@@ -375,7 +375,7 @@ class LimiXTrainer:
                     print(f"GPU ICL filter: TabICLv2 -> {self.device}")
                 return
             except ImportError:
-                raise ImportError("tabicl not installed. Run: pip install tabicl")
+                raise ImportError("tabicl not installed. Use: uv add tabicl")
 
         elif model_path == 'tabpfn':
             try:
@@ -388,7 +388,7 @@ class LimiXTrainer:
                     print(f"GPU ICL filter: TabPFN -> {self.device}")
                 return
             except ImportError:
-                raise ImportError("tabpfn not installed. Run: pip install tabpfn")
+                raise ImportError("tabpfn not installed. Use: uv add tabpfn")
 
         else:
             # LimiX checkpoint

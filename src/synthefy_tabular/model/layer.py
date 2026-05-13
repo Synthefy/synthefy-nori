@@ -272,7 +272,7 @@ class MultiheadAttention(torch.nn.Module):
         Uses the batched interface (q, k, v) instead of varlen packing.
         All sequences in a batch have equal length, so no cu_seqlens needed.
         """
-        assert HAVE_FLASH_ATTN_4, "FlashAttention-4 not installed. pip install flash-attn-4"
+        assert HAVE_FLASH_ATTN_4, "FlashAttention-4 not installed. Use: uv add flash-attn-4"
         # FA4 beta backward kernels fail for LimiX's native head_dim=16 on H100. Padding the
         # per-head dimension to 128 keeps q·k and weighted-v math unchanged as long as we also
         # preserve the original softmax scale.

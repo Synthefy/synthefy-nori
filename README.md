@@ -7,7 +7,7 @@ inference, evaluation, and Hugging Face checkpoint tooling.
 ## Install
 
 ```bash
-pip install -e ".[dev]"
+uv sync --extra dev
 ```
 
 ## Inference

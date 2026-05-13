@@ -160,7 +160,7 @@ class DatasetRegistry:
         try:
             import openml
         except ImportError:
-            print("[DatasetRegistry] openml not installed. Run: pip install openml")
+            print("[DatasetRegistry] openml not installed. Use: uv add openml")
             return {"downloaded": 0, "skipped": 0, "failed": 0}
 
         try:
@@ -203,12 +203,12 @@ class DatasetRegistry:
     # RelBench CTU (via redelex)
     # ------------------------------------------------------------------
     def load_ctu(self, max_datasets=70, task_types=None):
-        """Load CTU datasets via redelex (installed by pip install relbench[ctu])."""
+        """Load CTU datasets via redelex (installed with uv add relbench[ctu])."""
         try:
             from redelex.datasets import ctu_datasets as _ctu_mod
         except ImportError:
             print("[DatasetRegistry] redelex not importable. "
-                  "Run: pip install 'relbench[ctu]' torchvision pytorch_frame tensorboard")
+                  "Use: uv add 'relbench[ctu]' torchvision pytorch_frame tensorboard")
             return 0
 
         ctu_classes = self._get_ctu_classes(_ctu_mod)
@@ -321,11 +321,11 @@ class DatasetRegistry:
     # OpenML-CC18
     # ------------------------------------------------------------------
     def load_openml_cc18(self, max_datasets=72, show_progress=True):
-        """Load OpenML-CC18 classification benchmark. Requires: pip install openml"""
+        """Load OpenML-CC18 classification benchmark. Requires: uv add openml"""
         try:
             import openml
         except ImportError:
-            print("[DatasetRegistry] openml not installed. Run: pip install openml")
+            print("[DatasetRegistry] openml not installed. Use: uv add openml")
             return 0
 
         loaded = 0
@@ -358,11 +358,11 @@ class DatasetRegistry:
     # OpenML Regression
     # ------------------------------------------------------------------
     def load_openml_regression(self, max_datasets=30, show_progress=True):
-        """Load curated OpenML regression datasets. Requires: pip install openml"""
+        """Load curated OpenML regression datasets. Requires: uv add openml"""
         try:
             import openml
         except ImportError:
-            print("[DatasetRegistry] openml not installed. Run: pip install openml")
+            print("[DatasetRegistry] openml not installed. Use: uv add openml")
             return 0
 
         # Note: 4550 (MiceProtein) was removed — it's an 8-class classification dataset

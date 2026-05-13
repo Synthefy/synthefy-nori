@@ -276,7 +276,7 @@ class LimiXEnsembleWrapper(BaseModelWrapper):
 # ---------------------------------------------------------------------------
 
 class TabPFNWrapper(BaseModelWrapper):
-    """Wrapper for TabPFN v2 / v2.5. Requires: pip install tabpfn
+    """Wrapper for TabPFN v2 / v2.5. Requires: uv add tabpfn
 
     Args:
         model_name: Display name for the model (e.g. "TabPFN-2.5", "Real TabPFN-2.5").
@@ -380,7 +380,7 @@ class TabPFNWrapper(BaseModelWrapper):
 # ---------------------------------------------------------------------------
 
 class TabICLWrapper(BaseModelWrapper):
-    """Wrapper for TabICLv2. Requires: pip install tabicl"""
+    """Wrapper for TabICLv2. Requires: uv add tabicl"""
 
     def __init__(self, device="cuda:0"):
         self._name = "TabICLv2"
@@ -586,7 +586,7 @@ class ModelRegistry:
                 description="TabPFN v2.5 default (synthetic pre-training)",
             ))
         except ImportError:
-            print("[ModelRegistry] tabpfn not installed. Run: pip install tabpfn")
+            print("[ModelRegistry] tabpfn not installed. Use: uv add tabpfn")
 
     def add_tabpfn_real(self, device=None):
         """Register TabPFN-2.5 Real variant (fine-tuned on real data)."""
@@ -620,7 +620,7 @@ class ModelRegistry:
                 description="TabPFN v2.5 real variant (fine-tuned on real data)",
             ))
         except ImportError:
-            print("[ModelRegistry] tabpfn not installed. Run: pip install tabpfn")
+            print("[ModelRegistry] tabpfn not installed. Use: uv add tabpfn")
 
     def add_tabpfn_v26(self, device=None):
         """Register TabPFN-2.6 (latest default, uses default constructor).
@@ -640,7 +640,7 @@ class ModelRegistry:
                 description="TabPFN v2.6 default (latest)",
             ))
         except ImportError:
-            print("[ModelRegistry] tabpfn not installed. Run: pip install tabpfn")
+            print("[ModelRegistry] tabpfn not installed. Use: uv add tabpfn")
 
     def add_tabicl(self, device=None):
         device = device or self.device
@@ -649,10 +649,10 @@ class ModelRegistry:
             wrapper = TabICLWrapper(device=device)
             self.register(ModelEntry(
                 name="TabICLv2", wrapper=wrapper, model_type="tabicl",
-                description="TabICLv2 (pip install tabicl)",
+                description="TabICLv2 (uv add tabicl)",
             ))
         except ImportError:
-            print("[ModelRegistry] tabicl not installed. Run: pip install tabicl")
+            print("[ModelRegistry] tabicl not installed. Use: uv add tabicl")
 
     def cleanup_all(self):
         for entry in self._models.values():

@@ -12,9 +12,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[dev]"
-      - run: python -c "import synthefy_tabular"
-      - run: pytest tests
-      - run: ruff check src scripts tests
-      - run: python -m build
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra dev
+      - run: uv run python -c "import synthefy_tabular"
+      - run: uv run pytest tests
+      - run: uv run ruff check src scripts tests
+      - run: uv build
