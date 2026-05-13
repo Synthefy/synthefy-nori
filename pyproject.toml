@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synthefy-tabular"
+version = "0.1.0"
+description = "Synthefy Tabular foundation model training, inference, and evaluation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "Synthefy" }]
+dependencies = [
+    "einops",
+    "huggingface-hub",
+    "kditransform",
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "scipy",
+    "torch>=2.0",
+    "tqdm",
+    "typing-extensions",
+]
+
+[project.optional-dependencies]
+train = ["wandb>=0.15.0", "xgboost"]
+eval = ["matplotlib", "openml"]
+dev = ["build", "pytest", "ruff"]
+
+[project.scripts]
+synthefy-tabular-train = "synthefy_tabular.training.cli:main"
+synthefy-tabular-eval = "synthefy_tabular.evaluation.cli:main"
+synthefy-tabular-download = "synthefy_tabular.hf:download_cli"
+synthefy-tabular-upload = "synthefy_tabular.hf:upload_cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"synthefy_tabular.configs" = ["*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E9", "F821", "F822", "F823"]

@@ -1,0 +1,1159 @@
+from synthefy_tabular.inference.inference_method import InferenceAttentionMap, InferenceResultWithRetrieval
+from synthefy_tabular.inference.preprocess import (
+    FeatureShuffler,
+    FilterValidFeatures,
+    CategoricalFeatureEncoder,
+    RebalanceFeatureDistribution,
+    FingerprintFeatureEncoder,
+    HighDimFeatureSelector,
+    MaxFeatureSubsampler,
+    MADWinsorizer,
+    PolynomialInteractionGenerator,
+    SubSampleData)
+from synthefy_tabular.utils.loading import load_model
+import torch
+from typing import List, Literal
+import random
+from sklearn.utils.validation import check_X_y, check_array
+from sklearn.preprocessing import LabelEncoder, OrdinalEncoder
+from sklearn.compose import ColumnTransformer, make_column_selector
+from sklearn.preprocessing import FunctionTransformer
+import numpy as np
+from itertools import chain, repeat
+import pandas as pd
+import einops
+import json
+import os
+
+
+NA_PLACEHOLDER = "__MISSING__"
+
+class LimiXPredictor:
+    """"LimiX model inferencer, supporting tasks such as classification, regression, and missing value prediction."""
+    def __init__(self,
+                 device:torch.device,
+                 model_path:str = None,
+                 inference_config: list|str = None,
+                 mix_precision:bool=True,
+                 outlier_remove_std: float=12,
+                 softmax_temperature:float=0.9,
+                #  task_type: Literal['Classification', 'Regression']='Classification',
+                 mask_prediction:bool=False,
+                 categorical_features_indices:List[int]|None=None,
+                 inference_with_DDP: bool = False,
+                 seed:int=0,
+                 model: torch.nn.Module = None,
+                 augmentations: tuple|list|None = None,
+                 yj_skew_threshold: float = 10.0,
+                 quantile_collapse: str = 'mean',
+                 bar_temperature: float = 1.0,
+                 bar_point_estimator: str = 'mean'):
+        """
+        init LimiXPredictor
+
+        Args:
+            device: The device for performing inference; GPU is recommended
+            model_path: The model path of LimiX (unused when model is provided)
+            mix_precision: Whether to use mixed precision inference
+            outlier_remove_std: Standard deviation used for removing outliers
+            softmax_temperature: Softmax temperature coefficient
+            task_type:  task type
+            mask_prediction: Whether to enable missing value prediction
+            categorical_features_indices: Index numbers of categorical features, currently not in use
+            inference_config: inference_config_setting,
+            inference_with_DDP: If using DDP to inference,
+            seed: Random seed
+            model: Pre-loaded model instance (skips load_model when provided)
+        """
+        if isinstance(inference_config, str):
+            if os.path.isfile(inference_config):
+                with open(inference_config, 'r') as f:
+                    inference_config = json.load(f)
+            else:
+                raise ValueError(f"inference_config is not a config file path: {inference_config}")
+        self.model_path = model_path
+        self.device = device
+        self.mix_precision = mix_precision
+        self.categorical_features_indices = categorical_features_indices
+        self.seed = seed
+        self.inference_config = inference_config
+        n_estimators = len(inference_config)
+        assert n_estimators > 0, f"Invalid configuration file! the number of pipelines is 0!"
+        self.n_estimators = n_estimators
+        self.model = None
+        self.outlier_remove_std = outlier_remove_std
+        self.class_shuffle_factor = 3
+        self.min_seq_len_for_category_infer = 100
+        self.max_unique_num_for_category_infer = 30
+        self.min_unique_num_for_numerical_infer = 4
+        self.preprocess_num = 10
+        self.softmax_temperature = softmax_temperature
+        # self.task_type = task_type
+        self.mask_prediction = mask_prediction
+        self.inference_with_DDP=inference_with_DDP
+        # Optional inference-time augmentations. Currently supports:
+        #   'yj': Yeo-Johnson target transform ensemble — fit PowerTransformer
+        #         on y_train, predict in transformed space, inverse-transform,
+        #         average with the identity (untransformed) pass. Targets
+        #         heavy-tailed regression datasets (stock_fardamento02, CPS1988).
+        #         CONDITIONAL: only applied when |skew(y_train)| > yj_skew_threshold.
+        #         Ablation showed unconditional YJ hurt net R² (MIP-2016 −0.10,
+        #         others −0.03 to −0.06) despite helping stock_fardamento02
+        #         (+0.077). Gating on skew preserves the wins while skipping
+        #         moderately-skewed datasets where YJ is harmful.
+        self.augmentations = tuple(augmentations) if augmentations else ()
+        self.yj_skew_threshold = float(yj_skew_threshold)
+        # How to collapse K-quantile output to a point estimate per row.
+        #   'mean'          — simple average of all τ quantiles (≈ E[y]
+        #                     under uniform τ spacing; current default)
+        #   'median'        — the τ=0.5 quantile (robust to quantile noise;
+        #                     more conservative on skewed distributions)
+        #   'trimmed_mean'  — drop outer 5% of τ, average the rest
+        #   'huber_mean'    — MAD-normalized Huber-weighted mean around q_0.5
+        #   'tail_aware'    — per-row skewness test on the predicted quantile
+        #                     distribution: if left-heavy (q_0.5-q_0.01 >>
+        #                     q_0.99-q_0.5), return q_0.01; right-heavy →
+        #                     q_0.99; balanced → mean. Targets extreme-outlier
+        #                     rows (Job_Profitability, capped houses) where
+        #                     the model's quantile spread signals an
+        #                     out-of-bulk prediction.
+        # All strategies are zero-retrain: they only change how the K-way
+        # quantile head is collapsed to a single prediction.
+        valid_collapse = ('mean', 'median', 'trimmed_mean', 'huber_mean', 'tail_aware')
+        if quantile_collapse not in valid_collapse:
+            raise ValueError(f"quantile_collapse must be one of {valid_collapse}, got {quantile_collapse!r}")
+        self.quantile_collapse = quantile_collapse
+        # Bar-distribution inference controls (only used when the loaded model
+        # was trained with regression_loss='bar_distribution', auto-detected
+        # via model.regression_loss). Ignored for pinball/MSE/etc. checkpoints.
+        valid_bar = ('mean', 'mode', 'median')
+        if bar_point_estimator not in valid_bar:
+            raise ValueError(f"bar_point_estimator must be one of {valid_bar}, got {bar_point_estimator!r}")
+        self.bar_temperature = float(bar_temperature)
+        self.bar_point_estimator = bar_point_estimator
+
+        device_type = device.type if isinstance(device, torch.device) else str(device).split(':')[0]
+        if device_type == 'cpu':
+            if self.inference_config[0]["retrieval_config"]["use_retrieval"]:
+                raise ValueError("Retrieval is not supported for CPU inference! Please use the noretrieval configuration when running on a CPU device!")
+            self.mix_precision = False
+            print("Mixed precision is not supported for CPU inference, so it has been automatically disabled")
+
+        if model is not None:
+            self.model = model
+        else:
+            self.model = load_model(model_path=model_path, mask_prediction=mask_prediction)
+
+        self.preprocess_pipelines = []
+        self.preprocess_configs = []
+
+        self.build_preprocess_pipeline()
+
+    def set_inference_config(self, inference_config: list|str, softmax_temperature:float|None=None, seed:int|None=None):
+        if isinstance(inference_config, str):
+            if os.path.isfile(inference_config):
+                with open(inference_config, 'r') as f:
+                    inference_config = json.load(f)
+            else:
+                raise ValueError(f"inference_config is not a config file path: {inference_config}")
+        self.inference_config = inference_config
+        n_estimators = len(inference_config)
+        assert n_estimators > 0, f"Invalid configuration file! the number of pipelines is 0!"
+        self.n_estimators = n_estimators
+        
+        if softmax_temperature is not None:
+            self.softmax_temperature = softmax_temperature
+        if seed is not None:
+            self.seed = seed
+        self.build_preprocess_pipeline()
+
+    def build_preprocess_pipeline(self):
+        self.preprocess_pipelines = []
+        self.preprocess_configs = []
+    
+        random.seed(self.seed)
+        rand_gen = np.random.default_rng(self.seed)
+        self.seeds = [random.randint(0, 10000) for _ in range(self.n_estimators*self.preprocess_num)]
+        start_idx = rand_gen.integers(0, 1000)
+        all_shifts = list(range(start_idx, start_idx + self.n_estimators))
+        self.all_shifts = rand_gen.choice(all_shifts, size=self.n_estimators, replace=False)
+    
+        if self.mask_prediction:
+            for inference_config_item in self.inference_config:
+                if len(inference_config_item['RebalanceFeatureDistribution']['worker_tags']) > 0:
+                    for i, v in enumerate(inference_config_item['RebalanceFeatureDistribution']['worker_tags']):
+                        if v == 'power':
+                            print("WARNING: Missing value imputation does not currently support the preprocessing method of power! Using the default worker_tags method")
+                            inference_config_item['RebalanceFeatureDistribution']['worker_tags'].pop(i)
+                            inference_config_item['RebalanceFeatureDistribution']['worker_tags'].append(None)
+                inference_config_item['RebalanceFeatureDistribution']['discrete_flag'] = True
+
+        for idx in range(self.n_estimators):
+            pipeline = []
+            inference_config_item = self.inference_config[idx]
+            retrieval_config = inference_config_item["retrieval_config"]
+            if retrieval_config["use_retrieval"] and retrieval_config["retrieval_before_preprocessing"]:
+                if retrieval_config["subsample_type"] == "sample":
+                    assert retrieval_config[
+                        "calculate_sample_attention"], "Retrieval on sample level must calculate sample attention score before."
+                    if retrieval_config["use_type"] == "mixed":
+                        assert retrieval_config[
+                            "calculate_feature_attention"], "Retrieval on mixed type must calculate sample and feature attention score before."
+                if retrieval_config["subsample_type"] == "feature":
+                    assert retrieval_config[
+                        "calculate_feature_attention"], "Retrieval on sample level must calculate feature attention score before."
+                pipeline.append(
+                    InferenceAttentionMap(self.model_path, retrieval_config["calculate_feature_attention"],
+                                          retrieval_config["calculate_sample_attention"]))
+                pipeline.append(SubSampleData(retrieval_config["subsample_type"], retrieval_config["use_type"]))
+            # HighDimFeatureSelector runs BEFORE MaxFeatureSubsampler so we
+            # can do supervised top-k selection (corr / MI / ExtraTrees) or
+            # SVD projection on binary fingerprints before any random pruning.
+            # Self-gates: passthrough on low-dim datasets, identical to today's
+            # behavior. Activates only when n_features > threshold OR
+            # binary_frac >= threshold.
+            if 'HighDimFeatureSelector' in inference_config_item:
+                pipeline.append(HighDimFeatureSelector(**inference_config_item['HighDimFeatureSelector']))
+            # MaxFeatureSubsampler runs BEFORE poly generator so poly pairs are
+            # drawn from the subsampled feature set (matches TabPFN semantics:
+            # each estimator sees ≤ max_features original columns).
+            if 'MaxFeatureSubsampler' in inference_config_item:
+                pipeline.append(MaxFeatureSubsampler(**inference_config_item['MaxFeatureSubsampler']))
+            if 'PolynomialInteractionGenerator' in inference_config_item:
+                pipeline.append(PolynomialInteractionGenerator(**inference_config_item['PolynomialInteractionGenerator']))
+
+            pipeline.append(FilterValidFeatures())
+
+            # MAD winsorization: clip per-column at ±N MAD from median, matching
+            # the training-side safety winsorization. Runs BEFORE rebalance so
+            # subsequent transforms see clipped values.
+            if 'MADWinsorizer' in inference_config_item:
+                pipeline.append(MADWinsorizer(**inference_config_item['MADWinsorizer']))
+
+            if 'RebalanceFeatureDistribution' in inference_config_item:
+                pipeline.append(RebalanceFeatureDistribution(**inference_config_item['RebalanceFeatureDistribution']))
+            if 'CategoricalFeatureEncoder' in inference_config_item:
+                pipeline.append(CategoricalFeatureEncoder(**inference_config_item['CategoricalFeatureEncoder']))
+            if inference_config_item.get('FingerprintFeatureEncoder', False):
+                pipeline.append(FingerprintFeatureEncoder())
+            if 'FeatureShuffler' in inference_config_item:
+                shuffler = FeatureShuffler(**inference_config_item['FeatureShuffler'])
+                shuffler.offset = self.all_shifts[idx]
+                pipeline.append(shuffler)
+            
+            if retrieval_config["use_retrieval"] and not retrieval_config["retrieval_before_preprocessing"]:
+                if retrieval_config["subsample_type"] == "sample":
+                    assert retrieval_config[
+                        "calculate_sample_attention"], "Retrieval on sample level must calculate sample attention score before."
+                    if retrieval_config["use_type"] == "mixed":
+                        assert retrieval_config[
+                            "calculate_feature_attention"], "Retrieval on mixed type must calculate sample and feature attention score before."
+                if retrieval_config["subsample_type"] == "feature":
+                    assert retrieval_config[
+                        "calculate_feature_attention"], "Retrieval on sample level must calculate feature attention score before."
+                pipeline.append(
+                    InferenceAttentionMap(self.model_path, retrieval_config["calculate_feature_attention"],
+                                          retrieval_config["calculate_sample_attention"]))
+                pipeline.append(SubSampleData(retrieval_config["subsample_type"], retrieval_config["use_type"]))
+            self.preprocess_pipelines.append(pipeline)
+
+    def _check_n_features(self, X, reset):
+        """Check whether the number of features matches the previous evaluation"""
+        n_features = X.shape[1]
+        if reset:
+            self.n_features_in_ = n_features
+        else:
+            if self.n_features_in_ != n_features:
+                raise ValueError(
+                    f"X has {n_features} features, "
+                    f"but this estimator is expecting {self.n_features_in_} features."
+                )
+    
+    def validate_data(self, x=None, y=None, reset=True, validate_separately=False, **check_params):
+        """
+        {'accept_sparse': False, 'dtype': None, 'ensure_all_finite': 'allow-nan'}
+        """
+        # Validate both x and y simultaneously
+        if y is not None:
+            x, y = check_X_y(x, y, **check_params)
+            self._check_n_features(x, reset=reset)
+            return x, y
+
+        # Validate X
+        if x is not None:
+            x = check_array(x, **check_params)
+            self._check_n_features(x, reset=reset)
+            return x
+
+        return None
+    
+    def convert_x_dtypes(self, x:np.ndarray, dtypes:Literal["float32", "float64"] = "float64"):
+        NUMERIC_DTYPE_KINDS = "?bBiufm"
+        OBJECT_DTYPE_KINDS = "OV"
+        STRING_DTYPE_KINDS = "SaU"
+        
+        if x.dtype.kind in NUMERIC_DTYPE_KINDS:
+            x = pd.DataFrame(x, copy=False, dtype=dtypes)
+        elif x.dtype.kind in OBJECT_DTYPE_KINDS:
+            x = pd.DataFrame(x, copy=True)
+            x = x.convert_dtypes()
+        else:
+            raise ValueError(f"Unsupport string dtypes! {x.dtype}")
+
+        integer_columns = x.select_dtypes(include=["number"]).columns
+        if len(integer_columns) > 0:
+            x[integer_columns] = x[integer_columns].astype(dtypes)
+        return x
+    
+    def convert_category2num(self, x, dtype:np.floating=np.float64, placeholder: str = NA_PLACEHOLDER,):
+        # --- Drop high-cardinality string columns (e.g. IDs) before encoding ---
+        string_cols_pre = x.select_dtypes(include=["string", "object"]).columns
+        cols_to_drop = []
+        for col in string_cols_pre:
+            n_unique = x[col].nunique()
+            n_samples = len(x[col])
+            # If > 90% of values are unique (and there are at least 50 samples), it's likely an ID column
+            if n_samples > 50 and n_unique / n_samples > 0.90:
+                cols_to_drop.append(col)
+        if cols_to_drop:
+            x = x.drop(columns=cols_to_drop)
+
+        ordinal_encoder = OrdinalEncoder(categories="auto",
+                                        dtype=dtype,
+                                        handle_unknown="use_encoded_value",
+                                        unknown_value=-1,
+                                        encoded_missing_value=np.nan)
+        col_encoder = ColumnTransformer(transformers=[("encoder", ordinal_encoder, make_column_selector(dtype_include=["category", "string", "bool"]))],
+                                        remainder=FunctionTransformer(),
+                                        sparse_threshold=0.0,
+                                        verbose_feature_names_out=False,
+                                    )
+        
+        string_cols = x.select_dtypes(include=["string", "object"]).columns
+        if len(string_cols) > 0:
+            x[string_cols] = x[string_cols].fillna(placeholder)
+        
+        X_encoded = col_encoder.fit_transform(x)
+
+        string_cols_ix = [x.columns.get_loc(col) for col in string_cols]
+        placeholder_mask = x[string_cols] == placeholder
+        string_cols_ix_2 = list(range(len(string_cols_ix)))
+        X_encoded[:, string_cols_ix_2] = np.where(
+            placeholder_mask,
+            np.nan,
+            X_encoded[:, string_cols_ix_2],
+        )
+
+        return X_encoded
+
+    def _drop_high_cardinality_string_columns(
+        self,
+        x_train: pd.DataFrame,
+        x_test: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        string_cols_pre = x_train.select_dtypes(include=["string", "object"]).columns
+        cols_to_drop = []
+        for col in string_cols_pre:
+            n_unique = x_train[col].nunique()
+            n_samples = len(x_train[col])
+            if n_samples > 50 and n_unique / n_samples > 0.90:
+                cols_to_drop.append(col)
+        if cols_to_drop:
+            x_train = x_train.drop(columns=cols_to_drop)
+            x_test = x_test.drop(columns=cols_to_drop)
+        return x_train, x_test
+
+    def _fit_category_encoder(
+        self,
+        x_train: pd.DataFrame,
+        dtype: np.floating = np.float64,
+        placeholder: str = NA_PLACEHOLDER,
+    ) -> dict:
+        ordinal_encoder = OrdinalEncoder(
+            categories="auto",
+            dtype=dtype,
+            handle_unknown="use_encoded_value",
+            unknown_value=-1,
+            encoded_missing_value=np.nan,
+        )
+        encoded_cols = list(
+            x_train.select_dtypes(include=["category", "string", "bool"]).columns
+        )
+        string_cols = list(x_train.select_dtypes(include=["string", "object"]).columns)
+        x_train_fit = x_train.copy()
+        if string_cols:
+            x_train_fit[string_cols] = x_train_fit[string_cols].fillna(placeholder)
+        col_encoder = ColumnTransformer(
+            transformers=[
+                ("encoder", ordinal_encoder, make_column_selector(dtype_include=["category", "string", "bool"]))
+            ],
+            remainder=FunctionTransformer(),
+            sparse_threshold=0.0,
+            verbose_feature_names_out=False,
+        )
+        col_encoder.fit(x_train_fit)
+        return {
+            "encoder": col_encoder,
+            "encoded_cols": encoded_cols,
+            "string_cols": string_cols,
+            "placeholder": placeholder,
+        }
+
+    def _transform_category2num(
+        self,
+        x: pd.DataFrame,
+        encoder_state: dict,
+    ) -> np.ndarray:
+        x_enc = x.copy()
+        string_cols = encoder_state["string_cols"]
+        placeholder = encoder_state["placeholder"]
+        if string_cols:
+            x_enc[string_cols] = x_enc[string_cols].fillna(placeholder)
+
+        X_encoded = encoder_state["encoder"].transform(x_enc)
+        if string_cols:
+            encoded_cols = encoder_state["encoded_cols"]
+            string_output_positions = [encoded_cols.index(col) for col in string_cols]
+            placeholder_mask = (x_enc[string_cols] == placeholder).to_numpy()
+            X_encoded[:, string_output_positions] = np.where(
+                placeholder_mask,
+                np.nan,
+                X_encoded[:, string_output_positions],
+            )
+        return X_encoded
+
+    def _prepare_inductive_features(
+        self,
+        x_train: np.ndarray,
+        x_test: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, list[int]]:
+        x_train_df = self.convert_x_dtypes(x_train)
+        x_test_df = self.convert_x_dtypes(x_test)
+        x_train_df, x_test_df = self._drop_high_cardinality_string_columns(
+            x_train_df,
+            x_test_df,
+        )
+        encoder_state = self._fit_category_encoder(x_train_df)
+        x_train_enc = self._transform_category2num(x_train_df, encoder_state).astype(np.float32)
+        x_test_enc = self._transform_category2num(x_test_df, encoder_state).astype(np.float32)
+        categorical_idx = self.get_categorical_features_indices(x_train_enc)
+        return x_train_enc, x_test_enc, categorical_idx
+
+    def _fit_transform_step_inductive(
+        self,
+        step,
+        x_train: np.ndarray,
+        x_test: np.ndarray,
+        categorical_idx: list[int],
+        seed: int,
+        y_train: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, list[int]]:
+        # `y_train` is forwarded to selectors that require it (e.g.
+        # HighDimFeatureSelector with corr / mi / extratrees). Steps that don't
+        # accept a y= kwarg simply ignore it via **kwargs.
+        categorical_idx = step.fit(x_train, categorical_idx, seed, y=y_train)
+        if isinstance(step, FingerprintFeatureEncoder):
+            x_train_out, categorical_idx = step.transform(x_train, is_test=False)
+            x_test_out, categorical_idx = step.transform(x_test, is_test=True)
+            return x_train_out, x_test_out, categorical_idx
+
+        if isinstance(step, FilterValidFeatures):
+            x_train_out, categorical_idx = step.transform(x_train)
+            train_invalid = (
+                None if step.invalid_features is None else step.invalid_features.copy()
+            )
+            x_test_out, categorical_idx = step.transform(x_test)
+            test_invalid = (
+                None if step.invalid_features is None else step.invalid_features.copy()
+            )
+            if train_invalid is None:
+                step.invalid_features = test_invalid
+            elif test_invalid is None:
+                step.invalid_features = train_invalid
+            else:
+                step.invalid_features = np.concatenate([train_invalid, test_invalid], axis=0)
+            return x_train_out, x_test_out, categorical_idx
+
+        x_train_out, categorical_idx = step.transform(x_train)
+        x_test_out, categorical_idx = step.transform(x_test)
+        return x_train_out, x_test_out, categorical_idx
+
+    
+    def get_categorical_features_indices(self, x:np.ndarray):
+        if x.shape[0] < self.min_seq_len_for_category_infer:
+            return []
+        categorical_idx = []
+        for idx, col in enumerate(x.T):
+            if len(np.unique(col)) < self.min_unique_num_for_numerical_infer:
+                categorical_idx.append(idx)
+        return categorical_idx
+        
+    
+    def predict(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray, task_type:Literal['Classification', 'Regression']='Classification') -> np.ndarray:
+        """
+        Perform inference using the LimiX model
+        
+        Args:
+        x_train: Training data x
+        y_train: Training data y
+        x_test:  Testing data x
+        """
+        if task_type == "Classification":
+            return self._predict_cls(x_train, y_train, x_test)
+        elif task_type == "Regression":
+            return self._predict_reg(x_train, y_train, x_test)
+        else:
+            raise ValueError(f"Unsupported task type, supported tasks include classification and regression!")
+
+    def _collapse_regression_output(self, output: torch.Tensor) -> torch.Tensor:
+        """Convert regression decoder output to one point prediction per test row.
+
+        Pinball-trained checkpoints emit one column per quantile τ_i
+        (ordered ascending, e.g. τ=0.01..0.99). This method collapses the
+        [..., K] quantile bank to a [...] point estimate using
+        self.quantile_collapse (set at __init__). Under uniform τ spacing
+        'mean' is approximately E[y]; other strategies trade accuracy on
+        symmetric bulk for robustness/tail behavior.
+
+        Bar-distribution-trained checkpoints emit K bin logits over a fixed
+        [bar_borders_low, bar_borders_high] range. When we detect that mode on
+        the loaded model, we skip the quantile-collapse path and decode via
+        softmax → point estimate (mean/mode/median of the predicted density).
+        """
+        model_ref = self.model
+        if hasattr(model_ref, "module"):
+            model_ref = model_ref.module
+        if hasattr(model_ref, "_orig_mod"):
+            model_ref = model_ref._orig_mod
+        num_reg_quantiles = int(getattr(model_ref, "num_reg_quantiles", 1))
+        regression_loss = str(getattr(model_ref, "regression_loss", "pinball"))
+        if output.ndim == 0:
+            output = output.unsqueeze(0)
+
+        if num_reg_quantiles > 1:
+            if regression_loss == 'bar_distribution':
+                num_bars = int(getattr(model_ref, "num_bars", num_reg_quantiles))
+                lo = float(getattr(model_ref, "bar_borders_low", -10.0))
+                hi = float(getattr(model_ref, "bar_borders_high", 10.0))
+                if output.ndim == 1 and output.shape[0] == num_bars:
+                    # Single test row with num_bars logits
+                    output = self._apply_bar_distribution_decode(
+                        output.unsqueeze(0), num_bars, lo, hi,
+                    ).squeeze(0).unsqueeze(0)
+                elif output.shape[-1] == num_bars:
+                    output = self._apply_bar_distribution_decode(
+                        output, num_bars, lo, hi,
+                    )
+            else:
+                if output.ndim == 1 and output.shape[0] == num_reg_quantiles:
+                    # Single test row with K quantiles — collapse, then re-expand
+                    output = self._apply_quantile_collapse(output.unsqueeze(0)).squeeze(0).unsqueeze(0)
+                elif output.shape[-1] == num_reg_quantiles:
+                    output = self._apply_quantile_collapse(output)
+
+        output = output.squeeze()
+        if output.ndim == 0:
+            output = output.unsqueeze(0)
+        return output
+
+    def _apply_bar_distribution_decode(
+        self, logits: torch.Tensor, num_bars: int, lo: float, hi: float,
+    ) -> torch.Tensor:
+        """Decode [..., num_bars] logits to [...] point estimate.
+
+        probs = softmax(logits / T), where T = self.bar_temperature (default 1.0).
+        Point estimate is selected by self.bar_point_estimator:
+          'mean'   — E[y] = Σ prob_i * center_i   (default)
+          'mode'   — bin_center at argmax(prob)
+          'median' — bin_center where CDF first crosses 0.5
+
+        Borders are constructed fresh on the logits device so this path is
+        fully graph-compatible with torch.compile.
+        """
+        borders = torch.linspace(
+            lo, hi, num_bars + 1, device=logits.device, dtype=logits.dtype,
+        )
+        bin_centers = 0.5 * (borders[:-1] + borders[1:])  # [num_bars]
+        T = float(getattr(self, 'bar_temperature', 1.0))
+        if T <= 0:
+            T = 1.0
+        probs = torch.softmax(logits.float() / T, dim=-1)
+        mode = getattr(self, 'bar_point_estimator', 'mean')
+        if mode == 'mode':
+            idx = probs.argmax(dim=-1)
+            return bin_centers[idx]
+        if mode == 'median':
+            cdf = probs.cumsum(dim=-1)
+            idx = (cdf >= 0.5).int().argmax(dim=-1)  # first bin where CDF crosses 0.5
+            return bin_centers[idx]
+        # mean (default)
+        return (probs * bin_centers).sum(dim=-1)
+
+    def _apply_quantile_collapse(self, q: torch.Tensor) -> torch.Tensor:
+        """Collapse [..., K] quantile tensor to [...] point estimate.
+
+        Strategies:
+          mean          — current default; Σ q_i / K (≈ E[y] for uniform τ)
+          median        — q at the middle τ index; robust to quantile
+                          crossing, but more conservative on skewed rows
+          trimmed_mean  — drop outer 5% of τ indices, average rest
+          huber_mean    — Huber-weighted mean with center = τ=0.5 quantile,
+                          scale = MAD of quantile values
+        """
+        mode = getattr(self, 'quantile_collapse', 'mean')
+        K = q.shape[-1]
+        if mode == 'mean' or K <= 1:
+            return q.mean(dim=-1)
+        if mode == 'median':
+            # τ-ordered output: middle index is τ=0.5 for odd K, lower-median for even
+            return q[..., K // 2]
+        if mode == 'trimmed_mean':
+            trim = max(1, int(K * 0.05))
+            return q[..., trim:K - trim].mean(dim=-1)
+        if mode == 'huber_mean':
+            # Sort defensively against quantile crossing — q should already be
+            # monotonic in τ for a well-trained pinball head.
+            q_sorted, _ = q.sort(dim=-1)
+            center = q_sorted[..., K // 2:K // 2 + 1]
+            mad = (q_sorted - center).abs().median(dim=-1, keepdim=True).values
+            mad = torch.clamp(mad, min=1e-8)
+            dev = (q_sorted - center) / mad
+            k_huber = 1.5
+            w = torch.where(
+                dev.abs() < k_huber,
+                torch.ones_like(dev),
+                k_huber / dev.abs().clamp(min=k_huber),
+            )
+            return (q_sorted * w).sum(dim=-1) / w.sum(dim=-1).clamp(min=1e-8)
+        if mode == 'tail_aware':
+            # Use the shape of the predicted quantile distribution to detect
+            # rows where the model is signaling an out-of-bulk prediction.
+            # For such rows, collapse to the heavy-side quantile instead of
+            # the mean (which gets pulled back by bulk-side quantile mass).
+            # Pure bulk rows fall through to mean — no bias there.
+            #
+            # Rule:
+            #   left_weight  = q[τ=0.5] - q[τ=0.01]   (median → low tail)
+            #   right_weight = q[τ=0.99] - q[τ=0.5]   (median → high tail)
+            #   LEFT_HEAVY  if left_weight  > SKEW_RATIO * right_weight
+            #   RIGHT_HEAVY if right_weight > SKEW_RATIO * left_weight
+            # Both require spread > MIN_SPREAD_RATIO × (batch-median spread)
+            # so a uniformly-tiny quantile spread can't accidentally trigger.
+            lo_idx = max(0, int(round(K * 0.01)))           # τ≈0.01
+            mid_idx = K // 2                                 # τ=0.5
+            hi_idx = min(K - 1, int(round(K * 0.99)) - 1)    # τ≈0.99
+            q_lo = q[..., lo_idx]
+            q_mid = q[..., mid_idx]
+            q_hi = q[..., hi_idx]
+            left_w = q_mid - q_lo
+            right_w = q_hi - q_mid
+            spread = (q_hi - q_lo).abs()
+            # Relative threshold: a row's spread has to stand out from the batch.
+            spread_thresh = spread.median() * 1.5 if q.shape[0] > 1 else spread.new_zeros(()) - 1.0
+            SKEW_RATIO = 3.0
+            left_heavy = (left_w.abs() > SKEW_RATIO * right_w.abs().clamp(min=1e-8)) & (spread > spread_thresh)
+            right_heavy = (right_w.abs() > SKEW_RATIO * left_w.abs().clamp(min=1e-8)) & (spread > spread_thresh)
+            mean_est = q.mean(dim=-1)
+            result = torch.where(left_heavy, q_lo, mean_est)
+            result = torch.where(right_heavy, q_hi, result)
+            return result
+        # Should be unreachable (validated in __init__), but fall back safely.
+        return q.mean(dim=-1)
+        
+    def _predict_cls(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray) -> np.ndarray:
+        # Check size constraints to avoid OOM
+        n_features = x_train.shape[1] if x_train.ndim > 1 else 1
+        n_samples_train = x_train.shape[0]
+        n_samples_test = x_test.shape[0]
+        
+        # If the number of elements is too large, we must chunk the test set to avoid OOM
+        # A conservative budget for 24GB GPUs is around 200,000 to 500,000 elements
+        MAX_ELEMENTS_BUDGET = 2_000_000
+        
+        # Calculate elements for one full forward pass (train + 1 test row at minimum)
+        base_elements = (n_samples_train + 1) * n_features
+        if base_elements > MAX_ELEMENTS_BUDGET:
+            # If even the train set + 1 row is too big, we must subsample the training set
+            max_train_samples = max(10, MAX_ELEMENTS_BUDGET // (2 * n_features))
+            # Randomly subsample the training data
+            rng = np.random.default_rng(self.seed)
+            idx = rng.choice(n_samples_train, max_train_samples, replace=False)
+            x_train = x_train[idx]
+            y_train = y_train[idx]
+            n_samples_train = len(x_train)
+            
+        np_rng = np.random.default_rng(self.seed)
+        
+        x_train, y_train = self.validate_data(x_train, y_train, reset=True, validate_separately=False, accept_sparse=False, dtype=None, ensure_all_finite=False)
+        x_test = self.validate_data(x_test, reset=False, validate_separately=False, accept_sparse=False, dtype=None, ensure_all_finite=False)
+        
+        # Encode y_train
+        self.label_encoder = LabelEncoder()
+        y = self.label_encoder.fit_transform(y_train)
+        self.classes = self.label_encoder.classes_
+        self.n_classes = len(self.classes)
+        
+        # shuffle y
+        noise = np_rng.random((self.n_estimators * self.class_shuffle_factor, self.n_classes))
+        shufflings = np.argsort(noise, axis=1)
+        uniqs = np.unique(shufflings, axis=0)
+        balance_count = self.n_estimators // len(uniqs)
+        self.class_permutations = list(chain.from_iterable(repeat(elem, balance_count) for elem in uniqs))
+        cout = self.n_estimators%len(uniqs)
+        if self.n_estimators%len(uniqs) > 0:
+            self.class_permutations += [uniqs[i] for i in np_rng.choice(len(uniqs), size=cout)]
+        
+        # Fit preprocessing on train only, then apply the fitted state to test.
+        x_train_base, x_test_base, categorical_idx = self._prepare_inductive_features(
+            x_train,
+            x_test,
+        )
+        outputs = []
+        mask_predictions = []
+        for id_pipe, pipe in enumerate(self.preprocess_pipelines):
+            x_train_ = x_train_base.copy()
+            x_test_ = x_test_base.copy()
+            y_ = self.class_permutations[id_pipe][y.copy()]
+            categorical_idx_ = categorical_idx.copy()
+            for id_step, step in enumerate(pipe):
+                if isinstance(step, InferenceAttentionMap):
+                    feature_attention_score, sample_attention_score = step.inference(X_train=x_train_.astype(np.float32),
+                                                                                     y_train=y_train.astype(np.float32),
+                                                                                     X_test=x_test_.astype(np.float32),
+                                                                                     task_type="cls",device=self.device)
+                   
+                elif isinstance(step, SubSampleData):
+                    step.fit(torch.from_numpy(x_train_), torch.from_numpy(y_train),
+                             feature_attention_score=feature_attention_score,
+                             sample_attention_score=sample_attention_score,
+                             subsample_ratio=self.inference_config[id_pipe]["retrieval_config"].get("sub_feature_ratio", 0.5))
+                    if self.inference_config[id_pipe]["retrieval_config"]["subsample_type"] == "feature":
+                        x_combined = step.transform(torch.from_numpy(x_test_).float())
+                        x_train_ = x_combined[:len(y_train)]
+                        x_test_ = x_combined[len(y_train):]
+                        categorical_idx_ = self.get_categorical_features_indices(x_train_)
+                    else:
+                        attention_score = step.transform(torch.from_numpy(x_test_).float())
+                else:
+                    x_train_, x_test_, categorical_idx_ = self._fit_transform_step_inductive(
+                        step,
+                        x_train_,
+                        x_test_,
+                        categorical_idx_,
+                        self.seeds[id_pipe*self.preprocess_num+id_step],
+                        y_train=y_,
+                    )
+
+            x_ = np.concatenate([x_train_, x_test_], axis=0)
+            x_ = torch.from_numpy(x_[:, :]).float().to(self.device)
+            y_ = torch.from_numpy(y_).float().to(self.device)
+            torch.manual_seed(self.seed)
+            torch.cuda.manual_seed_all(self.seed)
+            if self.inference_config[id_pipe]["retrieval_config"]["use_retrieval"] and \
+                    self.inference_config[id_pipe]["retrieval_config"]["subsample_type"] == "sample":
+                inference = InferenceResultWithRetrieval(model=self.model,
+                                                         sample_selection_type="AM")
+                output = inference.inference(x_[:len(y_train)], y_,
+                                             x_[len(y_train):],
+                                             attention_score=attention_score,
+                                             retrieval_len=self.inference_config[id_pipe]["retrieval_config"][
+                                                 "retrieval_len"],
+                                             dynamic_ratio=self.inference_config[id_pipe]["retrieval_config"].get(
+                                                 "dynamic_ratio", None),
+                                             use_cluster=self.inference_config[id_pipe]["retrieval_config"].get(
+                                                 "use_cluster", False),
+                                             cluster_num=self.inference_config[id_pipe]["retrieval_config"].get(
+                                                 "cluster_num", 20),
+                                             task_type="cls",
+                                             use_threshold=self.inference_config[id_pipe]["retrieval_config"].get(
+                                                 "use_threshold", False),
+                                             threshold=self.inference_config[id_pipe]["retrieval_config"].get(
+                                                 "threshold", 1),
+                                             mixed_method=self.inference_config[id_pipe]["retrieval_config"].get(
+                                                 "mixed_method", "max"),device=self.device)
+                if self.softmax_temperature != 1:
+                    output = (output[:, :self.n_classes].float() / self.softmax_temperature)
+
+                output = output[..., self.class_permutations[id_pipe]]
+                outputs.append(output)
+            elif self.inference_with_DDP:
+                inference = InferenceResultWithRetrieval(model=self.model,
+                                                         sample_selection_type="DDP")
+                output = inference.inference(x_[:len(y_train)].squeeze(1), y_, x_[len(y_train):].squeeze(1),
+                                             task_type="cls")
+                if self.softmax_temperature != 1:
+                    output = (output[:, :self.n_classes].float() / self.softmax_temperature)
+
+                output = output[..., self.class_permutations[id_pipe]]
+                outputs.append(output)
+            if not self.inference_config[id_pipe]["retrieval_config"]["use_retrieval"] and not self.inference_with_DDP:
+                # Calculate max allowed test samples per batch to avoid OOM
+                # We need: (n_train + chunk_size) * n_features <= MAX_ELEMENTS_BUDGET
+                chunk_size = max(256, (MAX_ELEMENTS_BUDGET // n_features) - n_samples_train)
+                
+                # Chunk the test data
+                all_outputs = []
+                for i in range(0, n_samples_test, chunk_size):
+                    end_idx = min(i + chunk_size, n_samples_test)
+                    x_chunk_test = x_[len(y_train) + i : len(y_train) + end_idx]
+                    
+                    # Recombine train + test chunk
+                    x_chunk_combined = torch.cat([x_[:len(y_train)], x_chunk_test], dim=0)
+                    
+                    # Create dummy y for test chunk
+                    y_chunk_test = torch.zeros(end_idx - i, dtype=y_.dtype, device=y_.device)
+                    y_chunk_combined = torch.cat([y_[:len(y_train)], y_chunk_test], dim=0)
+                    
+                    self.model.to(self.device)
+                    with(torch.autocast(device_type=self.device.type if isinstance(self.device, torch.device) else self.device, enabled=self.mix_precision), torch.inference_mode()):
+                        x_in = x_chunk_combined.unsqueeze(0)
+                        y_in = y_chunk_combined.unsqueeze(0)
+                        chunk_output = self.model(x=x_in, y=y_in, eval_pos=len(y_train), task_type='cls')
+
+                        if self.mask_prediction:
+                            process_config = chunk_output['process_config']
+                            chunk_output_feature_pred = self.PostProcessInModel(chunk_output['feature_pred'], process_config)
+                            chunk_output_feature_pred = self.PostProcess(chunk_output_feature_pred, pipe, process_config)
+                            mask_predictions.append(chunk_output_feature_pred)
+                            chunk_output = chunk_output['cls_output']
+
+                        chunk_output = chunk_output if isinstance(chunk_output, dict) else chunk_output.squeeze(0)
+
+                        if self.softmax_temperature != 1:
+                            chunk_output = (chunk_output[:, :self.n_classes].float() / self.softmax_temperature)
+
+                        chunk_output = chunk_output[..., self.class_permutations[id_pipe]]
+                        all_outputs.append(chunk_output)
+                
+                # Concatenate all test chunks
+                output = torch.cat(all_outputs, dim=0)
+                outputs.append(output)
+            
+        outputs = [torch.nn.functional.softmax(o, dim=1) for o in outputs]
+        output = torch.stack(outputs).mean(dim=0)
+        mask_prediction = np.stack(mask_predictions).mean(axis=0) if mask_predictions != [] and self.mask_prediction else None
+        output = output.float().cpu().numpy()
+
+        if self.mask_prediction:
+            return output / output.sum(axis=1, keepdims=True), mask_prediction
+        else:
+            return output / output.sum(axis=1, keepdims=True)
+    
+    def PostProcessInModel(self, feature_pred:torch.tensor, config: dict) -> torch.tensor:
+        # Revert preprocess in model forward
+        feature_pred = feature_pred / torch.sqrt(config['features_per_group'] / config['num_used_features'].to(self.device))
+        feature_pred = feature_pred*config['std_for_normalization'] + config['mean_for_normalization']
+        feature_pred = einops.rearrange(feature_pred, "b s f n -> s b (f n)").squeeze(1).float().cpu().numpy()
+        if config['n_x_padding'] > 0:
+            feature_pred = feature_pred[:,:-config['n_x_padding']]
+        return feature_pred
+    
+    def PostProcess(self, feature_pred:np.ndarray, pipeline:List, config: dict, gt=False) -> np.ndarray:        
+        # Revert preprocess in the Classifier
+        for id_step, step in enumerate(reversed(pipeline)):
+            if isinstance(step, FeatureShuffler):
+                if step.mode == "shuffle":
+                    inv_p = np.argsort(step.feature_indices)
+                    feature_pred = feature_pred[:, inv_p]
+                else:
+                    raise NotImplementedError
+            elif isinstance(step, CategoricalFeatureEncoder):
+                if step.encoding_strategy != 'onehot':
+                    if step.category_mappings is not None:
+                        categorical_indices = list(step.category_mappings.keys())
+                        feature_pred[:, categorical_indices] = np.round(feature_pred[:, categorical_indices])
+                    if step.transformer is not None:
+                        for idx, p in step.category_mappings.items():
+                            feature_pred[:, idx] = np.clip(feature_pred[:, idx], a_min=0, a_max=max(p))
+                            inv_p = np.argsort(p)
+                            feature_pred[:, idx] = inv_p[feature_pred[:, idx].astype(int)].astype(feature_pred.dtype)
+                        inv_col = np.argsort(step.feature_indices)
+                        feature_pred = feature_pred[:, inv_col]
+                else:
+                    if len(step.categorical_features) == 0 or step.transformer is None:
+                        continue
+                    cont_features_indices = [idx for idx in range(feature_pred.shape[1]) if idx not in step.categorical_features]
+                    
+                    assert np.array_equal(step.categorical_features, np.arange(len(step.categorical_features)))
+                    start_idx = 0
+                    for idx, out_category in enumerate(step.transformer.named_transformers_['one_hot_encoder'].categories_):
+                        assert len(out_category) >= 2
+                        if not np.any(np.isnan(out_category)):
+                            if len(out_category) == 2: # e.g. [3, 5.5]
+                                feature_pred[:,start_idx] = np.round(np.clip(feature_pred[:,start_idx], a_min=0, a_max=1))
+                                start_idx += 1
+                            else:
+                                arr = feature_pred[:, start_idx:start_idx+len(out_category)]
+                                feature_pred[:, start_idx:start_idx+len(out_category)] = (arr == arr.max(axis=1, keepdims=True)).astype(float)
+                                start_idx += len(out_category)
+                        else:
+                            if len(out_category) == 2: # e.g. [0, nan]
+                                feature_pred[:,start_idx] = 0
+                                start_idx += 1
+                            else:
+                                arr = feature_pred[:, start_idx:start_idx+len(out_category)-1]
+                                feature_pred[:, start_idx:start_idx+len(out_category)-1] = (arr == arr.max(axis=1, keepdims=True)).astype(float)
+                                feature_pred[:, start_idx+len(out_category)-1] = 0
+                                start_idx += len(out_category)
+                    feature_pred = np.column_stack([step.transformer.named_transformers_['one_hot_encoder'].inverse_transform(feature_pred[:, step.categorical_features]), feature_pred[:, cont_features_indices]])
+                    
+            elif isinstance(step, RebalanceFeatureDistribution):
+                if step.svd_tag == 'svd' and step.svd_n_comp > 0:
+                    feature_pred = feature_pred[:, :-step.svd_n_comp]
+                if step.worker_tags[0] in ["quantile_uniform_10", "quantile_uniform_5", "quantile_uniform_all_data"] and step.n_quantile_features > 0:
+                    feature_pred = feature_pred[:, :-step.n_quantile_features]
+                elif step.worker_tags[0] == "power":
+                    raise ValueError(f"Missing value imputation does not currently support the preprocessing method of power!")
+                    cont_features_indices = [idx for idx in range(feature_pred.shape[1]) if idx not in step.dis_ix]
+                    feature_pred[:, cont_features_indices] = step.worker.named_transformers_['feat_transform'].inverse_transform(feature_pred[:, cont_features_indices])
+                    # reverse feature order
+                if step.feature_indices is not None:
+                    inv_p = np.argsort(step.feature_indices)
+                    feature_pred = feature_pred[:, inv_p]
+
+                    
+            elif isinstance(step, FilterValidFeatures):
+                deleted_indices = np.where(step.invalid_indices)[0]
+                if len(deleted_indices) > 0:
+                    original_cols = len(deleted_indices) + feature_pred.shape[1]
+                    restored = np.zeros((feature_pred.shape[0], original_cols))                
+                    all_indices = set(range(original_cols))
+                    kept_indices = list(all_indices - set(deleted_indices)) 
+                    for i, idx in enumerate(kept_indices):
+                        restored[:, idx] = feature_pred[:, i]                
+                    for i, idx in enumerate(deleted_indices):
+                        restored[:, idx] = step.invalid_features[:, i]
+                    feature_pred = restored.copy()
+        return feature_pred
+        
+    def _predict_reg(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray) -> np.ndarray:
+        """Regression predict with optional inference-time augmentations.
+
+        Default: single pass on raw y_train.
+        If 'yj' in self.augmentations AND |skew(y_train)| > yj_skew_threshold:
+            ensemble [identity, Yeo-Johnson] passes.
+        Otherwise (skew below threshold): return identity pass only.
+
+        Ablation (96 datasets) showed unconditional YJ was net negative despite
+        winning stock_fardamento02 (skew 17.7, +0.077 R²). The skew threshold
+        default (5.0) preserves the wins on extreme-skew datasets while
+        skipping moderately-skewed ones where YJ harms predictions.
+        """
+        base_pred = self._predict_reg_single(x_train, y_train, x_test)
+        if 'yj' not in self.augmentations:
+            return base_pred
+
+        # Conditional YJ gate: only apply if y_train is sufficiently skewed.
+        # Use bias=False for unbiased estimator; robust to NaN via nan_to_num.
+        try:
+            from scipy import stats as _stats
+            y_np = np.asarray(y_train, dtype=np.float64)
+            y_np = y_np[np.isfinite(y_np)]
+            if len(y_np) < 10:
+                return base_pred
+            y_skew = float(_stats.skew(y_np, bias=False))
+        except Exception:
+            return base_pred
+        if not np.isfinite(y_skew) or abs(y_skew) < self.yj_skew_threshold:
+            # Skew below threshold — YJ not needed / harmful
+            return base_pred
+
+        # --- Yeo-Johnson target transform ensemble pass ---
+        try:
+            from sklearn.preprocessing import PowerTransformer
+            import warnings as _warnings
+
+            y_train_arr = np.asarray(y_train, dtype=np.float64).reshape(-1, 1)
+            pt = PowerTransformer(method='yeo-johnson', standardize=True)
+            with _warnings.catch_warnings():
+                _warnings.simplefilter('ignore')
+                y_train_yj = pt.fit_transform(y_train_arr).ravel()
+
+            # Predict in YJ-transformed target space
+            pred_yj_space = self._predict_reg_single(x_train, y_train_yj, x_test)
+            # base_pred may be torch.Tensor; normalize to numpy for transform
+            pred_yj_np = pred_yj_space.detach().cpu().numpy() if torch.is_tensor(pred_yj_space) else np.asarray(pred_yj_space)
+
+            # Clip in-transformed-space before inverse to avoid explosion
+            y_tr_min, y_tr_max = y_train_yj.min(), y_train_yj.max()
+            clip_range = (y_tr_max - y_tr_min) * 3.0 + 1e-6
+            pred_yj_np_clipped = np.clip(
+                pred_yj_np, y_tr_min - clip_range, y_tr_max + clip_range
+            )
+
+            with _warnings.catch_warnings():
+                _warnings.simplefilter('ignore')
+                pred_inv = pt.inverse_transform(
+                    pred_yj_np_clipped.reshape(-1, 1)).ravel()
+
+            # Convert base_pred to numpy for averaging
+            base_np = base_pred.detach().cpu().numpy() if torch.is_tensor(base_pred) else np.asarray(base_pred)
+            base_np = base_np.ravel()
+            pred_inv = pred_inv.ravel()
+
+            # Per-row fallback: if inverse produced NaN/inf, use identity pass
+            bad = ~np.isfinite(pred_inv)
+            if bad.any():
+                pred_inv[bad] = base_np[bad]
+
+            ensembled = 0.5 * (base_np + pred_inv)
+
+            # Return same type as base_pred
+            if torch.is_tensor(base_pred):
+                return torch.as_tensor(ensembled, dtype=base_pred.dtype, device=base_pred.device)
+            return ensembled
+        except Exception as _e:
+            print(f"  [YJ] augmentation failed ({type(_e).__name__}: {_e}), "
+                  f"falling back to identity-only prediction")
+            return base_pred
+
+    def _predict_reg_single(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray) -> np.ndarray:
+        # Check size constraints to avoid OOM
+        n_features = x_train.shape[1] if x_train.ndim > 1 else 1
+        n_samples_train = x_train.shape[0]
+        n_samples_test = x_test.shape[0]
+        
+        # If the number of elements is too large, we must chunk the test set to avoid OOM
+        # A conservative budget for 24GB GPUs is around 200,000 to 500,000 elements
+        MAX_ELEMENTS_BUDGET = 2_000_000
+        
+        # Calculate elements for one full forward pass (train + 1 test row at minimum)
+        base_elements = (n_samples_train + 1) * n_features
+        if base_elements > MAX_ELEMENTS_BUDGET:
+            # If even the train set + 1 row is too big, we must subsample the training set
+            max_train_samples = max(10, MAX_ELEMENTS_BUDGET // (2 * n_features))
+            # Randomly subsample the training data
+            rng = np.random.default_rng(self.seed)
+            idx = rng.choice(n_samples_train, max_train_samples, replace=False)
+            x_train = x_train[idx]
+            y_train = y_train[idx]
+            n_samples_train = len(x_train)
+            
+        np_rng = np.random.default_rng(self.seed)
+        
+        x_train, y_train = self.validate_data(x_train, y_train, reset=True, validate_separately=False, accept_sparse=False, dtype=None, ensure_all_finite=False)
+        x_test = self.validate_data(x_test, reset=False, validate_separately=False, accept_sparse=False, dtype=None, ensure_all_finite=False)
+
+        x_train_base, x_test_base, categorical_idx = self._prepare_inductive_features(
+            x_train,
+            x_test,
+        )
+    
+        outputs = []
+        mask_predictions = []
+        for id_pipe, pipe in enumerate(self.preprocess_pipelines):
+            x_train_ = x_train_base.copy()
+            x_test_ = x_test_base.copy()
+            y_ = y_train.copy()
+            categorical_idx_ = categorical_idx.copy()
+            for id_step, step in enumerate(pipe):
+                if isinstance(step, InferenceAttentionMap):
+
+                    feature_attention_score, sample_attention_score = step.inference(X_train=x_train_.astype(np.float32),
+                                                                                     y_train=y_.astype(np.float32),
+                                                                                     X_test=x_test_.astype(np.float32),
+                                                                                     task_type="reg",device=self.device)
+                    
+                elif isinstance(step, SubSampleData):
+                    step.fit(torch.from_numpy(x_train_), torch.from_numpy(y_train),
+                             feature_attention_score=feature_attention_score,
+                             sample_attention_score=sample_attention_score,
+                             subsample_ratio=self.inference_config[id_pipe]["retrieval_config"].get("sub_feature_ratio", 0.5))
+                    if self.inference_config[id_pipe]["retrieval_config"]["subsample_type"] == "feature":
+                        x_combined = step.transform(torch.from_numpy(x_test_).float())
+                        x_train_ = x_combined[:len(y_train)]
+                        x_test_ = x_combined[len(y_train):]
+                        categorical_idx_ = self.get_categorical_features_indices(x_train_)
+                    else:
+                        attention_score = step.transform(torch.from_numpy(x_test_).float())
+                else:
+                    x_train_, x_test_, categorical_idx_ = self._fit_transform_step_inductive(
+                        step,
+                        x_train_,
+                        x_test_,
+                        categorical_idx_,
+                        self.seeds[id_pipe*self.preprocess_num+id_step],
+                        y_train=y_,
+                    )
+
+            x_ = np.concatenate([x_train_, x_test_], axis=0)
+            x_ = torch.from_numpy(x_[:, :]).float().to(self.device)
+            y_ = torch.from_numpy(y_).float().to(self.device)
+            torch.manual_seed(self.seed)
+            torch.cuda.manual_seed_all(self.seed)
+            if self.inference_config[id_pipe]["retrieval_config"]["use_retrieval"] and \
+                    self.inference_config[id_pipe]["retrieval_config"]["subsample_type"] == "sample":
+                inference = InferenceResultWithRetrieval(model=self.model,
+                                                         sample_selection_type="AM")
+                output = inference.inference(x_[:len(y_train)], y_,
+                                             x_[len(y_train):],
+                                             attention_score=attention_score,
+                                             retrieval_len=self.inference_config[id_pipe]["retrieval_config"][
+                                                 "retrieval_len"],
+                                             dynamic_ratio=self.inference_config[id_pipe]["retrieval_config"].get(
+                                                 "dynamic_ratio", None),
+                                             use_cluster=self.inference_config[id_pipe]["retrieval_config"].get(
+                                                 "use_cluster", False),
+                                             cluster_num=self.inference_config[id_pipe]["retrieval_config"].get(
+                                                 "cluster_num", 20),
+                                             task_type="reg",
+                                             use_threshold=self.inference_config[id_pipe]["retrieval_config"].get(
+                                                 "use_threshold", False),
+                                             threshold=self.inference_config[id_pipe]["retrieval_config"].get(
+                                                 "threshold", 1),
+                                             mixed_method=self.inference_config[id_pipe]["retrieval_config"].get(
+                                                 "mixed_method", "max"),device=self.device)
+                outputs.append(output)
+            elif self.inference_with_DDP:
+                inference = InferenceResultWithRetrieval(model=self.model,
+                                                         sample_selection_type="DDP")
+                output = inference.inference(x_[:len(y_train)].squeeze(1), y_, x_[len(y_train):].squeeze(1),
+                                             task_type="reg")
+                outputs.append(output)
+            if not self.inference_config[id_pipe]["retrieval_config"]["use_retrieval"] and not self.inference_with_DDP:
+                # Calculate max allowed test samples per batch to avoid OOM
+                # We need: (n_train + chunk_size) * n_features <= MAX_ELEMENTS_BUDGET
+                chunk_size = max(256, (MAX_ELEMENTS_BUDGET // n_features) - n_samples_train)
+                
+                # Chunk the test data
+                all_outputs = []
+                for i in range(0, n_samples_test, chunk_size):
+                    end_idx = min(i + chunk_size, n_samples_test)
+                    x_chunk_test = x_[len(y_train) + i : len(y_train) + end_idx]
+                    
+                    # Recombine train + test chunk
+                    x_chunk_combined = torch.cat([x_[:len(y_train)], x_chunk_test], dim=0)
+                    
+                    # Create dummy y for test chunk
+                    y_chunk_test = torch.zeros(end_idx - i, dtype=y_.dtype, device=y_.device)
+                    y_chunk_combined = torch.cat([y_[:len(y_train)], y_chunk_test], dim=0)
+
+                    self.model.to(self.device)
+                    with(torch.autocast(device_type=self.device.type if isinstance(self.device, torch.device) else self.device, enabled=self.mix_precision), torch.inference_mode()):
+                        x_in = x_chunk_combined.unsqueeze(0)
+                        y_in = y_chunk_combined.unsqueeze(0)
+
+                        chunk_output = self.model(x=x_in, y=y_in, eval_pos=len(y_train), task_type='reg')
+
+                    if self.mask_prediction:
+                        process_config = chunk_output['process_config']
+                        chunk_output_feature_pred = self.PostProcessInModel(chunk_output['feature_pred'], process_config)
+                        chunk_output_feature_pred = self.PostProcess(chunk_output_feature_pred, pipe, process_config)
+                        mask_predictions.append(chunk_output_feature_pred)
+                        chunk_output = chunk_output['reg_output']
+
+                    chunk_output = chunk_output if isinstance(chunk_output, dict) else chunk_output.squeeze(0)
+                    all_outputs.append(chunk_output)
+                    
+                # Concatenate all test chunks
+                output = torch.cat(all_outputs, dim=0)
+                outputs.append(output)
+            
+        output = torch.stack(outputs).mean(dim=0)
+        output = self._collapse_regression_output(output)
+        mask_prediction = np.stack(mask_predictions).mean(axis=0) if mask_predictions != [] else None
+        
+        if self.mask_prediction:
+            return output, mask_prediction
+        else:
+            return output
