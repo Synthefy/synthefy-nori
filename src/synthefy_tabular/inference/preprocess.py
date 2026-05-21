@@ -408,9 +408,15 @@ class MADWinsorizer(BasePreprocess):
         eliminate valid categorical values.
     """
 
-    def __init__(self, *, n_mad: float = 6.0, skip_categorical: bool = True):
+    def __init__(self, *, n_mad: float = 6.0, skip_categorical: bool = True,
+                  soft_log_clip: bool = False):
         self.n_mad = float(n_mad)
         self.skip_categorical = bool(skip_categorical)
+        # V13: replace hard clip at boundary with soft logarithmic clip.
+        # For values beyond [lo, hi], replace with hi + log1p(|x - hi|) /
+        # bounds-equivalent on the low side. Preserves ordering of extremes
+        # (rank-sensitive heads benefit) while still suppressing magnitude.
+        self.soft_log_clip = bool(soft_log_clip)
         self.median_: np.ndarray | None = None
         self.lo_: np.ndarray | None = None
         self.hi_: np.ndarray | None = None
@@ -445,7 +451,18 @@ class MADWinsorizer(BasePreprocess):
             # Shape changed (e.g., upstream filter dropped columns). Skip
             # winsorization rather than crash; this is a safety fallback.
             return x.astype(np.float32), kwargs.get('categorical_features', [])
-        out = np.clip(x, self.lo_, self.hi_)
+        if self.soft_log_clip:
+            # Soft logarithmic clip: values beyond bounds are mapped to
+            # bound + sign(excess) * log1p(|excess|). Preserves ordering
+            # of extremes; smooth transition at the boundary.
+            out = x.copy()
+            hi_excess = np.maximum(out - self.hi_, 0.0)
+            lo_excess = np.maximum(self.lo_ - out, 0.0)
+            # Suppress only where actually exceeding
+            out = np.where(hi_excess > 0, self.hi_ + np.log1p(hi_excess), out)
+            out = np.where(lo_excess > 0, self.lo_ - np.log1p(lo_excess), out)
+        else:
+            out = np.clip(x, self.lo_, self.hi_)
         if self.skip_categorical and self.cat_mask_ is not None and self.cat_mask_.any():
             # Restore categorical columns to original (un-clipped) values
             out[:, self.cat_mask_] = x[:, self.cat_mask_]
@@ -465,7 +482,7 @@ class FeatureShuffler(BasePreprocess):
 
     def __init__(
         self,
-        mode: Literal['rotate', 'shuffle'] | None = "shuffle",
+        mode: Literal['rotate', 'shuffle', 'latin'] | None = "shuffle",
         offset: int = 0,
     ):
         super().__init__()
@@ -474,19 +491,30 @@ class FeatureShuffler(BasePreprocess):
         self.random_seed = None
         self.feature_indices = None
         self.categorical_indices = None
-    
+
     @override
     def fit(self, x:np.ndarray, categorical_features:list[int], seed:int, **kwargs) -> list[int]:
         n_features = x.shape[1]
         self.random_seed = seed
-        
+
         indices = np.arange(n_features)
-        
+
         if self.mode == "rotate":
             self.feature_indices = np.roll(indices, self.offset)
         elif self.mode == "shuffle":
             _, rng = infer_random_state(self.random_seed)
             self.feature_indices = rng.permutation(indices)
+        elif self.mode == "latin":
+            # Latin-square-like permutation: random base shuffle (deterministic
+            # per dataset via seed) + rotation by offset. Across the
+            # n_estimators ensemble (each with a different offset 0..K-1),
+            # every feature visits each position roughly equally — best
+            # feature-position coverage for fixed n_estimators. Ports
+            # TabICL's _latin_squares() pattern with simpler rotational
+            # construction.
+            _, rng = infer_random_state(self.random_seed)
+            base = rng.permutation(indices)
+            self.feature_indices = np.roll(base, self.offset)
         elif self.mode is None:
             self.feature_indices = np.arange(n_features)
         else:

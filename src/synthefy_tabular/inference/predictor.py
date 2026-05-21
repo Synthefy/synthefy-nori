@@ -47,7 +47,8 @@ class LimiXPredictor:
                  yj_skew_threshold: float = 10.0,
                  quantile_collapse: str = 'mean',
                  bar_temperature: float = 1.0,
-                 bar_point_estimator: str = 'mean'):
+                 bar_point_estimator: str = 'mean',
+                 discrete_y_snap_max_unique: int = 30):
         """
         init LimiXPredictor
 
@@ -90,6 +91,13 @@ class LimiXPredictor:
         self.softmax_temperature = softmax_temperature
         # self.task_type = task_type
         self.mask_prediction = mask_prediction
+        # V12r3: snap regression predictions to nearest training-y value
+        # when training y has at most this many unique values. Helps
+        # discrete-target benchmarks (wine_quality 6 levels, sensory 11,
+        # ERA 9, CookbookReviews 6, chscase_foot 3) without retraining.
+        # Set to 0 to disable. Default 30 covers all standard discrete-y
+        # benchmarks while leaving continuous y untouched.
+        self.discrete_y_snap_max_unique = int(discrete_y_snap_max_unique)
         self.inference_with_DDP=inference_with_DDP
         # Optional inference-time augmentations. Currently supports:
         #   'yj': Yeo-Johnson target transform ensemble — fit PowerTransformer
@@ -119,10 +127,15 @@ class LimiXPredictor:
         #                     out-of-bulk prediction.
         # All strategies are zero-retrain: they only change how the K-way
         # quantile head is collapsed to a single prediction.
-        valid_collapse = ('mean', 'median', 'trimmed_mean', 'huber_mean', 'tail_aware')
+        valid_collapse = ('mean', 'median', 'trimmed_mean', 'huber_mean',
+                            'tail_aware', 'qdist', 'qdist_simple')
         if quantile_collapse not in valid_collapse:
             raise ValueError(f"quantile_collapse must be one of {valid_collapse}, got {quantile_collapse!r}")
         self.quantile_collapse = quantile_collapse
+        # 'qdist' invokes the V13 quantile-distribution decoder (sort-monotone
+        # + analytical mean with exp tail extrapolation; ports TabICL's
+        # _model/quantile_dist.py). 'qdist_simple' uses the same sort+
+        # analytical-mean but without tail extrapolation (faster, pure-torch).
         # Bar-distribution inference controls (only used when the loaded model
         # was trained with regression_loss='bar_distribution', auto-detected
         # via model.regression_loss). Ignored for pinball/MSE/etc. checkpoints.
@@ -439,6 +452,21 @@ class LimiXPredictor:
         categorical_idx = self.get_categorical_features_indices(x_train_enc)
         return x_train_enc, x_test_enc, categorical_idx
 
+    def _seed_step_index(self, pipe: list, id_step: int) -> int:
+        """Seed-array index for pipeline step `id_step`.
+
+        HighDimFeatureSelector gets the spare last slot (preprocess_num is a
+        fixed 10, larger than any real pipeline). Every other step is indexed
+        by its position EXCLUDING the HDF step — so adding HDF to a config
+        does not shift any downstream step's seed. A config with HDF is then
+        byte-identical to one without it on datasets where HDF passes through
+        (gate inactive: n_features below threshold).
+        """
+        if isinstance(pipe[id_step], HighDimFeatureSelector):
+            return self.preprocess_num - 1
+        return sum(1 for s in pipe[:id_step]
+                   if not isinstance(s, HighDimFeatureSelector))
+
     def _fit_transform_step_inductive(
         self,
         step,
@@ -492,7 +520,7 @@ class LimiXPredictor:
     def predict(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray, task_type:Literal['Classification', 'Regression']='Classification') -> np.ndarray:
         """
         Perform inference using the LimiX model
-        
+
         Args:
         x_train: Training data x
         y_train: Training data y
@@ -501,9 +529,75 @@ class LimiXPredictor:
         if task_type == "Classification":
             return self._predict_cls(x_train, y_train, x_test)
         elif task_type == "Regression":
-            return self._predict_reg(x_train, y_train, x_test)
+            preds = self._predict_reg(x_train, y_train, x_test)
+            # V12r3: discrete-y snap. If training y has very low unique
+            # count (≤ discrete_y_snap_max_unique, default 30), snap each
+            # prediction to the nearest training-y value. Helps datasets
+            # like wine_quality (6 unique y), sensory (11), ERA (9),
+            # CookbookReviews (6), chscase_foot (3) at inference WITHOUT
+            # retraining. Disabled when threshold is 0 or training y is
+            # genuinely continuous.
+            if getattr(self, 'discrete_y_snap_max_unique', 0) > 0:
+                preds = self._maybe_snap_discrete_y(y_train, preds)
+            return preds
         else:
             raise ValueError(f"Unsupported task type, supported tasks include classification and regression!")
+
+    @staticmethod
+    def _unwrap_model_output(output, *, task_type: str):
+        """Normalize model forward outputs across training/inference contracts.
+
+        Most backbones return a tensor when mask_prediction=False. V14 always
+        returns the trainer dict unless return_tensor=True is passed, so the
+        predictor must unwrap it before stacking/chunk concatenation.
+        """
+        if isinstance(output, dict):
+            if task_type == "reg":
+                return output["reg_output"]
+            if task_type == "cls":
+                return output["cls_output"]
+        return output
+
+    def _maybe_snap_discrete_y(self, y_train: np.ndarray,
+                                 preds: np.ndarray) -> np.ndarray:
+        """Snap regression predictions to nearest training y value when
+        training y is discrete (low unique count).
+
+        Detection: y_train has <= self.discrete_y_snap_max_unique unique
+        values. When triggered, each prediction is replaced by the closest
+        unique y value seen in training. Continuous targets (many unique
+        values) pass through unchanged.
+
+        This is a pure post-hoc adjustment — does not change the model
+        forward pass; only the final decoded output. Safe to apply broadly.
+        """
+        try:
+            y_arr = np.asarray(y_train, dtype=np.float64).reshape(-1)
+            y_finite = y_arr[np.isfinite(y_arr)]
+            if y_finite.size == 0:
+                return preds
+            unique_y = np.unique(y_finite)
+            threshold = int(getattr(self, 'discrete_y_snap_max_unique', 30))
+            if len(unique_y) > threshold or len(unique_y) < 2:
+                return preds
+            # Sort uniques and snap each prediction to nearest by absolute
+            # distance. Vectorized for speed even on large query sets.
+            unique_sorted = np.sort(unique_y)
+            preds_arr = np.asarray(preds).reshape(-1).astype(np.float64)
+            # Find insertion index for each pred, compare neighbors.
+            idx = np.searchsorted(unique_sorted, preds_arr)
+            idx = np.clip(idx, 0, len(unique_sorted) - 1)
+            left_idx = np.clip(idx - 1, 0, len(unique_sorted) - 1)
+            d_right = np.abs(preds_arr - unique_sorted[idx])
+            d_left = np.abs(preds_arr - unique_sorted[left_idx])
+            chosen = np.where(d_left < d_right, unique_sorted[left_idx],
+                                unique_sorted[idx])
+            return chosen.reshape(np.asarray(preds).shape).astype(
+                np.asarray(preds).dtype
+            )
+        except Exception:
+            # Fail open — never break inference because of the snap helper.
+            return preds
 
     def _collapse_regression_output(self, output: torch.Tensor) -> torch.Tensor:
         """Convert regression decoder output to one point prediction per test row.
@@ -535,14 +629,20 @@ class LimiXPredictor:
                 num_bars = int(getattr(model_ref, "num_bars", num_reg_quantiles))
                 lo = float(getattr(model_ref, "bar_borders_low", -10.0))
                 hi = float(getattr(model_ref, "bar_borders_high", 10.0))
+                # Prefer stored borders buffer (V12+ ships custom non-uniform
+                # borders for normal-quantile mode). Fall back to uniform
+                # [lo, hi] for older checkpoints.
+                stored_borders = getattr(model_ref, "bar_borders_buffer", None)
                 if output.ndim == 1 and output.shape[0] == num_bars:
                     # Single test row with num_bars logits
                     output = self._apply_bar_distribution_decode(
                         output.unsqueeze(0), num_bars, lo, hi,
+                        borders=stored_borders,
                     ).squeeze(0).unsqueeze(0)
                 elif output.shape[-1] == num_bars:
                     output = self._apply_bar_distribution_decode(
                         output, num_bars, lo, hi,
+                        borders=stored_borders,
                     )
             else:
                 if output.ndim == 1 and output.shape[0] == num_reg_quantiles:
@@ -558,6 +658,7 @@ class LimiXPredictor:
 
     def _apply_bar_distribution_decode(
         self, logits: torch.Tensor, num_bars: int, lo: float, hi: float,
+        borders: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Decode [..., num_bars] logits to [...] point estimate.
 
@@ -567,12 +668,16 @@ class LimiXPredictor:
           'mode'   — bin_center at argmax(prob)
           'median' — bin_center where CDF first crosses 0.5
 
-        Borders are constructed fresh on the logits device so this path is
-        fully graph-compatible with torch.compile.
+        If `borders` is provided (V12+ stored buffer), uses those non-uniform
+        edges. Else constructs uniform [lo, hi] borders fresh on the logits
+        device (legacy path, compile-compatible).
         """
-        borders = torch.linspace(
-            lo, hi, num_bars + 1, device=logits.device, dtype=logits.dtype,
-        )
+        if borders is not None and borders.shape[0] == num_bars + 1:
+            borders = borders.to(device=logits.device, dtype=logits.dtype)
+        else:
+            borders = torch.linspace(
+                lo, hi, num_bars + 1, device=logits.device, dtype=logits.dtype,
+            )
         bin_centers = 0.5 * (borders[:-1] + borders[1:])  # [num_bars]
         T = float(getattr(self, 'bar_temperature', 1.0))
         if T <= 0:
@@ -657,9 +762,65 @@ class LimiXPredictor:
             result = torch.where(left_heavy, q_lo, mean_est)
             result = torch.where(right_heavy, q_hi, result)
             return result
+        if mode == 'qdist':
+            # V13 quantile-distribution decoder: sort + analytical mean with
+            # exp tail extrapolation. K should be ≥ ~100 for stable tail fit.
+            # Falls back to qdist_simple at K < 8.
+            from synthefy_tabular.model.quantile_dist import quantile_dist_mean_batch
+            tau_levels = (np.arange(K, dtype=np.float64) + 1.0) / float(K + 1)
+            return quantile_dist_mean_batch(
+                q, tau_levels, enforce_monotone_first=True, tail_outer_n=20,
+            )
+        if mode == 'qdist_simple':
+            # V13 quantile-distribution decoder, pure-torch (no tail correction).
+            # Faster, fully on-device. Use when tail extrapolation isn't needed
+            # (e.g. K=999 already covers 99.9% of mass).
+            from synthefy_tabular.model.quantile_dist import quantile_dist_mean_simple
+            tau_levels = (torch.arange(K, device=q.device, dtype=q.dtype) + 1.0) / float(K + 1)
+            return quantile_dist_mean_simple(
+                q, tau_levels, enforce_monotone_first=True,
+            )
         # Should be unreachable (validated in __init__), but fall back safely.
         return q.mean(dim=-1)
-        
+
+    def _effective_budget_n_features(self, n_features: int,
+                                     x_train: np.ndarray) -> int:
+        """Feature count the model actually sees after a HighDimFeatureSelector
+        in the inference config reduces dimensionality.
+
+        The OOM row-budget must use this reduced count. Using the raw count
+        subsamples training rows to fit memory the model never uses:
+        QSAR-TID-11 (1024 raw features, svd_all -> 256) was wrongly cut from
+        4019 context rows to 976, costing ~0.10 R2.
+        """
+        eff = n_features
+        binary_frac = None
+        for item in self.inference_config:
+            if not isinstance(item, dict):
+                continue
+            hdf = item.get('HighDimFeatureSelector')
+            if not hdf:
+                continue
+            strategy = hdf.get('strategy', 'passthrough')
+            thr = int(hdf.get('n_features_threshold', 128))
+            bthr = float(hdf.get('binary_threshold', 0.5))
+            if binary_frac is None:
+                try:
+                    bm = HighDimFeatureSelector._detect_binary_cols(
+                        np.asarray(x_train, dtype=np.float64))
+                    binary_frac = float(bm.mean()) if n_features else 0.0
+                except Exception:
+                    binary_frac = 0.0
+            if not ((n_features > thr) or (binary_frac >= bthr)):
+                continue
+            if strategy == 'svd_all':
+                eff = min(eff, int(hdf.get('svd_components', 64)))
+            elif strategy in ('corr', 'mi', 'extratrees'):
+                eff = min(eff, int(hdf.get('top_k', 256)))
+            # svd_binary output size is data-dependent (n_nonbinary +
+            # components) — leave the budget conservative (no reduction).
+        return max(1, eff)
+
     def _predict_cls(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray) -> np.ndarray:
         # Check size constraints to avoid OOM
         n_features = x_train.shape[1] if x_train.ndim > 1 else 1
@@ -670,11 +831,14 @@ class LimiXPredictor:
         # A conservative budget for 24GB GPUs is around 200,000 to 500,000 elements
         MAX_ELEMENTS_BUDGET = 2_000_000
         
-        # Calculate elements for one full forward pass (train + 1 test row at minimum)
-        base_elements = (n_samples_train + 1) * n_features
+        # Calculate elements for one full forward pass (train + 1 test row at
+        # minimum). Use the post-HighDimFeatureSelector feature count — the
+        # model never sees the raw count when the config reduces dimensionality.
+        budget_n_features = self._effective_budget_n_features(n_features, x_train)
+        base_elements = (n_samples_train + 1) * budget_n_features
         if base_elements > MAX_ELEMENTS_BUDGET:
             # If even the train set + 1 row is too big, we must subsample the training set
-            max_train_samples = max(10, MAX_ELEMENTS_BUDGET // (2 * n_features))
+            max_train_samples = max(10, MAX_ELEMENTS_BUDGET // (2 * budget_n_features))
             # Randomly subsample the training data
             rng = np.random.default_rng(self.seed)
             idx = rng.choice(n_samples_train, max_train_samples, replace=False)
@@ -740,11 +904,21 @@ class LimiXPredictor:
                         x_train_,
                         x_test_,
                         categorical_idx_,
-                        self.seeds[id_pipe*self.preprocess_num+id_step],
+                        self.seeds[id_pipe*self.preprocess_num+self._seed_step_index(pipe, id_step)],
                         y_train=y_,
                     )
 
             x_ = np.concatenate([x_train_, x_test_], axis=0)
+            # A single preprocessing branch can occasionally emit NaN/Inf
+            # (for example power transforms on awkward real-valued columns).
+            # Without this guard, one bad branch poisons the estimator mean and
+            # turns an otherwise valid dataset into 100% non-finite predictions.
+            x_ = np.nan_to_num(
+                x_,
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            ).astype(np.float32, copy=False)
             x_ = torch.from_numpy(x_[:, :]).float().to(self.device)
             y_ = torch.from_numpy(y_).float().to(self.device)
             torch.manual_seed(self.seed)
@@ -817,7 +991,7 @@ class LimiXPredictor:
                             mask_predictions.append(chunk_output_feature_pred)
                             chunk_output = chunk_output['cls_output']
 
-                        chunk_output = chunk_output if isinstance(chunk_output, dict) else chunk_output.squeeze(0)
+                        chunk_output = self._unwrap_model_output(chunk_output, task_type="cls").squeeze(0)
 
                         if self.softmax_temperature != 1:
                             chunk_output = (chunk_output[:, :self.n_classes].float() / self.softmax_temperature)
@@ -1017,11 +1191,14 @@ class LimiXPredictor:
         # A conservative budget for 24GB GPUs is around 200,000 to 500,000 elements
         MAX_ELEMENTS_BUDGET = 2_000_000
         
-        # Calculate elements for one full forward pass (train + 1 test row at minimum)
-        base_elements = (n_samples_train + 1) * n_features
+        # Calculate elements for one full forward pass (train + 1 test row at
+        # minimum). Use the post-HighDimFeatureSelector feature count — the
+        # model never sees the raw count when the config reduces dimensionality.
+        budget_n_features = self._effective_budget_n_features(n_features, x_train)
+        base_elements = (n_samples_train + 1) * budget_n_features
         if base_elements > MAX_ELEMENTS_BUDGET:
             # If even the train set + 1 row is too big, we must subsample the training set
-            max_train_samples = max(10, MAX_ELEMENTS_BUDGET // (2 * n_features))
+            max_train_samples = max(10, MAX_ELEMENTS_BUDGET // (2 * budget_n_features))
             # Randomly subsample the training data
             rng = np.random.default_rng(self.seed)
             idx = rng.choice(n_samples_train, max_train_samples, replace=False)
@@ -1072,7 +1249,7 @@ class LimiXPredictor:
                         x_train_,
                         x_test_,
                         categorical_idx_,
-                        self.seeds[id_pipe*self.preprocess_num+id_step],
+                        self.seeds[id_pipe*self.preprocess_num+self._seed_step_index(pipe, id_step)],
                         y_train=y_,
                     )
 
@@ -1142,7 +1319,14 @@ class LimiXPredictor:
                         mask_predictions.append(chunk_output_feature_pred)
                         chunk_output = chunk_output['reg_output']
 
-                    chunk_output = chunk_output if isinstance(chunk_output, dict) else chunk_output.squeeze(0)
+                    chunk_output = self._unwrap_model_output(chunk_output, task_type="reg").squeeze(0)
+                    if not torch.isfinite(chunk_output).all():
+                        chunk_output = torch.nan_to_num(
+                            chunk_output,
+                            nan=0.0,
+                            posinf=0.0,
+                            neginf=0.0,
+                        )
                     all_outputs.append(chunk_output)
                     
                 # Concatenate all test chunks

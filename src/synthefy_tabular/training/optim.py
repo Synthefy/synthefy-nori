@@ -355,12 +355,15 @@ def build_optimizer(
             include_embeddings=muon_include_embeddings,
             include_nd=muon_include_nd,
         )
-        # When include_nd is True, use the 'split' backend: stock Muon for 2D
-        # (C++ fast path), MuonND only for ndim>2 attention tensors. This
-        # avoids paying ~50µs/op Python dispatch overhead on the bulk of
-        # weights (which are 2D MLPs/decoders); only the smaller set of
-        # attention 3D/4D weights pays the per-tensor Python loop cost.
-        backend = "split" if muon_include_nd else "torch"
+        # Pick backend: stock torch.optim.Muon (C++ fast path, PyTorch ≥2.7)
+        # when available; fall back to our MuonND (Python loop) otherwise.
+        _has_torch_muon = hasattr(torch.optim, "Muon")
+        if not _has_torch_muon:
+            backend = "nd"
+        elif muon_include_nd:
+            backend = "split"
+        else:
+            backend = "torch"
         optimizer = HybridMuonAdamW(
             muon_named_params=muon_params,
             adamw_named_params=adamw_params,

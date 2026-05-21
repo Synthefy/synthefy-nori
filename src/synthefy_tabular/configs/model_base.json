@@ -1,0 +1,51 @@
+{
+  "preprocess_config_x": {
+    "num_features": 2,
+    "nan_handling_enabled": true,
+    "normalize_on_train_only": true,
+    "normalize_x": true,
+    "remove_outliers": false,
+    "normalize_by_used_features": true
+  },
+  "encoder_config_x": {
+    "num_features": 2,
+    "embedding_size": 96,
+    "mask_embedding_size": 96,
+    "encoder_use_bias": true,
+    "numeric_embed_type": "RBF",
+    "RBF_config": {
+      "token_embed_dim": 16,
+      "n_kernels": 64,
+      "sigma": 0.5,
+      "use_learn_sigma": false,
+      "use_learn_embeddings": false,
+      "use_random_kernels": false,
+      "use_original_features": false
+    }
+  },
+  "encoder_config_y": {
+    "num_inputs": 1,
+    "embedding_size": 96,
+    "nan_handling_y_encoder": true,
+    "max_num_classes": 10
+  },
+  "decoder_config": {
+    "num_classes": 10
+  },
+  "feature_positional_embedding_type": "none",
+  "nlayers": 12,
+  "nhead": 6,
+  "embed_dim": 96,
+  "hid_dim": 384,
+  "features_per_group": 2,
+  "dropout": 0,
+  "pre_norm": false,
+  "activation": "gelu",
+  "recompute_attn": false,
+  "layer_arch": "smf",
+  "self_share_all_kv_heads": false,
+  "cross_share_all_kv_heads": false,
+  "seq_attn_isolated": true,
+  "seq_attn_serial": false,
+  "mask_prediction": false
+}

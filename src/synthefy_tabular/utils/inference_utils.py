@@ -227,3 +227,7 @@ def swap_rows_back(tensor, indices):
     for i, idx in enumerate(indices):
         inverse_indices[idx] = i
     return tensor[inverse_indices]
+
+if __name__ == "__main__":
+    args = init_args()
+    generate_infenerce_config(args)

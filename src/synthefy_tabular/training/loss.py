@@ -51,35 +51,28 @@ def _quantile_monotonicity_penalty(pred: torch.Tensor) -> torch.Tensor:
 
 
 def _bar_distribution_loss(logits: torch.Tensor, target: torch.Tensor,
-                            num_bars: int, borders_low: float, borders_high: float
-                            ) -> torch.Tensor:
-    """Cross-entropy loss over fixed uniform bars on context-normalized y.
+                            borders: torch.Tensor) -> torch.Tensor:
+    """Cross-entropy loss over arbitrary (possibly non-uniform) bin borders.
 
     The model head outputs [..., num_bars] logits. Targets (already
     context-normalized: mean 0, std 1 per episode via trainer._prepare_batch)
     are bucketized into bin indices, then CE is computed.
 
-    Targets outside [borders_low, borders_high] are clamped to the outermost
-    bin — heavy-tail episodes produce many such rows, and the model still
-    learns a useful signal from them (predict 'bin 0' or 'bin 4999').
+    Targets outside the borders range are clamped to the outermost bin —
+    heavy-tail episodes still contribute useful signal.
 
     Args:
         logits: [..., num_bars] unnormalized class scores
         target: [...] ground-truth y values (context-normalized)
-        num_bars: number of bins
-        borders_low, borders_high: inclusive range of bin coverage
+        borders: [num_bars+1] tensor of bin edges (uniform OR non-uniform,
+                 e.g. N(0,1)-quantile-spaced).
 
     Returns:
         per-example loss tensor with shape equal to target.
     """
-    # Uniform borders with num_bars+1 edges. Semantics we want: bin i covers
-    # [borders[i], borders[i+1]), so y == borders[i] exactly belongs to bin i.
-    # torch.bucketize with right=True returns the first idx where y < b[idx];
-    # subtracting 1 then gives the correct bin index, including at exact edges.
-    borders = torch.linspace(
-        borders_low, borders_high, num_bars + 1,
-        device=target.device, dtype=torch.float32,
-    )
+    num_bars = borders.shape[0] - 1
+    # Bin i covers [borders[i], borders[i+1]). bucketize(right=True)-1 gives
+    # the correct index even at exact-edge values.
     idx = torch.bucketize(target.float().contiguous(), borders, right=True) - 1
     idx = idx.clamp(0, num_bars - 1)
     return F.cross_entropy(
@@ -90,53 +83,56 @@ def _bar_distribution_loss(logits: torch.Tensor, target: torch.Tensor,
 
 
 def _bar_distribution_soft_loss(logits: torch.Tensor, target: torch.Tensor,
-                                 num_bars: int, borders_low: float,
-                                 borders_high: float, sigma_bins: float
+                                 borders: torch.Tensor, sigma_y: float
                                  ) -> torch.Tensor:
-    """Soft cross-entropy with Gaussian-smoothed bin targets.
+    """Soft cross-entropy with Gaussian-smoothed bin targets in y-space.
 
-    Hard CE on 5000 bins of width 0.004 std treats y=-0.001 (bin 2499) and
-    y=+0.001 (bin 2500) as different classes — full penalty for predicting
-    one when the truth is the other, even though the y-space error is zero.
-    This creates 5000 categorical cliffs in the loss landscape.
+    Hard CE has K categorical cliffs in the loss landscape — predicting
+    bin 251 when truth is bin 250 gets full penalty. Soft CE replaces the
+    one-hot target with a Gaussian density centered at the true y with
+    sigma_y std units. The model gets partial credit for predicting nearby
+    bins, with credit decaying as Gaussian in y-space distance.
 
-    Soft CE replaces the one-hot target with a Gaussian density over bins
-    centered at the true y, width sigma_bins (in bin units). The model gets
-    partial credit for predicting nearby bins. Recovers hard CE in the limit
-    sigma_bins → 0.
+    Critically, the smoothing is in *y-space* (not "bin units") so the
+    semantics are well-defined even when bins are non-uniformly spaced
+    (e.g. N(0,1)-quantile borders, where bins near y=0 are much narrower
+    than bins at y=±2).
 
     Args:
         logits: [..., num_bars] unnormalized scores
         target: [...] ground-truth y values (context-normalized)
-        num_bars: number of bins
-        borders_low, borders_high: bin coverage range
-        sigma_bins: smoothing width in bin units (e.g. 10.0 → ±10 bins)
+        borders: [num_bars+1] bin edges
+        sigma_y: smoothing width in y-space std units. e.g. 0.12 means
+                 soft-target Gaussian has std 0.12.
 
     Returns:
         per-example loss tensor, shape == target.shape.
     """
-    bin_width = (borders_high - borders_low) / float(num_bars)
-    sigma_y = float(sigma_bins) * bin_width  # smoothing in y-space std units
-
-    # Bin centers: midpoint of each bin
-    borders = torch.linspace(
-        borders_low, borders_high, num_bars + 1,
-        device=target.device, dtype=torch.float32,
-    )
     bin_centers = 0.5 * (borders[:-1] + borders[1:])  # [num_bars]
-
-    # Soft target: Gaussian over bin centers around true y
-    # diff: [..., num_bars] = target.unsqueeze(-1) - bin_centers
     diff = target.float().unsqueeze(-1) - bin_centers
-    # Log-Gaussian (unnormalized); softmax over last dim normalizes per row
-    log_target = -(diff ** 2) / (2.0 * sigma_y ** 2 + 1e-12)
-    target_dist = torch.softmax(log_target, dim=-1)  # [..., num_bars]
-
-    # KL divergence (constant entropy of target dropped — same gradient):
-    # loss = -Σ target_dist * log_softmax(logits)
+    log_target = -(diff ** 2) / (2.0 * float(sigma_y) ** 2 + 1e-12)
+    target_dist = torch.softmax(log_target, dim=-1)
     log_pred = torch.log_softmax(logits.float(), dim=-1)
     loss = -(target_dist * log_pred).sum(dim=-1)
     return loss
+
+
+def _bar_aux_mse_loss(logits: torch.Tensor, target: torch.Tensor,
+                      borders: torch.Tensor) -> torch.Tensor:
+    """Auxiliary MSE on the bar head's expected-value point estimate.
+
+    Bar CE is satisfied as long as the right BIN gets high mass — but the
+    expected value (Σ softmax(logits)·bin_centers) used at inference can
+    still be biased if mass is concentrated bimodally. This term forces
+    the expected value to be calibrated against the true target,
+    regardless of the underlying distribution shape.
+
+    Returns per-example MSE tensor (shape == target).
+    """
+    bin_centers = 0.5 * (borders[:-1] + borders[1:])
+    probs = torch.softmax(logits.float(), dim=-1)
+    expected = (probs * bin_centers).sum(dim=-1)  # [...]
+    return (expected - target.float()) ** 2
 
 
 def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
@@ -148,7 +144,10 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
                       num_bars: int = 5000,
                       bar_borders_low: float = -10.0,
                       bar_borders_high: float = 10.0,
-                      bar_target_sigma: float = 0.0):
+                      bar_target_sigma: float = 0.0,
+                      bar_borders: torch.Tensor | None = None,
+                      bar_target_sigma_y: float = 0.0,
+                      bar_aux_mse_weight: float = 0.0):
     """Compute the unified CCMM loss.
 
     Args:
@@ -285,21 +284,51 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
                         f"({num_bars}); got {pred.shape[-1]}. Did you set "
                         f"decoder_config.num_reg_quantiles = {num_bars} at model build?"
                     )
-                # Soft CE (Gaussian-smoothed targets) when sigma > 0; hard CE otherwise.
-                if bar_target_sigma > 0:
+                # Resolve borders: prefer explicit bar_borders tensor (passed
+                # from synthefy_tabular.model.bar_borders_buffer), else fall back to uniform.
+                if bar_borders is not None:
+                    borders_t = bar_borders.to(pred.device)
+                else:
+                    borders_t = torch.linspace(
+                        bar_borders_low, bar_borders_high, num_bars + 1,
+                        device=pred.device, dtype=torch.float32,
+                    )
+                # Resolve sigma_y: prefer explicit y-space sigma; else convert
+                # legacy sigma_bins to sigma_y via mean bin width (only well-
+                # defined for uniform-ish borders).
+                if bar_target_sigma_y > 0:
+                    sigma_y = float(bar_target_sigma_y)
+                elif bar_target_sigma > 0:
+                    mean_w = float((borders_t[1:] - borders_t[:-1]).mean().item())
+                    sigma_y = float(bar_target_sigma) * mean_w
+                else:
+                    sigma_y = 0.0
+
+                # Soft CE when sigma_y>0; hard CE otherwise.
+                if sigma_y > 0:
                     per_ex_loss = _bar_distribution_soft_loss(
-                        pred, target, num_bars, bar_borders_low, bar_borders_high,
-                        sigma_bins=bar_target_sigma,
+                        pred, target, borders_t, sigma_y=sigma_y,
                     )
                 else:
                     per_ex_loss = _bar_distribution_loss(
-                        pred, target, num_bars, bar_borders_low, bar_borders_high,
+                        pred, target, borders_t,
                     )  # [B, n_query]
                 per_ep_loss = per_ex_loss.mean(dim=1)
                 # bar_distribution loss is CE in log-space: not episode-variance
                 # normalized. Typical scale is log(num_bars) ≈ 8.5 for 5000 bars;
                 # clamp to 2× that ceiling to cap pathological episodes.
                 per_ep_loss = per_ep_loss.clamp(max=20.0)
+                # Auxiliary MSE on expected value: forces the bar head's
+                # softmax(logits)·bin_centers point estimate to be
+                # calibrated against the true target. Without this, bar CE
+                # is satisfied even when the expected value is biased
+                # (compression failure mode for bimodal predicted
+                # distributions). Episode-variance-normalized so it composes
+                # cleanly with the CE term across heterogeneous y scales.
+                if bar_aux_mse_weight > 0:
+                    aux = _bar_aux_mse_loss(pred, target, borders_t).mean(dim=1)
+                    aux_norm = aux / per_ep_var
+                    per_ep_loss = per_ep_loss + bar_aux_mse_weight * aux_norm.clamp(max=10.0)
             else:
                 raise ValueError(f"Unsupported regression_loss: {regression_loss}")
 
@@ -311,6 +340,17 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
                 per_ep_loss = per_ep_loss.clamp(max=10.0)
             y_loss = per_ep_loss.sum()
             n_y_cells = batch_size  # one NMSE value per episode
+
+    if feature_loss_weight <= 0:
+        y_loss_avg = y_loss / max(n_y_cells, 1)
+        loss_dict = {
+            'total_loss': y_loss_avg.item(),
+            'y_loss': y_loss_avg.item(),
+            'feat_loss': 0.0,
+            'n_y_cells': n_y_cells,
+            'n_feat_cells': 0,
+        }
+        return y_loss_avg, loss_dict
 
     # ------------------------------------------------------------------
     # 2. Feature reconstruction loss (masked cells only)

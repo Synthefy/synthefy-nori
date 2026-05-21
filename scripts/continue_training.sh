@@ -60,7 +60,6 @@ MAX_BUDGET="${MAX_BUDGET:-1200000}"
 DIM_BIAS_SAMPLES="${DIM_BIAS_SAMPLES:-1.5}"
 DIM_BIAS_FEATURES="${DIM_BIAS_FEATURES:-1.5}"
 COMPILE="${COMPILE:-1}"
-BASE_CKPT="${BASE_CKPT:-cache/LimiX-2M.ckpt}"
 
 COMPILE_ARGS=()
 if [[ "${COMPILE,,}" == "1" || "${COMPILE,,}" == "true" || "${COMPILE,,}" == "yes" ]]; then
@@ -91,10 +90,10 @@ echo "============================================================"
 
 cd "${REPO_ROOT}"
 export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
+export PATH="${REPO_ROOT}/.venv/bin:${PATH}"
 
 torchrun --nproc_per_node="${NPROC}" --master_port="${MASTER_PORT}" \
   -m synthefy_tabular.training.cli \
-  --checkpoint "${BASE_CKPT}" \
   --resume "${SEED_CKPT}" --resume-model-only \
   --checkpoint-dir "${STAGE2_DIR}" \
   --total-steps "${TOTAL_STEPS}" --run-steps "${TOTAL_STEPS}" \
@@ -118,7 +117,7 @@ torchrun --nproc_per_node="${NPROC}" --master_port="${MASTER_PORT}" \
   --sparse-nonlinear-prob 0.08 \
   --context-missingness-prob 0.5 \
   --realistic-augmentation-prob 0.5 \
-  --icl-filter-model "${BASE_CKPT}" \
+  --icl-filter-model "${ICL_FILTER_MODEL:-limix}" \
   --icl-filter-reg-min-r2 0.05 \
   --quality-filter-max-retries 5 \
   --model-v2-lite \

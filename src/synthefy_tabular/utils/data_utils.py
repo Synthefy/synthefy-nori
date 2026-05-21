@@ -9,8 +9,6 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from typing import List, Literal
 
-from synthefy_tabular.utils.retrieval_utils import find_top_K_indice
-
 
 class TabularInferenceDataset(Dataset):
     """
@@ -428,3 +426,4 @@ def load_data(data_root,folder):
     return trainX, trainy, testX, testy
 if __name__ == '__main__':
     pass
+

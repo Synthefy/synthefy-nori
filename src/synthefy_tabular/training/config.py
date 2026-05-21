@@ -73,6 +73,10 @@ class TrainingConfig:
     # Reproducibility
     seed: int = 42
 
+    # Debug NPZ dump for the reproduction harness (inactive unless dir set)
+    debug_dump_dir: str = ""
+    debug_dump_steps: int = 5
+
     # Hardware
     device: str = "cuda:2"
     mixed_precision: bool = True
@@ -91,6 +95,10 @@ class TrainingConfig:
     wandb_tags: tuple[str, ...] = field(default_factory=tuple)
     ema_decay: float = 0.0
 
+    # Offline dataset pool (pre-generated Parquet shards)
+    offline_pool_dir: str = ''
+    offline_pool_tier: int = 1  # Which tier subdir to read from
+
     # Compilation
     compile: bool = False
 
@@ -100,7 +108,7 @@ class TrainingConfig:
     world_size: int = 1
 
     # Model
-    checkpoint_path: str = "cache/LimiX-2M.ckpt"
+    checkpoint_path: str = ""
     features_per_group: int = 2
     target_aware_init_scale: float = 1.0
     target_aware_warmup_steps: int = 0
@@ -133,6 +141,11 @@ class TrainingConfig:
     icl_filter_model: str = ''       # Path to frozen LimiX checkpoint for ICL-based filtering
     icl_filter_cls_min_auc: float = 0.55
     icl_filter_reg_min_r2: float = 0.05
+    # Replacement-loop budget in _filter_and_replace. Old default was a hard-
+    # coded 2 with silent acceptance after the loop. 6 makes the silent-accept
+    # rate negligible in practice; the trainer logs the empirical rate so we
+    # can tune it.
+    icl_filter_max_rounds: int = 6
     icl_scaling_filter: bool = False  # Second gate: does more context help?
     icl_scaling_min_improvement: float = 0.03  # Min R² improvement from small to large context
     v4_no_edge_noise: bool = True  # skip Gaussian edge noise (TabICLv2 found no benefit)
@@ -180,7 +193,22 @@ class TrainingConfig:
     # (one-hot target). >0 = Gaussian-smoothed target with this sigma —
     # gives partial credit for predicting nearby bins, smooths the loss
     # landscape that's otherwise 5000 categorical cliffs.
+    # NOTE: only well-defined for uniform borders. For non-uniform borders
+    # (normal_quantile mode), use bar_target_sigma_y instead.
     bar_target_sigma: float = 0.0
+    # Soft CE width in *y-space std units* (cleaner semantics for non-uniform
+    # bin borders). When > 0, overrides bar_target_sigma. e.g. 0.12 means
+    # soft target Gaussian has std 0.12 std around the true y, regardless
+    # of bin width geometry.
+    bar_target_sigma_y: float = 0.0
+    # Bar borders mode: 'uniform' (linspace [low, high]) or 'normal_quantile'
+    # (N(0,1) quantile-spaced — ~3-4× more bins concentrated near y=0).
+    bar_borders_mode: str = 'uniform'
+    # Auxiliary MSE weight on bar head's expected-value point estimate.
+    # Forces softmax(logits)·bin_centers to be calibrated against true y,
+    # fixing the "compression" failure mode where bar CE is satisfied but
+    # the expected value is biased. 0.0 = off; 0.10 is a typical setting.
+    bar_aux_mse_weight: float = 0.0
     reg_prior_prob: float = 0.4  # fraction of reg episodes using prior generator
     reg_denoise: bool = False  # reduce noise for regression episodes
     reg_deterministic_prob: float = 0.20  # probability a regression-prior episode is zero-noise
@@ -221,6 +249,56 @@ class TrainingConfig:
     # GP smooth function prior: y sampled from Gaussian Process with RBF/Matern kernels
     # via Random Fourier Features. Produces smooth joint multivariate functions.
     gp_prior_prob: float = 0.0
+
+    # Cat-dominant prior: 60-95% of columns are categorical with mixed
+    # cardinalities (2-50, biased toward low-K). y = sum of per-column
+    # category-effect + sparse pairwise interactions + small continuous
+    # signal. Targets the cat-heavy regime SCM under-generates: Ailerons,
+    # Buzzinsocialmedia, Food_Delivery_Time, MIP-2016.
+    cat_dominant_prob: float = 0.0
+
+    # Binary fingerprint prior: all-binary high-dim feature matrix with
+    # heavy-tailed per-column on-rates and sparse signal (5-30 active bits
+    # out of n_features). Targets the QSAR-TID-11 / chemical fingerprint
+    # archetype.
+    binary_fingerprint_prob: float = 0.0
+
+    # Temporal prior: rows generated in TEMPORAL ORDER with one of 5
+    # patterns (AR(1) features, lagged y, concept drift, trend+seasonal,
+    # pure trend on y). Trainer's eval_pos split on these episodes
+    # becomes a time-ordered train/test split — matching real benchmarks
+    # like NASA_PHM, Food_Delivery_Time, Allstate, dataset_sales.
+    temporal_prior_prob: float = 0.0
+
+    # Train-time per-column distribution augmentation (V12). Per-episode gate;
+    # within fired episodes, each non-categorical column has a 40% chance of
+    # receiving 1-2 random transforms (YJ, log, sign-flip, square, rank,
+    # affine, identity). Closes the train/inference distribution-shape gap.
+    train_feature_augment_prob: float = 0.0
+
+    # Train-time cat target encoding (V12). Per-episode in trainer's
+    # _prepare_batch, after context/query split. With this probability per
+    # cat-detected column, replace integer levels with mean-y per level
+    # computed from CONTEXT rows only (no query y leakage).
+    cat_target_encode_prob: float = 0.0
+    # Train-time frequency / count encoding (V12r3). Per cat-detected
+    # column, with this probability, replace integer levels with the count
+    # of occurrences in context rows. For high-cardinality real-world IDs
+    # where label-encoded integers carry no meaningful magnitude — counts
+    # extract the genuinely useful "common vs rare" signal. Unseen levels
+    # in query get count=0.
+    freq_count_encode_prob: float = 0.0
+
+    # logN attention scaling: pre-multiply Q by log(n_keys)/log(n_ref) so
+    # softmax stays sharp as context length grows. attn_n_ref is the
+    # reference length where the factor equals 1 (no change).
+    use_logn_attention: bool = False
+    attn_n_ref: float = 1024.0
+
+    # Learnable per-layer attention temperature: each MultiheadAttention has
+    # an nn.Parameter scalar (init 1.0, .abs() applied) multiplied into the
+    # attention scale. Lets the model learn per-layer attention sharpness.
+    use_learnable_attn_temperature: bool = False
 
     # Context missingness augmentation: probability of injecting random NaN cells
     # across the full feature matrix (including context rows). Teaches the model
@@ -313,6 +391,16 @@ class TrainingConfig:
     eval_reg_config: str = field(
         default_factory=lambda: package_config_path("reg_default_noretrieval.json")
     )
+    embedding_probe_enabled: bool = False
+    embedding_probe_n_synthetic: int = 6
+    embedding_probe_n_real_datasets: int = 4
+    embedding_probe_max_train: int = 512
+    embedding_probe_max_test: int = 256
+    embedding_probe_max_features: int = 128
+    embedding_probe_pairwise_pairs: int = 2000
+    embedding_probe_max_rank_samples: int = 2048
+    embedding_probe_seed: int = 42
+    embedding_probe_output_path: str | None = None
 
     # Early stopping (measured in validation runs, not optimizer steps)
     early_stop_patience_evals: int = 0

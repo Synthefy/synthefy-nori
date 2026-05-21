@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import json
 import sys
 import os
 from datetime import datetime
@@ -22,15 +23,26 @@ if '--no-flash-attn' in sys.argv:
 import torch
 
 from synthefy_tabular.utils.loading import build_model
-from synthefy_tabular.training.config import TrainingConfig
+from synthefy_tabular.training.config import TrainingConfig, package_config_path
 from synthefy_tabular.training.trainer import LimiXTrainer
 
 
-def extract_config_from_checkpoint(ckpt_path):
-    """Extract model config from a pretrained checkpoint."""
-    state = torch.load(ckpt_path, map_location='cpu', weights_only=False)
-    config = state['config']
-    return config
+def load_model_config(source: str | None) -> dict:
+    """Load model architecture config from a checkpoint or JSON file.
+
+    When *source* is ``None`` the bundled ``model_base.json`` is used, so
+    training can start from scratch without an external checkpoint.
+    """
+    if source is None:
+        with open(package_config_path("model_base.json"), "r", encoding="utf-8") as f:
+            return json.load(f)
+    if source.endswith(".json"):
+        with open(source, "r", encoding="utf-8") as f:
+            return json.load(f)
+    state = torch.load(source, map_location='cpu', weights_only=False)
+    if 'model_config' in state:
+        return state['model_config']
+    return state['config']
 
 
 def parse_quantiles(raw: str) -> tuple[float, ...]:
@@ -52,8 +64,9 @@ def parse_tags(raw: str | None) -> tuple[str, ...]:
 def main():
     parser = argparse.ArgumentParser(description='Train Synthefy Tabular from scratch')
     parser.add_argument('--device', type=str, default='cuda:2')
-    parser.add_argument('--checkpoint', type=str, default='cache/LimiX-2M.ckpt',
-                        help='Pretrained checkpoint to extract config from')
+    parser.add_argument('--checkpoint', type=str, default=None,
+                        help='Checkpoint (.ckpt/.pt) or JSON file to load model architecture config from. '
+                             'Defaults to the bundled model_base.json.')
     parser.add_argument('--resume', type=str, default=None,
                         help='Training checkpoint to resume from')
     parser.add_argument('--resume-model-only', action='store_true',
@@ -156,9 +169,12 @@ def main():
                         help='Minimum reg ExtraTrees OOB R2 to keep a dataset')
     parser.add_argument('--icl-filter-model', type=str, default='',
                         help='GPU model for ICL learnability filtering. Options: '
-                             'path to LimiX checkpoint (.pt/.ckpt), '
+                             '"limix" to auto-download LimiX-2M from HuggingFace, '
+                             '"hf" to auto-download the Synthefy checkpoint, '
+                             'path to local checkpoint (.pt/.ckpt), '
                              '"tabicl" for TabICLv2, '
-                             '"tabpfn" for TabPFN-2.5. '
+                             '"tabpfn" for TabPFN-2.5, '
+                             'or empty string to disable. '
                              'Runs on the training GPU after each batch.')
     parser.add_argument('--icl-filter-cls-min-auc', type=float, default=0.55,
                         help='Minimum classification accuracy for ICL filter (default: 0.55)')
@@ -363,7 +379,25 @@ def main():
                         help='Disable async data prefetching')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for data generation and training (default: 42)')
+    parser.add_argument('--debug-dump-dir', type=str, default='',
+                        help='Dump per-step NPZ files (data, gradients, '
+                             'weights, loss) for the first --debug-dump-steps '
+                             'optimizer steps into this directory. Setting this '
+                             'also enables deterministic mode (seeded torch + '
+                             'cudnn.deterministic).')
+    parser.add_argument('--debug-dump-steps', type=int, default=5,
+                        help='Number of optimizer steps to dump (default: 5)')
     args = parser.parse_args()
+
+    if args.debug_dump_dir:
+        import numpy as _np_seed
+        _np_seed.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        print(f"[debug-dump] deterministic mode ON: seed={args.seed}, "
+              f"cudnn.deterministic=True")
 
     # Auto-generate checkpoint directory with timestamp
     if args.checkpoint_dir is None:
@@ -386,9 +420,10 @@ def main():
         parser.error("--target-aware-warmup-steps must be >= 0")
     if not 0.0 <= args.target_aware_init_scale <= 1.0:
         parser.error("--target-aware-init-scale must be in [0, 1]")
-    # Extract model config from pretrained checkpoint
-    print(f"Extracting model config from {args.checkpoint}")
-    model_config = extract_config_from_checkpoint(args.checkpoint)
+    # Load model architecture config
+    config_source = args.checkpoint or "bundled model_base.json"
+    print(f"Loading model config from {config_source}")
+    model_config = load_model_config(args.checkpoint)
 
     # Enable mask prediction for training
     model_config['mask_prediction'] = True
@@ -626,7 +661,7 @@ def main():
         feature_loss_decay_start_step=args.feature_loss_decay_start_step,
         feature_loss_decay_end_step=args.feature_loss_decay_end_step,
         mixed_precision=not args.no_mixed_precision,
-        checkpoint_path=args.checkpoint,
+        checkpoint_path=args.checkpoint or "",
         features_per_group=model_config.get('features_per_group', 2),
         target_aware_init_scale=args.target_aware_init_scale,
         target_aware_warmup_steps=args.target_aware_warmup_steps,
@@ -711,6 +746,8 @@ def main():
         prefetch_workers=0 if args.no_prefetch else args.prefetch_workers,
         prefetch_count=args.prefetch_count,
         seed=args.seed,
+        debug_dump_dir=args.debug_dump_dir,
+        debug_dump_steps=args.debug_dump_steps,
     )
 
     # Create trainer (model already on device, skip internal .to())

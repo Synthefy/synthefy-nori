@@ -16,6 +16,9 @@ DEFAULT_CHECKPOINT_FILENAME = os.environ.get(
     "synthefy-tabular.pt",
 )
 
+LIMIX_REPO_ID = "stableai-org/LimiX-2M"
+LIMIX_FILENAME = "LimiX-2M.ckpt"
+
 
 def download_checkpoint(
     repo_id: str = DEFAULT_MODEL_REPO_ID,
@@ -39,6 +42,24 @@ def download_checkpoint(
         cache_dir=cache_dir,
         token=token,
         force_download=force_download,
+    )
+
+
+def download_limix(
+    *,
+    cache_dir: str | None = None,
+    force_download: bool = False,
+) -> str:
+    """Download the LimiX-2M base checkpoint from HuggingFace.
+
+    Used as an ICL learnability filter during training. The checkpoint is
+    publicly hosted at ``stableai-org/LimiX-2M``.
+    """
+    return download_checkpoint(
+        repo_id=LIMIX_REPO_ID,
+        filename=LIMIX_FILENAME,
+        force_download=force_download,
+        cache_dir=cache_dir,
     )
 
 

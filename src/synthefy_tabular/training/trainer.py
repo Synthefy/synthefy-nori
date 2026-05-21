@@ -143,9 +143,16 @@ class LimiXTrainer:
                     )
                 self.quality_rules = None
 
-        # Async data prefetching
+        # Offline dataset pool (pre-generated Parquet shards)
+        self.pool_loader = None
+        if config.offline_pool_dir:
+            from synthefy_tabular.training.parquet_loader import ParquetPoolLoader
+            self.pool_loader = ParquetPoolLoader(
+                config.offline_pool_dir, tier=config.offline_pool_tier)
+
+        # Async data prefetching (skip if using offline pool)
         self.prefetcher = None
-        if config.prefetch_workers > 0:
+        if config.prefetch_workers > 0 and self.pool_loader is None:
             self.prefetcher = DataPrefetcher(
                 num_workers=config.prefetch_workers,
                 prefetch_count=config.prefetch_count,
@@ -158,14 +165,27 @@ class LimiXTrainer:
         if config.icl_filter_model:
             self._init_gpu_icl_filter(config.icl_filter_model)
 
+        # ICL filter telemetry — reset every log_interval, logged to wandb.
+        # _icl_total_episodes:    denominator (episodes considered)
+        # _icl_first_round_reject: numerator for reject_rate (failed initial filter)
+        # _icl_escape_count:      episodes that survived all max_rounds (still bad,
+        #                         silently accepted — V11 default 6 rounds)
+        # _icl_rounds_used_sum:   sum of rounds-needed across all bad episodes;
+        #                         ratio with first_round_reject = avg rounds.
+        self._icl_total_episodes = 0
+        self._icl_first_round_reject = 0
+        self._icl_escape_count = 0
+        self._icl_rounds_used_sum = 0
+
         self._set_target_aware_scale(self._get_current_target_aware_scale())
 
         # Wandb
+        self.embedding_probe = None
         self.wandb_run = None
 
     # Shape buckets for torch.compile. These keep recompiles bounded while still
     # allowing larger late-curriculum tables.
-    SAMPLE_BUCKETS = [64, 128, 256, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 12288, 16384]
+    SAMPLE_BUCKETS = [64, 128, 256, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 12288, 16384, 24576, 32768, 49152]
     FEATURE_BUCKETS = [4, 8, 16, 32, 48, 64, 96, 128, 192, 256, 320, 384, 512, 768, 1024]
     CONTEXT_RATIO_BUCKETS = [0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
 
@@ -178,6 +198,39 @@ class LimiXTrainer:
         """
         cfg = self.config
         rng = self.shared_rng  # Same across all ranks
+
+        # Offline pool: sample directly from available bucket shapes to
+        # avoid NaN-padding when the trainer asks for an unavailable shape.
+        if self.pool_loader is not None:
+            # Filter pool buckets to those within the configured tier limits
+            min_s = cfg.min_samples
+            max_s = cfg.max_samples
+            min_f = cfg.min_features
+            max_f = cfg.max_features
+            budget = cfg.max_sample_feature_budget
+            valid_keys = [
+                k for k in self.pool_loader._index.keys()
+                if min_s <= k[0] <= max_s
+                and min_f <= k[1] <= max_f
+                and k[0] * k[1] <= budget
+                and len(self.pool_loader._index[k]) > 0
+            ]
+            if not valid_keys:
+                # Fall back to all keys if filter is too strict
+                valid_keys = [k for k in self.pool_loader._index.keys()
+                              if len(self.pool_loader._index[k]) > 0]
+            # Consume the same number of rng draws as the random path to keep
+            # shared_rng in sync (uniform for samples, uniform for features)
+            rng.uniform(0, 1)
+            rng.uniform(0, 1)
+            idx = int(rng.integers(0, len(valid_keys)))
+            n_samples, n_features = valid_keys[idx]
+            task_type = cfg.task_type if cfg.task_type != 'both' else 'reg'
+            # Consume task rng draw
+            rng.random()
+            n_classes = None
+            context_ratio = rng.uniform(cfg.context_ratio_min, cfg.context_ratio_max)
+            return n_samples, n_features, task_type, n_classes, context_ratio
 
         if cfg.fixed_n_samples is not None and cfg.fixed_n_features is not None:
             # Fixed size mode: skip random sampling but still consume rng
@@ -289,6 +342,10 @@ class LimiXTrainer:
             'quadratic_surface_prob': cfg.quadratic_surface_prob,
             'sparse_nonlinear_prob': cfg.sparse_nonlinear_prob,
             'gp_prior_prob': cfg.gp_prior_prob,
+            'cat_dominant_prob': getattr(cfg, 'cat_dominant_prob', 0.0),
+            'binary_fingerprint_prob': getattr(cfg, 'binary_fingerprint_prob', 0.0),
+            'temporal_prior_prob': getattr(cfg, 'temporal_prior_prob', 0.0),
+            'train_feature_augment_prob': getattr(cfg, 'train_feature_augment_prob', 0.0),
             'context_missingness_prob': cfg.context_missingness_prob,
             'realistic_augmentation_prob': cfg.realistic_augmentation_prob,
             'y_transform_prob': cfg.y_transform_prob,
@@ -343,6 +400,20 @@ class LimiXTrainer:
         if hasattr(bare_model, 'target_aware_scale'):
             bare_model.target_aware_scale = float(scale)
 
+    def _run_embedding_probe(self) -> dict | None:
+        if not self.config.embedding_probe_enabled:
+            return None
+        if self.embedding_probe is None:
+            from synthefy_tabular.training.embedding_geometry import OnlineRegressionEmbeddingProbe
+
+            self.embedding_probe = OnlineRegressionEmbeddingProbe(self.config)
+        return self.embedding_probe.evaluate(
+            self._get_bare_model(),
+            self.device,
+            step=self.optimizer_step,
+            mixed_precision=self.config.mixed_precision,
+        )
+
     def _submit_prefetch(self, n_samples, n_features, task_type, n_classes):
         """Submit one batch to the prefetcher with a deterministic seed."""
         seed = int(self.rng.integers(0, 2**63))
@@ -352,16 +423,36 @@ class LimiXTrainer:
 
     # ── GPU-batched ICL learnability filter ──────────────────────────────
 
+    @staticmethod
+    def _resolve_icl_filter_path(model_path: str) -> str:
+        """Resolve shorthand names to a local file path.
+
+        Accepted values:
+          ``'limix'``         -- download LimiX-2M from ``stableai-org/LimiX-2M``
+          ``'hf'``            -- download the default Synthefy checkpoint
+          ``'org/repo'``      -- download from an arbitrary HuggingFace repo
+          local file path     -- used as-is
+        """
+        if model_path == 'limix':
+            from synthefy_tabular.hf import download_limix
+            return download_limix()
+        if model_path == 'hf':
+            from synthefy_tabular.hf import download_checkpoint
+            return download_checkpoint()
+        if '/' in model_path and not os.path.exists(model_path):
+            from synthefy_tabular.hf import download_checkpoint
+            return download_checkpoint(repo_id=model_path)
+        return model_path
+
     def _init_gpu_icl_filter(self, model_path):
         """Load a frozen model for GPU-batched learnability filtering.
 
         Supports:
-          - LimiX checkpoints (.pt/.ckpt) — uses native forward pass
-          - 'tabicl' — loads TabICLv2 regressor/classifier
-          - 'tabpfn' — loads TabPFN-2.5 regressor/classifier
-
-        The model_path can be a file path (LimiX) or a string identifier
-        ('tabicl', 'tabpfn') for library models.
+          - ``'hf'`` -- auto-download the default Synthefy checkpoint from HuggingFace
+          - ``'org/repo'`` -- auto-download from a custom HuggingFace repo
+          - Local file paths (.pt/.ckpt) -- uses native forward pass
+          - ``'tabicl'`` -- loads TabICLv2 regressor/classifier
+          - ``'tabpfn'`` -- loads TabPFN-2.5 regressor/classifier
         """
         self._icl_filter_type = 'limix'  # default
 
@@ -391,7 +482,7 @@ class LimiXTrainer:
                 raise ImportError("tabpfn not installed. Use: uv add tabpfn")
 
         else:
-            # LimiX checkpoint
+            model_path = self._resolve_icl_filter_path(model_path)
             from synthefy_tabular.utils.loading import load_model
             m = load_model(model_path, mask_prediction=True)
             m.eval()
@@ -576,21 +667,47 @@ class LimiXTrainer:
 
         Rejected episodes are regenerated synchronously (without ICL filter,
         since the replacement itself gets a GPU check on the next pass).
-        At most 2 rounds of replacement to avoid infinite loops.
+        Up to cfg.icl_filter_max_rounds (default 6) replacement rounds. After
+        the budget is exhausted, any still-bad episodes are silently kept —
+        the trainer tracks the rate as `train/icl_filter_escape_rate` so we
+        can see if it's actually a problem.
+
+        Telemetry counters (reset by the periodic log block):
+          self._icl_total_episodes      — denominator
+          self._icl_first_round_reject  — failed initial filter (numerator
+                                          for reject_rate)
+          self._icl_rounds_used_sum     — total rounds used across rejected
+                                          episodes (avg = sum/reject_count)
+          self._icl_escape_count        — episodes that survived all rounds
+                                          (numerator for escape_rate)
         """
+        cfg = self.config
+        max_rounds = max(1, int(getattr(cfg, 'icl_filter_max_rounds', 6)))
+
         passed = self._gpu_icl_filter(X_batch, y_batch, task_type, n_classes)
         n_rejected = int((~passed).sum())
+
+        # Telemetry: count this batch toward the totals regardless of outcome.
+        self._icl_total_episodes += len(passed)
+
         if n_rejected == 0:
             return X_batch, y_batch
 
+        self._icl_first_round_reject += n_rejected
+
         if self.is_main and self.global_step % self.config.log_interval == 0:
-            print(f"  [ICL-GPU] Rejected {n_rejected}/{len(passed)} episodes")
+            print(f"  [ICL-GPU] Rejected {n_rejected}/{len(passed)} episodes "
+                  f"(round budget={max_rounds})")
 
         gen_kwargs = self._build_gen_kwargs(n_samples, n_features, task_type, n_classes)
         gen_kwargs.pop('icl_filter_model', None)
         gen_kwargs.pop('batch_size', None)
 
-        for _round in range(2):
+        # Track per-episode "rounds needed". -1 means still bad after all
+        # rounds; otherwise records 1..max_rounds (1 = passed after round 1).
+        rounds_needed = np.where(passed, 0, -1)
+
+        for round_idx in range(1, max_rounds + 1):
             bad_idx = np.where(~passed)[0]
             if len(bad_idx) == 0:
                 break
@@ -603,8 +720,189 @@ class LimiXTrainer:
                 y_batch[i] = y_new[0]
 
             passed = self._gpu_icl_filter(X_batch, y_batch, task_type, n_classes)
+            # Episodes that just flipped from False to True passed at this round.
+            newly_passed = passed & (rounds_needed == -1)
+            rounds_needed[newly_passed] = round_idx
+
+        # Anything still ==-1 is an escape (silently accepted).
+        escape_idx = np.where(rounds_needed == -1)[0]
+        if len(escape_idx) > 0:
+            self._icl_escape_count += len(escape_idx)
+            # Charge the full max_rounds against the rounds-used budget.
+            self._icl_rounds_used_sum += int(len(escape_idx) * max_rounds)
+            if self.is_main and self.global_step % self.config.log_interval == 0:
+                print(f"  [ICL-GPU] Escape: {len(escape_idx)}/{len(passed)} "
+                      f"episodes still bad after {max_rounds} rounds — "
+                      f"silently accepted")
+
+        # Sum of rounds used by episodes that eventually passed.
+        good_rounds = rounds_needed[(rounds_needed > 0)]
+        if len(good_rounds) > 0:
+            self._icl_rounds_used_sum += int(good_rounds.sum())
 
         return X_batch, y_batch
+
+    def _apply_cat_target_encoding(self, X_batch, y_batch, eval_pos,
+                                    p_col=0.25):
+        """Replace cat-like columns with target-encoded versions per episode.
+
+        Detection heuristic (per col, per episode):
+          - Integer-valued (np.allclose to round)
+          - unique_count <= 50
+
+        For each detected cat col, with probability p_col, replace its values
+        with mean(y_context) per category level. Unseen levels at query time
+        get the global context-mean (sklearn TargetEncoder default).
+
+        Uses CONTEXT rows only for the encoding so query y is never leaked
+        through features.
+
+        Args:
+            X_batch: [B, N, F] (modified in place, returned)
+            y_batch: [B, N] context-normalized regression targets
+            eval_pos: int, context/query split point
+            p_col: per-cat-col probability of swap
+        """
+        B, N, F = X_batch.shape
+        for b in range(B):
+            y_ctx = y_batch[b, :eval_pos]
+            global_ctx_mean = float(np.nanmean(y_ctx)) if np.isfinite(y_ctx).any() else 0.0
+
+            for j in range(F):
+                col = X_batch[b, :, j]
+                col_ctx = col[:eval_pos]
+                finite = np.isfinite(col_ctx)
+                if finite.sum() < 4:
+                    continue
+
+                vals = col_ctx[finite]
+                unique_vals = np.unique(vals)
+                if len(unique_vals) > 50:
+                    continue
+                # Integer check (cat protection)
+                if not np.allclose(vals, np.round(vals), atol=1e-6):
+                    continue
+
+                if self.rng.random() >= p_col:
+                    continue
+
+                # Compute mean y per integer level (context only). Filter
+                # NaN BEFORE round so NaN-cast-to-int doesn't trigger numpy's
+                # "invalid value in cast" RuntimeWarning. NaN positions are
+                # restored at the end (encoded[~finite] = nan).
+                ctx_finite_mask = np.isfinite(col_ctx)
+                col_ctx_safe = np.where(ctx_finite_mask, col_ctx, 0.0)
+                rounded_ctx = np.round(col_ctx_safe).astype(np.int64)
+                level_means = {}
+                for lv in unique_vals:
+                    lv_int = int(round(float(lv)))
+                    mask = (rounded_ctx == lv_int) & ctx_finite_mask & np.isfinite(y_ctx)
+                    if mask.any():
+                        level_means[lv_int] = float(np.mean(y_ctx[mask]))
+
+                # Apply to ALL rows (context + query). Query rows with unseen
+                # levels get the global context-mean. Same NaN-safe rounding.
+                full_finite_mask = np.isfinite(col)
+                col_safe = np.where(full_finite_mask, col, 0.0)
+                col_full_round = np.round(col_safe).astype(np.int64)
+                encoded = np.full(N, global_ctx_mean, dtype=np.float64)
+                for lv_int, mean_val in level_means.items():
+                    encoded[col_full_round == lv_int] = mean_val
+                # Preserve NaN positions
+                encoded[~np.isfinite(col)] = np.nan
+
+                # Re-standardize the encoded column to mean-0/std-1 over
+                # context rows so it matches the model's expected input scale.
+                enc_ctx = encoded[:eval_pos]
+                enc_finite = enc_ctx[np.isfinite(enc_ctx)]
+                if len(enc_finite) > 1:
+                    mu = float(np.mean(enc_finite))
+                    sd = float(np.std(enc_finite))
+                    if sd > 1e-8:
+                        encoded = (encoded - mu) / sd
+
+                X_batch[b, :, j] = encoded.astype(X_batch.dtype)
+
+        return X_batch
+
+    def _apply_freq_count_encoding(self, X_batch, eval_pos, p_col=0.20):
+        """Replace cat-like columns with frequency (count) encoding per episode.
+
+        For real benchmarks with high-cardinality categorical IDs (chscase_foot,
+        Goodreads, CookbookReviews), the label-encoded integer values carry no
+        meaningful magnitude — but the COUNT of how often each value appears
+        does. Common values are usually informative (e.g. popular product
+        category); rare values are usually noise.
+
+        Detection heuristic (per col, per episode):
+          - Integer-valued (np.allclose to round)
+          - unique_count <= 50
+
+        For each detected cat col, with probability p_col, replace its values
+        with count-of-occurrences in CONTEXT rows. Unseen levels in query get
+        0 (rare-or-absent). Re-standardize for model input compatibility.
+
+        Args:
+            X_batch: [B, N, F] (modified in place, returned)
+            eval_pos: int, context/query split point
+            p_col: per-cat-col probability of swap
+        """
+        B, N, F = X_batch.shape
+        for b in range(B):
+            for j in range(F):
+                col = X_batch[b, :, j]
+                col_ctx = col[:eval_pos]
+                finite = np.isfinite(col_ctx)
+                if finite.sum() < 4:
+                    continue
+
+                vals = col_ctx[finite]
+                unique_vals = np.unique(vals)
+                if len(unique_vals) > 50:
+                    continue
+                # Integer check (cat protection)
+                if not np.allclose(vals, np.round(vals), atol=1e-6):
+                    continue
+
+                if self.rng.random() >= p_col:
+                    continue
+
+                # Count occurrences per integer level (context only). NaN-safe.
+                ctx_finite_mask = np.isfinite(col_ctx)
+                col_ctx_safe = np.where(ctx_finite_mask, col_ctx, 0.0)
+                rounded_ctx = np.round(col_ctx_safe).astype(np.int64)
+                level_counts = {}
+                for lv in unique_vals:
+                    lv_int = int(round(float(lv)))
+                    mask = (rounded_ctx == lv_int) & ctx_finite_mask
+                    if mask.any():
+                        level_counts[lv_int] = int(np.sum(mask))
+
+                # Apply to all rows (context + query). Unseen levels in query
+                # get 0 (genuinely informative — "this value didn't show up
+                # in training").
+                full_finite_mask = np.isfinite(col)
+                col_safe = np.where(full_finite_mask, col, 0.0)
+                col_full_round = np.round(col_safe).astype(np.int64)
+                encoded = np.zeros(N, dtype=np.float64)
+                for lv_int, count in level_counts.items():
+                    encoded[col_full_round == lv_int] = float(count)
+                # Preserve NaN positions
+                encoded[~full_finite_mask] = np.nan
+
+                # Re-standardize over context rows (matches model's expected
+                # input scale, same as cat_target_encode).
+                enc_ctx = encoded[:eval_pos]
+                enc_finite = enc_ctx[np.isfinite(enc_ctx)]
+                if len(enc_finite) > 1:
+                    mu = float(np.mean(enc_finite))
+                    sd = float(np.std(enc_finite))
+                    if sd > 1e-8:
+                        encoded = (encoded - mu) / sd
+
+                X_batch[b, :, j] = encoded.astype(X_batch.dtype)
+
+        return X_batch
 
     def _prepare_batch(self, X_batch, y_batch, task_type, n_classes, context_ratio):
         """Prepare a training batch with masking.
@@ -661,6 +959,34 @@ class LimiXTrainer:
             y_ctx_std = context_y.std(axis=-1, keepdims=True)
             y_ctx_std = np.where(y_ctx_std < 1e-8, 1.0, y_ctx_std)
             y_batch = (y_batch - y_ctx_mean) / y_ctx_std
+
+        # Cat target encoding (V12 audit-driven addition). Real benchmark
+        # cat columns arrive in many encodings: label, ordinal, target-
+        # encoded, etc. Synth pipeline almost always emits label-encoded
+        # ints, so the model is brittle to other encodings. With probability
+        # cat_target_encode_prob per col, replace a cat-like col with its
+        # target-encoded version (mean-y per category) computed from CONTEXT
+        # rows only — query y is masked, so no label leakage.
+        cte_prob = float(getattr(cfg, 'cat_target_encode_prob', 0.0))
+        if cte_prob > 0.0 and task_type == 'reg':
+            X_batch = self._apply_cat_target_encoding(
+                X_batch, y_batch, eval_pos, cte_prob)
+
+        # Frequency / count encoding (V12r3 audit-driven addition).
+        # For real benchmarks like chscase_foot (cat cardinality 236 in train,
+        # 125 in test, 64 overlap) and Goodreads (high-cardinality
+        # title/author cols), label-encoded integer levels are arbitrary
+        # numbers — they don't carry meaningful magnitude. Replacing with
+        # FREQUENCY (count of occurrences in context) extracts the genuinely
+        # useful signal: "common values vs rare values". Unseen-in-train
+        # levels naturally get count=0, which is informative.
+        # Runs AFTER cat_target_encode so they don't both fire on the same
+        # column (target encode produces continuous mean-y, breaking the
+        # integer-check that gates freq encoding).
+        fce_prob = float(getattr(cfg, 'freq_count_encode_prob', 0.0))
+        if fce_prob > 0.0 and task_type == 'reg':
+            X_batch = self._apply_freq_count_encoding(
+                X_batch, eval_pos, fce_prob)
 
         n_query = n_samples - eval_pos
 
@@ -836,7 +1162,11 @@ class LimiXTrainer:
 
         # --- Generate batch + forward + loss (can error) ---
         try:
-            if self.prefetcher is not None:
+            if self.pool_loader is not None:
+                # Offline pool path: read pre-generated, pre-filtered datasets
+                X_batch, y_batch, n_classes = self.pool_loader.get_batch(
+                    cfg.batch_size, n_samples, n_features, rng=self.rng)
+            elif self.prefetcher is not None:
                 # Async path: get pre-generated batch from prefetcher.
                 # The batch for THIS step was submitted earlier (in
                 # _prefill_pipeline or previous train_step). We also
@@ -883,6 +1213,11 @@ class LimiXTrainer:
                     task_type=task_type,
                 )
 
+            # Pull bar-borders buffer from model (may be None for non-bar
+            # losses or if model wasn't built with bar_distribution head).
+            _bare = self._get_bare_model()
+            _bar_borders = getattr(_bare, 'bar_borders_buffer', None)
+
             # Compute loss outside autocast for float32 precision
             loss, loss_dict = compute_ccmm_loss(
                 model_output=output,
@@ -902,6 +1237,9 @@ class LimiXTrainer:
                 bar_borders_low=cfg.bar_borders_low,
                 bar_borders_high=cfg.bar_borders_high,
                 bar_target_sigma=cfg.bar_target_sigma,
+                bar_borders=_bar_borders,
+                bar_target_sigma_y=getattr(cfg, 'bar_target_sigma_y', 0.0),
+                bar_aux_mse_weight=getattr(cfg, 'bar_aux_mse_weight', 0.0),
             )
             loss_dict['feature_loss_weight'] = current_feature_loss_weight
             loss_dict['target_aware_scale'] = current_tae_scale
@@ -1031,6 +1369,18 @@ class LimiXTrainer:
             # Gradient clipping
             self.scaler.unscale_(self.optimizer)
 
+            # Debug NPZ dump: capture unscaled, pre-clip gradients for the
+            # first debug_dump_steps optimizer steps (reproduction harness).
+            _dbg_dump = (bool(cfg.debug_dump_dir) and self.is_main
+                         and self.optimizer_step < cfg.debug_dump_steps)
+            _dbg_grads = None
+            if _dbg_dump:
+                _dbg_grads = {
+                    n: p.grad.detach().float().cpu().numpy()
+                    for n, p in self._get_bare_model().named_parameters()
+                    if p.grad is not None
+                }
+
             # Diagnostics (after unscaling, before clipping) — rank 0 only
             if cfg.log_interval > 0 and ((self.optimizer_step + 1) % cfg.log_interval == 0) and self.is_main:
                 self._log_diagnostics(output)
@@ -1047,6 +1397,15 @@ class LimiXTrainer:
             self.optimizer_step += 1
             optimizer_stepped = True
 
+            if _dbg_dump:
+                self._write_debug_dump(
+                    step=self.optimizer_step - 1,
+                    X_batch=X_batch, y_batch=y_batch,
+                    x_input=x_input, y_input=y_input, eval_pos=eval_pos,
+                    loss_val=loss_val, loss_dict=loss_dict,
+                    grad_norm=float(grad_norm), grads=_dbg_grads,
+                )
+
         loss_dict['skipped'] = False
         loss_dict['lr'] = self.scheduler.get_last_lr()[0]
         loss_dict['task_type'] = task_type
@@ -1057,6 +1416,49 @@ class LimiXTrainer:
         loss_dict['optimizer_step'] = self.optimizer_step
 
         return loss_dict
+
+    def _write_debug_dump(self, *, step, X_batch, y_batch, x_input, y_input,
+                          eval_pos, loss_val, loss_dict, grad_norm, grads):
+        """Write one per-step NPZ for the reproduction harness.
+
+        Observation-only — runs only when config.debug_dump_dir is set. Each
+        file holds the raw generated batch, the model-ready input tensors,
+        loss scalars, unscaled pre-clip gradients, and post-step weights.
+        init_weights.npz (pre-training weights) is written once by train().
+        """
+        d = self.config.debug_dump_dir
+        os.makedirs(d, exist_ok=True)
+        bare = self._get_bare_model()
+
+        def _np_of(t):
+            if isinstance(t, torch.Tensor):
+                return t.detach().float().cpu().numpy()
+            return np.asarray(t)
+
+        payload = {
+            'X_batch': _np_of(X_batch),
+            'y_batch': _np_of(y_batch),
+            'x_input': _np_of(x_input),
+            'y_input': _np_of(y_input),
+            'eval_pos': np.int64(eval_pos),
+            'loss': np.float64(loss_val),
+            'grad_norm': np.float64(grad_norm),
+        }
+        for k, v in (loss_dict or {}).items():
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, (int, float)):
+                payload[f'loss_dict.{k}'] = np.float64(v)
+            elif isinstance(v, torch.Tensor) and v.ndim == 0:
+                payload[f'loss_dict.{k}'] = np.float64(v.item())
+        for n, g in (grads or {}).items():
+            payload[f'grad.{n}'] = g
+        for n, p in bare.named_parameters():
+            payload[f'weight.{n}'] = p.detach().float().cpu().numpy()
+
+        path = os.path.join(d, f'step{step}.npz')
+        np.savez(path, **payload)
+        print(f"  [debug-dump] step {step} -> {path} ({len(payload)} arrays)")
 
     def _get_bare_model(self):
         """Return the unwrapped model (handles DDP and torch.compile wrapping)."""
@@ -1348,6 +1750,7 @@ class LimiXTrainer:
                 from synthefy_tabular.training.evaluator import run_full_evaluation
                 self.model.eval()
                 torch.cuda.empty_cache()
+                probe_results = None
                 if self.ema_state_dict is not None:
                     print(f"  Using EMA weights for validation (decay={self.ema_decay})")
                 with self._swap_in_ema_weights():
@@ -1360,6 +1763,14 @@ class LimiXTrainer:
                             cls_config_path=cfg.eval_cls_config,
                             reg_config_path=cfg.eval_reg_config,
                         )
+                        if cfg.embedding_probe_enabled:
+                            try:
+                                if self.embedding_probe is None:
+                                    print("  Building embedding probe suite...")
+                                probe_results = self._run_embedding_probe()
+                            except Exception as probe_e:
+                                probe_results = None
+                                print(f"  [PROBE] Embedding probe failed: {probe_e}")
                 self.model.train()
 
                 mean_auc = eval_results['mean_auc']
@@ -1415,6 +1826,20 @@ class LimiXTrainer:
                     for name in sorted(eval_results['reg_datasets'].keys()):
                         m = eval_results['reg_datasets'][name]
                         print(f"    {name}: {m.get('r2', float('nan')):.4f}")
+                if probe_results is not None:
+                    def _fmt_probe(x):
+                        return "nan" if not np.isfinite(x) else f"{x:.4f}"
+
+                    print(
+                        "  probe: "
+                        f"rank={_fmt_probe(probe_results['effective_rank'])} "
+                        f"cone={_fmt_probe(probe_results['mean_cosine_to_mean'])} "
+                        f"intra={_fmt_probe(probe_results['mean_source_intra'])} "
+                        f"prior={_fmt_probe(probe_results['mean_prior_separation'])} "
+                        f"synth-real={_fmt_probe(probe_results['mean_synth_real_centroid_distance'])} | "
+                        f"{probe_results['elapsed_seconds']:.1f}s"
+                    )
+
                 # Log to wandb
                 if cfg.use_wandb and self.wandb_run:
                     import wandb
@@ -1425,6 +1850,34 @@ class LimiXTrainer:
                         'val/feature_loss_weight': current_feature_loss_weight,
                         'val/target_aware_scale': current_tae_scale,
                     }
+                    if probe_results is not None:
+                        for key in [
+                            'elapsed_seconds',
+                            'mean_source_intra',
+                            'mean_prior_separation',
+                            'mean_synth_real_centroid_distance',
+                            'effective_rank',
+                            'participation_ratio',
+                            'top_eig_ratio',
+                            'mean_cosine_to_mean',
+                            'std_cosine_to_mean',
+                            'intra_synthv3',
+                            'intra_synthv6',
+                            'intra_real_reg',
+                            'prior_sep_synthv3',
+                            'prior_sep_synthv6',
+                            'inter_synthv3_real_reg',
+                            'inter_synthv6_real_reg',
+                            'rows_synthv3',
+                            'rows_synthv6',
+                            'rows_real_reg',
+                        ]:
+                            value = probe_results.get(key)
+                            if value is None:
+                                continue
+                            if isinstance(value, (int, float)) and not np.isfinite(value):
+                                continue
+                            log_dict[f'probe/{key}'] = value
                     for name, m in eval_results['cls_datasets'].items():
                         log_dict[f'val_cls/{name}_auc'] = m['auc']
                     for name, m in eval_results['reg_datasets'].items():
@@ -1594,6 +2047,19 @@ class LimiXTrainer:
                 print("Running step-0 baseline eval (before training)...")
             self._run_validation()
 
+        # Debug NPZ dump: snapshot initial weights once, before any step.
+        if (self.config.debug_dump_dir and self.is_main
+                and self.optimizer_step == 0):
+            os.makedirs(self.config.debug_dump_dir, exist_ok=True)
+            _bare = self._get_bare_model()
+            _init = {f'weight.{n}': p.detach().float().cpu().numpy()
+                     for n, p in _bare.named_parameters()}
+            np.savez(os.path.join(self.config.debug_dump_dir,
+                                  'init_weights.npz'), **_init)
+            print(f"  [debug-dump] init weights -> "
+                  f"{self.config.debug_dump_dir}/init_weights.npz "
+                  f"({len(_init)} params)")
+
         while self.optimizer_step < target_optimizer_step:
 
             # train_step handles all errors internally (OOM, ValueError, NaN,
@@ -1669,7 +2135,34 @@ class LimiXTrainer:
                         log_dict['train/cls_y_loss'] = running_cls_y_loss / cls_count
                     if reg_count > 0:
                         log_dict['train/reg_y_loss'] = running_reg_y_loss / reg_count
+                    # ICL-filter telemetry — only emit when we saw episodes
+                    # this window (denominator > 0). Resets immediately below.
+                    if self._icl_total_episodes > 0:
+                        denom = float(self._icl_total_episodes)
+                        reject_rate = self._icl_first_round_reject / denom
+                        escape_rate = self._icl_escape_count / denom
+                        log_dict['train/icl_filter_reject_rate'] = reject_rate
+                        log_dict['train/icl_filter_escape_rate'] = escape_rate
+                        log_dict['train/icl_filter_episodes'] = int(self._icl_total_episodes)
+                        if self._icl_first_round_reject > 0:
+                            avg_rounds = (self._icl_rounds_used_sum
+                                          / float(self._icl_first_round_reject))
+                            log_dict['train/icl_filter_avg_rounds'] = avg_rounds
+                        # Echo the rates to stdout — operators care about
+                        # escape_rate especially (silent acceptance signal).
+                        print(f"  [ICL-GPU/win] reject={reject_rate*100:.1f}% "
+                              f"escape={escape_rate*100:.2f}% "
+                              f"(over {int(denom)} eps)")
                     wandb.log(log_dict, step=opt_step)
+
+                # Reset ICL-filter counters at every log window so each metric
+                # describes the most-recent log_interval steps. Reset on rank-0
+                # only because they're rank-local; in DDP each rank tracks its
+                # own filter passes.
+                self._icl_total_episodes = 0
+                self._icl_first_round_reject = 0
+                self._icl_escape_count = 0
+                self._icl_rounds_used_sum = 0
 
                 running_loss = 0.0
                 running_y_loss = 0.0

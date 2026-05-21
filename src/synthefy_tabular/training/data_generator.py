@@ -3849,17 +3849,43 @@ def _generate_lookup_prior_episode(n_samples, n_features, task_type,
 
     entity_signal = np.zeros(n_samples, dtype=np.float64)
     for j in range(n_id_cols):
-        # Cardinality: 10-200, enough repeats for ICL
-        max_K = int(min(200, max(10, n_samples // 4)))
+        # Cardinality: 10-300, often higher than n_samples/4 to force
+        # genuine train/test partial overlap (audit: chscase_foot has 236
+        # train levels vs 125 test, only 64 overlap; CookbookReviews and
+        # Goodreads have similar high-cardinality patterns).
+        # Mix of "moderate" and "high-cardinality near-unique" regimes.
+        if rng.random() < 0.40:
+            # High-cardinality (near-unique IDs): K close to n_samples
+            max_K = int(min(300, max(20, n_samples // 2)))
+        else:
+            # Moderate cardinality (counts more useful)
+            max_K = int(min(200, max(10, n_samples // 4)))
         K = int(np.exp(rng.uniform(np.log(10.0), np.log(float(max_K)))))
         K = int(np.clip(K, 10, max_K))
 
-        # Zipf-like frequency
-        alpha = rng.uniform(0.6, 1.5)
+        # Zipf-like frequency. Stronger long-tail (alpha 1.0-3.0 vs old
+        # 0.6-1.5) — most levels appear ≤2 times, matching real-world
+        # high-card data.
+        alpha = rng.uniform(1.0, 3.0)
         ranks = np.arange(1, K + 1, dtype=np.float64)
         probs = ranks ** (-alpha)
         probs /= probs.sum()
         cat_ids = rng.choice(K, size=n_samples, replace=True, p=probs)
+
+        # Force some IDs to appear EXACTLY ONCE (rare singleton pattern).
+        # Real high-card datasets have ~5-25% singleton rate. Pick random
+        # rows to overwrite with rare-IDs (drawn from the tail of K).
+        if rng.random() < 0.50 and K > 30:
+            singleton_frac = rng.uniform(0.05, 0.25)
+            n_singletons = max(1, int(n_samples * singleton_frac))
+            # IDs in the tail (less common already) — promote to singletons
+            tail_start = max(K - n_singletons, K // 2)
+            singleton_ids = rng.choice(
+                np.arange(tail_start, K), size=n_singletons,
+                replace=(K - tail_start < n_singletons)
+            )
+            singleton_rows = rng.choice(n_samples, size=n_singletons, replace=False)
+            cat_ids[singleton_rows] = singleton_ids
 
         # Per-entity random effect with group structure
         n_groups = max(2, min(20, int(np.sqrt(K))))
@@ -4080,6 +4106,502 @@ def _generate_clean_lowdim_episode(n_samples, n_features_batch, task_type,
     }
 
 
+def _generate_cat_dominant_episode(n_samples, n_features, task_type,
+                                    n_classes, rng,
+                                    probabilistic_labels=False):
+    """Generate a categorical-dominant regression dataset.
+
+    Fills the gap between SCM (mostly continuous, only 1-3 cat cols via
+    synth_v3 cat branch) and lookup_prior (limited to 1-3 ID columns):
+    real benchmarks like Ailerons, Buzzinsocialmedia, Food_Delivery_Time,
+    MIP-2016 have 10-50 categorical features that drive most of the signal.
+
+    Generation:
+      - 60-95% of columns are categorical with mixed cardinalities (2-50,
+        biased toward low-K which is most common in real data)
+      - y = Σ per-column category-level effects (importance-weighted)
+            + 0-4 pairwise cat-cat interactions
+            + small continuous-feature signal (10-25% of variance)
+            + calibrated Gaussian noise targeting R² ∈ [0.45, 0.92]
+      - Mix of nominal (random per-level effects) and ordinal (monotone)
+        cats per column
+    """
+    X = np.zeros((n_samples, n_features), dtype=np.float64)
+
+    cat_frac = float(rng.uniform(0.60, 0.95))
+    n_cat = max(min(n_features, 4), int(round(n_features * cat_frac)))
+    n_cont = n_features - n_cat
+
+    # Cardinality distribution: 40% binary, 35% small (3-7), 20% medium
+    # (8-20), 5% large (21-50). Real datasets are dominated by binary and
+    # small-cardinality cats; this is the empirical mix from a survey of
+    # OpenML reg datasets.
+    cat_cards = []
+    for j in range(n_cat):
+        u = rng.random()
+        if u < 0.40:
+            K = 2
+        elif u < 0.75:
+            K = int(rng.integers(3, 8))
+        elif u < 0.95:
+            K = int(rng.integers(8, 21))
+        else:
+            K = int(rng.integers(21, 51))
+        # Cap so each level has at least ~5 samples on average
+        K = max(2, min(K, max(2, n_samples // 5)))
+        cat_cards.append(K)
+
+        # Frequency: 60% uniform (nominal), 40% Zipf-skewed
+        if rng.random() < 0.60:
+            cat_ids = rng.integers(0, K, size=n_samples)
+        else:
+            alpha = rng.uniform(0.5, 2.0)
+            ranks = np.arange(1, K + 1, dtype=np.float64)
+            probs = ranks ** (-alpha)
+            probs /= probs.sum()
+            cat_ids = rng.choice(K, size=n_samples, replace=True, p=probs)
+        X[:, j] = cat_ids.astype(np.float64)
+
+    # Continuous features (minority)
+    for j in range(n_cat, n_features):
+        dist = int(rng.integers(0, 3))
+        if dist == 0:
+            X[:, j] = rng.standard_normal(n_samples)
+        elif dist == 1:
+            X[:, j] = rng.uniform(-3, 3, size=n_samples)
+        else:
+            X[:, j] = rng.standard_normal(n_samples) ** 2 - 1.0
+
+    # --- Build y: per-column main effects + sparse pairwise interactions ---
+    y_raw = np.zeros(n_samples, dtype=np.float64)
+
+    # Active subset: 50-90% of cat cols are informative; the rest are
+    # noise distractors (matches real-data sparsity in cat-heavy datasets).
+    active_frac = float(rng.uniform(0.50, 0.90))
+    n_active_cat = max(2, int(round(n_cat * active_frac)))
+    active_cat_cols = rng.choice(n_cat, size=n_active_cat, replace=False)
+
+    # Power-law importance: a few cat cols dominate
+    importance = rng.exponential(1.0, size=n_active_cat)
+    importance /= max(importance.mean(), 1e-8)
+
+    for k, col in enumerate(active_cat_cols):
+        K = cat_cards[col]
+        cat_ids = X[:, col].astype(int)
+        # 70% nominal (random per-level effects), 30% ordinal (monotone +
+        # small noise). Binary cats always treated as nominal.
+        if rng.random() < 0.70 or K <= 2:
+            level_effects = rng.standard_normal(K)
+        else:
+            slope = rng.standard_normal()
+            level_effects = (np.arange(K, dtype=np.float64) - K / 2.0) * slope / max(K, 2)
+            level_effects += rng.standard_normal(K) * 0.2
+        level_effects -= level_effects.mean()
+        y_raw += importance[k] * level_effects[cat_ids]
+
+    # Pairwise cat-cat interactions: 0-4 pairs (only when joint table fits)
+    n_pairs = int(rng.integers(0, min(5, n_active_cat // 2 + 1)))
+    for _ in range(n_pairs):
+        if n_active_cat < 2:
+            break
+        a, b = rng.choice(active_cat_cols, size=2, replace=False)
+        Ka, Kb = cat_cards[a], cat_cards[b]
+        # Skip if joint table too large vs n_samples (would make every
+        # cell ~unique, killing signal).
+        if Ka * Kb > max(8, n_samples // 3):
+            continue
+        ids_a = X[:, a].astype(int)
+        ids_b = X[:, b].astype(int)
+        joint_effects = rng.standard_normal((Ka, Kb)) * rng.uniform(0.3, 0.8)
+        joint_effects -= joint_effects.mean()
+        y_raw += joint_effects[ids_a, ids_b]
+
+    # Small continuous-feature signal (cat dominant)
+    if n_cont > 0:
+        n_active_cont = min(n_cont, int(rng.integers(1, max(2, n_cont // 2 + 1))))
+        active_cont_cols = rng.choice(range(n_cat, n_features),
+                                        size=n_active_cont, replace=False)
+        beta = rng.standard_normal(n_active_cont) * 0.4
+        cont_signal = X[:, active_cont_cols] @ beta
+        if np.std(y_raw) > 1e-8 and np.std(cont_signal) > 1e-8:
+            y_raw = (y_raw / np.std(y_raw)) + 0.3 * (cont_signal / np.std(cont_signal))
+
+    # Calibrated noise + standardize
+    if task_type == 'reg':
+        y_std = float(np.std(y_raw))
+        if y_std > 1e-8:
+            target_r2 = float(rng.uniform(0.45, 0.92))
+            noise_std = y_std * np.sqrt((1 - target_r2) / max(target_r2, 1e-6))
+            y_raw += rng.standard_normal(n_samples) * noise_std
+        mu, std = float(np.mean(y_raw)), float(np.std(y_raw))
+        if std > 1e-8:
+            y_raw = (y_raw - mu) / std
+        y = y_raw.astype(np.float32)
+        actual_n_classes = None
+    else:
+        if n_classes is None:
+            n_classes = int(rng.integers(2, 11))
+        if probabilistic_labels and rng.random() < 0.5:
+            y = _probabilistic_label(y_raw, X, n_classes, rng)
+        else:
+            percentiles = np.linspace(0, 100, n_classes + 1)
+            thresholds = np.nanpercentile(y_raw, percentiles[1:-1])
+            y = np.digitize(y_raw, thresholds).astype(np.float32)
+        actual_n_classes = n_classes
+
+    # Winsorize continuous-only columns (cat ids stay as integer levels).
+    for col in range(n_cat, n_features):
+        col_vals = X[:, col]
+        finite = np.isfinite(col_vals)
+        if finite.sum() > 4:
+            sorted_vals = np.sort(col_vals[finite])
+            n_fin = len(sorted_vals)
+            median = sorted_vals[n_fin // 2]
+            mad = np.median(np.abs(sorted_vals - median))
+            if mad > 1e-12:
+                X[finite, col] = np.clip(col_vals[finite],
+                                           median - 6 * mad,
+                                           median + 6 * mad)
+
+    return {
+        'X': X.astype(np.float64),
+        'y': y.astype(np.float32),
+        'task_type': task_type,
+        'n_classes': actual_n_classes,
+        'filtered': False,
+        'meta': {'cat_dominant': True, 'n_cat': n_cat,
+                 'cat_frac': float(n_cat) / max(n_features, 1)},
+    }
+
+
+def _generate_binary_fingerprint_episode(n_samples, n_features, task_type,
+                                          n_classes, rng,
+                                          probabilistic_labels=False):
+    """Generate a binary-fingerprint regression episode.
+
+    Targets the QSAR-TID-11 archetype: a high-dimensional binary feature
+    matrix (chemical or molecular fingerprints) where only 5-30 of the
+    bits actually drive y; the rest are noise distractors.
+
+    Generation:
+      - n_features columns, all binary (0/1)
+      - per-column on-rate drawn from Beta(0.5, 4) — heavy mass near 0,
+        rare-bit pattern that matches real fingerprints
+      - y is a sparse function (linear / shallow MLP / GAM) over 5-30
+        active bits, importance-weighted with a power-law tail
+      - calibrated Gaussian noise targeting R² ∈ [0.40, 0.90]
+    """
+    # Per-column on-rate: heavy-tailed near 0 (most bits rare).
+    on_rates = rng.beta(0.5, 4.0, size=n_features)
+    on_rates = np.clip(on_rates, 1.0 / max(n_samples, 1), 0.5)
+
+    X = (rng.random((n_samples, n_features)) < on_rates).astype(np.float64)
+
+    # Degenerate-column repair: flip ~1% of cells in all-0 / all-1 columns
+    # so the encoder sees per-column variance.
+    for j in range(n_features):
+        s = int(X[:, j].sum())
+        if s == 0:
+            flip_idx = rng.choice(n_samples, size=max(1, n_samples // 100),
+                                    replace=False)
+            X[flip_idx, j] = 1.0
+        elif s == n_samples:
+            flip_idx = rng.choice(n_samples, size=max(1, n_samples // 100),
+                                    replace=False)
+            X[flip_idx, j] = 0.0
+
+    # --- Active subset (signal-bearing bits) ---
+    # Sample 2..30 active bits, clamped by n_features so the choice() call
+    # never asks for more columns than exist (small-bucket safety).
+    hi = min(30, max(2, n_features // 2 + 1))
+    lo = min(5, hi)
+    n_active = int(rng.integers(lo, hi + 1))
+    n_active = max(2, min(n_active, n_features))
+    active_cols = rng.choice(n_features, size=n_active, replace=False)
+
+    # Power-law importance: a few critical bits matter most
+    imp_alpha = rng.uniform(1.0, 3.0)
+    importances = np.sort(rng.pareto(imp_alpha, size=n_active))[::-1]
+    importances = importances / max(importances.mean(), 1e-8)
+    signs = rng.choice([-1.0, 1.0], size=n_active)
+
+    X_active = X[:, active_cols]
+
+    # --- Target type: 50% sparse linear, 30% shallow MLP, 20% GAM ---
+    target_t = rng.random()
+
+    if target_t < 0.50:
+        beta = importances * signs
+        y_raw = X_active @ beta
+        # 60% chance to add 1-3 pairwise AND interactions (substructure
+        # co-occurrence, common in cheminformatics)
+        if rng.random() < 0.6 and n_active >= 4:
+            n_int = int(rng.integers(1, 4))
+            for _ in range(n_int):
+                i, j = rng.choice(n_active, size=2, replace=False)
+                w = rng.standard_normal() * 0.5
+                y_raw += w * X_active[:, i] * X_active[:, j]
+
+    elif target_t < 0.80:
+        # Shallow MLP, 1 hidden layer, tanh activation
+        h_dim = int(rng.integers(4, 16))
+        W1 = rng.standard_normal((n_active, h_dim)) / np.sqrt(max(n_active, 1))
+        b1 = rng.standard_normal(h_dim) * 0.3
+        W2 = rng.standard_normal(h_dim) / np.sqrt(max(h_dim, 1))
+        X_weighted = X_active * importances[None, :]
+        h = np.tanh(X_weighted @ W1 + b1)
+        y_raw = h @ W2
+
+    else:
+        # GAM-style: per-feature transforms summed
+        y_raw = np.zeros(n_samples, dtype=np.float64)
+        for k in range(n_active):
+            x = X_active[:, k]
+            transform = int(rng.integers(0, 3))
+            if transform == 0:
+                fx = x  # linear
+            elif transform == 1:
+                fx = 2.0 * x - 1.0  # ±1 encoded
+            else:
+                fx = x * (x - 0.5) * 4.0  # quadratic on binary == 0 (so noisy)
+            y_raw += importances[k] * signs[k] * fx
+
+    # Smooth clip before noise
+    y_raw = 50.0 * np.tanh(y_raw / 50.0)
+
+    if task_type == 'reg':
+        y_std = float(np.std(y_raw))
+        if y_std > 1e-8:
+            target_r2 = float(rng.uniform(0.40, 0.90))
+            noise_std = y_std * np.sqrt((1 - target_r2) / max(target_r2, 1e-6))
+            y_raw += rng.standard_normal(n_samples) * noise_std
+        mu, std = float(np.mean(y_raw)), float(np.std(y_raw))
+        if std > 1e-8:
+            y_raw = (y_raw - mu) / std
+        y = y_raw.astype(np.float32)
+        actual_n_classes = None
+    else:
+        if n_classes is None:
+            n_classes = int(rng.integers(2, 11))
+        if probabilistic_labels and rng.random() < 0.5:
+            y = _probabilistic_label(y_raw, X, n_classes, rng)
+        else:
+            percentiles = np.linspace(0, 100, n_classes + 1)
+            thresholds = np.nanpercentile(y_raw, percentiles[1:-1])
+            y = np.digitize(y_raw, thresholds).astype(np.float32)
+        actual_n_classes = n_classes
+
+    return {
+        'X': X.astype(np.float64),
+        'y': y.astype(np.float32),
+        'task_type': task_type,
+        'n_classes': actual_n_classes,
+        'filtered': False,
+        'meta': {'binary_fingerprint': True, 'n_active': n_active,
+                 'mean_on_rate': float(on_rates.mean())},
+    }
+
+
+def _generate_temporal_prior_episode(n_samples, n_features, task_type,
+                                      n_classes, rng,
+                                      probabilistic_labels=False):
+    """Generate a temporally-structured regression episode.
+
+    The generated rows are in TEMPORAL ORDER. Since the trainer's eval_pos
+    split slices [0:eval_pos] as context and [eval_pos:] as query, this
+    automatically produces a time-ordered train/test split — matching real-
+    world tabular benchmarks where train comes before test in time
+    (NASA_PHM, Food_Delivery_Time, Allstate_Claims_Severity, dataset_sales,
+    BNG, time-of-day-keyed insurance).
+
+    Five randomly-selected sub-modes:
+      1. AR(1) features: x_t = ρ * x_{t-1} + noise (autocorrelated)
+      2. Lagged y: y_t = f(x_{t-k}) — y depends on PAST features
+      3. Concept drift: regression coefficients change linearly over t
+      4. Trend + seasonal: features include sin/cos of time, target has trend
+      5. Pure trend on y: y_t = α*t + β*x + noise (smooth target drift)
+
+    Rationale: addresses the "no temporal prior" gap. Currently every prior
+    we have generates i.i.d. rows. Real tabular benchmarks frequently have
+    autocorrelation or temporal dependencies we don't model.
+
+    Args:
+        n_samples: total rows (in temporal order)
+        n_features: feature count
+        task_type: 'reg' or 'cls'
+        n_classes: if cls
+        rng: numpy random generator
+        probabilistic_labels: if cls, use probabilistic labeling
+    """
+    # Sub-mode selection — 5 distinct temporal patterns
+    mode = rng.integers(0, 5)
+    # Time index in [0, 1]
+    t = np.arange(n_samples, dtype=np.float64) / max(n_samples - 1, 1)
+
+    # ---- Generate features ----
+    if mode == 0:
+        # AR(1) features: x_t = ρ_j * x_{t-1} + sqrt(1 - ρ²) * noise
+        # Different ρ per feature column. Auto-correlated time series.
+        rho = rng.uniform(0.3, 0.95, size=n_features)
+        X = np.zeros((n_samples, n_features), dtype=np.float64)
+        X[0] = rng.standard_normal(n_features)
+        noise_scale = np.sqrt(1.0 - rho ** 2)
+        for ti in range(1, n_samples):
+            X[ti] = rho * X[ti - 1] + noise_scale * rng.standard_normal(n_features)
+    elif mode == 1:
+        # i.i.d. features, but y depends on LAGGED features
+        X = rng.standard_normal((n_samples, n_features))
+    elif mode == 2:
+        # Mix of i.i.d. + slow-drift features
+        X = rng.standard_normal((n_samples, n_features))
+        # 30% of features get slow drift baseline
+        n_drift_feat = max(1, int(n_features * 0.30))
+        drift_cols = rng.choice(n_features, size=n_drift_feat, replace=False)
+        for c in drift_cols:
+            # Random walk with normalization
+            drift = np.cumsum(rng.standard_normal(n_samples)) * 0.1
+            drift = (drift - drift.mean()) / (drift.std() + 1e-8)
+            X[:, c] = 0.5 * X[:, c] + 0.5 * drift
+    elif mode == 3:
+        # Trend + seasonal: dedicate first few features to time signals
+        X = rng.standard_normal((n_samples, n_features))
+        period = float(rng.uniform(5, 50))  # cycles within n_samples
+        if n_features >= 1:
+            X[:, 0] = t  # explicit time
+        if n_features >= 2:
+            X[:, 1] = np.sin(2 * np.pi * t * period)
+        if n_features >= 3:
+            X[:, 2] = np.cos(2 * np.pi * t * period)
+        if n_features >= 4:
+            # Slower secondary cycle
+            X[:, 3] = np.sin(2 * np.pi * t * period * 0.3)
+    else:  # mode == 4
+        # Pure trend on y: features mostly i.i.d., y has explicit time component
+        X = rng.standard_normal((n_samples, n_features))
+
+    # ---- Generate target ----
+    if mode == 0:
+        # AR(1) features → linear/MLP target
+        if rng.random() < 0.5:
+            beta = rng.standard_normal(n_features)
+            y_raw = X @ beta
+        else:
+            # Shallow MLP
+            h_dim = int(rng.integers(4, 16))
+            W1 = rng.standard_normal((n_features, h_dim)) / np.sqrt(n_features)
+            b1 = rng.standard_normal(h_dim) * 0.3
+            W2 = rng.standard_normal(h_dim) / np.sqrt(h_dim)
+            y_raw = np.tanh(X @ W1 + b1) @ W2
+    elif mode == 1:
+        # Lagged dependency: y_t = f(x_{t-k})
+        max_lag = int(min(5, max(1, n_samples // 50)))
+        lag = int(rng.integers(1, max_lag + 1))
+        # Active subset
+        n_active = int(rng.integers(2, min(8, n_features) + 1))
+        active = rng.choice(n_features, size=n_active, replace=False)
+        beta = rng.standard_normal(n_active)
+        # First `lag` rows: cold-start (use current features as proxy)
+        y_raw = np.zeros(n_samples)
+        y_raw[:lag] = X[:lag, active] @ beta
+        y_raw[lag:] = X[:-lag, active] @ beta
+        # Optional second-lag term (further history)
+        if lag + 1 < n_samples // 4 and rng.random() < 0.4:
+            lag2 = int(rng.integers(lag + 1, max(lag + 2, n_samples // 4) + 1))
+            beta2 = rng.standard_normal(n_active) * 0.5
+            y_raw[lag2:] = y_raw[lag2:] + X[:-lag2, active] @ beta2
+    elif mode == 2:
+        # Concept drift: regression coefficients change over t
+        n_active = int(rng.integers(2, min(10, n_features) + 1))
+        active = rng.choice(n_features, size=n_active, replace=False)
+        beta_start = rng.standard_normal(n_active)
+        beta_end = rng.standard_normal(n_active)
+        y_raw = np.zeros(n_samples)
+        for ti in range(n_samples):
+            alpha_t = t[ti]
+            beta_t = (1.0 - alpha_t) * beta_start + alpha_t * beta_end
+            y_raw[ti] = X[ti, active] @ beta_t
+    elif mode == 3:
+        # Trend + seasonal: y has explicit time components + feature signal
+        trend_amp = float(rng.uniform(0.3, 1.5))
+        seasonal_amp = float(rng.uniform(0.3, 1.5))
+        period_y = float(rng.uniform(5, 50))
+        y_time = trend_amp * t + seasonal_amp * np.sin(2 * np.pi * t * period_y)
+        # Optionally add second seasonal harmonic
+        if rng.random() < 0.4:
+            y_time = y_time + 0.3 * seasonal_amp * np.sin(2 * np.pi * t * period_y * 2)
+        # Plus feature contribution
+        if n_features > 4:
+            n_active = int(rng.integers(2, min(8, n_features - 4) + 1))
+            active = rng.choice(np.arange(4, n_features), size=n_active, replace=False)
+            beta = rng.standard_normal(n_active) * 0.5
+            y_feat = X[:, active] @ beta
+        else:
+            y_feat = np.zeros(n_samples)
+        y_raw = y_time + y_feat
+    else:  # mode == 4
+        # Pure trend on y: y = α*t + β*x + small periodic
+        trend_slope = float(rng.uniform(-2.0, 2.0))
+        n_active = int(rng.integers(2, min(8, n_features) + 1))
+        active = rng.choice(n_features, size=n_active, replace=False)
+        beta = rng.standard_normal(n_active)
+        y_raw = trend_slope * t + X[:, active] @ beta
+        if rng.random() < 0.5:
+            # Smooth periodic component
+            period_y = float(rng.uniform(5, 30))
+            y_raw = y_raw + 0.3 * np.sin(2 * np.pi * t * period_y)
+
+    # Smooth y clipping before noise
+    y_raw = 50.0 * np.tanh(y_raw / 50.0)
+
+    # Calibrated noise + standardize
+    if task_type == 'reg':
+        y_std = float(np.std(y_raw))
+        if y_std > 1e-8:
+            target_r2 = float(rng.uniform(0.45, 0.92))
+            noise_std = y_std * np.sqrt((1 - target_r2) / max(target_r2, 1e-6))
+            y_raw = y_raw + rng.standard_normal(n_samples) * noise_std
+        mu, std = float(np.mean(y_raw)), float(np.std(y_raw))
+        if std > 1e-8:
+            y_raw = (y_raw - mu) / std
+        y = y_raw.astype(np.float32)
+        actual_n_classes = None
+    else:
+        if n_classes is None:
+            n_classes = int(rng.integers(2, 11))
+        if probabilistic_labels and rng.random() < 0.5:
+            y = _probabilistic_label(y_raw, X, n_classes, rng)
+        else:
+            percentiles = np.linspace(0, 100, n_classes + 1)
+            thresholds = np.nanpercentile(y_raw, percentiles[1:-1])
+            y = np.digitize(y_raw, thresholds).astype(np.float32)
+        actual_n_classes = n_classes
+
+    # Per-column winsorization for safety (light — temporal features can have
+    # legitimate large values from trends, but extreme outliers from noise
+    # propagation should still be clipped)
+    for col in range(n_features):
+        col_vals = X[:, col]
+        finite = np.isfinite(col_vals)
+        if finite.sum() > 4:
+            sorted_vals = np.sort(col_vals[finite])
+            n_fin = len(sorted_vals)
+            median = sorted_vals[n_fin // 2]
+            mad = np.median(np.abs(sorted_vals - median))
+            if mad > 1e-12:
+                X[finite, col] = np.clip(col_vals[finite],
+                                          median - 8 * mad,
+                                          median + 8 * mad)
+
+    return {
+        'X': X.astype(np.float64),
+        'y': y.astype(np.float32),
+        'task_type': task_type,
+        'n_classes': actual_n_classes,
+        'filtered': False,
+        'meta': {'temporal_prior': True, 'mode': int(mode)},
+    }
+
+
 def generate_dataset_filtered(n_samples, n_features, task_type, n_classes=None,
                               rng=None, max_retries=3, quality_rules=None, **kwargs):
     """Generate a synthetic dataset with optional learnability filtering.
@@ -4153,6 +4675,142 @@ def generate_dataset_filtered(n_samples, n_features, task_type, n_classes=None,
     return data
 
 
+def _apply_train_feature_augmentation(X_batch, rng, p_episode=0.6,
+                                       p_col=0.40):
+    """Train-time per-column feature distribution augmentation.
+
+    Closes the synth/real distribution-shape gap. The literature consensus
+    (TabICLv2, MITRA, CARTE) is to randomize per-column shape DURING training
+    rather than fix it at inference. After this, the model sees skewed,
+    log-shaped, sign-flipped, ranked, and quadratic columns — making heavy
+    inference YJ unnecessary.
+
+    Design (carefully chosen, see deep-think notes):
+      - Nested gate: p_episode controls episode-level firing; within fired
+        episodes, p_col controls per-column firing. Result is a bimodal
+        distribution of "transformed-col fraction" per episode (matches
+        real-data variability — some datasets have many heavy cols, some none).
+      - 7 transform types (one of, weighted by realism in tabular data).
+      - Cat protection: skip cols with unique_count < min(20, n_samples//50).
+      - Re-standardize per-col after transform: preserves new shape but
+        normalizes scale so model's internal normalizer behaves predictably.
+      - Operates on each episode independently (no cross-episode leakage).
+      - Returns a NEW float64 array (input not mutated).
+
+    Args:
+        X_batch: [B, N, F] feature matrix
+        rng: np.random.Generator
+        p_episode: per-episode firing probability
+        p_col: per-column firing probability inside fired episodes
+
+    Returns:
+        X_aug: [B, N, F] augmented matrix
+    """
+    # Lazy import: scipy is heavy at module-load time and only needed here.
+    try:
+        from scipy.stats import yeojohnson
+    except ImportError:
+        yeojohnson = None  # YJ branch will fall through to identity
+
+    B, N, F = X_batch.shape
+    X_aug = X_batch.astype(np.float64, copy=True)
+
+    cat_threshold_unique = min(20, max(5, N // 50))
+
+    for b in range(B):
+        if rng.random() >= p_episode:
+            continue  # this episode skips augmentation entirely
+
+        for j in range(F):
+            col = X_aug[b, :, j]
+            finite = np.isfinite(col)
+            if finite.sum() < 4:
+                continue
+
+            # Cat protection: skip integer-valued / low-cardinality cols
+            unique_count = len(np.unique(col[finite]))
+            if unique_count < cat_threshold_unique:
+                continue
+            # Also skip if col looks integer-encoded
+            if np.allclose(col[finite], np.round(col[finite]), atol=1e-6) \
+                    and unique_count < N // 4:
+                continue
+
+            if rng.random() >= p_col:
+                continue  # this col stays unchanged
+
+            # Stack 1-2 transforms (90% one, 10% two — empirical compromise
+            # between expressivity and producing pathological compositions).
+            n_transforms = 2 if rng.random() < 0.10 else 1
+
+            new_col = col.astype(np.float64).copy()
+
+            for _ in range(n_transforms):
+                t = rng.random()
+                try:
+                    if t < 0.30 and yeojohnson is not None:
+                        # Yeo-Johnson with random lambda. Covers identity (1),
+                        # log (0), 1/x (-1), square (2) at the edges and a
+                        # smooth interpolation in between. Single most useful
+                        # transform — matches the inference YJ pipeline.
+                        lam = float(rng.uniform(-1.5, 1.5))
+                        new_col = yeojohnson(new_col, lmbda=lam)
+                    elif t < 0.45:
+                        # Sign-preserving log: shrinks heavy tails while
+                        # keeping zero-crossings. Common for finance/bio.
+                        new_col = np.sign(new_col) * np.log(np.abs(new_col) + 1.0)
+                    elif t < 0.60:
+                        # Sign flip + offset: direction invariance without
+                        # losing information.
+                        offset = float(rng.standard_normal())
+                        new_col = -new_col + offset
+                    elif t < 0.70:
+                        # Centered square: quadratic warp, loses sign
+                        # information. Used cautiously (10% of transforms).
+                        c = float(np.mean(new_col))
+                        new_col = (new_col - c) ** 2
+                    elif t < 0.80:
+                        # Rank to [-1, 1]: strips scale and shape entirely,
+                        # leaves only ordinal information. Robust for skewed.
+                        ranks = np.argsort(np.argsort(new_col)).astype(np.float64)
+                        new_col = 2.0 * ranks / max(N - 1, 1) - 1.0
+                    elif t < 0.90:
+                        # Affine: random scale + shift. Tests scale invariance
+                        # of the model's internal normalizer.
+                        a = float(np.exp(rng.uniform(np.log(0.1), np.log(10.0))))
+                        b_off = float(rng.standard_normal() * 2.0)
+                        new_col = a * new_col + b_off
+                    # else (t >= 0.90): identity — column gets the gate but
+                    # no actual transform. Keeps some "raw" cols even in
+                    # fired episodes, prevents over-smoothing.
+                except Exception:
+                    # Numerical failure: skip this transform but keep the
+                    # column (don't lose the data).
+                    continue
+
+                # Sanity: replace bad values
+                new_col = np.nan_to_num(new_col, nan=0.0,
+                                         posinf=0.0, neginf=0.0)
+
+                # CRITICAL: re-standardize per-col after transform. YJ + log +
+                # exp produce wildly-different scales; encoder assumes z-scored
+                # input. This preserves NEW shape but normalizes scale.
+                mu = float(np.mean(new_col))
+                sd = float(np.std(new_col))
+                if sd > 1e-8:
+                    new_col = (new_col - mu) / sd
+                else:
+                    # Degenerate (all same value after transform). Skip the
+                    # transform by reverting to original col so the cell isn't
+                    # zeroed-out (which would break encoder normalization).
+                    new_col = col.astype(np.float64).copy()
+                    break
+
+            X_aug[b, :, j] = new_col
+
+    return X_aug
+
+
 def generate_batch(batch_size, n_samples, n_features, task_type,
                    n_classes=None, rng=None, augment=False, augment_v3=False,
                    rich_reg_targets=True, scale_variation=True,
@@ -4169,6 +4827,10 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                    tree_prior_prob=0.0, lookup_prior_prob=0.0,
                    quadratic_surface_prob=0.0, sparse_nonlinear_prob=0.0,
                    gp_prior_prob=0.0,
+                   cat_dominant_prob=0.0,
+                   binary_fingerprint_prob=0.0,
+                   temporal_prior_prob=0.0,
+                   train_feature_augment_prob=0.0,
                    context_missingness_prob=0.0,
                    realistic_augmentation_prob=0.0,
                    y_transform_prob=0.0,
@@ -4279,6 +4941,31 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                 n_samples, n_features, task_type, n_classes, rng,
                 reg_denoise=reg_denoise,
                 probabilistic_labels=probabilistic_labels)
+        # --- Categorical-dominant prior ---
+        # 60-95% of cols are categorical (cardinalities 2-50, biased small).
+        # Targets cat-heavy benchmarks (Ailerons, Buzzinsocialmedia,
+        # Food_Delivery_Time, MIP-2016) where SCM under-generates.
+        elif cat_dominant_prob > 0 and rng.random() < cat_dominant_prob:
+            data = _generate_cat_dominant_episode(
+                n_samples, n_features, task_type, n_classes, rng,
+                probabilistic_labels=probabilistic_labels)
+        # --- Binary fingerprint prior ---
+        # All-binary high-dim data with sparse signal. Targets QSAR-TID-11
+        # archetype (chemical fingerprints, drug-binding affinity).
+        elif binary_fingerprint_prob > 0 and rng.random() < binary_fingerprint_prob:
+            data = _generate_binary_fingerprint_episode(
+                n_samples, n_features, task_type, n_classes, rng,
+                probabilistic_labels=probabilistic_labels)
+        # --- Temporal prior ---
+        # Rows generated in temporal order with one of 5 patterns:
+        # AR(1) autocorrelated features, lagged-y, concept drift, trend+seasonal,
+        # pure trend on y. The trainer's eval_pos split becomes a time-ordered
+        # train/test split automatically. Addresses the "no temporal prior" gap
+        # (Food_Delivery_Time, NASA_PHM, Allstate, dataset_sales, etc.).
+        elif temporal_prior_prob > 0 and rng.random() < temporal_prior_prob:
+            data = _generate_temporal_prior_episode(
+                n_samples, n_features, task_type, n_classes, rng,
+                probabilistic_labels=probabilistic_labels)
         # TabICL prior: MLP/Tree SCM with rich activations and meta-distribution
         # HP sampling. For cls, applies Reg2Cls to convert continuous targets to
         # class labels. For reg, uses raw SCM output (standardized continuous y).
@@ -4384,6 +5071,17 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
 
     X_batch = np.stack(X_list, axis=0)
     y_batch = np.stack(y_list, axis=0)
+
+    # Train-time feature distribution augmentation (V12 audit-driven addition).
+    # Closes the train/inference distribution-shape gap that currently requires
+    # heavy inference normalization (--yj-skew-threshold 10, poly 10, etc.).
+    # Per-episode gate inside per-column gate: matches the bimodal real-world
+    # pattern where some datasets have heavy-tailed cols and some have none.
+    # Skips integer-valued / low-unique cols (cat protection) — same heuristic
+    # used by inference cat detection.
+    if train_feature_augment_prob > 0.0:
+        X_batch = _apply_train_feature_augmentation(
+            X_batch, rng, p_episode=train_feature_augment_prob)
 
     # Context missingness augmentation: inject 1-8% random NaN cells across
     # the full feature matrix. Real benchmark datasets have NaN in both

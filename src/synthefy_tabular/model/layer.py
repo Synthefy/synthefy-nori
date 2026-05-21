@@ -1,5 +1,6 @@
 from typing import Callable, Literal, Optional
 import functools
+import math
 import os
 
 import torch
@@ -195,6 +196,9 @@ class MultiheadAttention(torch.nn.Module):
         dropout:float=0,
         recompute:bool=False,
         use_qassmax: bool = False,
+        use_logn_attention: bool = False,
+        use_learnable_attn_temperature: bool = False,
+        attn_n_ref: float = 1024.0,
     ):
         super().__init__()
         assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
@@ -208,6 +212,24 @@ class MultiheadAttention(torch.nn.Module):
         self.device = device
         self.dtype = dtype
         self.use_qassmax = use_qassmax
+
+        # logN attention scaling and learnable per-layer temperature.
+        # The standard scale is 1/sqrt(head_dim). We pre-multiply Q by an
+        # additional factor so SDPA's internal scaling produces the desired
+        # final scale of (temperature * log(n_keys) / log(n_ref)) / sqrt(d).
+        # When both flags are off, behaves identically to standard attention.
+        self.use_logn_attention = use_logn_attention
+        self.use_learnable_attn_temperature = use_learnable_attn_temperature
+        self.attn_n_ref = float(attn_n_ref)
+        self._attn_n_ref_log = math.log(max(self.attn_n_ref, 2.0))
+        if use_learnable_attn_temperature:
+            # Init at 1.0 so step-0 behavior matches standard attention.
+            # Use abs() in forward to keep positive — gradient is well-defined
+            # everywhere except 0, which is practically never visited.
+            self.attn_temperature = nn.Parameter(torch.ones(1, device=device,
+                                                             dtype=dtype if dtype else torch.float32))
+        else:
+            self.attn_temperature = None
 
         self.out_proj_weight = torch.nn.Parameter(torch.empty(self.num_heads, self.head_dim, self.embed_dim, device=self.device, dtype=self.dtype))
         self.qkv_proj_weight = torch.nn.Parameter(torch.empty(3, self.num_heads, self.head_dim, self.embed_dim, device=device, dtype=dtype))
@@ -246,6 +268,36 @@ class MultiheadAttention(torch.nn.Module):
             device=device,
         )
     
+    def _apply_extra_attn_scale(self, q: torch.Tensor, n_keys: int) -> torch.Tensor:
+        """Pre-multiply Q by (temperature * logN factor) so SDPA's internal
+        1/sqrt(d) scaling combines to the desired final attention scale.
+
+        - logN factor: log(max(n_keys, 2)) / log(n_ref). When n_keys==n_ref,
+          factor==1 and attention is identical to standard. As n grows, the
+          factor grows (sharpens softmax) to compensate for soft-distribution
+          dilution at long context.
+        - Learnable temperature (if enabled): a per-layer scalar nn.Parameter,
+          initialized to 1.0, multiplied via .abs() for positivity. Lets the
+          model learn per-layer attention sharpness.
+
+        For static-shape tracing under torch.compile, n_keys is a Python int
+        (one trace per shape bucket), so math.log is constant in the trace.
+        Returns Q multiplied by the factor — or Q unchanged when both flags
+        are off.
+        """
+        if not self.use_logn_attention and not self.use_learnable_attn_temperature:
+            return q
+
+        factor: float | torch.Tensor = 1.0
+        if self.use_logn_attention:
+            n_keys_int = max(int(n_keys), 2)
+            log_n = math.log(n_keys_int)
+            factor = factor * (log_n / self._attn_n_ref_log)
+        if self.use_learnable_attn_temperature and self.attn_temperature is not None:
+            # Tensor multiplication; gradient flows through the temperature.
+            factor = self.attn_temperature.abs() * factor
+        return q * factor
+
     def compute_attention_by_torch(self, qkv:torch.Tensor|None, q:torch.Tensor|None, kv:torch.Tensor|None, attn_mask:torch.Tensor|None) -> torch.Tensor:
         '''Since flash attention does not support attn_mask, use scaled_dot_product_attention to compute attention when attn_mask is not None'''
         if qkv is not None:
@@ -255,7 +307,13 @@ class MultiheadAttention(torch.nn.Module):
         else:
             raise ValueError("When qkv is None, q and kv cannot both be None at the same time")
         assert q is not None and k is not None and v is not None, "q, k, and v must not be None"
-        
+
+        # Apply logN + learnable-temperature scaling to Q before SDPA.
+        # SDPA's internal 1/sqrt(d) scale is unchanged; pre-scaling Q gives
+        # the desired final attention scale.
+        n_keys = k.size(1)  # k shape: [B, n_keys, num_heads, head_dim]
+        q = self._apply_extra_attn_scale(q, n_keys)
+
         attention_outputs = torch.nn.functional.scaled_dot_product_attention(
                 q.transpose(1, 2),
                 k.transpose(1, 2),
@@ -272,7 +330,7 @@ class MultiheadAttention(torch.nn.Module):
         Uses the batched interface (q, k, v) instead of varlen packing.
         All sequences in a batch have equal length, so no cu_seqlens needed.
         """
-        assert HAVE_FLASH_ATTN_4, "FlashAttention-4 not installed. Use: uv add flash-attn-4"
+        assert HAVE_FLASH_ATTN_4, "FlashAttention-4 not installed. pip install flash-attn-4"
         # FA4 beta backward kernels fail for LimiX's native head_dim=16 on H100. Padding the
         # per-head dimension to 128 keeps q·k and weighted-v math unchanged as long as we also
         # preserve the original softmax scale.
@@ -563,8 +621,14 @@ class EncoderBaseLayer(nn.Module):
                  use_qassmax: bool = False,
                  norm_type: str = 'layernorm',
                  deepnorm_alpha: float|None = None,
+                 use_logn_attention: bool = False,
+                 use_learnable_attn_temperature: bool = False,
+                 attn_n_ref: float = 1024.0,
                  ):
         super().__init__()
+        self.use_logn_attention = use_logn_attention
+        self.use_learnable_attn_temperature = use_learnable_attn_temperature
+        self.attn_n_ref = float(attn_n_ref)
         self.nhead = nhead
         self.embed_dim = embed_dim
         self.hid_dim = hid_dim
@@ -615,7 +679,10 @@ class EncoderBaseLayer(nn.Module):
                                                                 dropout=self.dropout,
                                                                 recompute=self.recompute_attn,
                                                                 use_qassmax=False,
-                                                        ) 
+                                                                use_logn_attention=use_logn_attention,
+                                                                use_learnable_attn_temperature=use_learnable_attn_temperature,
+                                                                attn_n_ref=attn_n_ref,
+                                                        )
                                                         for _ in range(self.feature_attn_num)
                                                     ]
                                                 )
@@ -630,7 +697,10 @@ class EncoderBaseLayer(nn.Module):
                                                             dropout=self.dropout,
                                                             recompute=self.recompute_attn,
                                                             use_qassmax=use_qassmax,
-                                                        ) 
+                                                            use_logn_attention=use_logn_attention,
+                                                            use_learnable_attn_temperature=use_learnable_attn_temperature,
+                                                            attn_n_ref=attn_n_ref,
+                                                        )
                                                         for _ in range(self.seq_attn_num)
                                                     ]
                                                 )

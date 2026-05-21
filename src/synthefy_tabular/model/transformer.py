@@ -35,6 +35,9 @@ class FeaturesTransformer(nn.Module):
                 deepnorm_alpha: float|None = None,
                 use_target_aware_embedding: bool = False,
                 use_column_specific_y_aware: bool = False,
+                use_logn_attention: bool = False,
+                use_learnable_attn_temperature: bool = False,
+                attn_n_ref: float = 1024.0,
                 **layer_kwargs:Any
                 ):
         super().__init__()
@@ -70,6 +73,40 @@ class FeaturesTransformer(nn.Module):
         self.num_bars = int(decoder_config.get('num_bars', self.num_reg_quantiles))
         self.bar_borders_low = float(decoder_config.get('bar_borders_low', -10.0))
         self.bar_borders_high = float(decoder_config.get('bar_borders_high', 10.0))
+        # Bar-borders mode: 'uniform' (linspace over [low, high]) or
+        # 'normal_quantile' (N(0,1) quantile-spaced for equal mass per bin
+        # under standard normal). Normal-quantile concentrates ~3-4× more
+        # bins near y=0 where context-normalized targets actually live;
+        # eliminates wasted tail bins. Borders are persisted as a buffer so
+        # inference uses the exact same edges.
+        self.bar_borders_mode = str(decoder_config.get('bar_borders_mode', 'uniform'))
+        if self.regression_loss == 'bar_distribution':
+            if self.bar_borders_mode == 'normal_quantile':
+                # N(0,1) quantile spacing — bins are equal-mass under standard
+                # normal. Replace ±inf at the edges with finite extreme values
+                # (±8 std covers all real ctx-normalized data).
+                try:
+                    from scipy.stats import norm as _norm
+                    qs = torch.linspace(0.0, 1.0, self.num_bars + 1, dtype=torch.float32)
+                    edges_np = _norm.ppf(qs.numpy())
+                    edges_np[0] = -8.0
+                    edges_np[-1] = 8.0
+                    bar_borders = torch.from_numpy(edges_np).float()
+                except ImportError:
+                    # Fallback: uniform if scipy isn't available.
+                    bar_borders = torch.linspace(
+                        self.bar_borders_low, self.bar_borders_high,
+                        self.num_bars + 1, dtype=torch.float32,
+                    )
+            else:
+                bar_borders = torch.linspace(
+                    self.bar_borders_low, self.bar_borders_high,
+                    self.num_bars + 1, dtype=torch.float32,
+                )
+            # register_buffer makes it part of state_dict and follows .to()
+            self.register_buffer('bar_borders_buffer', bar_borders, persistent=True)
+        else:
+            self.bar_borders_buffer = None
         self.use_target_aware_embedding = use_target_aware_embedding
         # Column-specific y-aware modulation: extends row-level target_aware
         # embedding so the y-derived bias is *gated per column* by the inner
@@ -94,6 +131,12 @@ class FeaturesTransformer(nn.Module):
             encoder_config_y.get('max_num_classes', decoder_config.get('num_classes', 10))
         )
 
+        # logN attention scaling + learnable per-layer temperature.
+        # Plumbed through EncoderBaseLayer to all per-layer MultiheadAttentions.
+        self.use_logn_attention = use_logn_attention
+        self.use_learnable_attn_temperature = use_learnable_attn_temperature
+        self.attn_n_ref = float(attn_n_ref)
+
         layer_creator = lambda: EncoderBaseLayer(
             embed_dim=self.embed_dim,
             hid_dim=self.hid_dim,
@@ -109,6 +152,9 @@ class FeaturesTransformer(nn.Module):
             layer_arch=self.layer_arch, # type: ignore
             norm_type=self.norm_type,
             deepnorm_alpha=self.deepnorm_alpha,
+            use_logn_attention=self.use_logn_attention,
+            use_learnable_attn_temperature=self.use_learnable_attn_temperature,
+            attn_n_ref=self.attn_n_ref,
             **layer_kwargs
         )
 
