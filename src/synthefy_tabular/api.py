@@ -32,12 +32,12 @@ def _as_device(device):
     return torch.device(device)
 
 
-def _resolve_model_path(model_path: str | None) -> str:
+def _resolve_model_path(model_path: str | None, token: str | bool | None = None) -> str:
     if model_path is not None:
         return model_path
     from synthefy_tabular.hf import download_checkpoint
 
-    return download_checkpoint()
+    return download_checkpoint(token=token)
 
 
 class SynthefyTabularRegressor:
@@ -49,6 +49,7 @@ class SynthefyTabularRegressor:
         *,
         device=None,
         inference_config: str | None = None,
+        token: str | bool | None = None,
         augmentations: tuple[str, ...] | list[str] | None = ("yj",),
         yj_skew_threshold: float = 10.0,
         quantile_collapse: str = "mean",
@@ -57,6 +58,7 @@ class SynthefyTabularRegressor:
     ) -> None:
         self.model_path = model_path
         self.device = device
+        self.token = token
         self.inference_config = inference_config or config_path(
             "reg_allordinal_poly10_noretrieval.json"
         )
@@ -83,7 +85,7 @@ class SynthefyTabularRegressor:
 
             self._predictor = LimiXPredictor(
                 device=_as_device(self.device),
-                model_path=_resolve_model_path(self.model_path),
+                model_path=_resolve_model_path(self.model_path, self.token),
                 inference_config=self.inference_config,
                 augmentations=self.augmentations,
                 yj_skew_threshold=self.yj_skew_threshold,
@@ -123,9 +125,11 @@ class SynthefyTabularClassifier:
         *,
         device=None,
         inference_config: str | None = None,
+        token: str | bool | None = None,
     ) -> None:
         self.model_path = model_path
         self.device = device
+        self.token = token
         self.inference_config = inference_config or config_path("cls_default_noretrieval.json")
         self._predictor = None
 
@@ -144,7 +148,7 @@ class SynthefyTabularClassifier:
 
             self._predictor = LimiXPredictor(
                 device=_as_device(self.device),
-                model_path=_resolve_model_path(self.model_path),
+                model_path=_resolve_model_path(self.model_path, self.token),
                 inference_config=self.inference_config,
             )
         return self._predictor
@@ -177,17 +181,35 @@ class SynthefyTabularClassifier:
         return self.classes_[proba.argmax(axis=1)]
 
 
-def infer(X_train, y_train, X_test, *, task: Task = "regression", model_path: str | None = None, **kwargs):
+def infer(
+    X_train,
+    y_train,
+    X_test,
+    *,
+    task: Task = "regression",
+    model_path: str | None = None,
+    token: str | bool | None = None,
+    **kwargs,
+):
     """Fit on context rows and infer labels for query rows."""
     if task in ("regression", "reg"):
-        model = SynthefyTabularRegressor(model_path=model_path, **kwargs).fit(X_train, y_train)
+        model = SynthefyTabularRegressor(model_path=model_path, token=token, **kwargs).fit(X_train, y_train)
         return model.predict(X_test)
     if task in ("classification", "cls"):
-        model = SynthefyTabularClassifier(model_path=model_path, **kwargs).fit(X_train, y_train)
+        model = SynthefyTabularClassifier(model_path=model_path, token=token, **kwargs).fit(X_train, y_train)
         return model.predict(X_test)
     raise ValueError(f"Unsupported task: {task!r}")
 
 
-def predict(X_train, y_train, X_test, *, task: Task = "regression", model_path: str | None = None, **kwargs):
+def predict(
+    X_train,
+    y_train,
+    X_test,
+    *,
+    task: Task = "regression",
+    model_path: str | None = None,
+    token: str | bool | None = None,
+    **kwargs,
+):
     """Alias for infer()."""
-    return infer(X_train, y_train, X_test, task=task, model_path=model_path, **kwargs)
+    return infer(X_train, y_train, X_test, task=task, model_path=model_path, token=token, **kwargs)

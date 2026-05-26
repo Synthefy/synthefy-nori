@@ -9,19 +9,48 @@ description = "Synthefy Tabular foundation model training, inference, and evalua
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Synthefy" }]
-dependencies = [
-    "einops",
-    "huggingface-hub",
-    "kditransform",
-    "numpy",
-    "pandas",
-    "scikit-learn",
-    "scipy",
-    "torch>=2.0",
-    "tqdm",
-    "typing-extensions",
+keywords = [
+    "tabular",
+    "foundation-model",
+    "machine-learning",
+    "deep-learning",
+    "regression",
+    "classification",
+    "pytorch",
+    "synthetic-data",
 ]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "einops>=0.7",
+    "huggingface-hub>=1.0",
+    "kditransform>=1.0",
+    "numpy>=2.0",
+    "pandas>=2.0",
+    "scikit-learn>=1.4",
+    "scipy>=1.13",
+    "torch>=2.0",
+    "tqdm>=4.65",
+    "typing-extensions>=4.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/Synthefy/synthefy-tabular"
+Repository = "https://github.com/Synthefy/synthefy-tabular"
+Issues = "https://github.com/Synthefy/synthefy-tabular/issues"
+Changelog = "https://github.com/Synthefy/synthefy-tabular/releases"
 
 [project.optional-dependencies]
 train = ["wandb>=0.15.0", "xgboost"]
@@ -42,6 +71,10 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: end-to-end tests that download checkpoints and run real inference (run with `pytest -m slow`)",
+]
 
 [tool.ruff]
 target-version = "py310"

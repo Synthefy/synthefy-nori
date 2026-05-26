@@ -1,0 +1,85 @@
+"""End-to-end inference tests.
+
+These tests download the default HuggingFace checkpoint and run a real forward
+pass through the model. They are skipped by default because they:
+
+* require network access,
+* require an HF token with access to `Synthefy/synthefy-tabular` (until that
+  repo is made public), and
+* take ~15s on CPU for the regression case.
+
+Run explicitly with::
+
+    pytest -m slow
+
+Override the checkpoint location without touching HF by setting
+``SYNTHEFY_TABULAR_TEST_CHECKPOINT=/abs/path/to/checkpoint.pt`` in the
+environment.
+"""
+from __future__ import annotations
+
+import os
+
+import numpy as np
+import pytest
+
+
+pytestmark = pytest.mark.slow
+
+
+def _checkpoint_kwargs():
+    local = os.environ.get("SYNTHEFY_TABULAR_TEST_CHECKPOINT")
+    if local:
+        return {"model_path": local}
+    if not (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")):
+        pytest.skip(
+            "set HF_TOKEN (with access to the default HF repo) "
+            "or SYNTHEFY_TABULAR_TEST_CHECKPOINT to run e2e tests"
+        )
+    return {}
+
+
+def test_regressor_recovers_linear_signal():
+    from synthefy_tabular import SynthefyTabularRegressor
+
+    rng = np.random.default_rng(0)
+    n_train, n_test, d = 200, 50, 4
+    X_train = rng.normal(size=(n_train, d)).astype(np.float32)
+    true_w = rng.normal(size=d).astype(np.float32)
+    y_train = (X_train @ true_w + rng.normal(scale=0.1, size=n_train)).astype(np.float32)
+    X_test = rng.normal(size=(n_test, d)).astype(np.float32)
+    y_truth = X_test @ true_w
+
+    model = SynthefyTabularRegressor(**_checkpoint_kwargs())
+    model.fit(X_train, y_train)
+    pred = model.predict(X_test)
+
+    assert pred.shape == (n_test,)
+    assert np.all(np.isfinite(pred))
+    assert pred.std() > 1e-6, "predictions are degenerate"
+
+    corr = float(np.corrcoef(pred, y_truth)[0, 1])
+    assert corr > 0.8, f"expected strong correlation with linear truth, got {corr:.3f}"
+
+
+def test_classifier_separates_linear_boundary():
+    from synthefy_tabular import SynthefyTabularClassifier
+
+    rng = np.random.default_rng(1)
+    n_train, n_test, d = 200, 50, 4
+    X_train = rng.normal(size=(n_train, d)).astype(np.float32)
+    y_train = (X_train[:, 0] > 0).astype(np.int64)
+    X_test = rng.normal(size=(n_test, d)).astype(np.float32)
+    y_truth = (X_test[:, 0] > 0).astype(np.int64)
+
+    model = SynthefyTabularClassifier(**_checkpoint_kwargs())
+    model.fit(X_train, y_train)
+    pred = model.predict(X_test)
+    proba = model.predict_proba(X_test)
+
+    assert pred.shape == (n_test,)
+    assert proba.shape == (n_test, 2)
+    assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-3)
+
+    accuracy = float((pred == y_truth).mean())
+    assert accuracy > 0.65, f"expected accuracy > 0.65 on linearly separable task, got {accuracy:.3f}"

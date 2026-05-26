@@ -20,6 +20,22 @@ LIMIX_REPO_ID = "stableai-org/LimiX-2M"
 LIMIX_FILENAME = "LimiX-2M.ckpt"
 
 
+class CheckpointAccessError(RuntimeError):
+    """Raised when the Hugging Face checkpoint cannot be downloaded due to auth."""
+
+
+def _access_error_message(repo_id: str) -> str:
+    return (
+        f"Could not download '{repo_id}' from the Hugging Face Hub: access denied.\n"
+        f"This checkpoint requires authentication. To resolve:\n"
+        f"  1. Request access at https://huggingface.co/{repo_id}\n"
+        f"  2. Get a token at https://huggingface.co/settings/tokens (read scope)\n"
+        f"  3. Provide it via `export HF_TOKEN=hf_...`, `huggingface-cli login`,\n"
+        f"     or pass token=... to SynthefyTabularRegressor/Classifier.\n"
+        f"If you already have a local checkpoint, pass model_path=... to skip the download."
+    )
+
+
 def download_checkpoint(
     repo_id: str = DEFAULT_MODEL_REPO_ID,
     filename: str = DEFAULT_CHECKPOINT_FILENAME,
@@ -32,17 +48,30 @@ def download_checkpoint(
     """Download a checkpoint from the Hugging Face Hub and return its local path."""
     try:
         from huggingface_hub import hf_hub_download
+        from huggingface_hub.errors import (
+            GatedRepoError,
+            HfHubHTTPError,
+            RepositoryNotFoundError,
+        )
     except ImportError as exc:
         raise ImportError("Install huggingface-hub to download checkpoints.") from exc
 
-    return hf_hub_download(
-        repo_id=repo_id,
-        filename=filename,
-        revision=revision,
-        cache_dir=cache_dir,
-        token=token,
-        force_download=force_download,
-    )
+    try:
+        return hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            revision=revision,
+            cache_dir=cache_dir,
+            token=token,
+            force_download=force_download,
+        )
+    except (GatedRepoError, RepositoryNotFoundError) as exc:
+        raise CheckpointAccessError(_access_error_message(repo_id)) from exc
+    except HfHubHTTPError as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in (401, 403):
+            raise CheckpointAccessError(_access_error_message(repo_id)) from exc
+        raise
 
 
 def download_limix(
