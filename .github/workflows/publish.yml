@@ -32,7 +32,9 @@ jobs:
         if: github.event_name == 'release'
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          pkg_version=$(uvx --from packaging python -c "from packaging.utils import parse_wheel_filename; import glob; print(parse_wheel_filename(glob.glob('dist/*.whl')[0])[1])")
+          wheel=$(basename dist/synthefy_tabular-*.whl)
+          pkg_version=$(echo "$wheel" | awk -F- '{print $2}')
+          echo "tag=$tag pkg_version=$pkg_version wheel=$wheel"
           if [ "$tag" != "$pkg_version" ]; then
             echo "Tag $tag does not match package version $pkg_version" >&2
             exit 1
