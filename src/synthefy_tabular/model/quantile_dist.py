@@ -1,4 +1,4 @@
-"""Quantile-distribution point estimate decoders (V13).
+"""Quantile-distribution point estimate decoders.
 
 Convert K predicted quantiles (at τ levels) into a single point estimate
 by treating them as a piecewise-linear CDF and computing the analytical

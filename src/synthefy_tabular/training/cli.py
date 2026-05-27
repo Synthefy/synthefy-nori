@@ -134,19 +134,6 @@ def main():
                         help='Max n_features per synthetic table (default: 250)')
     parser.add_argument('--fixed-size', type=str, default=None,
                         help='Fixed NxF size (e.g. "1024x64"). Overrides random sampling.')
-    parser.add_argument('--eval-interval', type=int, default=5000,
-                        help='Run validation every N steps (0 to disable)')
-    parser.add_argument('--no-eval', action='store_true',
-                        help='Disable validation entirely')
-    parser.add_argument('--early-stop-patience-evals', type=int, default=0,
-                        help='Stop after this many validation runs without improvement (0 disables)')
-    parser.add_argument('--early-stop-metric', type=str, default='combined',
-                        choices=['combined', 'mean_auc', 'mean_r2'],
-                        help='Validation metric to monitor for early stopping')
-    parser.add_argument('--early-stop-min-delta', type=float, default=0.0,
-                        help='Minimum metric improvement required to reset early stopping patience')
-    parser.add_argument('--early-stop-min-evals', type=int, default=0,
-                        help='Number of initial validation runs to ignore for patience counting')
     parser.add_argument('--no-synth-v2', action='store_true',
                         help='Disable synth_v2 data augmentations (revert to Run 8 behavior)')
     parser.add_argument('--no-synth-v3', action='store_true',
@@ -294,9 +281,6 @@ def main():
                         help='Probability per regression episode of rounding/binning y to '
                              '5-15 unique levels. Models discrete-regression datasets (Wine_Quality '
                              '6 levels, sensory 1-10 ratings). Default 0.0.')
-    parser.add_argument('--eval-at-step-0', action='store_true',
-                        help='Run one eval before training starts. Useful for fine-tune runs to '
-                             'establish a baseline on the eval dataset.')
     parser.add_argument(
         '--quality-filter-rules',
         type=str,
@@ -309,10 +293,6 @@ def main():
         default=3,
         help='Max retries when generated data fails quality rules (default: 3)',
     )
-    parser.add_argument('--eval-cls-dir', type=str, default='cache/tabarena_cls',
-                        help='Path to classification eval datasets')
-    parser.add_argument('--eval-reg-dir', type=str, default='cache/tabarena_reg',
-                        help='Path to regression eval datasets')
     parser.add_argument('--tabicl-prior', action='store_true',
                         help='Enable TabICL prior generator (MLP/Tree SCM + Reg2Cls)')
     parser.add_argument('--tabicl-prior-prob', type=float, default=0.5,
@@ -378,7 +358,9 @@ def main():
     parser.add_argument('--no-prefetch', action='store_true',
                         help='Disable async data prefetching')
     parser.add_argument('--seed', type=int, default=42,
-                        help='Random seed for data generation and training (default: 42)')
+                        help='Random seed for data generation and training. Seeds Python, '
+                             'NumPy, and torch (CPU + CUDA) so same-seed runs are '
+                             'reproducible (default: 42)')
     parser.add_argument('--debug-dump-dir', type=str, default='',
                         help='Dump per-step NPZ files (data, gradients, '
                              'weights, loss) for the first --debug-dump-steps '
@@ -389,11 +371,20 @@ def main():
                         help='Number of optimizer steps to dump (default: 5)')
     args = parser.parse_args()
 
+    # Seed Python/NumPy/torch from --seed so same-seed runs are reproducible.
+    # Model init, the subortho feature embeddings, and the tabicl prior all draw
+    # from the global torch RNG, so without this a run is only reproducible in
+    # debug-dump mode. Seeding here is cheap and does not affect training speed.
+    import random as _random
+    import numpy as _np_seed
+    _random.seed(args.seed)
+    _np_seed.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+
     if args.debug_dump_dir:
-        import numpy as _np_seed
-        _np_seed.random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)
+        # cudnn determinism disables fast nondeterministic kernels (slower), so it
+        # is reserved for byte-exact debug dumps, not normal training.
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
         print(f"[debug-dump] deterministic mode ON: seed={args.seed}, "
@@ -406,12 +397,6 @@ def main():
 
     if args.run_steps is not None and args.run_steps <= 0:
         parser.error("--run-steps must be a positive integer")
-    if args.early_stop_patience_evals < 0:
-        parser.error("--early-stop-patience-evals must be >= 0")
-    if args.early_stop_min_evals < 0:
-        parser.error("--early-stop-min-evals must be >= 0")
-    if args.early_stop_patience_evals > 0 and (args.no_eval or args.eval_interval == 0):
-        parser.error("Early stopping requires validation; remove --no-eval and set --eval-interval > 0")
     if args.feature_loss_weight_end is not None and args.feature_loss_weight_end < 0:
         parser.error("--feature-loss-weight-end must be >= 0")
     if args.feature_loss_decay_start_step < 0 or args.feature_loss_decay_end_step < 0:
@@ -627,11 +612,6 @@ def main():
         if local_rank == 0:
             print(f"Fixed size: {fixed_n_samples} samples x {fixed_n_features} features")
 
-    # Eval config
-    eval_enabled = not args.no_eval
-    if eval_enabled and args.eval_interval == 0:
-        eval_enabled = False
-
     # Training config
     train_config = TrainingConfig(
         device=device,
@@ -676,14 +656,6 @@ def main():
         **({"max_features": args.max_features} if args.max_features is not None else {}),
         fixed_n_samples=fixed_n_samples,
         fixed_n_features=fixed_n_features,
-        eval_enabled=eval_enabled,
-        eval_interval=args.eval_interval,
-        eval_cls_data_dir=args.eval_cls_dir,
-        eval_reg_data_dir=args.eval_reg_dir,
-        early_stop_patience_evals=args.early_stop_patience_evals,
-        early_stop_metric=args.early_stop_metric,
-        early_stop_min_delta=args.early_stop_min_delta,
-        early_stop_min_evals=args.early_stop_min_evals,
         synth_v2=not args.no_synth_v2,
         synth_v3=not args.no_synth_v3,
         rich_reg_targets=not args.no_rich_reg_targets,
@@ -736,7 +708,6 @@ def main():
         latent_factor_prob=args.latent_factor_prob,
         high_cap_prob=args.high_cap_prob,
         low_unique_y_prob=args.low_unique_y_prob,
-        eval_at_step_0=args.eval_at_step_0,
         quality_filter_rules_path=args.quality_filter_rules,
         quality_filter_max_retries=args.quality_filter_max_retries,
         dim_bias_samples=args.dim_bias_samples,

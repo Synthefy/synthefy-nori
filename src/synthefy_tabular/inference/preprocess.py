@@ -412,7 +412,7 @@ class MADWinsorizer(BasePreprocess):
                   soft_log_clip: bool = False):
         self.n_mad = float(n_mad)
         self.skip_categorical = bool(skip_categorical)
-        # V13: replace hard clip at boundary with soft logarithmic clip.
+        # Replace hard clip at boundary with soft logarithmic clip.
         # For values beyond [lo, hi], replace with hi + log1p(|x - hi|) /
         # bounds-equivalent on the low side. Preserves ordering of extremes
         # (rank-sensitive heads benefit) while still suppressing magnitude.
