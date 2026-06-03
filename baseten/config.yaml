@@ -1,0 +1,32 @@
+# Synthefy Tabular: in-context learning tabular foundation model. Each request
+# carries the context rows (X_train, y_train) and the query rows (X_test); the
+# model predicts in a single forward pass. See model/model.py for the API.
+model_name: Synthefy Tabular
+python_version: py311
+
+# Runtime dependencies. The synthefy_tabular package itself is shipped via the
+# bundled `packages/` directory (auto-added to PYTHONPATH by Truss), so only its
+# third-party deps are listed here. Kept in sync with pyproject.toml.
+requirements:
+  - einops>=0.7
+  - huggingface-hub>=1.0
+  - kditransform>=1.0
+  - numpy>=2.0
+  - pandas>=2.0
+  - scikit-learn>=1.4
+  - scipy>=1.13
+  - torch>=2.0
+  - tqdm>=4.65
+  - typing-extensions>=4.10
+
+resources:
+  accelerator: T4
+  cpu: "4"
+  memory: 16Gi
+  use_gpu: true
+
+# The default checkpoint (Synthefy/synthefy-tabular) is gated on the Hugging Face
+# Hub. Set this secret in the Baseten workspace (Settings -> Secrets) to a HF token
+# with read access, then reference it here. The value below is just a placeholder.
+secrets:
+  hf_access_token: null

@@ -1,0 +1,7 @@
+# Vendored copy of the package, regenerated before `truss push` (see README.md):
+#   rm -rf packages/synthefy_tabular && cp -R ../src/synthefy_tabular packages/synthefy_tabular
+# Kept out of git to avoid a second, drifting copy of src/.
+packages/synthefy_tabular/
+
+# Bundled wheels / data artifacts
+*.whl
