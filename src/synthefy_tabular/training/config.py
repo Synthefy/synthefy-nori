@@ -359,10 +359,6 @@ class TrainingConfig:
     # probability.
     low_unique_y_prob: float = 0.0
 
-    # Run one eval before training starts (before optimizer step 0). Useful
-    # for fine-tune runs to establish a baseline on the eval dataset.
-    eval_at_step_0: bool = False
-
     # Optional mined synthetic quality rules (from eval_synthetic_benchmark.py).
     # If provided, generated episodes that violate rules are rejected/regenerated.
     quality_filter_rules_path: str | None = None
@@ -379,31 +375,3 @@ class TrainingConfig:
     # Async data prefetching
     prefetch_workers: int = 4  # number of background data generation processes (0 = disabled)
     prefetch_count: int = 4    # number of batches to prefetch ahead
-
-    # Evaluation
-    eval_enabled: bool = True
-    eval_interval: int = 5000
-    eval_cls_data_dir: str = "cache/tabarena_cls"
-    eval_reg_data_dir: str = "cache/tabarena_reg"
-    eval_cls_config: str = field(
-        default_factory=lambda: package_config_path("cls_default_noretrieval.json")
-    )
-    eval_reg_config: str = field(
-        default_factory=lambda: package_config_path("reg_default_noretrieval.json")
-    )
-    embedding_probe_enabled: bool = False
-    embedding_probe_n_synthetic: int = 6
-    embedding_probe_n_real_datasets: int = 4
-    embedding_probe_max_train: int = 512
-    embedding_probe_max_test: int = 256
-    embedding_probe_max_features: int = 128
-    embedding_probe_pairwise_pairs: int = 2000
-    embedding_probe_max_rank_samples: int = 2048
-    embedding_probe_seed: int = 42
-    embedding_probe_output_path: str | None = None
-
-    # Early stopping (measured in validation runs, not optimizer steps)
-    early_stop_patience_evals: int = 0
-    early_stop_metric: str = "combined"  # 'combined', 'mean_auc', or 'mean_r2'
-    early_stop_min_delta: float = 0.0
-    early_stop_min_evals: int = 0

@@ -132,7 +132,7 @@ class LimiXPredictor:
         if quantile_collapse not in valid_collapse:
             raise ValueError(f"quantile_collapse must be one of {valid_collapse}, got {quantile_collapse!r}")
         self.quantile_collapse = quantile_collapse
-        # 'qdist' invokes the V13 quantile-distribution decoder (sort-monotone
+        # 'qdist' invokes the quantile-distribution decoder (sort-monotone
         # + analytical mean with exp tail extrapolation; ports TabICL's
         # _model/quantile_dist.py). 'qdist_simple' uses the same sort+
         # analytical-mean but without tail extrapolation (faster, pure-torch).
@@ -763,7 +763,7 @@ class LimiXPredictor:
             result = torch.where(right_heavy, q_hi, result)
             return result
         if mode == 'qdist':
-            # V13 quantile-distribution decoder: sort + analytical mean with
+            # Quantile-distribution decoder: sort + analytical mean with
             # exp tail extrapolation. K should be ≥ ~100 for stable tail fit.
             # Falls back to qdist_simple at K < 8.
             from synthefy_tabular.model.quantile_dist import quantile_dist_mean_batch
@@ -772,7 +772,7 @@ class LimiXPredictor:
                 q, tau_levels, enforce_monotone_first=True, tail_outer_n=20,
             )
         if mode == 'qdist_simple':
-            # V13 quantile-distribution decoder, pure-torch (no tail correction).
+            # Quantile-distribution decoder, pure-torch (no tail correction).
             # Faster, fully on-device. Use when tail extrapolation isn't needed
             # (e.g. K=999 already covers 99.9% of mass).
             from synthefy_tabular.model.quantile_dist import quantile_dist_mean_simple

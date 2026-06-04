@@ -105,13 +105,6 @@ class LimiXTrainer:
         self.optimizer_step = 0
         self.accumulated_micro_steps = 0
         self.best_loss = float('inf')
-        self.best_auc = -float('inf')
-        self.best_r2 = -float('inf')
-        self.best_early_stop_metric = -float('inf')
-        self.best_early_stop_step = 0
-        self.early_stop_bad_evals = 0
-        self.early_stop_eval_count = 0
-        self.should_stop_early = False
 
         # Loss spike detection (EMA-based)
         self._loss_ema = None
@@ -180,7 +173,6 @@ class LimiXTrainer:
         self._set_target_aware_scale(self._get_current_target_aware_scale())
 
         # Wandb
-        self.embedding_probe = None
         self.wandb_run = None
 
     # Shape buckets for torch.compile. These keep recompiles bounded while still
@@ -399,20 +391,6 @@ class LimiXTrainer:
         bare_model = self._get_bare_model()
         if hasattr(bare_model, 'target_aware_scale'):
             bare_model.target_aware_scale = float(scale)
-
-    def _run_embedding_probe(self) -> dict | None:
-        if not self.config.embedding_probe_enabled:
-            return None
-        if self.embedding_probe is None:
-            from synthefy_tabular.training.embedding_geometry import OnlineRegressionEmbeddingProbe
-
-            self.embedding_probe = OnlineRegressionEmbeddingProbe(self.config)
-        return self.embedding_probe.evaluate(
-            self._get_bare_model(),
-            self.device,
-            step=self.optimizer_step,
-            mixed_precision=self.config.mixed_precision,
-        )
 
     def _submit_prefetch(self, n_samples, n_features, task_type, n_classes):
         """Submit one batch to the prefetcher with a deterministic seed."""
@@ -1477,89 +1455,6 @@ class LimiXTrainer:
             for name, tensor in self._get_bare_model().state_dict().items()
         }
 
-    def _early_stop_info_path(self):
-        return os.path.join(self.config.checkpoint_dir, "early_stop_info.json")
-
-    def _resolve_early_stop_metric(self, mean_auc, mean_r2):
-        metric_name = self.config.early_stop_metric
-        if metric_name == "mean_auc":
-            return float(mean_auc), "mean_auc"
-        if metric_name == "mean_r2":
-            return float(mean_r2), "mean_r2"
-
-        values = []
-        if np.isfinite(mean_auc):
-            values.append(float(mean_auc))
-        if np.isfinite(mean_r2):
-            values.append(float(mean_r2))
-        if not values:
-            return float("nan"), "combined"
-        return float(np.mean(values)), "combined"
-
-    def _write_early_stop_info(self, metric_name, current_value):
-        os.makedirs(self.config.checkpoint_dir, exist_ok=True)
-        payload = {
-            "triggered": True,
-            "metric": metric_name,
-            "best_value": self.best_early_stop_metric,
-            "best_step": int(self.best_early_stop_step),
-            "stopped_value": float(current_value),
-            "stopped_step": int(self.optimizer_step),
-            "bad_evals": int(self.early_stop_bad_evals),
-            "patience_evals": int(self.config.early_stop_patience_evals),
-            "min_delta": float(self.config.early_stop_min_delta),
-            "min_evals": int(self.config.early_stop_min_evals),
-            "best_checkpoint": "best_early_stop.pt",
-        }
-        with open(self._early_stop_info_path(), "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, sort_keys=True)
-
-    def _update_early_stopping(self, mean_auc, mean_r2):
-        cfg = self.config
-        if cfg.early_stop_patience_evals <= 0:
-            return
-
-        self.early_stop_eval_count += 1
-        metric_value, metric_name = self._resolve_early_stop_metric(mean_auc, mean_r2)
-
-        if not np.isfinite(metric_value):
-            print(
-                f"  Early-stop monitor: {metric_name} is not finite; "
-                "skipping patience update."
-            )
-            return
-
-        improved = metric_value > (self.best_early_stop_metric + cfg.early_stop_min_delta)
-        if improved:
-            self.best_early_stop_metric = metric_value
-            self.best_early_stop_step = self.optimizer_step
-            self.early_stop_bad_evals = 0
-            best_path = os.path.join(cfg.checkpoint_dir, "best_early_stop.pt")
-            self.save_checkpoint(path=best_path)
-            print(f"  Early-stop monitor: new best {metric_name}={metric_value:.4f}")
-            return
-
-        if self.early_stop_eval_count <= cfg.early_stop_min_evals:
-            remaining = cfg.early_stop_min_evals - self.early_stop_eval_count
-            print(
-                f"  Early-stop warmup: {metric_name}={metric_value:.4f} | "
-                f"patience starts after {max(remaining, 0)} more eval(s)"
-            )
-            return
-
-        self.early_stop_bad_evals += 1
-        print(
-            f"  Early-stop monitor: {metric_name}={metric_value:.4f} | "
-            f"no improvement ({self.early_stop_bad_evals}/{cfg.early_stop_patience_evals})"
-        )
-        if self.early_stop_bad_evals >= cfg.early_stop_patience_evals:
-            self.should_stop_early = True
-            self._write_early_stop_info(metric_name, metric_value)
-            print(
-                f"  Early stopping triggered on {metric_name}: "
-                f"best={self.best_early_stop_metric:.4f} at step {self.best_early_stop_step}"
-            )
-
     def _update_ema(self):
         if self.ema_state_dict is None:
             return
@@ -1608,12 +1503,6 @@ class LimiXTrainer:
             'optimizer_step': self.optimizer_step,
             'accumulated_micro_steps': self.accumulated_micro_steps,
             'best_loss': self.best_loss,
-            'best_auc': self.best_auc,
-            'best_r2': self.best_r2,
-            'best_early_stop_metric': self.best_early_stop_metric,
-            'best_early_stop_step': self.best_early_stop_step,
-            'early_stop_bad_evals': self.early_stop_bad_evals,
-            'early_stop_eval_count': self.early_stop_eval_count,
             'config': self.config,
         }
         if self.ema_state_dict is not None:
@@ -1655,13 +1544,6 @@ class LimiXTrainer:
             self.optimizer_step = 0
             self.accumulated_micro_steps = 0
             self.best_loss = float('inf')
-            self.best_auc = -float('inf')
-            self.best_r2 = -float('inf')
-            self.best_early_stop_metric = -float('inf')
-            self.best_early_stop_step = 0
-            self.early_stop_bad_evals = 0
-            self.early_stop_eval_count = 0
-            self.should_stop_early = False
             if self.ema_state_dict is not None:
                 loaded_ema = ckpt.get('ema_state_dict')
                 if loaded_ema is None:
@@ -1693,13 +1575,6 @@ class LimiXTrainer:
         # mid accumulation would otherwise step with missing micro-batch grads.
         self.accumulated_micro_steps = 0
         self.best_loss = ckpt.get('best_loss', float('inf'))
-        self.best_auc = ckpt.get('best_auc', -float('inf'))
-        self.best_r2 = ckpt.get('best_r2', -float('inf'))
-        self.best_early_stop_metric = ckpt.get('best_early_stop_metric', -float('inf'))
-        self.best_early_stop_step = ckpt.get('best_early_stop_step', 0)
-        self.early_stop_bad_evals = ckpt.get('early_stop_bad_evals', 0)
-        self.early_stop_eval_count = ckpt.get('early_stop_eval_count', 0)
-        self.should_stop_early = False
         if self.ema_state_dict is not None:
             loaded_ema = ckpt.get('ema_state_dict')
             if loaded_ema is None:
@@ -1732,184 +1607,6 @@ class LimiXTrainer:
                 )
             print(f'Checkpoint loaded from {path}, step={self.global_step}, '
                   f'lr={new_lr:.2e}')
-
-    def _run_validation(self):
-        """Run TabArena validation (rank 0 only). Other ranks wait at barrier."""
-        cfg = self.config
-        if not cfg.eval_enabled:
-            return
-
-        # Only rank 0 runs eval
-        if self.is_main:
-            opt_step = self.optimizer_step
-            current_feature_loss_weight = self._get_current_feature_loss_weight()
-            current_tae_scale = self._get_current_target_aware_scale()
-            self._set_target_aware_scale(current_tae_scale)
-            print(f"\n--- Validation at step {opt_step} ---")
-            try:
-                from synthefy_tabular.training.evaluator import run_full_evaluation
-                self.model.eval()
-                torch.cuda.empty_cache()
-                probe_results = None
-                if self.ema_state_dict is not None:
-                    print(f"  Using EMA weights for validation (decay={self.ema_decay})")
-                with self._swap_in_ema_weights():
-                    with torch.no_grad():
-                        eval_results = run_full_evaluation(
-                            model=self.model,
-                            device=self.device,
-                            cls_data_dir=cfg.eval_cls_data_dir,
-                            reg_data_dir=cfg.eval_reg_data_dir,
-                            cls_config_path=cfg.eval_cls_config,
-                            reg_config_path=cfg.eval_reg_config,
-                        )
-                        if cfg.embedding_probe_enabled:
-                            try:
-                                if self.embedding_probe is None:
-                                    print("  Building embedding probe suite...")
-                                probe_results = self._run_embedding_probe()
-                            except Exception as probe_e:
-                                probe_results = None
-                                print(f"  [PROBE] Embedding probe failed: {probe_e}")
-                self.model.train()
-
-                mean_auc = eval_results['mean_auc']
-                mean_r2 = eval_results['mean_r2']
-                elapsed = eval_results['elapsed_seconds']
-                n_cls = len(eval_results['cls_datasets'])
-                n_reg = len(eval_results['reg_datasets'])
-
-                print(f"  mean_auc={mean_auc:.4f} ({n_cls} datasets) | "
-                      f"mean_r2={mean_r2:.4f} ({n_reg} datasets) | "
-                      f"{elapsed:.1f}s | "
-                      f"feat_w={current_feature_loss_weight:.3f} "
-                      f"tae={current_tae_scale:.3f}")
-                # Per-dataset R2 for tracking gap closure
-                if eval_results['reg_datasets']:
-                    # Group datasets by subset: tabarena-13 vs hard (our tracked
-                    # failing datasets from TabPFN-2.6 and LimiX-2M).
-                    TABARENA_13 = {
-                        'Another-Dataset-on-used-Fiat-500', 'Food_Delivery_Time',
-                        'QSAR-TID-11', 'QSAR_fish_toxicity', 'airfoil_self_noise',
-                        'concrete_compressive_strength', 'diamonds',
-                        'healthcare_insurance_expenses', 'houses', 'miami_housing',
-                        'physiochemical_protein', 'superconductivity', 'wine_quality',
-                    }
-                    tabarena_scores = []
-                    hard_scores = []
-                    for name, m in eval_results['reg_datasets'].items():
-                        r2 = m.get('r2', float('nan'))
-                        if not np.isfinite(r2):
-                            continue
-                        if name in TABARENA_13:
-                            tabarena_scores.append(r2)
-                        else:
-                            hard_scores.append(r2)
-
-                    # Subset means line
-                    mean_parts = []
-                    if tabarena_scores:
-                        mean_parts.append(
-                            f"tabarena_r2={np.mean(tabarena_scores):.4f} "
-                            f"({len(tabarena_scores)} datasets)"
-                        )
-                    if hard_scores:
-                        mean_parts.append(
-                            f"hard_r2={np.mean(hard_scores):.4f} "
-                            f"({len(hard_scores)} datasets)"
-                        )
-                    if mean_parts:
-                        print(f"  reg_means: {' | '.join(mean_parts)}")
-
-                    # Per-dataset vertical list, alphabetically sorted
-                    print("  reg_r2:")
-                    for name in sorted(eval_results['reg_datasets'].keys()):
-                        m = eval_results['reg_datasets'][name]
-                        print(f"    {name}: {m.get('r2', float('nan')):.4f}")
-                if probe_results is not None:
-                    def _fmt_probe(x):
-                        return "nan" if not np.isfinite(x) else f"{x:.4f}"
-
-                    print(
-                        "  probe: "
-                        f"rank={_fmt_probe(probe_results['effective_rank'])} "
-                        f"cone={_fmt_probe(probe_results['mean_cosine_to_mean'])} "
-                        f"intra={_fmt_probe(probe_results['mean_source_intra'])} "
-                        f"prior={_fmt_probe(probe_results['mean_prior_separation'])} "
-                        f"synth-real={_fmt_probe(probe_results['mean_synth_real_centroid_distance'])} | "
-                        f"{probe_results['elapsed_seconds']:.1f}s"
-                    )
-
-                # Log to wandb
-                if cfg.use_wandb and self.wandb_run:
-                    import wandb
-                    log_dict = {
-                        'val/mean_auc': mean_auc,
-                        'val/mean_r2': mean_r2,
-                        'val/eval_seconds': elapsed,
-                        'val/feature_loss_weight': current_feature_loss_weight,
-                        'val/target_aware_scale': current_tae_scale,
-                    }
-                    if probe_results is not None:
-                        for key in [
-                            'elapsed_seconds',
-                            'mean_source_intra',
-                            'mean_prior_separation',
-                            'mean_synth_real_centroid_distance',
-                            'effective_rank',
-                            'participation_ratio',
-                            'top_eig_ratio',
-                            'mean_cosine_to_mean',
-                            'std_cosine_to_mean',
-                            'intra_synthv3',
-                            'intra_synthv6',
-                            'intra_real_reg',
-                            'prior_sep_synthv3',
-                            'prior_sep_synthv6',
-                            'inter_synthv3_real_reg',
-                            'inter_synthv6_real_reg',
-                            'rows_synthv3',
-                            'rows_synthv6',
-                            'rows_real_reg',
-                        ]:
-                            value = probe_results.get(key)
-                            if value is None:
-                                continue
-                            if isinstance(value, (int, float)) and not np.isfinite(value):
-                                continue
-                            log_dict[f'probe/{key}'] = value
-                    for name, m in eval_results['cls_datasets'].items():
-                        log_dict[f'val_cls/{name}_auc'] = m['auc']
-                    for name, m in eval_results['reg_datasets'].items():
-                        log_dict[f'val_reg/{name}_r2'] = m['r2']
-                    wandb.log(log_dict, step=opt_step)
-
-                # Save best checkpoints
-                if np.isfinite(mean_auc) and mean_auc > self.best_auc:
-                    self.best_auc = mean_auc
-                    best_path = os.path.join(cfg.checkpoint_dir, "best_cls_auc.pt")
-                    self.save_checkpoint(path=best_path)
-                    print(f"  New best AUC: {mean_auc:.4f}")
-
-                if np.isfinite(mean_r2) and mean_r2 > self.best_r2:
-                    self.best_r2 = mean_r2
-                    best_path = os.path.join(cfg.checkpoint_dir, "best_reg_r2.pt")
-                    self.save_checkpoint(path=best_path)
-                    print(f"  New best R2: {mean_r2:.4f}")
-
-                self._update_early_stopping(mean_auc, mean_r2)
-
-            except Exception as e:
-                print(f"  [EVAL] Validation failed: {e}")
-                self.model.train()
-
-            print(f"--- End validation ---\n")
-
-        if cfg.distributed:
-            stop_tensor = torch.tensor(
-                [1 if self.should_stop_early else 0], device=self.device)
-            torch.distributed.broadcast(stop_tensor, src=0)
-            self.should_stop_early = stop_tensor.item() > 0.5
 
     def train(self):
         """Main training loop."""
@@ -2036,16 +1733,6 @@ class LimiXTrainer:
                 self.scheduler.step()  # Initialize scheduler at step 0
 
         first_log_pending = self.global_step == 0 and self.optimizer_step == 0
-
-        # Optional: eval at step 0 before any training, to establish baseline
-        # on the current checkpoint (useful for fine-tune runs to see what
-        # the seed scores on the eval dataset without any perturbation).
-        if (getattr(cfg, 'eval_at_step_0', False)
-                and cfg.eval_enabled
-                and self.optimizer_step == 0):
-            if self.is_main:
-                print("Running step-0 baseline eval (before training)...")
-            self._run_validation()
 
         # Debug NPZ dump: snapshot initial weights once, before any step.
         if (self.config.debug_dump_dir and self.is_main
@@ -2178,20 +1865,6 @@ class LimiXTrainer:
             if stepped and cfg.save_interval > 0 and self.optimizer_step % cfg.save_interval == 0:
                 self.save_checkpoint()
 
-            # Validation (on optimizer step boundaries)
-            if (cfg.eval_enabled
-                    and cfg.eval_interval > 0
-                    and stepped
-                    and self.optimizer_step % cfg.eval_interval == 0):
-                self._run_validation()
-                if self.should_stop_early:
-                    if self.is_main:
-                        print(
-                            f"Stopping early at optimizer step {self.optimizer_step} "
-                            f"after validation plateau."
-                        )
-                    break
-
         # Final checkpoint
         self.save_checkpoint()
 
@@ -2204,12 +1877,7 @@ class LimiXTrainer:
             wandb.finish()
 
         if self.is_main:
-            if self.should_stop_early:
-                print(
-                    f"Training stopped early at optimizer step "
-                    f"{self.optimizer_step}/{cfg.total_steps}."
-                )
-            elif self.optimizer_step >= cfg.total_steps:
+            if self.optimizer_step >= cfg.total_steps:
                 print("Training complete!")
             else:
                 print(
