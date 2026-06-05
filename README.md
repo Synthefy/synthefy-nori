@@ -208,7 +208,7 @@ synthefy-tabular-eval --checkpoint "Synthefy:path/to/checkpoint.pt"
 ```
 
 or `bash scripts/evaluate.sh`. See [docs/evaluation.md](docs/evaluation.md) for
-benchmark sources, baselines, and Elo computation.
+benchmark sources and how to evaluate a Synthefy Tabular checkpoint.
 
 ## Hugging Face
 
@@ -227,7 +227,7 @@ src/synthefy_tabular/
   model/            FeaturesTransformer architecture
   training/         Data generation, trainer, loss, config, CLI
   inference/        Sklearn-compatible predictor + preprocessing
-  evaluation/       Benchmark runner, model registry, Elo
+  evaluation/       Benchmark runner over public suites (Synthefy / LimiX)
   hf.py             Hugging Face download / upload
 scripts/            train.sh, continue_training.sh, evaluate.sh
 docs/               training, inference, evaluation, huggingface guides
