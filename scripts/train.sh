@@ -97,7 +97,7 @@ torchrun --nproc_per_node="${NPROC}" --master_port="${MASTER_PORT}" \
   --reg-denoise --reg-dense \
   --synth-v4 --synth-v5 --synth-v5-mixture \
   --no-v4-filter \
-  --tabicl-prior --tabicl-prior-prob 0.05 \
+  --scm-prior --scm-prior-prob 0.05 \
   --probabilistic-labels --nominal-categoricals --enhanced-missingness \
   --clean-lowdim-prob 0.03 --tree-prior-prob 0.08 --lookup-prior-prob 0.02 \
   --gp-prior-prob 0.12 \

@@ -4820,7 +4820,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                    reg_prior_prob=0.0, reg_denoise=False,
                    reg_deterministic_prob=0.20,
                    reg_dense=False,
-                   tabicl_prior=False, tabicl_prior_prob=0.5,
+                   scm_prior=False, scm_prior_prob=0.5,
                    probabilistic_labels=False, nominal_categoricals=False,
                    enhanced_missingness=False,
                    clean_lowdim_prob=0.0,
@@ -4881,8 +4881,8 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                    target_r2=1.0 (deterministic target), independent of reg_dense
         reg_dense: if True, dense-signal regression mode (flat importances,
                    fewer noise features, more SCM parents, higher R²)
-        tabicl_prior: if True, enable TabICL prior generator
-        tabicl_prior_prob: per-dataset probability of using TabICL prior
+        scm_prior: if True, enable TabICL prior generator
+        scm_prior_prob: per-dataset probability of using TabICL prior
         quality_rules: optional mined quality rules dict. If provided, datasets
                        failing the rules are regenerated up to filter_max_retries.
         filter_max_retries: max retries for filtered dataset regeneration
@@ -4969,7 +4969,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
         # TabICL prior: MLP/Tree SCM with rich activations and meta-distribution
         # HP sampling. For cls, applies Reg2Cls to convert continuous targets to
         # class labels. For reg, uses raw SCM output (standardized continuous y).
-        elif (tabicl_prior and rng.random() < tabicl_prior_prob):
+        elif (scm_prior and rng.random() < scm_prior_prob):
             from synthefy_tabular.training.scm_prior_generator import generate_scm_prior_dataset
             data = generate_scm_prior_dataset(
                 n_samples, n_features, task_type,

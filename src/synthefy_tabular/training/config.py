@@ -128,8 +128,8 @@ class TrainingConfig:
     scale_variation: bool = True   # random y scale (0.37x to 2.72x)
 
     # TabICL prior generator (alternative data source from TabICL's prior system)
-    tabicl_prior: bool = False   # Enable TabICL MLP/Tree SCM prior
-    tabicl_prior_prob: float = 0.5  # Per-dataset probability of using TabICL prior
+    scm_prior: bool = False   # Enable TabICL MLP/Tree SCM prior
+    scm_prior_prob: float = 0.5  # Per-dataset probability of using TabICL prior
 
     # Synthetic data v4 augmentations (TabICLv2-inspired diversity improvements)
     synth_v4: bool = False

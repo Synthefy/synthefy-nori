@@ -113,8 +113,8 @@ SHARED_ARGS=(
   --synth-v5
   --synth-v5-mixture
   --no-v4-filter
-  --tabicl-prior
-  --tabicl-prior-prob 0.05
+  --scm-prior
+  --scm-prior-prob 0.05
   --probabilistic-labels
   --nominal-categoricals
   --enhanced-missingness
