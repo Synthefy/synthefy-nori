@@ -291,9 +291,9 @@ def main():
         default=3,
         help='Max retries when generated data fails quality rules (default: 3)',
     )
-    parser.add_argument('--tabicl-prior', action='store_true',
+    parser.add_argument('--scm-prior', action='store_true',
                         help='Enable TabICL prior generator (MLP/Tree SCM + Reg2Cls)')
-    parser.add_argument('--tabicl-prior-prob', type=float, default=0.5,
+    parser.add_argument('--scm-prior-prob', type=float, default=0.5,
                         help='Per-dataset probability of using TabICL prior (default: 0.5)')
     parser.add_argument('--synth-v5', action='store_true',
                         help='Enable synth_v5 SCM improvements (informative categoricals, concat aggregation, multi-dim nodes)')
@@ -710,8 +710,8 @@ def main():
         quality_filter_max_retries=args.quality_filter_max_retries,
         dim_bias_samples=args.dim_bias_samples,
         dim_bias_features=args.dim_bias_features,
-        tabicl_prior=args.tabicl_prior,
-        tabicl_prior_prob=args.tabicl_prior_prob,
+        scm_prior=args.scm_prior,
+        scm_prior_prob=args.scm_prior_prob,
         prefetch_workers=0 if args.no_prefetch else args.prefetch_workers,
         prefetch_count=args.prefetch_count,
         seed=args.seed,
