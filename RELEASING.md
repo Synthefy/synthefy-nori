@@ -3,6 +3,19 @@
 This package can be published either through the automated GitHub Actions
 workflow (recommended) or manually from a developer machine.
 
+## TL;DR — ship version `X.Y.Z`
+
+1. Set the same `X.Y.Z` in three places: `pyproject.toml` (`version =`), `src/synthefy_tabular/__init__.py` (`__version__ =`), and the git tag you're about to cut.
+2. Commit and push to `main`, then wait for the `ci` workflow to go green on that commit.
+3. (Optional) Rehearse on TestPyPI: `gh workflow run publish.yml --ref main -f target=testpypi`, then `pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ synthefy-tabular==X.Y.Z` in a clean venv.
+4. Cut the release: `gh release create vX.Y.Z --target main --title "vX.Y.Z" --generate-notes`.
+5. This triggers `publish.yml`, which builds the sdist + wheel, runs `twine check --strict`, and verifies the wheel version matches the `vX.Y.Z` tag.
+6. The upload step parks at the `pypi` environment's reviewer gate — go to Actions → the running `publish` run → **Review deployments** → check `pypi` → **Approve**.
+7. After approval, `pypa/gh-action-pypi-publish` uploads to PyPI over OIDC (no tokens) in ~30 seconds.
+8. Sanity-check: `pip install synthefy-tabular==X.Y.Z` in a fresh venv and run `python -c "import synthefy_tabular; print(synthefy_tabular.__version__)"`.
+9. If the build fails on version mismatch, fix the version files locally, push, then delete + recreate the release with `gh release delete vX.Y.Z --cleanup-tag --yes && gh release create vX.Y.Z ...`.
+10. PyPI never allows re-uploading the same version — if an upload itself partially fails, bump to `X.Y.Z+1` and start over rather than reusing the tag.
+
 ## One-time setup
 
 ### 1. Reserve the name on PyPI
