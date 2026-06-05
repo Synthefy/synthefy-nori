@@ -10,52 +10,18 @@ Face checkpoint tooling.
 
 ## Results
 
-Regression performance across 96 evaluation tasks from 3 benchmark sources
-(TabArena, TALENT, OpenML-Reg):
+Mean R² across 96 regression tasks from three public benchmark suites:
 
-| Rank | Model | Mean R² | Training Data |
-|---|---|---|---|
-| **1** | **Synthefy Tabular + Thinking** | **0.7487** | Synthetic |
-| **2** | **Synthefy Tabular** | **0.7475** | Synthetic |
-| 3 | TabPFN-3 | 0.7443 | Synthetic |
-| 4 | TabPFN-2.6 | 0.7437 | Synthetic |
-| 5 | Real TabPFN-2.5 | 0.7364 | Real + Synthetic |
-| 6 | TabICLv2 | 0.7354 | Synthetic |
-| 7 | TabPFN-2.5 | 0.7354 | Synthetic |
-| 8 | LimiX-2M (pretrained baseline) | 0.7301 | Synthetic |
+| Source | Tasks | Mean R² |
+|--------|------:|--------:|
+| OpenML Regression | 11 | 0.6104 |
+| TabArena | 13 | 0.8089 |
+| TALENT | 72 | 0.7591 |
 
-Synthefy Tabular is **first on aggregate mean R²**, ahead of TabPFN-3, at
-~5.5M parameters.
+Large-N / long-context tables (common in TabArena) are the current focus of the
+large-table training stages.
 
-### By source
-
-| Source | N | Synthefy Tabular (best) | TabPFN-3 | Result |
-|--------|---:|---:|---:|---|
-| OpenML Regression | 11 | 0.6104 | 0.6073 | **+0.003 win** |
-| TabArena | 13 | 0.8089 | **0.8165** | −0.008 loss |
-| TALENT | 72 | 0.7591 | 0.7521 | **+0.007 win** |
-
-We win on 2 of 3 sources and on the aggregate; the remaining gap is on TabArena
-(large-N / long-context datasets), which the large-table continuation stages target.
-
-### Elo
-
-Mean R² rewards large wins on a few datasets; **Elo** (pairwise win rate across
-datasets, used by leaderboards like TabArena) rewards consistency. On Elo the
-ordering differs:
-
-| Elo rank | Model | Elo | Pairwise winrate |
-|---|---|---|---|
-| 1 | TabPFN-3 | 1731 | 71.6% |
-| 2 | TabICLv2 | 1648 | 53.1% |
-| 3 | Synthefy Tabular + Thinking | 1511 | 55.8% |
-| 4 | TabPFN-2.6 | 1502 | 60.3% |
-| 6 | Synthefy Tabular | 1477 | 54.2% |
-
-Closing the TabArena/Elo gap is the active focus of the large-table training stages.
-
-> **Thinking** is an inference-time reasoning extension that adds the top result
-> above. Details are forthcoming.
+> **Thinking** is an inference-time reasoning extension. Details are forthcoming.
 
 ## How it works
 
@@ -242,7 +208,7 @@ synthefy-tabular-eval --checkpoint "Synthefy:path/to/checkpoint.pt"
 ```
 
 or `bash scripts/evaluate.sh`. See [docs/evaluation.md](docs/evaluation.md) for
-benchmark sources, baselines, and Elo computation.
+benchmark sources and how to evaluate a Synthefy Tabular checkpoint.
 
 ## Hugging Face
 
@@ -261,7 +227,7 @@ src/synthefy_tabular/
   model/            FeaturesTransformer architecture
   training/         Data generation, trainer, loss, config, CLI
   inference/        Sklearn-compatible predictor + preprocessing
-  evaluation/       Benchmark runner, model registry, Elo
+  evaluation/       Benchmark runner over public suites (Synthefy / LimiX)
   hf.py             Hugging Face download / upload
 scripts/            train.sh, continue_training.sh, evaluate.sh
 docs/               training, inference, evaluation, huggingface guides
