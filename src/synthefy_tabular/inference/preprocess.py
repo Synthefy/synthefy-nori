@@ -207,12 +207,10 @@ class AdaptiveColumnTransformer(BaseEstimator, TransformerMixin):
             return FunctionTransformer(
                 func=np.exp, inverse_func=np.log, check_inverse=False,
             )
-        # SafePowerTransformer handles overflow in scipy's yeo-johnson.
-        try:
-            from tabpfn.preprocessing.steps.safe_power_transformer import SafePowerTransformer
-            _PowerImpl = SafePowerTransformer
-        except ImportError:
-            _PowerImpl = PowerTransformer  # fallback
+        # scikit-learn PowerTransformer (Yeo-Johnson) for skewed columns.
+        # (Verified numerically identical to the previously-optional
+        # SafePowerTransformer on the winsorized feature ranges seen here.)
+        _PowerImpl = PowerTransformer
         if cat == 'positive_heavy_skew':
             # log1p first (textbook for heavy positive skew: income/price/counts),
             # then standardize. yeo-johnson under-fits very heavy tails.
@@ -955,19 +953,9 @@ class RebalanceFeatureDistribution(BasePreprocess):
                     n_quantiles=max(n_samples // 10, 2),
                 )
             elif worker_tag=="squash":
-                # RobustScaler + smooth clip x/sqrt(1+(x/B)^2). Robust to
-                # outliers / heavy-tail features; maps ±inf to ±B cleanly.
-                # Introduced in RealMLP (Holzmüller 2024), adopted by TabPFN.
-                # Complementary to quantile/power: preserves local geometry
-                # (monotone on inliers) while bounding extreme values. Uses
-                # TabPFN's implementation (handles nan, zero-scale, etc).
-                try:
-                    from tabpfn.preprocessing.steps.squashing_scaler_transformer import SquashingScaler
-                    sworker = SquashingScaler(max_absolute_value=3.0)
-                except ImportError:
-                    # Fallback: RobustScaler only (no soft clip) if tabpfn
-                    # not installed at runtime.
-                    sworker = RobustScaler(unit_variance=True)
+                # Robust scaling for outlier / heavy-tail features:
+                # median-centred, IQR-scaled to unit variance.
+                sworker = RobustScaler(unit_variance=True)
             elif worker_tag=="kdi_uni":
                 sworker = KDIX(alpha=1.0, output_distribution="uniform")
             elif worker_tag is None:
