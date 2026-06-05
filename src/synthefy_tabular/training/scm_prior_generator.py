@@ -884,7 +884,7 @@ def sample_hyperparams(rng, n_features, device="cpu"):
 # Top-level generation function
 # ============================================================================
 
-def generate_tabicl_dataset(n_samples, n_features, task_type, n_classes=None,
+def generate_scm_prior_dataset(n_samples, n_features, task_type, n_classes=None,
                              rng=None, device="cpu"):
     """Generate a single dataset using TabICL's prior system.
 

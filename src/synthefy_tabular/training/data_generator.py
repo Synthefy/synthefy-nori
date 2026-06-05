@@ -4970,8 +4970,8 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
         # HP sampling. For cls, applies Reg2Cls to convert continuous targets to
         # class labels. For reg, uses raw SCM output (standardized continuous y).
         elif (tabicl_prior and rng.random() < tabicl_prior_prob):
-            from synthefy_tabular.training.tabicl_generator import generate_tabicl_dataset
-            data = generate_tabicl_dataset(
+            from synthefy_tabular.training.scm_prior_generator import generate_scm_prior_dataset
+            data = generate_scm_prior_dataset(
                 n_samples, n_features, task_type,
                 n_classes=n_classes, rng=rng)
         # For regression, use the regression-specific prior with probability

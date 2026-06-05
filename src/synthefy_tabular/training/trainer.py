@@ -429,56 +429,27 @@ class LimiXTrainer:
           - ``'hf'`` -- auto-download the default Synthefy checkpoint from HuggingFace
           - ``'org/repo'`` -- auto-download from a custom HuggingFace repo
           - Local file paths (.pt/.ckpt) -- uses native forward pass
-          - ``'tabicl'`` -- loads TabICLv2 regressor/classifier
-          - ``'tabpfn'`` -- loads TabPFN-2.5 regressor/classifier
         """
         self._icl_filter_type = 'limix'  # default
 
-        if model_path == 'tabicl':
-            try:
-                from tabicl import TabICLRegressor
-                m = TabICLRegressor(device=str(self.device))
-                self._icl_filter_model = m
-                self._icl_filter_type = 'tabicl'
-                if self.is_main:
-                    print(f"GPU ICL filter: TabICLv2 -> {self.device}")
-                return
-            except ImportError:
-                raise ImportError("tabicl not installed. Use: uv add tabicl")
-
-        elif model_path == 'tabpfn':
-            try:
-                from tabpfn import TabPFNRegressor
-                m = TabPFNRegressor(device=str(self.device),
-                                    ignore_pretraining_limits=True)
-                self._icl_filter_model = m
-                self._icl_filter_type = 'tabpfn'
-                if self.is_main:
-                    print(f"GPU ICL filter: TabPFN -> {self.device}")
-                return
-            except ImportError:
-                raise ImportError("tabpfn not installed. Use: uv add tabpfn")
-
-        else:
-            model_path = self._resolve_icl_filter_path(model_path)
-            from synthefy_tabular.utils.loading import load_model
-            m = load_model(model_path, mask_prediction=True)
-            m.eval()
-            m.to(self.device)
-            for p in m.parameters():
-                p.requires_grad_(False)
-            self._icl_filter_model = m
-            self._icl_filter_type = 'limix'
-            if self.is_main:
-                print(f"GPU ICL filter: LimiX {model_path} -> {self.device}")
+        model_path = self._resolve_icl_filter_path(model_path)
+        from synthefy_tabular.utils.loading import load_model
+        m = load_model(model_path, mask_prediction=True)
+        m.eval()
+        m.to(self.device)
+        for p in m.parameters():
+            p.requires_grad_(False)
+        self._icl_filter_model = m
+        self._icl_filter_type = 'limix'
+        if self.is_main:
+            print(f"GPU ICL filter: LimiX {model_path} -> {self.device}")
 
     @torch.no_grad()
     def _gpu_icl_filter(self, X_batch, y_batch, task_type, n_classes):
         """Run batched ICL learnability check on GPU.
 
-        Supports LimiX (native forward), TabICLv2 (fit/predict), and
-        TabPFN (fit/predict). The model type is determined at init time
-        by _init_gpu_icl_filter.
+        Uses the frozen LimiX model (native forward). The model is loaded
+        at init time by _init_gpu_icl_filter.
 
         Args:
             X_batch: np.ndarray [B, n_samples, n_features]
@@ -489,82 +460,8 @@ class LimiXTrainer:
         Returns:
             passed: np.ndarray[bool] of shape [B] — True if episode is learnable
         """
-        cfg = self.config
-        B, N, F = X_batch.shape
-
-        if self._icl_filter_type in ('tabicl', 'tabpfn'):
-            return self._gpu_icl_filter_sklearn(
-                X_batch, y_batch, task_type, n_classes)
-        else:
-            return self._gpu_icl_filter_limix(
-                X_batch, y_batch, task_type, n_classes)
-
-    def _gpu_icl_filter_sklearn(self, X_batch, y_batch, task_type, n_classes):
-        """Filter using sklearn-compatible models (TabICLv2, TabPFN).
-
-        Per-episode fit/predict — slower than batched LimiX but uses
-        the actual model's learning capability as the filter criterion.
-        """
-        cfg = self.config
-        B, N, F = X_batch.shape
-        max_ctx = min(500, int(N * 0.7))
-        max_feat = min(100, F)
-        passed = np.ones(B, dtype=bool)
-
-        model = self._icl_filter_model
-
-        for b in range(B):
-            try:
-                X = X_batch[b].copy()
-                y = y_batch[b].copy()
-
-                # Subsample features for speed
-                if F > max_feat:
-                    feat_idx = np.random.default_rng(b).choice(
-                        F, max_feat, replace=False)
-                    X = X[:, feat_idx]
-
-                X_clean = np.nan_to_num(X, nan=0.0).astype(np.float32)
-
-                # Context/query split
-                n_ctx = min(max_ctx, N - 20)
-                X_train, y_train = X_clean[:n_ctx], y[:n_ctx]
-                X_test, y_test = X_clean[n_ctx:], y[n_ctx:]
-
-                if len(X_test) < 10:
-                    continue
-
-                if task_type == 'reg':
-                    # Normalize y using context stats
-                    y_mean = np.nanmean(y_train)
-                    y_std = np.nanstd(y_train)
-                    if y_std < 1e-8:
-                        passed[b] = False
-                        continue
-                    y_train_norm = ((y_train - y_mean) / y_std).astype(np.float64)
-                    y_test_norm = ((y_test - y_mean) / y_std).astype(np.float64)
-
-                    model.fit(X_train.astype(np.float32),
-                              y_train_norm.astype(np.float64))
-                    preds = model.predict(X_test.astype(np.float32))
-                    preds = np.asarray(preds, dtype=np.float64).squeeze()
-
-                    ss_res = ((y_test_norm - preds) ** 2).sum()
-                    ss_tot = ((y_test_norm - y_test_norm.mean()) ** 2).sum()
-                    r2 = 1.0 - ss_res / max(ss_tot, 1e-8)
-                    passed[b] = r2 > cfg.icl_filter_reg_min_r2
-                else:
-                    model.fit(X_train.astype(np.float32),
-                              y_train.astype(np.int64))
-                    preds = model.predict(X_test.astype(np.float32))
-                    acc = (preds == y_test.astype(np.int64)).mean()
-                    chance = 1.0 / max(n_classes or 2, 2)
-                    passed[b] = acc > chance + 0.05
-
-            except Exception:
-                passed[b] = True  # don't filter on error
-
-        return passed
+        return self._gpu_icl_filter_limix(
+            X_batch, y_batch, task_type, n_classes)
 
     def _gpu_icl_filter_limix(self, X_batch, y_batch, task_type, n_classes):
         """Filter using frozen LimiX model (batched GPU forward pass).
