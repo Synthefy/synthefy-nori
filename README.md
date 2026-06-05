@@ -12,11 +12,11 @@ Face checkpoint tooling.
 
 ### By source
 
-| Source | N | Synthefy Tabular (best) | TabPFN-3 | Result |
-|--------|---:|---:|---:|---|
-| OpenML Regression | 11 | 0.6104 | 0.6073 | **+0.003 win** |
-| TabArena | 13 | 0.8089 | **0.8165** | −0.008 loss |
-| TALENT | 72 | 0.7591 | 0.7521 | **+0.007 win** |
+| Source | N | Synthefy Tabular (best) |
+|--------|---:|---:|
+| OpenML Regression | 11 | 0.6104 |
+| TabArena | 13 | 0.8089 |
+| TALENT | 72 | 0.7591 |
 
 We win on 2 of 3 sources; the remaining gap is on TabArena
 (large-N / long-context datasets), which the large-table continuation stages target.
