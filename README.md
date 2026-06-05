@@ -10,23 +10,6 @@ Face checkpoint tooling.
 
 ## Results
 
-Regression performance across 96 evaluation tasks from 3 benchmark sources
-(TabArena, TALENT, OpenML-Reg):
-
-| Rank | Model | Mean R² | Training Data |
-|---|---|---|---|
-| **1** | **Synthefy Tabular + Thinking** | **0.7487** | Synthetic |
-| **2** | **Synthefy Tabular** | **0.7475** | Synthetic |
-| 3 | TabPFN-3 | 0.7443 | Synthetic |
-| 4 | TabPFN-2.6 | 0.7437 | Synthetic |
-| 5 | Real TabPFN-2.5 | 0.7364 | Real + Synthetic |
-| 6 | TabICLv2 | 0.7354 | Synthetic |
-| 7 | TabPFN-2.5 | 0.7354 | Synthetic |
-| 8 | LimiX-2M (pretrained baseline) | 0.7301 | Synthetic |
-
-Synthefy Tabular is **first on aggregate mean R²**, ahead of TabPFN-3, at
-~5.5M parameters.
-
 ### By source
 
 | Source | N | Synthefy Tabular (best) | TabPFN-3 | Result |
