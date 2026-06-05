@@ -159,8 +159,6 @@ def main():
                              '"limix" to auto-download LimiX-2M from HuggingFace, '
                              '"hf" to auto-download the Synthefy checkpoint, '
                              'path to local checkpoint (.pt/.ckpt), '
-                             '"tabicl" for TabICLv2, '
-                             '"tabpfn" for TabPFN-2.5, '
                              'or empty string to disable. '
                              'Runs on the training GPU after each batch.')
     parser.add_argument('--icl-filter-cls-min-auc', type=float, default=0.55,

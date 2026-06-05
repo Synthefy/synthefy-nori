@@ -1,6 +1,6 @@
 """LimiX Unified Evaluation Framework.
 
-Evaluate LimiX-2M, LimiX-16M, TabPFN-2.5, and custom checkpoints
+Evaluate LimiX-2M, LimiX-16M, and custom checkpoints
 across TabArena, RelBench CTU, OpenML-CC18, and other benchmarks.
 """
 
