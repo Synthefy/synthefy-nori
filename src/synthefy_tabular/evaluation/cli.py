@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--custom-cls-dir", default=None)
     parser.add_argument("--custom-reg-dir", default=None)
     parser.add_argument("--cls-config", default=config_path("cls_default_noretrieval.json"))
-    parser.add_argument("--reg-config", default=config_path("reg_allordinal_poly10_noretrieval.json"))
+    parser.add_argument("--reg-config", default=config_path("reg_allordinal_poly10_adaptive_svd256.json"))
     parser.add_argument("--task-types", nargs="+", default=None,
                         choices=["classification", "regression"])
     parser.add_argument("--sources", nargs="+", default=None)
