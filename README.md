@@ -18,7 +18,7 @@ Face checkpoint tooling.
 | TabArena | 13 | 0.8089 | **0.8165** | −0.008 loss |
 | TALENT | 72 | 0.7591 | 0.7521 | **+0.007 win** |
 
-We win on 2 of 3 sources and on the aggregate; the remaining gap is on TabArena
+We win on 2 of 3 sources; the remaining gap is on TabArena
 (large-N / long-context datasets), which the large-table continuation stages target.
 
 ### Elo
@@ -37,8 +37,7 @@ ordering differs:
 
 Closing the TabArena/Elo gap is the active focus of the large-table training stages.
 
-> **Thinking** is an inference-time reasoning extension that adds the top result
-> above. Details are forthcoming.
+> **Thinking** is an inference-time reasoning extension. Details are forthcoming.
 
 ## How it works
 
