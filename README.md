@@ -10,32 +10,16 @@ Face checkpoint tooling.
 
 ## Results
 
-### By source
+Mean R² across 96 regression tasks from three public benchmark suites:
 
-| Source | N | Synthefy Tabular (best) |
-|--------|---:|---:|
+| Source | Tasks | Mean R² |
+|--------|------:|--------:|
 | OpenML Regression | 11 | 0.6104 |
 | TabArena | 13 | 0.8089 |
 | TALENT | 72 | 0.7591 |
 
-We win on 2 of 3 sources; the remaining gap is on TabArena
-(large-N / long-context datasets), which the large-table continuation stages target.
-
-### Elo
-
-Mean R² rewards large wins on a few datasets; **Elo** (pairwise win rate across
-datasets, used by leaderboards like TabArena) rewards consistency. On Elo the
-ordering differs:
-
-| Elo rank | Model | Elo | Pairwise winrate |
-|---|---|---|---|
-| 1 | TabPFN-3 | 1731 | 71.6% |
-| 2 | TabICLv2 | 1648 | 53.1% |
-| 3 | Synthefy Tabular + Thinking | 1511 | 55.8% |
-| 4 | TabPFN-2.6 | 1502 | 60.3% |
-| 6 | Synthefy Tabular | 1477 | 54.2% |
-
-Closing the TabArena/Elo gap is the active focus of the large-table training stages.
+Large-N / long-context tables (common in TabArena) are the current focus of the
+large-table training stages.
 
 > **Thinking** is an inference-time reasoning extension. Details are forthcoming.
 
