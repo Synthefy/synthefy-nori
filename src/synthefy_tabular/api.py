@@ -60,7 +60,7 @@ class SynthefyTabularRegressor:
         self.device = device
         self.token = token
         self.inference_config = inference_config or config_path(
-            "reg_allordinal_poly10_noretrieval.json"
+            "reg_allordinal_poly10_adaptive_svd256.json"
         )
         self.augmentations = tuple(augmentations) if augmentations else ()
         self.yj_skew_threshold = float(yj_skew_threshold)

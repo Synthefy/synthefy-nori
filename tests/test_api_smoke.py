@@ -12,4 +12,4 @@ def test_config_path_points_to_bundled_file():
 def test_regressor_uses_default_regression_config():
     model = SynthefyTabularRegressor(model_path="local.pt")
     assert model.model_path == "local.pt"
-    assert model.inference_config.endswith("reg_allordinal_poly10_noretrieval.json")
+    assert model.inference_config.endswith("reg_allordinal_poly10_adaptive_svd256.json")

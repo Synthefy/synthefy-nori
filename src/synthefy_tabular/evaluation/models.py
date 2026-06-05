@@ -85,7 +85,7 @@ class LimiXWrapper(BaseModelWrapper):
         self.device = torch.device(device)
         self.cls_config_path = cls_config_path or package_config_path("cls_default_noretrieval.json")
         self.reg_config_path = reg_config_path or package_config_path(
-            "reg_allordinal_poly10_noretrieval.json"
+            "reg_allordinal_poly10_adaptive_svd256.json"
         )
         self.base_config_path = base_config_path
         self.augmentations = tuple(augmentations) if augmentations else ()
