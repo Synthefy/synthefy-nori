@@ -95,12 +95,15 @@ class Model:
     # --------------------------------------------------------------- predict
     def predict(self, model_input):
         import numpy as np
+        from fastapi import HTTPException
 
         task = str(model_input.get("task", "regression")).lower()
 
         for key in ("X_train", "y_train", "X_test"):
             if key not in model_input:
-                return {"error": f"Missing required field '{key}'."}
+                raise HTTPException(
+                    status_code=400, detail=f"Missing required field '{key}'."
+                )
 
         X_train = np.asarray(model_input["X_train"], dtype=np.float32)
         X_test = np.asarray(model_input["X_test"], dtype=np.float32)
@@ -127,4 +130,7 @@ class Model:
                 "classes": _to_jsonable(classes),
             }
 
-        return {"error": f"Unsupported task: {task!r}. Use 'regression' or 'classification'."}
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported task: {task!r}. Use 'regression' or 'classification'.",
+        )
