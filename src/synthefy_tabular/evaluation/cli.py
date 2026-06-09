@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> None:
     checkpoints = args.checkpoint or [f"Synthefy:{download_checkpoint()}"]
     for raw in checkpoints:
         label, path = _parse_checkpoint(raw)
-        models.add_limix(
+        models.add_checkpoint(
             label,
             path,
             device=args.device,

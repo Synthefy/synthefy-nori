@@ -1,4 +1,4 @@
-"""Hierarchical SCM synthetic data generator for LimiX training.
+"""Hierarchical SCM synthetic data generator for Synthefy Tabular training.
 
 Generates synthetic tabular datasets using a hierarchical composition of
 Local Causal Structures (LCS). Each LCS is a small DAG (3-8 nodes) with

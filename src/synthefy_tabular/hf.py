@@ -30,7 +30,7 @@ def _access_error_message(repo_id: str) -> str:
         f"This checkpoint requires authentication. To resolve:\n"
         f"  1. Request access at https://huggingface.co/{repo_id}\n"
         f"  2. Get a token at https://huggingface.co/settings/tokens (read scope)\n"
-        f"  3. Provide it via `export HF_TOKEN=hf_...`, `huggingface-cli login`,\n"
+        f"  3. Provide it via `export HF_TOKEN=hf_...`, `hf auth login`,\n"
         f"     or pass token=... to SynthefyTabularRegressor/Classifier.\n"
         f"If you already have a local checkpoint, pass model_path=... to skip the download."
     )

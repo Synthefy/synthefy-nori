@@ -105,13 +105,6 @@ class EvalAnalyzer:
             return None
         if focus_model and focus_model in models:
             return focus_model
-        for m in models:
-            low = m.lower()
-            if "limix" in low and "2m" in low:
-                return m
-        for m in models:
-            if "limix" in m.lower():
-                return m
         return models[0]
 
     # --- Aggregate summaries ---
@@ -677,7 +670,7 @@ class EvalAnalyzer:
 
     def print_report(self, show_per_dataset=True):
         print("\n" + "=" * 80)
-        print("  LIMIX EVALUATION REPORT")
+        print("  SYNTHEFY TABULAR EVALUATION REPORT")
         print("=" * 80)
 
         models = sorted(self.df["model"].unique())
@@ -975,7 +968,7 @@ class EvalAnalyzer:
         return lines
 
     def generate_markdown_report(self, output_path=None):
-        lines = ["# LimiX Evaluation Report\n"]
+        lines = ["# Synthefy Tabular Evaluation Report\n"]
         models = sorted(self.df["model"].unique())
         sources = sorted(self.df["source"].unique()) if "source" in self.df.columns else []
         lines.append(f"**Models**: {', '.join(models)}  ")

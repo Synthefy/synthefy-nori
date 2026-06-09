@@ -1,4 +1,4 @@
-"""TabICL-style synthetic data prior for LimiX training.
+"""TabICL-style synthetic data prior for Synthefy Tabular training.
 
 Ports the key components of TabICL's prior system (MLP SCM, Tree SCM,
 Reg2Cls, meta-distribution HP sampling, rich activation library) to work

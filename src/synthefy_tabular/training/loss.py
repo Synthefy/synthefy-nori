@@ -1,4 +1,4 @@
-"""Unified CCMM loss for LimiX training.
+"""Unified CCMM loss for Synthefy Tabular training.
 
 The CCMM objective treats ALL masked entries uniformly. The loss sums NLL
 across all masked positions:

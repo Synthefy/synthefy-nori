@@ -1,4 +1,4 @@
-"""Async data prefetching for LimiX training.
+"""Async data prefetching for Synthefy Tabular training.
 
 Uses a pool of background processes to generate synthetic data batches
 while the GPU runs forward/backward. This overlaps CPU data generation

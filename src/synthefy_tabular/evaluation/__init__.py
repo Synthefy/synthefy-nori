@@ -1,7 +1,7 @@
-"""LimiX Unified Evaluation Framework.
+"""Synthefy Tabular Evaluation Framework.
 
-Evaluate LimiX-2M, LimiX-16M, and custom checkpoints
-across TabArena, RelBench CTU, OpenML-CC18, and other benchmarks.
+Evaluate Synthefy Tabular checkpoints across TabArena, RelBench CTU,
+OpenML-CC18, and other benchmarks.
 """
 
 

@@ -81,9 +81,9 @@ class SynthefyTabularRegressor:
 
     def _get_predictor(self):
         if self._predictor is None:
-            from synthefy_tabular.inference.predictor import LimiXPredictor
+            from synthefy_tabular.inference.predictor import SynthefyTabularPredictor
 
-            self._predictor = LimiXPredictor(
+            self._predictor = SynthefyTabularPredictor(
                 device=_as_device(self.device),
                 model_path=_resolve_model_path(self.model_path, self.token),
                 inference_config=self.inference_config,

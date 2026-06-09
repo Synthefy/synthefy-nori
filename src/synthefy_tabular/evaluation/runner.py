@@ -328,7 +328,7 @@ class EvalRunner:
         total = len(models) * len(all_datasets)
         cache_status = "OFF" if self.no_cache else f"ON ({self._cache_dir})"
         print(f"\n{'='*70}")
-        print(f"  LimiX Unified Evaluation")
+        print(f"  Synthefy Tabular Evaluation")
         print(f"  Models: {len(models)}  |  Datasets: {len(all_datasets)}  |  Total runs: {total}")
         print(f"  Cache: {cache_status}")
         print(f"  Parallel model workers: {self.parallel_models}")
@@ -435,7 +435,7 @@ class EvalRunner:
     def _compute_max_train(n_test, n_features, gpu_mem_gb=70.0, features_per_group=2):
         """Estimate the maximum training samples that will fit in GPU memory.
 
-        LimiX memory is dominated by:
+        Model memory is dominated by:
         - Feature attention:  O(n_samples * n_groups^2) per layer
         - Sample attention:   O(n_samples^2 * n_heads) per layer
         - Embeddings:         O(n_samples * n_groups * embed_dim)

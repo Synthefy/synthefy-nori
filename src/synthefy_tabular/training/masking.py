@@ -1,4 +1,4 @@
-"""CCMM masking strategies for LimiX training.
+"""CCMM masking strategies for Synthefy Tabular training.
 
 Three mask patterns (randomly selected per episode):
 1. Cell-wise: Each cell independently masked with probability = mask_ratio
