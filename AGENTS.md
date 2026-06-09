@@ -6,7 +6,7 @@ repo. Keep it accurate — update it when commands, layout, or conventions chang
 ## What this is
 
 `synthefy-tabular` is a small (~5.5M-parameter) tabular foundation model
-(`FeaturesTransformer`) for **regression and classification** via in-context
+(`FeaturesTransformer`) for **regression** via in-context
 learning. Given a few labeled context rows, it predicts on query rows in a
 single forward pass — no task-specific training. It is trained entirely on
 synthetic data. The public API wraps an internal `SynthefyTabularPredictor`.
@@ -38,10 +38,11 @@ uv build
   `Synthefy/synthefy-tabular` (file `synthefy-tabular.pt`). First use downloads
   and caches it — **no token or access request needed**. A token is only used
   for higher rate limits or for pointing at a private/custom repo.
-- Public API (`src/synthefy_tabular/api.py`): `SynthefyTabularRegressor` and
-  `SynthefyTabularClassifier` (sklearn-style `fit` / `predict` /
-  `predict_proba`), plus the one-shot `infer` / `predict` helpers and
-  `config_path`.
+- Public API (`src/synthefy_tabular/api.py`): `SynthefyTabularRegressor`
+  (sklearn-style `fit` / `predict`; `predict` takes
+  `output_type="mean"/"median"/"mode"` per the `TabPFNRegressor` contract),
+  plus the one-shot `infer` / `predict` helpers and `config_path`. The public
+  API is **regression-only** as of 0.2.0 (classification was removed in #10).
 - `fit()` only stores the context rows; all compute happens in `predict()`.
   Uses GPU when available, else CPU.
 - Pass `model_path="…/checkpoint.pt"` to run a local checkpoint and skip the
@@ -80,9 +81,21 @@ tests/            fast unit/smoke tests + slow e2e tests (marked `slow`)
 - **Versioning**: keep `pyproject.toml` `version` and `__init__.py`
   `__version__` in sync — the publish workflow enforces a match with the git
   tag. Release process is in `RELEASING.md`.
-- **Training is GPU + DDP** via `scripts/train.sh` (torchrun); it is not meant
-  to run meaningfully on CPU. Smoke-test the wiring with:
-  `TOTAL_STEPS=2 NPROC_PER_NODE=1 WANDB_MODE=disabled bash scripts/train.sh`.
+- **Training is GPU + DDP.** Real runs go through `scripts/train.sh` (torchrun)
+  on one or more CUDA GPUs; the distributed path places each rank on
+  `cuda:<rank>`. Heads-up: the non-distributed `--device` default is `cuda:2`,
+  so `NPROC_PER_NODE=1 bash scripts/train.sh` only works on a box with ≥3 GPUs.
+- **CPU smoke (no GPU needed)** — exercises the full loop (data-gen →
+  CCMM/pinball loss → Muon step → checkpoint write) in 2 steps:
+
+  ```bash
+  WANDB_MODE=disabled uv run synthefy-tabular-train \
+    --device cpu --no-mixed-precision --no-prefetch --no-flash-attn \
+    --task-type reg --total-steps 2 --run-steps 2 --save-interval 2 \
+    --embed-dim 32 --hid-dim 64 --nlayers 2 --nhead 2 \
+    --batch-size 2 --max-features 16 --max-budget 4000 \
+    --checkpoint-dir /tmp/st_smoke
+  ```
 - Shell scripts run with the project venv (`.venv/bin/python`); they do not rely
   on a bare `python`.
 
