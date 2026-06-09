@@ -25,8 +25,10 @@ resources:
   memory: 16Gi
   use_gpu: true
 
-# The default checkpoint (Synthefy/synthefy-tabular) is gated on the Hugging Face
-# Hub. Set this secret in the Baseten workspace (Settings -> Secrets) to a HF token
-# with read access, then reference it here. The value below is just a placeholder.
+# The default checkpoint (Synthefy/synthefy-tabular) is PUBLIC and un-gated on the
+# Hugging Face Hub (verified: private=false, gated=false), so no token is required —
+# warmup downloads it anonymously and this secret can stay null. Only set
+# hf_access_token (a HF token with read access, via the Baseten workspace:
+# Settings -> Secrets) if the repo is ever made private or re-gated.
 secrets:
   hf_access_token: null

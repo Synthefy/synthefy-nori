@@ -3,13 +3,13 @@ info:
   title: Synthefy Tabular Inference API
   version: "1.0.0"
   description: |
-    In-context learning model for tabular **regression** and **classification**,
-    served on Baseten. There is no offline training step: every request supplies
-    the context rows (`X_train`, `y_train`) and the query rows (`X_test`), and the
-    model conditions on the context and predicts labels for the queries in a
-    single forward pass.
+    In-context learning model for tabular **regression**, served on Baseten.
+    There is no offline training step: every request supplies the context rows
+    (`X_train`, `y_train`) and the query rows (`X_test`), and the model conditions
+    on the context and predicts targets for the queries in a single forward pass.
 
     Notes:
+    - This deployment is **regression-only**.
     - The first request after a scale-to-zero idle triggers a checkpoint download +
       warmup and can take ~90s; warm requests return in ~1-2s.
     - Invalid requests (missing fields, unsupported task) return **HTTP 400** with
@@ -23,10 +23,10 @@ paths:
   /environments/production/predict:
     post:
       operationId: predict
-      summary: Run an in-context prediction
+      summary: Run an in-context regression prediction
       description: |
-        Submit context rows and query rows and receive predictions for the query
-        rows. The response shape depends on `task`.
+        Submit context rows and query rows and receive a predicted value for each
+        query row.
       requestBody:
         required: true
         content:
@@ -41,43 +41,23 @@ paths:
                   X_train: [[0.0, 1.0], [1.0, 0.0], [0.5, 0.5], [0.2, 0.8]]
                   y_train: [0.1, 0.9, 0.5, 0.3]
                   X_test: [[0.3, 0.7], [0.8, 0.2]]
-              classification:
-                summary: Classification request
-                value:
-                  task: classification
-                  X_train: [[0.0, 1.0], [1.0, 0.0], [0.5, 0.5], [0.2, 0.8]]
-                  y_train: [0, 1, 0, 1]
-                  X_test: [[0.3, 0.7], [0.8, 0.2]]
       responses:
         "200":
-          description: |
-            A successful prediction. The shape depends on `task`:
-            `RegressionResponse` or `ClassificationResponse`.
+          description: A successful regression prediction.
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: "#/components/schemas/RegressionResponse"
-                  - $ref: "#/components/schemas/ClassificationResponse"
+                $ref: "#/components/schemas/RegressionResponse"
               examples:
                 regression:
-                  summary: Regression response (real output)
+                  summary: Regression response (illustrative output)
                   value:
                     task: regression
                     predictions: [0.3699104921941226, 0.7807573902172393]
-                classification:
-                  summary: Classification response (real output)
-                  value:
-                    task: classification
-                    predictions: [0, 0]
-                    probabilities:
-                      - [0.5008668154219742, 0.4991331845780258]
-                      - [0.5013414770764553, 0.49865852292354473]
-                    classes: [0, 1]
         "400":
           description: |
             Invalid request — a required field (`X_train`, `y_train`, `X_test`)
-            is missing, or `task` is not one of the supported values.
+            is missing, or `task` is not a supported (regression) value.
           content:
             application/json:
               schema:
@@ -90,7 +70,7 @@ paths:
                 badTask:
                   summary: Unsupported task
                   value:
-                    error: "Unsupported task: 'cluster'. Use 'regression' or 'classification'."
+                    error: "Unsupported task: 'classification'. This deployment is regression-only; use 'regression'."
         "401":
           description: Missing or invalid API key.
         "404":
@@ -107,14 +87,9 @@ components:
   schemas:
     Task:
       type: string
-      description: Prediction task. Defaults to `regression` when omitted.
-      enum: [regression, reg, classification, cls]
+      description: Prediction task. Regression-only; defaults to `regression` when omitted.
+      enum: [regression, reg]
       default: regression
-    Label:
-      description: A target/class label; may be a number or a string.
-      oneOf:
-        - type: number
-        - type: string
     PredictRequest:
       type: object
       required: [X_train, y_train, X_test]
@@ -130,11 +105,9 @@ components:
               type: number
         y_train:
           type: array
-          description: |
-            Context targets aligned with `X_train` rows. Numeric for regression;
-            ints or strings for classification.
+          description: Context targets aligned with `X_train` rows (numeric).
           items:
-            $ref: "#/components/schemas/Label"
+            type: number
         X_test:
           type: array
           description: Query feature matrix, n_query x n_features.
@@ -155,30 +128,6 @@ components:
           description: Predicted value per `X_test` row.
           items:
             type: number
-    ClassificationResponse:
-      type: object
-      required: [task, predictions, probabilities, classes]
-      properties:
-        task:
-          type: string
-          const: classification
-        predictions:
-          type: array
-          description: Predicted class label per `X_test` row (argmax over classes).
-          items:
-            $ref: "#/components/schemas/Label"
-        probabilities:
-          type: array
-          description: Per-class probabilities per `X_test` row; columns ordered by `classes`.
-          items:
-            type: array
-            items:
-              type: number
-        classes:
-          type: array
-          description: Class labels giving the column order of `probabilities`.
-          items:
-            $ref: "#/components/schemas/Label"
     ErrorResponse:
       type: object
       required: [error]
