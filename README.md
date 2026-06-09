@@ -1,6 +1,6 @@
 # Synthefy Tabular
 
-Synthefy Tabular is a tabular foundation model for **regression and classification**
+Synthefy Tabular is a tabular foundation model for **regression**
 via in-context learning (ICL). Given a few labeled rows as context, it predicts on
 new query rows in a single forward pass, with no task-specific training or fine-tuning.
 The model is trained entirely on synthetic data.
@@ -130,9 +130,8 @@ model.fit(X_train, y_train)           # "fit" just stores the labeled rows as co
 pred = model.predict(X_test)          # predictions in a single forward pass, no training
 ```
 
-It uses a GPU when one is available and falls back to CPU. Classification uses
-`SynthefyTabularClassifier` with the same `fit` / `predict` API. A one-shot
-helper skips the object entirely:
+It uses a GPU when one is available and falls back to CPU. A one-shot helper
+skips the object entirely:
 
 ```python
 from synthefy_tabular import predict
@@ -145,8 +144,11 @@ To run from your own checkpoint instead of the Hub default, pass a path:
 model = SynthefyTabularRegressor(model_path="path/to/checkpoint.pt")
 ```
 
-Runnable examples: [`examples/inference_regression.py`](examples/inference_regression.py),
-[`examples/inference_classification.py`](examples/inference_classification.py).
+`predict` follows the `TabPFNRegressor.predict` contract: pass
+`output_type="mean"` (default), `"median"`, or `"mode"` to choose the point
+estimate drawn from the model's predictive distribution.
+
+Runnable example: [`examples/inference_regression.py`](examples/inference_regression.py).
 More detail in [docs/inference.md](docs/inference.md).
 
 ## Training
@@ -223,7 +225,7 @@ See [docs/huggingface.md](docs/huggingface.md).
 
 ```
 src/synthefy_tabular/
-  api.py            Public API (SynthefyTabularRegressor / Classifier, infer, predict)
+  api.py            Public API (SynthefyTabularRegressor, infer, predict)
   model/            FeaturesTransformer architecture
   training/         Data generation, trainer, loss, config, CLI
   inference/        Sklearn-compatible predictor + preprocessing

@@ -10,7 +10,7 @@ from importlib.resources import files
 from typing import Literal
 
 
-Task = Literal["classification", "regression", "cls", "reg"]
+Task = Literal["regression", "reg"]
 
 
 def config_path(filename: str) -> str:
@@ -95,7 +95,37 @@ class SynthefyTabularRegressor:
             )
         return self._predictor
 
-    def predict(self, X):
+    def predict(self, X, *, output_type: str = "mean", quantiles: list[float] | None = None):
+        """Predict targets for the query rows.
+
+        Mirrors the ``TabPFNRegressor.predict`` contract. ``output_type`` selects
+        the point estimate taken from the model's predictive distribution:
+
+        - ``"mean"``   — distribution mean (default; identical to prior behavior)
+        - ``"median"`` — distribution median (the ``tau=0.5`` quantile)
+        - ``"mode"``   — distribution mode
+
+        The distributional outputs ``"quantiles"``, ``"main"`` and ``"full"`` (and
+        the ``quantiles=`` argument) are part of the TabPFN contract but are not
+        yet supported here; requesting them raises ``NotImplementedError``.
+        """
+        if output_type in ("quantiles", "main", "full"):
+            raise NotImplementedError(
+                f"output_type={output_type!r} returns the full predictive "
+                "distribution, which SynthefyTabularRegressor does not yet "
+                "support. Use 'mean', 'median', or 'mode'."
+            )
+        if output_type not in ("mean", "median", "mode"):
+            raise ValueError(
+                f"Unknown output_type={output_type!r}; expected one of "
+                "'mean', 'median', 'mode', 'quantiles', 'main', 'full'."
+            )
+        if quantiles is not None:
+            raise ValueError(
+                "quantiles= is only valid with output_type='quantiles', which "
+                "is not yet supported."
+            )
+
         import numpy as np
         import torch
 
@@ -104,7 +134,21 @@ class SynthefyTabularRegressor:
 
         X_test = np.asarray(X, dtype=np.float32)
         y_norm = ((self.y_train_ - self.y_mean_) / self.y_std_).astype(np.float32)
-        pred = self._get_predictor().predict(
+
+        predictor = self._get_predictor()
+        # Drive the predictor's distribution-collapse from output_type. "mean"
+        # restores the regressor's configured collapse so the default path is
+        # byte-for-byte the prior behavior; "median"/"mode" override it for this
+        # call. A quantile head has no native mode, so "mode" falls back to the
+        # median there, while bar-distribution heads decode a true mode.
+        if output_type == "mean":
+            predictor.quantile_collapse = self.quantile_collapse
+            predictor.bar_point_estimator = self.bar_point_estimator
+        else:
+            predictor.quantile_collapse = "median"
+            predictor.bar_point_estimator = output_type
+
+        pred = predictor.predict(
             self.X_train_,
             y_norm,
             X_test,
@@ -114,71 +158,6 @@ class SynthefyTabularRegressor:
             pred = pred.detach().cpu().numpy()
         pred = np.asarray(pred, dtype=np.float64).squeeze()
         return pred * self.y_std_ + self.y_mean_
-
-
-class SynthefyTabularClassifier:
-    """Scikit-learn-style classification wrapper around the Synthefy checkpoint."""
-
-    def __init__(
-        self,
-        model_path: str | None = None,
-        *,
-        device=None,
-        inference_config: str | None = None,
-        token: str | bool | None = None,
-    ) -> None:
-        self.model_path = model_path
-        self.device = device
-        self.token = token
-        self.inference_config = inference_config or config_path("cls_default_noretrieval.json")
-        self._predictor = None
-
-    def fit(self, X, y):
-        import numpy as np
-
-        self.X_train_ = np.asarray(X, dtype=np.float32)
-        self.classes_, encoded = np.unique(y, return_inverse=True)
-        self.y_train_ = encoded.astype(np.int64)
-        self.n_classes_ = len(self.classes_)
-        return self
-
-    def _get_predictor(self):
-        if self._predictor is None:
-            from synthefy_tabular.inference.predictor import LimiXPredictor
-
-            self._predictor = LimiXPredictor(
-                device=_as_device(self.device),
-                model_path=_resolve_model_path(self.model_path, self.token),
-                inference_config=self.inference_config,
-            )
-        return self._predictor
-
-    def predict_proba(self, X):
-        import numpy as np
-        import torch
-
-        if not hasattr(self, "X_train_"):
-            raise ValueError("Call fit(X, y) before predict_proba(X).")
-
-        X_test = np.asarray(X, dtype=np.float32)
-        pred = self._get_predictor().predict(
-            self.X_train_,
-            self.y_train_,
-            X_test,
-            task_type="Classification",
-        )
-        if isinstance(pred, torch.Tensor):
-            pred = pred.detach().cpu().numpy()
-        pred = np.asarray(pred, dtype=np.float64)
-        if pred.ndim == 2 and pred.shape[1] > self.n_classes_:
-            pred = pred[:, : self.n_classes_]
-        row_sums = pred.sum(axis=1, keepdims=True)
-        row_sums = np.where(row_sums > 0, row_sums, 1.0)
-        return pred / row_sums
-
-    def predict(self, X):
-        proba = self.predict_proba(X)
-        return self.classes_[proba.argmax(axis=1)]
 
 
 def infer(
@@ -194,9 +173,6 @@ def infer(
     """Fit on context rows and infer labels for query rows."""
     if task in ("regression", "reg"):
         model = SynthefyTabularRegressor(model_path=model_path, token=token, **kwargs).fit(X_train, y_train)
-        return model.predict(X_test)
-    if task in ("classification", "cls"):
-        model = SynthefyTabularClassifier(model_path=model_path, token=token, **kwargs).fit(X_train, y_train)
         return model.predict(X_test)
     raise ValueError(f"Unsupported task: {task!r}")
 
