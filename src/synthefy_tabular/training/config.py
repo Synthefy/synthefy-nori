@@ -87,7 +87,7 @@ class TrainingConfig:
     save_interval: int = 5000
     checkpoint_dir: str = "./checkpoints"
     use_wandb: bool = True
-    wandb_project: str = "limix-training"
+    wandb_project: str = "synthefy-tabular"
     wandb_entity: str | None = None
     wandb_name: str | None = None
     wandb_group: str | None = None
@@ -327,7 +327,7 @@ class TrainingConfig:
 
     # Heavy-tail regression y priors (gated). Applies continuous heavy-tail
     # transforms to y: log-normal (exp), Pareto-tailed additive noise, stronger
-    # outlier injection. No rounding. Targets LimiX-2M strict wins:
+    # outlier injection. No rounding. Targets skewed-target weak spots:
     # stock_fardamento02 (skew 17.7), CPS1988, sulfur, Food_Delivery_Time.
     heavy_tail_prior_prob: float = 0.0
 

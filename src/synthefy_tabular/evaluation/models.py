@@ -1,8 +1,6 @@
 """Model registry for the unified evaluation pipeline.
 
-Supports:
-  - LimiX-2M (pretrained and custom checkpoints)
-  - LimiX-16M (pretrained and custom checkpoints)
+Wraps Synthefy Tabular checkpoints for benchmarking.
 """
 
 import gc
@@ -56,11 +54,11 @@ class BaseModelWrapper(ABC):
 
 
 # ---------------------------------------------------------------------------
-# LimiX wrapper (works for 2M, 16M, and custom checkpoints)
+# Model wrapper
 # ---------------------------------------------------------------------------
 
-class LimiXWrapper(BaseModelWrapper):
-    """Wrapper around LimiXPredictor for unified eval."""
+class SynthefyTabularWrapper(BaseModelWrapper):
+    """Wrapper around SynthefyTabularPredictor for unified eval."""
 
     def __init__(
         self,
@@ -102,7 +100,7 @@ class LimiXWrapper(BaseModelWrapper):
 
     def _get_cls_predictor(self):
         if self._cls_predictor is None:
-            from synthefy_tabular.inference.predictor import LimiXPredictor
+            from synthefy_tabular.inference.predictor import SynthefyTabularPredictor
             from synthefy_tabular.utils.loading import load_model
 
             model = load_model(
@@ -110,7 +108,7 @@ class LimiXWrapper(BaseModelWrapper):
                 mask_prediction=False,
                 base_config_path=self.base_config_path,
             )
-            self._cls_predictor = LimiXPredictor(
+            self._cls_predictor = SynthefyTabularPredictor(
                 device=self.device,
                 inference_config=self.cls_config_path,
                 model=model,
@@ -119,7 +117,7 @@ class LimiXWrapper(BaseModelWrapper):
 
     def _get_reg_predictor(self):
         if self._reg_predictor is None:
-            from synthefy_tabular.inference.predictor import LimiXPredictor
+            from synthefy_tabular.inference.predictor import SynthefyTabularPredictor
             from synthefy_tabular.utils.loading import load_model
 
             # Reuse model from cls_predictor if already loaded
@@ -131,7 +129,7 @@ class LimiXWrapper(BaseModelWrapper):
                     mask_prediction=False,
                     base_config_path=self.base_config_path,
                 )
-            self._reg_predictor = LimiXPredictor(
+            self._reg_predictor = SynthefyTabularPredictor(
                 device=self.device,
                 inference_config=self.reg_config_path,
                 model=model,
@@ -154,7 +152,7 @@ class LimiXWrapper(BaseModelWrapper):
             pred = pred.cpu().numpy()
         pred = np.asarray(pred, dtype=np.float64)
 
-        # LimiX outputs 10 columns (max classes); trim to actual n_classes
+        # The model outputs 10 columns (max classes); trim to actual n_classes
         if pred.ndim == 2 and pred.shape[1] > n_classes:
             pred = pred[:, :n_classes]
 
@@ -171,7 +169,7 @@ class LimiXWrapper(BaseModelWrapper):
         X_test = np.asarray(X_test, dtype=np.float32)
         y_train = np.asarray(y_train, dtype=np.float64)
 
-        # Normalize y for LimiX
+        # Normalize y for the model
         y_mean, y_std = y_train.mean(), y_train.std()
         if y_std < 1e-12:
             y_std = 1.0
@@ -193,10 +191,10 @@ class LimiXWrapper(BaseModelWrapper):
             torch.cuda.empty_cache()
 
 
-class LimiXEnsembleWrapper(BaseModelWrapper):
-    """Average predictions from N LimiX/Synthefy checkpoints.
+class SynthefyTabularEnsembleWrapper(BaseModelWrapper):
+    """Average predictions from N Synthefy checkpoints.
 
-    Each component is a fully-configured LimiXWrapper (its own checkpoint,
+    Each component is a fully-configured SynthefyTabularWrapper (its own checkpoint,
     inference config, augmentations). The ensemble runs each component for
     every dataset and averages predictions in y-space (regression) or
     probability space (classification).
@@ -213,7 +211,7 @@ class LimiXEnsembleWrapper(BaseModelWrapper):
     def __init__(self, model_name: str, components: list,
                  weights: list | None = None):
         if not components:
-            raise ValueError("LimiXEnsembleWrapper requires at least one component")
+            raise ValueError("SynthefyTabularEnsembleWrapper requires at least one component")
         self._name = model_name
         self.components = components
         self._device = components[0].device_str
@@ -276,7 +274,7 @@ class ModelEntry:
     """Metadata about a registered model."""
     name: str
     wrapper: BaseModelWrapper
-    model_type: str  # "limix", "limix_ensemble", "custom"
+    model_type: str  # "synthefy", "synthefy_ensemble", "custom"
     description: str = ""
     metadata: dict = field(default_factory=dict)
 
@@ -301,7 +299,7 @@ class ModelRegistry:
     # ------------------------------------------------------------------
     # Convenience registration methods
     # ------------------------------------------------------------------
-    def add_limix(
+    def add_checkpoint(
         self,
         name,
         model_path,
@@ -317,7 +315,7 @@ class ModelRegistry:
         bar_point_estimator: str = 'mean',
     ):
         device = device or self.device
-        wrapper = LimiXWrapper(
+        wrapper = SynthefyTabularWrapper(
             model_name=name,
             model_path=model_path,
             device=device,
@@ -331,7 +329,7 @@ class ModelRegistry:
             bar_point_estimator=bar_point_estimator,
         )
         self.register(ModelEntry(
-            name=name, wrapper=wrapper, model_type="limix",
+            name=name, wrapper=wrapper, model_type="synthefy",
             description=description,
             metadata={"model_path": model_path, "device": device},
         ))
@@ -348,7 +346,7 @@ class ModelRegistry:
         weights=None,
         description="",
     ):
-        """Register an ensemble of N Synthefy/LimiX checkpoints.
+        """Register an ensemble of N Synthefy checkpoints.
 
         Each component_spec is a dict with keys:
           - path (required): checkpoint path
@@ -357,14 +355,14 @@ class ModelRegistry:
         Predictions are averaged in y-space (regression) or prob-space (cls).
         """
         device = device or self.device
-        components: list[LimiXWrapper] = []
+        components: list[SynthefyTabularWrapper] = []
         for spec in component_specs:
             if isinstance(spec, str):
                 spec = {"path": spec}
             path = spec["path"]
             label = spec.get("label") or os.path.splitext(os.path.basename(path))[0]
             cmp_reg_config = spec.get("reg_config") or default_reg_config
-            wrapper = LimiXWrapper(
+            wrapper = SynthefyTabularWrapper(
                 model_name=label,
                 model_path=path,
                 device=device,
@@ -375,28 +373,13 @@ class ModelRegistry:
             )
             components.append(wrapper)
 
-        ens = LimiXEnsembleWrapper(ensemble_name, components, weights=weights)
+        ens = SynthefyTabularEnsembleWrapper(ensemble_name, components, weights=weights)
         self.register(ModelEntry(
-            name=ensemble_name, wrapper=ens, model_type="limix_ensemble",
+            name=ensemble_name, wrapper=ens, model_type="synthefy_ensemble",
             description=description or f"Ensemble of {len(components)} Synthefy checkpoints",
             metadata={"components": [c.model_path for c in components],
                       "weights": (weights if weights else [1.0/len(components)]*len(components))},
         ))
-
-    def add_limix_pretrained_2m(self, device=None, model_path="cache/LimiX-2M.ckpt"):
-        self.add_limix("LimiX-2M (pretrained)", model_path, device=device,
-                       description="Official pretrained LimiX-2M checkpoint")
-
-    def add_limix_pretrained_16m(self, device=None, model_path="cache/LimiX-16M.ckpt"):
-        self.add_limix("LimiX-16M (pretrained)", model_path, device=device,
-                       cls_config=package_config_path("cls_default_noretrieval.json"),
-                       reg_config=package_config_path("reg_allordinal_poly10_noretrieval.json"),
-                       description="Official pretrained LimiX-16M checkpoint")
-
-    def add_limix_checkpoint(self, name, checkpoint_path, device=None, base_config_path=None):
-        self.add_limix(name, checkpoint_path, device=device,
-                       base_config_path=base_config_path,
-                       description=f"Custom checkpoint: {checkpoint_path}")
 
     def cleanup_all(self):
         for entry in self._models.values():

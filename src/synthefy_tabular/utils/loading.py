@@ -83,13 +83,6 @@ def load_model(model_path, mask_prediction:bool=False, base_config_path:str=None
         # Training checkpoint format (legacy): no model_config saved
         # Fall back to extracting config from base pretrained checkpoint
         if base_config_path is None:
-            # Try default location
-            import os
-            for candidate in ['cache/LimiX-2M.ckpt', 'cache/LimiX-16M.ckpt']:
-                if os.path.exists(candidate):
-                    base_config_path = candidate
-                    break
-        if base_config_path is None:
             raise KeyError(
                 f"Training checkpoint at {model_path} does not contain 'model_config'. "
                 "Provide base_config_path pointing to the pretrained .ckpt file."

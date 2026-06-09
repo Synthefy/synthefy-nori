@@ -1,4 +1,4 @@
-"""Main training loop for LimiX CCMM training."""
+"""Main training loop for Synthefy Tabular CCMM training."""
 
 import json
 import os
@@ -39,8 +39,8 @@ def get_wcd_schedule(optimizer, warmup_steps, decay_start_step, total_steps, lr_
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-class LimiXTrainer:
-    """Training loop for LimiX with CCMM objective."""
+class SynthefyTabularTrainer:
+    """Training loop for Synthefy Tabular with CCMM objective."""
 
     def __init__(self, model, config: TrainingConfig, model_config: dict = None,
                  on_checkpoint_saved=None):
@@ -50,7 +50,7 @@ class LimiXTrainer:
         self.on_checkpoint_saved = on_checkpoint_saved
         self.device = torch.device(config.device)
 
-        # In DDP mode, model is already on device from train_limix.py
+        # In DDP mode, model is already on device from the training entrypoint
         if not config.distributed:
             self.model.to(self.device)
 

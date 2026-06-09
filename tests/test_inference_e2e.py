@@ -1,11 +1,12 @@
 """End-to-end inference tests.
 
 These tests download the default HuggingFace checkpoint and run a real forward
-pass through the model. They are skipped by default because they:
+pass through the model. They are deselected by default (the ``slow`` marker)
+because they:
 
-* require network access,
-* require an HF token with access to `Synthefy/synthefy-tabular` (until that
-  repo is made public), and
+* require network access to fetch the public ``Synthefy/synthefy-tabular``
+  checkpoint (no token required; one is used automatically if present in the
+  environment, only to raise anonymous rate limits), and
 * take ~15s on CPU for the regression case.
 
 Run explicitly with::
@@ -31,11 +32,8 @@ def _checkpoint_kwargs():
     local = os.environ.get("SYNTHEFY_TABULAR_TEST_CHECKPOINT")
     if local:
         return {"model_path": local}
-    if not (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")):
-        pytest.skip(
-            "set HF_TOKEN (with access to the default HF repo) "
-            "or SYNTHEFY_TABULAR_TEST_CHECKPOINT to run e2e tests"
-        )
+    # The default repo is public, so anonymous download works. Any HF token in
+    # the environment is picked up automatically (it only affects rate limits).
     return {}
 
 

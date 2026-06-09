@@ -83,32 +83,34 @@ driver, install a PyTorch wheel matching your CUDA version instead. The Muon
 optimizer used in training prefers `torch.optim.Muon`; if your PyTorch lacks it,
 the package automatically falls back to a built-in implementation.
 
-## Authentication
+## Authentication (optional)
 
-The default model checkpoint lives at
+The default checkpoint at
 [`Synthefy/synthefy-tabular`](https://huggingface.co/Synthefy/synthefy-tabular)
-on the Hugging Face Hub and currently requires access. To use the package:
+is **public**: the first inference call downloads and caches it automatically,
+with no token and no access request.
 
-1. Request access at the model page (or contact Synthefy if the page isn't
-   visible to you yet).
-2. Provide your Hugging Face token in any one of these ways:
+A Hugging Face token is only worth setting if you hit anonymous download rate
+limits, or if you point the package at a private/gated checkpoint of your own.
+Provide one in any of these ways:
 
-   ```bash
-   # Option A: env var (one-shot)
-   export HF_TOKEN=hf_xxxxxxxx
+```bash
+# Option A: env var (one-shot)
+export HF_TOKEN=hf_xxxxxxxx
 
-   # Option B: persist via the HF CLI
-   huggingface-cli login
-   ```
+# Option B: persist via the HF CLI (huggingface-hub >= 1.0)
+hf auth login
+```
 
-   ```python
-   # Option C: pass explicitly in code
-   from synthefy_tabular import SynthefyTabularRegressor
-   model = SynthefyTabularRegressor(token="hf_xxxxxxxx")
-   ```
+```python
+# Option C: pass explicitly in code
+from synthefy_tabular import SynthefyTabularRegressor
+model = SynthefyTabularRegressor(token="hf_xxxxxxxx")
+```
 
 Get a token at <https://huggingface.co/settings/tokens> (read scope is
-sufficient). If you supply a local `model_path=` instead, no token is needed.
+sufficient). If you supply a local `model_path=` instead, no network access is
+needed at all.
 
 ## Inference
 
@@ -160,7 +162,7 @@ TOTAL_STEPS=2 NPROC_PER_NODE=1 WANDB_MODE=disabled bash scripts/train.sh
 ```
 
 Training runs entirely on synthetic data and **trains to completion**: there is
-no real-data validation in the loop (`--no-eval`), so no benchmark data needs to
+no real-data validation in the loop, so no benchmark data needs to
 be downloaded to train, and no eval signal influences checkpoint selection. Each
 run writes periodic and final checkpoints, and each curriculum tier seeds from
 the previous tier's final checkpoint.
@@ -229,7 +231,7 @@ src/synthefy_tabular/
   model/            FeaturesTransformer architecture
   training/         Data generation, trainer, loss, config, CLI
   inference/        Sklearn-compatible predictor + preprocessing
-  evaluation/       Benchmark runner over public suites (Synthefy / LimiX)
+  evaluation/       Benchmark runner over public benchmark suites
   hf.py             Hugging Face download / upload
 scripts/            train.sh, continue_training.sh, evaluate.sh
 docs/               training, inference, evaluation, huggingface guides

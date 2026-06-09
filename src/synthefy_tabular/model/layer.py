@@ -13,7 +13,7 @@ from torch.amp import autocast
 
 
 
-if os.environ.get("LIMIX_NO_FLASH_ATTN", "0") == "1":
+if os.environ.get("SYNTHEFY_TABULAR_NO_FLASH_ATTN", "0") == "1":
     HAVE_FLASH_ATTN = False
     HAVE_FLASH_ATTN_4 = False
 else:
@@ -331,7 +331,7 @@ class MultiheadAttention(torch.nn.Module):
         All sequences in a batch have equal length, so no cu_seqlens needed.
         """
         assert HAVE_FLASH_ATTN_4, "FlashAttention-4 not installed. pip install flash-attn-4"
-        # FA4 beta backward kernels fail for LimiX's native head_dim=16 on H100. Padding the
+        # FA4 beta backward kernels fail for the model's native head_dim=16 on H100. Padding the
         # per-head dimension to 128 keeps q·k and weighted-v math unchanged as long as we also
         # preserve the original softmax scale.
         flash_head_dim = 128 if self.head_dim < 128 else self.head_dim

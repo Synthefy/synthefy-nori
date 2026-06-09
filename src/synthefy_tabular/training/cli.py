@@ -18,13 +18,13 @@ from datetime import datetime
 
 # Must set before model imports which check this env var at module load time
 if '--no-flash-attn' in sys.argv:
-    os.environ["LIMIX_NO_FLASH_ATTN"] = "1"
+    os.environ["SYNTHEFY_TABULAR_NO_FLASH_ATTN"] = "1"
 
 import torch
 
 from synthefy_tabular.utils.loading import build_model
 from synthefy_tabular.training.config import TrainingConfig, package_config_path
-from synthefy_tabular.training.trainer import LimiXTrainer
+from synthefy_tabular.training.trainer import SynthefyTabularTrainer
 
 
 def load_model_config(source: str | None) -> dict:
@@ -247,7 +247,7 @@ def main():
     parser.add_argument('--y-transform-prob', type=float, default=0.0,
                         help='Probability of applying realistic y-target transforms per episode. '
                              'Simulates integer counts, censored values, ordinal ratings, bounded averages, '
-                             'zero-inflated counts. Targets LimiX-2M wins we regress on '
+                             'zero-inflated counts. Targets datasets we underperform on '
                              '(stock_fardamento02, boston, sensory, Goodreads, etc). Default 0.0 (off).')
     parser.add_argument('--cap-injection-prob', type=float, default=0.0,
                         help='Probability of injecting upper/lower quantile cap (saturation) per '
@@ -258,7 +258,7 @@ def main():
                         help='Probability of applying heavy-tail y transforms per regression episode. '
                              'Continuous transforms only: log-normal (exp), Pareto additive noise, '
                              'strong outlier injection (5-10%% @ 3-15x scale). No rounding — safe vs '
-                             'failed y_transform experiment. Targets LimiX-2M wins on skewed data '
+                             'failed y_transform experiment. Targets weak spots on skewed data '
                              '(stock_fardamento02, CPS1988, sulfur, Food_Delivery_Time). Default 0.0.')
     parser.add_argument('--pareto-importance-prob', type=float, default=0.0,
                         help='Probability per regression-prior episode of multiplying the per-feature '
@@ -316,7 +316,7 @@ def main():
     parser.add_argument('--feature-positional-embedding-type', type=str, default=None,
                         choices=['subortho', 'learned', 'none'],
                         help='Feature positional embedding type. '
-                             'subortho=random orthogonal each fwd (LimiX default). '
+                             'subortho=random orthogonal each fwd (default). '
                              'learned=nn.Embedding table with permuted slots (TabPFN-2.6 style). '
                              'none=no feature positional embedding.')
     parser.add_argument('--feature-positional-embedding-num-slots', type=int, default=1000,
@@ -720,7 +720,7 @@ def main():
     )
 
     # Create trainer (model already on device, skip internal .to())
-    trainer = LimiXTrainer(model, train_config, model_config=model_config)
+    trainer = SynthefyTabularTrainer(model, train_config, model_config=model_config)
 
     # Resume if specified
     if args.resume:

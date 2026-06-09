@@ -28,8 +28,8 @@ import os
 
 NA_PLACEHOLDER = "__MISSING__"
 
-class LimiXPredictor:
-    """"LimiX model inferencer, supporting tasks such as classification, regression, and missing value prediction."""
+class SynthefyTabularPredictor:
+    """Synthefy Tabular model inferencer, supporting tasks such as classification, regression, and missing value prediction."""
     def __init__(self,
                  device:torch.device,
                  model_path:str = None,
@@ -50,11 +50,11 @@ class LimiXPredictor:
                  bar_point_estimator: str = 'mean',
                  discrete_y_snap_max_unique: int = 30):
         """
-        init LimiXPredictor
+        init SynthefyTabularPredictor
 
         Args:
             device: The device for performing inference; GPU is recommended
-            model_path: The model path of LimiX (unused when model is provided)
+            model_path: The model path of the Synthefy Tabular model (unused when model is provided)
             mix_precision: Whether to use mixed precision inference
             outlier_remove_std: Standard deviation used for removing outliers
             softmax_temperature: Softmax temperature coefficient
@@ -519,7 +519,7 @@ class LimiXPredictor:
     
     def predict(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray, task_type:Literal['Classification', 'Regression']='Classification') -> np.ndarray:
         """
-        Perform inference using the LimiX model
+        Perform inference using the Synthefy Tabular model
 
         Args:
         x_train: Training data x
