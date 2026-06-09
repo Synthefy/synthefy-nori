@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synthefy-tabular"
-version = "0.1.0"
+version = "0.2.0"
 description = "Synthefy Tabular foundation model training, inference, and evaluation"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,7 +17,6 @@ keywords = [
     "machine-learning",
     "deep-learning",
     "regression",
-    "classification",
     "pytorch",
     "synthetic-data",
 ]

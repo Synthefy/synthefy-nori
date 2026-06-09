@@ -62,24 +62,21 @@ def test_regressor_recovers_linear_signal():
     assert corr > 0.8, f"expected strong correlation with linear truth, got {corr:.3f}"
 
 
-def test_classifier_separates_linear_boundary():
-    from synthefy_tabular import SynthefyTabularClassifier
+def test_regressor_output_types_match_tabpfn_contract():
+    from synthefy_tabular import SynthefyTabularRegressor
 
-    rng = np.random.default_rng(1)
+    rng = np.random.default_rng(0)
     n_train, n_test, d = 200, 50, 4
     X_train = rng.normal(size=(n_train, d)).astype(np.float32)
-    y_train = (X_train[:, 0] > 0).astype(np.int64)
+    true_w = rng.normal(size=d).astype(np.float32)
+    y_train = (X_train @ true_w + rng.normal(scale=0.1, size=n_train)).astype(np.float32)
     X_test = rng.normal(size=(n_test, d)).astype(np.float32)
-    y_truth = (X_test[:, 0] > 0).astype(np.int64)
 
-    model = SynthefyTabularClassifier(**_checkpoint_kwargs())
+    model = SynthefyTabularRegressor(**_checkpoint_kwargs())
     model.fit(X_train, y_train)
-    pred = model.predict(X_test)
-    proba = model.predict_proba(X_test)
 
-    assert pred.shape == (n_test,)
-    assert proba.shape == (n_test, 2)
-    assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-3)
-
-    accuracy = float((pred == y_truth).mean())
-    assert accuracy > 0.65, f"expected accuracy > 0.65 on linearly separable task, got {accuracy:.3f}"
+    # All three supported point estimates return a finite per-row vector.
+    for output_type in ("mean", "median", "mode"):
+        pred = model.predict(X_test, output_type=output_type)
+        assert pred.shape == (n_test,), output_type
+        assert np.all(np.isfinite(pred)), output_type
