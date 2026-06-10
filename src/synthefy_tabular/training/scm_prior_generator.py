@@ -9,6 +9,8 @@ Reference: https://github.com/soda-inria/tabicl
            Schlegel et al., "TabICL" (ICML 2025)
 """
 
+from __future__ import annotations
+
 import math
 import random as pyrandom
 import warnings

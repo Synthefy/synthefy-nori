@@ -4,6 +4,8 @@ Evaluate Synthefy Tabular checkpoints across TabArena, RelBench CTU,
 OpenML-CC18, and other benchmarks.
 """
 
+from __future__ import annotations
+
 
 def __getattr__(name):
     """Lazy imports to avoid dependency issues at import time."""

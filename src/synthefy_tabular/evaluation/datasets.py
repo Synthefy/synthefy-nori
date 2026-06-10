@@ -9,6 +9,8 @@ Supports:
   - Custom local CSV directories
 """
 
+from __future__ import annotations
+
 import os
 import gc
 import re

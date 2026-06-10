@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Callable, Literal, Optional
 import functools
 import math

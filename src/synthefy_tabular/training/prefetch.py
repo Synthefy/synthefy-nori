@@ -11,6 +11,8 @@ Design constraints:
   - Batches are returned in submission order (FIFO)
 """
 
+from __future__ import annotations
+
 import multiprocessing as mp
 import traceback
 from collections import deque

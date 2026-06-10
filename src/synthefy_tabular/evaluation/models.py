@@ -3,6 +3,8 @@
 Wraps Synthefy Tabular checkpoints for benchmarking.
 """
 
+from __future__ import annotations
+
 import gc
 import json
 import os

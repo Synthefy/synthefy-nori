@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import gc
 import time
 from typing import Literal, Tuple
@@ -171,10 +173,9 @@ class InferenceResultWithRetrieval:
                 if task_type == "cls":
                     relabel = RelabelRetrievalY(y_.unsqueeze(-1))
                     y_ = relabel.transform_y().squeeze(-1).to(device)
-                with (
-                    torch.autocast(device.type if isinstance(device, torch.device) else device, enabled=True),
-                    torch.inference_mode(),
-                ):
+                with torch.autocast(
+                    device.type if isinstance(device, torch.device) else device, enabled=True
+                ), torch.inference_mode():
                     output = model(x=x_, y=y_, eval_pos=y_.shape[1],
                                    task_type=task_type)
                 if len(output.shape) == 3:
@@ -209,10 +210,9 @@ class InferenceResultWithRetrieval:
                                         bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [耗时:{elapsed}]",
                                         leave=False) if self.rank == 0 else enumerate(
                 dataloader):
-                with (
-                    torch.autocast(device.type if isinstance(device, torch.device) else device, enabled=True),
-                    torch.inference_mode(),
-                ):
+                with torch.autocast(
+                    device.type if isinstance(device, torch.device) else device, enabled=True
+                ), torch.inference_mode():
                     indice.append(data["idx"])
                     X_train = data["X_train"]
                     X_test = data["X_test"].unsqueeze(1)
@@ -302,7 +302,7 @@ class InferenceAttentionMap:
         X_train = fix_data_shape(X_train, data_type="feature")
         X_test = fix_data_shape(X_test, data_type="feature")
         y_train = fix_data_shape(y_train, data_type="label")
-        with(torch.autocast(device.type if isinstance(device, torch.device) else device, enabled=True), torch.inference_mode()):
+        with torch.autocast(device.type if isinstance(device, torch.device) else device, enabled=True), torch.inference_mode():
             x_ = torch.cat([X_train, X_test], dim=1).to(device)
             y_ = y_train.to(device)
 

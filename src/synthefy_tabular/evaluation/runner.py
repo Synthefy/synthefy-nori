@@ -6,6 +6,8 @@ Runs all registered models on all loaded datasets, collecting:
   - Latency: wall-clock time per dataset, throughput (samples/sec)
 """
 
+from __future__ import annotations
+
 import gc
 import hashlib
 import json

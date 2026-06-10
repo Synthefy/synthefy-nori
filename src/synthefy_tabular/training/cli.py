@@ -10,6 +10,8 @@ Usage:
     torchrun --nproc_per_node=4 -m synthefy_tabular.training.cli --batch-size 8
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import sys

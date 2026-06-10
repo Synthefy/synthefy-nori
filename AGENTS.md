@@ -13,7 +13,7 @@ synthetic data. The public API wraps an internal `SynthefyTabularPredictor`.
 
 ## Setup
 
-- Python **≥ 3.10**. The interpreter and dependencies are managed by **uv**
+- Python **≥ 3.9**. The interpreter and dependencies are managed by **uv**
   (`uv.lock` is committed). There may be no bare `python` on PATH — use `uv run`.
 - Install everything (incl. dev tools): `uv sync --extra dev`
 - Optional extras: `--extra train` (wandb, xgboost), `--extra eval`
