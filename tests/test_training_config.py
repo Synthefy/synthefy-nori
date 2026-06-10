@@ -1,0 +1,13 @@
+from pathlib import Path
+
+from synthefy_tabular.training.config import TrainingConfig, package_config_path
+
+
+def test_training_config_constructs():
+    cfg = TrainingConfig()
+    assert isinstance(cfg, TrainingConfig)
+
+
+def test_bundled_configs_resolve():
+    assert Path(package_config_path("cls_default_noretrieval.json")).exists()
+    assert Path(package_config_path("reg_default_noretrieval.json")).exists()
