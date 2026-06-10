@@ -78,15 +78,11 @@ tests/            fast unit/smoke tests + slow e2e tests (marked `slow`)
 - **Never commit checkpoints or data.** `.gitignore` covers
   `*.pt`/`*.ckpt`/`*.safetensors`, `checkpoints/`, `data/`, `results/`,
   `wandb/`, `cache/`.
-- **Versioning**: keep `pyproject.toml` `version` and `__init__.py`
-  `__version__` in sync — the publish workflow enforces a match with the git
-  tag. Public PyPI release process is in `RELEASING.md`.
-- **Private distribution**: this package is private — consumed via git-install
-  from the private repo (pinned to a `vX.Y.Z` tag) or a wheel attached to a
-  private GitHub Release. Pushing a tag triggers `.github/workflows/private-release.yml`.
-  Full consumer + maintainer + Synthefy-SDK contract is in
-  `docs/private-distribution.md`. (GitHub Packages has no Python registry; public
-  PyPI can't carry a private dependency — see that doc for why.)
+- **Versioning & distribution**: the package is **public** and published to PyPI
+  (`pip install synthefy-tabular`). Keep `pyproject.toml` `version` and
+  `__init__.py` `__version__` in sync — `publish.yml` enforces a match with the
+  release tag and uploads to PyPI over OIDC trusted publishing. Release process is
+  in `RELEASING.md`.
 - **Training is GPU + DDP.** Real runs go through `scripts/train.sh` (torchrun)
   on one or more CUDA GPUs; the distributed path places each rank on
   `cuda:<rank>`. Heads-up: the non-distributed `--device` default is `cuda:2`,

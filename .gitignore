@@ -18,3 +18,10 @@ wandb/
 *.ckpt
 *.safetensors
 *.onnx
+
+# Local agent / tooling state
+.claude/
+
+# Environment files — may contain secrets, never commit
+.env
+*.env
