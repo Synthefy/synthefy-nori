@@ -1,0 +1,14 @@
+# CODEOWNERS — required reviewers for synthefy-tabular.
+#
+# Every change (the `*` glob) is owned by the maintainers below. With branch
+# protection's "Require review from Code Owners" enabled on the default branch,
+# a pull request cannot be merged until at least one of them approves it.
+#
+# The companion `.github/workflows/require-approval.yml` enforces the same rule
+# as a status check. See `.github/branch-protection.md` for the one-time
+# settings that make either mechanism actually block the merge button.
+#
+# NOTE: code owners must have write access to this repository, otherwise GitHub
+# silently ignores their entries here.
+
+*	@sagarwal-atg @d31003 @yogabbagabb @raimishah @adityanarayanan03
