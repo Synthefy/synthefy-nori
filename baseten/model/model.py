@@ -18,7 +18,15 @@ Request body (POST /predict):
 
 Response:
 
-    {"task": "regression", "predictions": [...]}   # one value per X_test row
+    {
+        "task": "regression",
+        "predictions": [...],   # one value per X_test row
+        "usage": {              # OpenAI-compatible token accounting
+            "input_tokens": ...,   # real (non-null) values sent across the inputs
+            "output_tokens": ...,  # one predicted target per X_test row
+            "total_tokens": ...,   # input_tokens + output_tokens
+        },
+    }
 """
 
 from __future__ import annotations
@@ -36,6 +44,28 @@ def _to_jsonable(value):
     if isinstance(value, np.generic):
         return value.item()
     return value
+
+
+def _load_token_accounting():
+    """Import the sibling ``token_accounting`` module.
+
+    Works both in-repo, where it imports as ``baseten.token_accounting``, and on
+    the deployed Truss container, where ``model.py`` runs as a top-level module
+    and ``token_accounting.py`` sits one directory up. Import is deferred to call
+    time to keep ``model.py`` import-light (the module pulls in numpy).
+    """
+    try:
+        from baseten import token_accounting
+    except ImportError:
+        import sys
+        from pathlib import Path
+
+        root = str(Path(__file__).resolve().parents[1])
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        import token_accounting
+
+    return token_accounting
 
 
 class Model:
@@ -114,4 +144,12 @@ class Model:
             self._regressor.fit(X_train, y_train)
             preds = self._regressor.predict(X_test)
         preds = np.atleast_1d(preds)
-        return {"task": "regression", "predictions": _to_jsonable(preds)}
+
+        # Token accounting is pure CPU counting and independent of the model, so
+        # it runs outside the inference lock.
+        usage = _load_token_accounting().usage(X_train, y_train, X_test)
+        return {
+            "task": "regression",
+            "predictions": _to_jsonable(preds),
+            "usage": usage,
+        }
