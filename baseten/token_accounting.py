@@ -41,3 +41,23 @@ def compute_tokens(
     output_tokens = int(X_test.shape[0])
 
     return input_tokens, output_tokens
+
+
+def usage(
+    X_train: np.ndarray, y_train: np.ndarray, X_test: np.ndarray
+) -> dict:
+    """Return an OpenAI-compatible ``usage`` block for one inference request.
+
+    Wraps :func:`compute_tokens` into the shape clients expect on the response::
+
+        {"input_tokens": ..., "output_tokens": ..., "total_tokens": ...}
+
+    ``total_tokens`` is exactly ``input_tokens + output_tokens``. Values are
+    builtin ``int`` (not numpy scalars) so the dict is JSON-serializable as-is.
+    """
+    input_tokens, output_tokens = compute_tokens(X_train, y_train, X_test)
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    }
