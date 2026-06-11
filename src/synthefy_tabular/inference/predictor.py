@@ -827,9 +827,12 @@ class SynthefyTabularPredictor:
         n_samples_train = x_train.shape[0]
         n_samples_test = x_test.shape[0]
         
-        # If the number of elements is too large, we must chunk the test set to avoid OOM
-        # A conservative budget for 24GB GPUs is around 200,000 to 500,000 elements
-        MAX_ELEMENTS_BUDGET = 2_000_000
+        # If the number of elements is too large, we must chunk the test set to avoid OOM.
+        # The default (2M elements) is conservative for ~24GB GPUs. On larger GPUs
+        # (A100/H100/H200) raise it via SYNTHEFY_MAX_ELEMENTS_BUDGET so big tables use
+        # their full context instead of being silently subsampled — e.g. set
+        # SYNTHEFY_MAX_ELEMENTS_BUDGET=16000000 for large-context (50K-row) inference.
+        MAX_ELEMENTS_BUDGET = int(os.environ.get("SYNTHEFY_MAX_ELEMENTS_BUDGET", "2000000"))
         
         # Calculate elements for one full forward pass (train + 1 test row at
         # minimum). Use the post-HighDimFeatureSelector feature count — the
@@ -1187,9 +1190,12 @@ class SynthefyTabularPredictor:
         n_samples_train = x_train.shape[0]
         n_samples_test = x_test.shape[0]
         
-        # If the number of elements is too large, we must chunk the test set to avoid OOM
-        # A conservative budget for 24GB GPUs is around 200,000 to 500,000 elements
-        MAX_ELEMENTS_BUDGET = 2_000_000
+        # If the number of elements is too large, we must chunk the test set to avoid OOM.
+        # The default (2M elements) is conservative for ~24GB GPUs. On larger GPUs
+        # (A100/H100/H200) raise it via SYNTHEFY_MAX_ELEMENTS_BUDGET so big tables use
+        # their full context instead of being silently subsampled — e.g. set
+        # SYNTHEFY_MAX_ELEMENTS_BUDGET=16000000 for large-context (50K-row) inference.
+        MAX_ELEMENTS_BUDGET = int(os.environ.get("SYNTHEFY_MAX_ELEMENTS_BUDGET", "2000000"))
         
         # Calculate elements for one full forward pass (train + 1 test row at
         # minimum). Use the post-HighDimFeatureSelector feature count — the
