@@ -9,7 +9,8 @@ that serves the Synthefy Tabular in-context learning model on Baseten.
 baseten/
 ├── config.yaml              # resources (T4 GPU), requirements, HF secret
 ├── model/
-│   └── model.py             # Model class: load() warms the checkpoint, predict() routes by task
+│   ├── model.py             # Model class: load() warms the checkpoint, predict() routes by task
+│   └── token_accounting.py  # OpenAI-style usage counting (bundled with model.py so Truss ships it)
 └── packages/
     └── synthefy_tabular/    # the bundled package (configs included)
 ```
