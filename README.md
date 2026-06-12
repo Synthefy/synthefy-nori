@@ -36,7 +36,7 @@ large-table training stages.
 ```bash
 pip install "synthefy-tabular[eval]"
 
-synthefy-tabular-eval --download-benchmarks --openml-reg --task-types regression
+synthefy-tabular-eval --download-benchmarks --openml-reg
 ```
 
 The first run downloads the pretrained checkpoint from the Hugging Face Hub and

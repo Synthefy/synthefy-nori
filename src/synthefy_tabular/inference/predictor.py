@@ -39,7 +39,6 @@ class SynthefyTabularPredictor:
                  mix_precision:bool=True,
                  outlier_remove_std: float=12,
                  softmax_temperature:float=0.9,
-                #  task_type: Literal['Classification', 'Regression']='Classification',
                  mask_prediction:bool=False,
                  categorical_features_indices:List[int]|None=None,
                  inference_with_DDP: bool = False,
@@ -60,7 +59,6 @@ class SynthefyTabularPredictor:
             mix_precision: Whether to use mixed precision inference
             outlier_remove_std: Standard deviation used for removing outliers
             softmax_temperature: Softmax temperature coefficient
-            task_type:  task type
             mask_prediction: Whether to enable missing value prediction
             categorical_features_indices: Index numbers of categorical features, currently not in use
             inference_config: inference_config_setting,
@@ -91,7 +89,6 @@ class SynthefyTabularPredictor:
         self.min_unique_num_for_numerical_infer = 4
         self.preprocess_num = 10
         self.softmax_temperature = softmax_temperature
-        # self.task_type = task_type
         self.mask_prediction = mask_prediction
         # V12r3: snap regression predictions to nearest training-y value
         # when training y has at most this many unique values. Helps
@@ -519,31 +516,26 @@ class SynthefyTabularPredictor:
         return categorical_idx
         
     
-    def predict(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray, task_type:Literal['Classification', 'Regression']='Classification') -> np.ndarray:
+    def predict(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray) -> np.ndarray:
         """
-        Perform inference using the Synthefy Tabular model
+        Perform regression inference using the Synthefy Tabular model
 
         Args:
         x_train: Training data x
         y_train: Training data y
         x_test:  Testing data x
         """
-        if task_type == "Classification":
-            return self._predict_cls(x_train, y_train, x_test)
-        elif task_type == "Regression":
-            preds = self._predict_reg(x_train, y_train, x_test)
-            # V12r3: discrete-y snap. If training y has very low unique
-            # count (≤ discrete_y_snap_max_unique, default 30), snap each
-            # prediction to the nearest training-y value. Helps datasets
-            # like wine_quality (6 unique y), sensory (11), ERA (9),
-            # CookbookReviews (6), chscase_foot (3) at inference WITHOUT
-            # retraining. Disabled when threshold is 0 or training y is
-            # genuinely continuous.
-            if getattr(self, 'discrete_y_snap_max_unique', 0) > 0:
-                preds = self._maybe_snap_discrete_y(y_train, preds)
-            return preds
-        else:
-            raise ValueError(f"Unsupported task type, supported tasks include classification and regression!")
+        preds = self._predict_reg(x_train, y_train, x_test)
+        # V12r3: discrete-y snap. If training y has very low unique
+        # count (≤ discrete_y_snap_max_unique, default 30), snap each
+        # prediction to the nearest training-y value. Helps datasets
+        # like wine_quality (6 unique y), sensory (11), ERA (9),
+        # CookbookReviews (6), chscase_foot (3) at inference WITHOUT
+        # retraining. Disabled when threshold is 0 or training y is
+        # genuinely continuous.
+        if getattr(self, 'discrete_y_snap_max_unique', 0) > 0:
+            preds = self._maybe_snap_discrete_y(y_train, preds)
+        return preds
 
     @staticmethod
     def _unwrap_model_output(output, *, task_type: str):
@@ -823,201 +815,6 @@ class SynthefyTabularPredictor:
             # components) — leave the budget conservative (no reduction).
         return max(1, eff)
 
-    def _predict_cls(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray) -> np.ndarray:
-        # Check size constraints to avoid OOM
-        n_features = x_train.shape[1] if x_train.ndim > 1 else 1
-        n_samples_train = x_train.shape[0]
-        n_samples_test = x_test.shape[0]
-        
-        # If the number of elements is too large, we must chunk the test set to avoid OOM.
-        # The default (2M elements) is conservative for ~24GB GPUs. On larger GPUs
-        # (A100/H100/H200) raise it via SYNTHEFY_MAX_ELEMENTS_BUDGET so big tables use
-        # their full context instead of being silently subsampled — e.g. set
-        # SYNTHEFY_MAX_ELEMENTS_BUDGET=16000000 for large-context (50K-row) inference.
-        MAX_ELEMENTS_BUDGET = int(os.environ.get("SYNTHEFY_MAX_ELEMENTS_BUDGET", "2000000"))
-        
-        # Calculate elements for one full forward pass (train + 1 test row at
-        # minimum). Use the post-HighDimFeatureSelector feature count — the
-        # model never sees the raw count when the config reduces dimensionality.
-        budget_n_features = self._effective_budget_n_features(n_features, x_train)
-        base_elements = (n_samples_train + 1) * budget_n_features
-        if base_elements > MAX_ELEMENTS_BUDGET:
-            # If even the train set + 1 row is too big, we must subsample the training set
-            max_train_samples = max(10, MAX_ELEMENTS_BUDGET // (2 * budget_n_features))
-            # Randomly subsample the training data
-            rng = np.random.default_rng(self.seed)
-            idx = rng.choice(n_samples_train, max_train_samples, replace=False)
-            x_train = x_train[idx]
-            y_train = y_train[idx]
-            n_samples_train = len(x_train)
-            
-        np_rng = np.random.default_rng(self.seed)
-        
-        x_train, y_train = self.validate_data(x_train, y_train, reset=True, validate_separately=False, accept_sparse=False, dtype=None, ensure_all_finite=False)
-        x_test = self.validate_data(x_test, reset=False, validate_separately=False, accept_sparse=False, dtype=None, ensure_all_finite=False)
-        
-        # Encode y_train
-        self.label_encoder = LabelEncoder()
-        y = self.label_encoder.fit_transform(y_train)
-        self.classes = self.label_encoder.classes_
-        self.n_classes = len(self.classes)
-        
-        # shuffle y
-        noise = np_rng.random((self.n_estimators * self.class_shuffle_factor, self.n_classes))
-        shufflings = np.argsort(noise, axis=1)
-        uniqs = np.unique(shufflings, axis=0)
-        balance_count = self.n_estimators // len(uniqs)
-        self.class_permutations = list(chain.from_iterable(repeat(elem, balance_count) for elem in uniqs))
-        cout = self.n_estimators%len(uniqs)
-        if self.n_estimators%len(uniqs) > 0:
-            self.class_permutations += [uniqs[i] for i in np_rng.choice(len(uniqs), size=cout)]
-        
-        # Fit preprocessing on train only, then apply the fitted state to test.
-        x_train_base, x_test_base, categorical_idx = self._prepare_inductive_features(
-            x_train,
-            x_test,
-        )
-        outputs = []
-        mask_predictions = []
-        for id_pipe, pipe in enumerate(self.preprocess_pipelines):
-            x_train_ = x_train_base.copy()
-            x_test_ = x_test_base.copy()
-            y_ = self.class_permutations[id_pipe][y.copy()]
-            categorical_idx_ = categorical_idx.copy()
-            for id_step, step in enumerate(pipe):
-                if isinstance(step, InferenceAttentionMap):
-                    feature_attention_score, sample_attention_score = step.inference(X_train=x_train_.astype(np.float32),
-                                                                                     y_train=y_train.astype(np.float32),
-                                                                                     X_test=x_test_.astype(np.float32),
-                                                                                     task_type="cls",device=self.device)
-                   
-                elif isinstance(step, SubSampleData):
-                    step.fit(torch.from_numpy(x_train_), torch.from_numpy(y_train),
-                             feature_attention_score=feature_attention_score,
-                             sample_attention_score=sample_attention_score,
-                             subsample_ratio=self.inference_config[id_pipe]["retrieval_config"].get("sub_feature_ratio", 0.5))
-                    if self.inference_config[id_pipe]["retrieval_config"]["subsample_type"] == "feature":
-                        x_combined = step.transform(torch.from_numpy(x_test_).float())
-                        x_train_ = x_combined[:len(y_train)]
-                        x_test_ = x_combined[len(y_train):]
-                        categorical_idx_ = self.get_categorical_features_indices(x_train_)
-                    else:
-                        attention_score = step.transform(torch.from_numpy(x_test_).float())
-                else:
-                    x_train_, x_test_, categorical_idx_ = self._fit_transform_step_inductive(
-                        step,
-                        x_train_,
-                        x_test_,
-                        categorical_idx_,
-                        self.seeds[id_pipe*self.preprocess_num+self._seed_step_index(pipe, id_step)],
-                        y_train=y_,
-                    )
-
-            x_ = np.concatenate([x_train_, x_test_], axis=0)
-            # A single preprocessing branch can occasionally emit NaN/Inf
-            # (for example power transforms on awkward real-valued columns).
-            # Without this guard, one bad branch poisons the estimator mean and
-            # turns an otherwise valid dataset into 100% non-finite predictions.
-            x_ = np.nan_to_num(
-                x_,
-                nan=0.0,
-                posinf=0.0,
-                neginf=0.0,
-            ).astype(np.float32, copy=False)
-            x_ = torch.from_numpy(x_[:, :]).float().to(self.device)
-            y_ = torch.from_numpy(y_).float().to(self.device)
-            torch.manual_seed(self.seed)
-            torch.cuda.manual_seed_all(self.seed)
-            if self.inference_config[id_pipe]["retrieval_config"]["use_retrieval"] and \
-                    self.inference_config[id_pipe]["retrieval_config"]["subsample_type"] == "sample":
-                inference = InferenceResultWithRetrieval(model=self.model,
-                                                         sample_selection_type="AM")
-                output = inference.inference(x_[:len(y_train)], y_,
-                                             x_[len(y_train):],
-                                             attention_score=attention_score,
-                                             retrieval_len=self.inference_config[id_pipe]["retrieval_config"][
-                                                 "retrieval_len"],
-                                             dynamic_ratio=self.inference_config[id_pipe]["retrieval_config"].get(
-                                                 "dynamic_ratio", None),
-                                             use_cluster=self.inference_config[id_pipe]["retrieval_config"].get(
-                                                 "use_cluster", False),
-                                             cluster_num=self.inference_config[id_pipe]["retrieval_config"].get(
-                                                 "cluster_num", 20),
-                                             task_type="cls",
-                                             use_threshold=self.inference_config[id_pipe]["retrieval_config"].get(
-                                                 "use_threshold", False),
-                                             threshold=self.inference_config[id_pipe]["retrieval_config"].get(
-                                                 "threshold", 1),
-                                             mixed_method=self.inference_config[id_pipe]["retrieval_config"].get(
-                                                 "mixed_method", "max"),device=self.device)
-                if self.softmax_temperature != 1:
-                    output = (output[:, :self.n_classes].float() / self.softmax_temperature)
-
-                output = output[..., self.class_permutations[id_pipe]]
-                outputs.append(output)
-            elif self.inference_with_DDP:
-                inference = InferenceResultWithRetrieval(model=self.model,
-                                                         sample_selection_type="DDP")
-                output = inference.inference(x_[:len(y_train)].squeeze(1), y_, x_[len(y_train):].squeeze(1),
-                                             task_type="cls")
-                if self.softmax_temperature != 1:
-                    output = (output[:, :self.n_classes].float() / self.softmax_temperature)
-
-                output = output[..., self.class_permutations[id_pipe]]
-                outputs.append(output)
-            if not self.inference_config[id_pipe]["retrieval_config"]["use_retrieval"] and not self.inference_with_DDP:
-                # Calculate max allowed test samples per batch to avoid OOM
-                # We need: (n_train + chunk_size) * n_features <= MAX_ELEMENTS_BUDGET
-                chunk_size = max(256, (MAX_ELEMENTS_BUDGET // n_features) - n_samples_train)
-                
-                # Chunk the test data
-                all_outputs = []
-                for i in range(0, n_samples_test, chunk_size):
-                    end_idx = min(i + chunk_size, n_samples_test)
-                    x_chunk_test = x_[len(y_train) + i : len(y_train) + end_idx]
-                    
-                    # Recombine train + test chunk
-                    x_chunk_combined = torch.cat([x_[:len(y_train)], x_chunk_test], dim=0)
-                    
-                    # Create dummy y for test chunk
-                    y_chunk_test = torch.zeros(end_idx - i, dtype=y_.dtype, device=y_.device)
-                    y_chunk_combined = torch.cat([y_[:len(y_train)], y_chunk_test], dim=0)
-                    
-                    self.model.to(self.device)
-                    with torch.autocast(device_type=self.device.type if isinstance(self.device, torch.device) else self.device, enabled=self.mix_precision), torch.inference_mode():
-                        x_in = x_chunk_combined.unsqueeze(0)
-                        y_in = y_chunk_combined.unsqueeze(0)
-                        chunk_output = self.model(x=x_in, y=y_in, eval_pos=len(y_train), task_type='cls')
-
-                        if self.mask_prediction:
-                            process_config = chunk_output['process_config']
-                            chunk_output_feature_pred = self.PostProcessInModel(chunk_output['feature_pred'], process_config)
-                            chunk_output_feature_pred = self.PostProcess(chunk_output_feature_pred, pipe, process_config)
-                            mask_predictions.append(chunk_output_feature_pred)
-                            chunk_output = chunk_output['cls_output']
-
-                        chunk_output = self._unwrap_model_output(chunk_output, task_type="cls").squeeze(0)
-
-                        if self.softmax_temperature != 1:
-                            chunk_output = (chunk_output[:, :self.n_classes].float() / self.softmax_temperature)
-
-                        chunk_output = chunk_output[..., self.class_permutations[id_pipe]]
-                        all_outputs.append(chunk_output)
-                
-                # Concatenate all test chunks
-                output = torch.cat(all_outputs, dim=0)
-                outputs.append(output)
-            
-        outputs = [torch.nn.functional.softmax(o, dim=1) for o in outputs]
-        output = torch.stack(outputs).mean(dim=0)
-        mask_prediction = np.stack(mask_predictions).mean(axis=0) if mask_predictions != [] and self.mask_prediction else None
-        output = output.float().cpu().numpy()
-
-        if self.mask_prediction:
-            return output / output.sum(axis=1, keepdims=True), mask_prediction
-        else:
-            return output / output.sum(axis=1, keepdims=True)
-    
     def PostProcessInModel(self, feature_pred:torch.tensor, config: dict) -> torch.tensor:
         # Revert preprocess in model forward
         feature_pred = feature_pred / torch.sqrt(config['features_per_group'] / config['num_used_features'].to(self.device))

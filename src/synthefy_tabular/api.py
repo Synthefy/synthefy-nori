@@ -148,12 +148,7 @@ class SynthefyTabularRegressor:
             predictor.quantile_collapse = "median"
             predictor.bar_point_estimator = output_type
 
-        pred = predictor.predict(
-            self.X_train_,
-            y_norm,
-            X_test,
-            task_type="Regression",
-        )
+        pred = predictor.predict(self.X_train_, y_norm, X_test)
         if isinstance(pred, torch.Tensor):
             pred = pred.detach().cpu().numpy()
         pred = np.asarray(pred, dtype=np.float64).squeeze()

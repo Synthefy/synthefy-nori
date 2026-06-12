@@ -9,8 +9,7 @@ public ``synthefy_tabular`` package API (the same one used by ``test.py``):
     model.fit(X_train, y_train)
     pred = model.predict(X_test)
 
-Data sources (regression only -- the public package exposes a regressor, not a
-classifier):
+Data sources (regression only):
 
   * TabArena / TALENT -- local CSV cache dirs in the outer repo, one folder per
     dataset containing ``{name}_train.csv`` and ``{name}_test.csv`` with the

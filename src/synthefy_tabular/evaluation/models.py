@@ -31,11 +31,6 @@ class BaseModelWrapper(ABC):
     """Abstract base for all model wrappers in the eval pipeline."""
 
     @abstractmethod
-    def predict_classification(self, X_train, y_train, X_test, n_classes):
-        """Return class probabilities: np.ndarray [n_test, n_classes]"""
-        pass
-
-    @abstractmethod
     def predict_regression(self, X_train, y_train, X_test):
         """Return predictions: np.ndarray [n_test]"""
         pass
@@ -67,7 +62,6 @@ class SynthefyTabularWrapper(BaseModelWrapper):
         model_name: str,
         model_path: str,
         device: str = "cuda:0",
-        cls_config_path: str | None = None,
         reg_config_path: str | None = None,
         base_config_path: Optional[str] = None,
         augmentations: tuple|list|None = None,
@@ -79,7 +73,6 @@ class SynthefyTabularWrapper(BaseModelWrapper):
         self._name = model_name
         self.model_path = model_path
         self.device = torch.device(device)
-        self.cls_config_path = cls_config_path or package_config_path("cls_default_noretrieval.json")
         self.reg_config_path = reg_config_path or package_config_path(
             "reg_allordinal_poly10_adaptive_svd256.json"
         )
@@ -89,7 +82,6 @@ class SynthefyTabularWrapper(BaseModelWrapper):
         self.quantile_collapse = quantile_collapse
         self.bar_temperature = float(bar_temperature)
         self.bar_point_estimator = bar_point_estimator
-        self._cls_predictor = None
         self._reg_predictor = None
 
     @property
@@ -100,8 +92,8 @@ class SynthefyTabularWrapper(BaseModelWrapper):
     def device_str(self):
         return str(self.device)
 
-    def _get_cls_predictor(self):
-        if self._cls_predictor is None:
+    def _get_reg_predictor(self):
+        if self._reg_predictor is None:
             from synthefy_tabular.inference.predictor import SynthefyTabularPredictor
             from synthefy_tabular.utils.loading import load_model
 
@@ -110,27 +102,6 @@ class SynthefyTabularWrapper(BaseModelWrapper):
                 mask_prediction=False,
                 base_config_path=self.base_config_path,
             )
-            self._cls_predictor = SynthefyTabularPredictor(
-                device=self.device,
-                inference_config=self.cls_config_path,
-                model=model,
-            )
-        return self._cls_predictor
-
-    def _get_reg_predictor(self):
-        if self._reg_predictor is None:
-            from synthefy_tabular.inference.predictor import SynthefyTabularPredictor
-            from synthefy_tabular.utils.loading import load_model
-
-            # Reuse model from cls_predictor if already loaded
-            if self._cls_predictor is not None:
-                model = self._cls_predictor.model
-            else:
-                model = load_model(
-                    self.model_path,
-                    mask_prediction=False,
-                    base_config_path=self.base_config_path,
-                )
             self._reg_predictor = SynthefyTabularPredictor(
                 device=self.device,
                 inference_config=self.reg_config_path,
@@ -142,28 +113,6 @@ class SynthefyTabularWrapper(BaseModelWrapper):
                 bar_point_estimator=self.bar_point_estimator,
             )
         return self._reg_predictor
-
-    def predict_classification(self, X_train, y_train, X_test, n_classes):
-        predictor = self._get_cls_predictor()
-        X_train = np.asarray(X_train, dtype=np.float32)
-        y_train = np.asarray(y_train, dtype=np.int64)
-        X_test = np.asarray(X_test, dtype=np.float32)
-
-        pred = predictor.predict(X_train, y_train, X_test, task_type="Classification")
-        if isinstance(pred, torch.Tensor):
-            pred = pred.cpu().numpy()
-        pred = np.asarray(pred, dtype=np.float64)
-
-        # The model outputs 10 columns (max classes); trim to actual n_classes
-        if pred.ndim == 2 and pred.shape[1] > n_classes:
-            pred = pred[:, :n_classes]
-
-        # Re-normalize so rows sum to 1 (avoids sklearn "y_prob do not sum to one" warning)
-        row_sums = pred.sum(axis=1, keepdims=True)
-        row_sums = np.where(row_sums > 0, row_sums, 1.0)
-        pred = pred / row_sums
-
-        return pred
 
     def predict_regression(self, X_train, y_train, X_test):
         predictor = self._get_reg_predictor()
@@ -177,7 +126,7 @@ class SynthefyTabularWrapper(BaseModelWrapper):
             y_std = 1.0
         y_train_norm = (y_train - y_mean) / y_std
 
-        pred = predictor.predict(X_train, y_train_norm.astype(np.float32), X_test, task_type="Regression")
+        pred = predictor.predict(X_train, y_train_norm.astype(np.float32), X_test)
         if isinstance(pred, torch.Tensor):
             pred = pred.cpu().numpy()
         pred = np.asarray(pred, dtype=np.float64).squeeze()
@@ -186,7 +135,6 @@ class SynthefyTabularWrapper(BaseModelWrapper):
         return pred * y_std + y_mean
 
     def cleanup(self):
-        self._cls_predictor = None
         self._reg_predictor = None
         gc.collect()
         if torch.cuda.is_available():
@@ -198,8 +146,7 @@ class SynthefyTabularEnsembleWrapper(BaseModelWrapper):
 
     Each component is a fully-configured SynthefyTabularWrapper (its own checkpoint,
     inference config, augmentations). The ensemble runs each component for
-    every dataset and averages predictions in y-space (regression) or
-    probability space (classification).
+    every dataset and averages predictions in y-space.
 
     Component weights default to uniform (1/N each). Pass `weights` for a
     weighted ensemble.
@@ -242,19 +189,6 @@ class SynthefyTabularEnsembleWrapper(BaseModelWrapper):
             else:
                 preds = preds + w * p
         return preds
-
-    def predict_classification(self, X_train, y_train, X_test, n_classes):
-        preds = None
-        for w, c in zip(self.weights, self.components):
-            p = np.asarray(c.predict_classification(X_train, y_train, X_test, n_classes), dtype=np.float64)
-            if preds is None:
-                preds = w * p
-            else:
-                preds = preds + w * p
-        # Re-normalize so rows sum to 1 (averages of normalized probs may drift)
-        row_sums = preds.sum(axis=1, keepdims=True)
-        row_sums = np.where(row_sums > 0, row_sums, 1.0)
-        return preds / row_sums
 
     def cleanup(self):
         for c in self.components:
@@ -306,7 +240,6 @@ class ModelRegistry:
         name,
         model_path,
         device=None,
-        cls_config=None,
         reg_config=None,
         base_config_path=None,
         description="",
@@ -321,7 +254,6 @@ class ModelRegistry:
             model_name=name,
             model_path=model_path,
             device=device,
-            cls_config_path=cls_config,
             reg_config_path=reg_config,
             base_config_path=base_config_path,
             augmentations=augmentations,
@@ -341,7 +273,6 @@ class ModelRegistry:
         ensemble_name: str,
         component_specs: list,  # list of dicts: {path, label, reg_config, ...}
         device=None,
-        cls_config=None,
         default_reg_config=None,
         augmentations=None,
         yj_skew_threshold: float = 10.0,
@@ -354,7 +285,7 @@ class ModelRegistry:
           - path (required): checkpoint path
           - label (optional): logging label, defaults to filename
           - reg_config (optional): override default reg config for this component
-        Predictions are averaged in y-space (regression) or prob-space (cls).
+        Predictions are averaged in y-space.
         """
         device = device or self.device
         components: list[SynthefyTabularWrapper] = []
@@ -368,7 +299,6 @@ class ModelRegistry:
                 model_name=label,
                 model_path=path,
                 device=device,
-                cls_config_path=cls_config,
                 reg_config_path=cmp_reg_config,
                 augmentations=augmentations,
                 yj_skew_threshold=yj_skew_threshold,

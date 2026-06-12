@@ -1,7 +1,6 @@
 """Evaluation runner with latency/speed benchmarking.
 
 Runs all registered models on all loaded datasets, collecting:
-  - Classification: AUC, accuracy, F1, log-loss, ECE
   - Regression: R2, RMSE, MAE
   - Latency: wall-clock time per dataset, throughput (samples/sec)
 """
@@ -23,11 +22,7 @@ from typing import Dict, List, Optional, Set
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import (
-    accuracy_score, f1_score, log_loss, r2_score,
-    roc_auc_score, mean_absolute_error,
-)
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score, mean_absolute_error
 try:
     from sklearn.metrics import root_mean_squared_error as rmse_score
 except ImportError:
@@ -42,54 +37,6 @@ from synthefy_tabular.evaluation.models import ModelEntry, ModelRegistry
 # ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------
-
-def compute_auc(y_true, y_prob, multi_class="ovo"):
-    try:
-        n_classes = y_prob.shape[1] if y_prob.ndim == 2 else 2
-        if n_classes > 2:
-            return roc_auc_score(y_true, y_prob, multi_class=multi_class)
-        else:
-            prob = y_prob[:, 1] if y_prob.ndim == 2 else y_prob
-            return roc_auc_score(y_true, prob)
-    except (ValueError, IndexError):
-        return float("nan")
-
-
-def compute_ece(y_true, y_prob, n_bins=10):
-    """Expected Calibration Error."""
-    y_true, y_prob = np.asarray(y_true), np.asarray(y_prob)
-    if y_prob.ndim == 2 and y_prob.shape[1] > 1:
-        confidences = np.max(y_prob, axis=1)
-        predictions = np.argmax(y_prob, axis=1)
-    else:
-        confidences = y_prob if y_prob.ndim == 1 else y_prob[:, 1]
-        predictions = (confidences >= 0.5).astype(int)
-
-    accuracies = (predictions == y_true)
-    bin_boundaries = np.linspace(0.0, 1.0, n_bins + 1)
-    ece = 0.0
-    for i in range(n_bins):
-        in_bin = (confidences > bin_boundaries[i]) & (confidences <= bin_boundaries[i + 1])
-        prop = np.mean(in_bin)
-        if prop > 0:
-            ece += np.abs(np.mean(accuracies[in_bin]) - np.mean(confidences[in_bin])) * prop
-    return ece
-
-
-def compute_cls_metrics(y_true, y_prob):
-    """Compute all classification metrics."""
-    y_pred = np.argmax(y_prob, axis=1)
-    n_classes = y_prob.shape[1] if y_prob.ndim == 2 else len(np.unique(y_true))
-    avg = "macro" if n_classes > 2 else "binary"
-
-    return {
-        "auc": compute_auc(y_true, y_prob),
-        "accuracy": accuracy_score(y_true, y_pred),
-        "f1": f1_score(y_true, y_pred, average=avg, zero_division=0),
-        "log_loss": log_loss(y_true, y_prob, labels=list(range(n_classes))),
-        "ece": compute_ece(y_true, y_prob),
-    }
-
 
 def compute_reg_metrics(y_true, y_pred):
     """Compute all regression metrics."""
@@ -123,7 +70,6 @@ class EvalResult:
     n_train: int = 0
     n_test: int = 0
     n_features: int = 0
-    n_classes: Optional[int] = None
     error: Optional[str] = None
 
     def to_dict(self):
@@ -135,7 +81,6 @@ class EvalResult:
             "n_train": self.n_train,
             "n_test": self.n_test,
             "n_features": self.n_features,
-            "n_classes": self.n_classes,
             "latency_ms": round(self.latency_ms, 1),
             "throughput_sps": round(self.throughput_samples_per_sec, 1),
             "error": self.error,
@@ -225,13 +170,11 @@ class EvalRunner:
                 n_train=data.get("n_train", 0),
                 n_test=data.get("n_test", 0),
                 n_features=data.get("n_features", 0),
-                n_classes=data.get("n_classes"),
                 latency_ms=data.get("latency_ms", 0.0),
                 throughput_samples_per_sec=data.get("throughput_sps", 0.0),
                 error=data.get("error"),
             )
-            for metric_key in ("auc", "accuracy", "f1", "log_loss", "ece",
-                               "r2", "rmse", "mae"):
+            for metric_key in ("r2", "rmse", "mae"):
                 if metric_key in data and data[metric_key] is not None:
                     result.metrics[metric_key] = data[metric_key]
             return result
@@ -312,15 +255,13 @@ class EvalRunner:
         model_names: Optional[List[str]] = None,
         dataset_names: Optional[List[str]] = None,
         sources: Optional[List[str]] = None,
-        task_types: Optional[List[str]] = None,
     ) -> pd.DataFrame:
         """Run evaluation and return results as a DataFrame.
 
         Args:
             model_names: Subset of models to run (None = all).
             dataset_names: Subset of datasets to run (None = all).
-            sources: Filter datasets by source (e.g. ["tabarena", "ctu"]).
-            task_types: Filter by task type (e.g. ["classification"]).
+            sources: Filter datasets by source (e.g. ["tabarena", "talent"]).
         """
         models = model_names or self.models.list_models()
         all_datasets = list(self.datasets.datasets.values())
@@ -330,8 +271,6 @@ class EvalRunner:
                            or f"{d.source}/{d.name}" in dataset_names]
         if sources:
             all_datasets = [d for d in all_datasets if d.source in sources]
-        if task_types:
-            all_datasets = [d for d in all_datasets if d.task_type in task_types]
 
         total = len(models) * len(all_datasets)
         cache_status = "OFF" if self.no_cache else f"ON ({self._cache_dir})"
@@ -422,20 +361,11 @@ class EvalRunner:
         return df
 
     @staticmethod
-    def _subsample_train(X_train, y_train, max_samples, task_type="classification"):
-        """Subsample training data if it exceeds max_samples (stratified for cls)."""
+    def _subsample_train(X_train, y_train, max_samples):
+        """Subsample training data if it exceeds max_samples (seeded)."""
         if X_train.shape[0] <= max_samples:
             return X_train, y_train
         rng = np.random.RandomState(42)
-        if task_type == "classification":
-            try:
-                _, X_sub, _, y_sub = train_test_split(
-                    X_train, y_train, test_size=max_samples,
-                    random_state=42, stratify=y_train,
-                )
-                return X_sub, y_sub
-            except ValueError:
-                pass  # Fall through to random sampling
         idx = rng.choice(X_train.shape[0], max_samples, replace=False)
         return X_train[idx], y_train[idx]
 
@@ -486,9 +416,7 @@ class EvalRunner:
             mem_max = self._compute_max_train(
                 ds.n_test, ds.n_features, gpu_mem_gb=self.gpu_mem_gb)
             max_train = min(max_train, mem_max)
-        X_train, y_train = self._subsample_train(
-            ds.X_train, ds.y_train, max_train, ds.task_type,
-        )
+        X_train, y_train = self._subsample_train(ds.X_train, ds.y_train, max_train)
 
         result = EvalResult(
             model_name=model_entry.name,
@@ -498,7 +426,6 @@ class EvalRunner:
             n_train=X_train.shape[0],
             n_test=ds.n_test,
             n_features=ds.n_features,
-            n_classes=ds.n_classes,
         )
 
         try:
@@ -515,19 +442,11 @@ class EvalRunner:
 
             # Warmup (for GPU timing stability)
             for _ in range(self.warmup_runs):
-                if ds.task_type == "classification":
-                    wrapper.predict_classification(
-                        X_train[:min(100, len(X_train))],
-                        y_train[:min(100, len(y_train))],
-                        ds.X_test[:min(10, ds.n_test)],
-                        ds.n_classes,
-                    )
-                else:
-                    wrapper.predict_regression(
-                        X_train[:min(100, len(X_train))],
-                        y_train[:min(100, len(y_train))],
-                        ds.X_test[:min(10, ds.n_test)],
-                    )
+                wrapper.predict_regression(
+                    X_train[:min(100, len(X_train))],
+                    y_train[:min(100, len(y_train))],
+                    ds.X_test[:min(10, ds.n_test)],
+                )
 
             # Timed run — synchronize on the model's device, not the default device
             model_device = getattr(wrapper, 'device', None) or getattr(wrapper, '_device', None)
@@ -535,41 +454,14 @@ class EvalRunner:
                 torch.cuda.synchronize(model_device)
             t_start = time.perf_counter()
 
-            if ds.task_type == "classification":
-                y_prob = wrapper.predict_classification(
-                    X_train, y_train, ds.X_test, ds.n_classes
-                )
-                if torch.cuda.is_available() and model_device is not None:
-                    torch.cuda.synchronize(model_device)
-                t_end = time.perf_counter()
-
-                # Ensure correct shape
-                y_prob = np.asarray(y_prob, dtype=np.float64)
-                if y_prob.ndim == 1 or y_prob.shape[1] != ds.n_classes:
-                    # Pad or trim probabilities
-                    if y_prob.ndim == 1:
-                        y_prob_full = np.zeros((len(y_prob), ds.n_classes))
-                        y_prob_full[:, 1] = y_prob
-                        y_prob_full[:, 0] = 1 - y_prob
-                        y_prob = y_prob_full
-                    elif y_prob.shape[1] < ds.n_classes:
-                        padded = np.zeros((y_prob.shape[0], ds.n_classes))
-                        padded[:, :y_prob.shape[1]] = y_prob
-                        y_prob = padded
-
-                result.metrics = compute_cls_metrics(ds.y_test, y_prob)
-
-            else:  # regression
-                y_pred = wrapper.predict_regression(
-                    X_train, y_train, ds.X_test
-                )
-                if torch.cuda.is_available() and model_device is not None:
-                    torch.cuda.synchronize(model_device)
-                t_end = time.perf_counter()
-
-                y_pred = np.asarray(y_pred, dtype=np.float64).squeeze()
-                result.metrics = compute_reg_metrics(ds.y_test, y_pred)
-
+            y_pred = wrapper.predict_regression(
+                X_train, y_train, ds.X_test
+            )
+            if torch.cuda.is_available() and model_device is not None:
+                torch.cuda.synchronize(model_device)
+            t_end = time.perf_counter()
+            y_pred = np.asarray(y_pred, dtype=np.float64).squeeze()
+            result.metrics = compute_reg_metrics(ds.y_test, y_pred)
             result.latency_ms = (t_end - t_start) * 1000
             total_samples = ds.n_train + ds.n_test
             if result.latency_ms > 0:

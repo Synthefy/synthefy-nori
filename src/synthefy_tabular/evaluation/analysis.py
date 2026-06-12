@@ -65,7 +65,7 @@ class EvalAnalyzer:
 
     @staticmethod
     def _primary_metric(task_type):
-        return "auc" if task_type == "classification" else "r2"
+        return "r2"
 
     @staticmethod
     def _higher_is_better(metric):
@@ -261,12 +261,6 @@ class EvalAnalyzer:
                 comp["n_features"],
                 bins=[0, 20, 50, 100, 200, float("inf")],
                 labels=["<=20", "21-50", "51-100", "101-200", ">200"],
-            )
-        if task_type == "classification" and "n_classes" in comp.columns:
-            comp["class_bucket"] = pd.cut(
-                comp["n_classes"],
-                bins=[0, 2, 5, 10, float("inf")],
-                labels=["2", "3-5", "6-10", ">10"],
             )
         return comp
 
@@ -604,7 +598,7 @@ class EvalAnalyzer:
         out.mkdir(parents=True, exist_ok=True)
         created = []
 
-        for task_type in ["classification", "regression"]:
+        for task_type in ["regression"]:
             tt_df = self._clean(task_type)
             if tt_df.empty:
                 continue
@@ -629,7 +623,7 @@ class EvalAnalyzer:
         focus = self._pick_focus_model(focus_model)
         if focus:
             focus_safe = self._safe_name(focus)
-            for task_type in ["classification", "regression"]:
+            for task_type in ["regression"]:
                 metric = self._primary_metric(task_type)
                 comp = self.comparison_vs_best_other(focus, task_type, metric=metric)
                 if comp.empty:
@@ -681,30 +675,6 @@ class EvalAnalyzer:
         n_err = self.df["error"].notna().sum() if "error" in self.df.columns else 0
         print(f"\n  Models: {len(models)}  |  Datasets: {n_ds}  |  Sources: {', '.join(sources)}  |  Errors: {n_err}")
 
-        # --- Classification aggregate ---
-        cls_df = self._clean("classification")
-        if not cls_df.empty:
-            print(f"\n{'='*80}\n  CLASSIFICATION (aggregate)\n{'='*80}")
-            print(f"  {'Model':<30} {'AUC':>8} {'Acc':>8} {'F1':>8} {'ECE':>8} {'LogLoss':>9} {'N':>5}")
-            print(f"  {'-'*78}")
-            for model in models:
-                m = cls_df[cls_df["model"] == model]
-                if m.empty:
-                    continue
-                parts = [f"  {model:<30}"]
-                for c, w in [("auc",8),("accuracy",8),("f1",8),("ece",8),("log_loss",9)]:
-                    v = m[c].mean() if c in m.columns else float("nan")
-                    parts.append(self._fmt(v, w))
-                parts.append(f"{len(m):>5}")
-                print(" ".join(parts))
-
-            # --- Per-source classification ---
-            self._print_per_source(cls_df, models, "classification")
-
-            # --- Per-dataset classification ---
-            if show_per_dataset:
-                self._print_per_dataset(cls_df, models, "classification")
-
         # --- Regression aggregate ---
         reg_df = self._clean("regression")
         if not reg_df.empty:
@@ -753,10 +723,7 @@ class EvalAnalyzer:
         if len(sources) < 2:
             return
 
-        if task_type == "classification":
-            metric_spec = [("auc", 8), ("accuracy", 8), ("f1", 8), ("ece", 8), ("log_loss", 9)]
-        else:
-            metric_spec = [("r2", 8), ("rmse", 10), ("mae", 10)]
+        metric_spec = [("r2", 8), ("rmse", 10), ("mae", 10)]
 
         print(f"\n  --- By source ({task_type}) ---")
         # Header
@@ -794,10 +761,7 @@ class EvalAnalyzer:
 
     def _print_per_dataset(self, df, models, task_type):
         """Print per-dataset results table grouped by source."""
-        if task_type == "classification":
-            metrics = [("auc", 8), ("accuracy", 8), ("f1", 8), ("log_loss", 9)]
-        else:
-            metrics = [("r2", 8), ("rmse", 10), ("mae", 10)]
+        metrics = [("r2", 8), ("rmse", 10), ("mae", 10)]
 
         def _fmt_int(v, width):
             if pd.notna(v) and np.isfinite(v):
@@ -872,11 +836,8 @@ class EvalAnalyzer:
         if len(sources) < 2:
             return []
 
-        primary = "auc" if task_type == "classification" else "r2"
-        if task_type == "classification":
-            metric_cols = ["auc", "accuracy", "f1", "ece", "log_loss"]
-        else:
-            metric_cols = ["r2", "rmse", "mae"]
+        primary = "r2"
+        metric_cols = ["r2", "rmse", "mae"]
 
         lines = [f"\n### By Source ({task_type.title()})\n"]
         hdr = "| Source | N |" + "|".join(f" {m} " for m in models) + "|"
@@ -915,10 +876,7 @@ class EvalAnalyzer:
     def _md_per_dataset(self, df, models, task_type):
         """Generate per-dataset markdown tables grouped by source."""
         lines = []
-        if task_type == "classification":
-            primary, metrics = "auc", ["auc", "accuracy", "f1", "log_loss"]
-        else:
-            primary, metrics = "r2", ["r2", "rmse", "mae"]
+        primary, metrics = "r2", ["r2", "rmse", "mae"]
 
         for src in sorted(df["source"].unique()):
             src_df = df[df["source"] == src]
@@ -977,28 +935,6 @@ class EvalAnalyzer:
         lines.append(f"**Datasets**: {self.df['dataset'].nunique()} across {', '.join(sources)}  ")
         lines.append(f"**Total evaluations**: {len(self.df)}\n")
 
-        cls_df = self._clean("classification")
-        if not cls_df.empty:
-            lines.append("\n## Classification Results (aggregate)\n")
-            lines.append("| Model | AUC | Accuracy | F1 | ECE | LogLoss | N |")
-            lines.append("|-------|-----|----------|-----|-----|---------|---|")
-            for model in models:
-                m = cls_df[cls_df["model"] == model]
-                if m.empty:
-                    continue
-                vals = []
-                for c in ["auc", "accuracy", "f1", "ece", "log_loss"]:
-                    v = m[c].mean() if c in m.columns else float("nan")
-                    vals.append(f"{v:.4f}" if np.isfinite(v) else "N/A")
-                lines.append(f"| {model} | {' | '.join(vals)} | {len(m)} |")
-
-            # Per-source classification
-            lines.extend(self._md_per_source(cls_df, models, "classification"))
-
-            # Per-dataset classification
-            lines.append("\n### Per-Dataset Classification (AUC)\n")
-            lines.extend(self._md_per_dataset(cls_df, models, "classification"))
-
         reg_df = self._clean("regression")
         if not reg_df.empty:
             lines.append("\n## Regression Results (aggregate)\n")
@@ -1037,7 +973,7 @@ class EvalAnalyzer:
                 lines.append(f"| {model} | {ml:.1f} | {mdl:.1f} | {thr_s} |")
 
         if len(models) >= 2:
-            for metric, tt in [("auc", "classification"), ("r2", "regression")]:
+            for metric, tt in [("r2", "regression")]:
                 tt_df = self._clean(tt)
                 if tt_df.empty or metric not in tt_df.columns:
                     continue

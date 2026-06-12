@@ -5,7 +5,7 @@
 ```bash
 pip install "synthefy-tabular[eval]"
 
-synthefy-tabular-eval --download-benchmarks --openml-reg --task-types regression
+synthefy-tabular-eval --download-benchmarks --openml-reg
 ```
 
 - `--download-benchmarks` fetches the TabArena and TALENT regression datasets
@@ -44,10 +44,10 @@ compared in one run.
 The CLI loads local CSV caches by default:
 
 ```text
-cache/tabarena_cls/    cache/tabarena_reg/    # --tabarena-cls-dir / --tabarena-reg-dir
-cache/talent_cls/      cache/talent_reg/      # --talent-cls-dir / --talent-reg-dir
+cache/tabarena_reg/    # --tabarena-reg-dir
+cache/talent_reg/      # --talent-reg-dir
 ```
 
 Each dataset is a folder `<name>/` containing `<name>_train.csv` and
 `<name>_test.csv` with the target in a `target` column (TALENT-style layout).
-Use `--custom-cls-dir` or `--custom-reg-dir` for local custom datasets.
+Use `--custom-reg-dir` for local custom datasets.

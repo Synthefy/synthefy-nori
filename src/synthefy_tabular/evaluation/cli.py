@@ -1,4 +1,4 @@
-"""Command-line evaluation entry point."""
+"""Command-line evaluation entry point (regression only)."""
 
 from __future__ import annotations
 
@@ -21,20 +21,14 @@ def main(argv: list[str] | None = None) -> None:
                         help="Checkpoint path or label:path. Repeatable.")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--output-dir", default="results/eval")
-    parser.add_argument("--tabarena-cls-dir", default="cache/tabarena_cls")
     parser.add_argument("--tabarena-reg-dir", default="cache/tabarena_reg")
-    parser.add_argument("--talent-cls-dir", default="cache/talent_cls")
     parser.add_argument("--talent-reg-dir", default="cache/talent_reg")
     parser.add_argument("--openml-reg", action="store_true",
                         help="Include the curated OpenML regression suite (downloads from OpenML)")
     parser.add_argument("--download-benchmarks", action="store_true",
                         help="Download the TabArena and TALENT regression CSV caches from OpenML first")
-    parser.add_argument("--custom-cls-dir", default=None)
     parser.add_argument("--custom-reg-dir", default=None)
-    parser.add_argument("--cls-config", default=config_path("cls_default_noretrieval.json"))
     parser.add_argument("--reg-config", default=config_path("reg_allordinal_poly10_adaptive_svd256.json"))
-    parser.add_argument("--task-types", nargs="+", default=None,
-                        choices=["classification", "regression"])
     parser.add_argument("--sources", nargs="+", default=None)
     parser.add_argument("--max-train-samples", type=int, default=50000)
     parser.add_argument("--max-predict-samples", type=int, default=50000)
@@ -62,15 +56,13 @@ def main(argv: list[str] | None = None) -> None:
     datasets = DatasetRegistry(max_train_samples=args.max_train_samples)
     if args.download_benchmarks:
         datasets.download_tabarena(reg_dir=args.tabarena_reg_dir)
-        datasets.download_talent(cls_dir=None, reg_dir=args.talent_reg_dir)
-    datasets.load_tabarena(cls_dir=args.tabarena_cls_dir, reg_dir=args.tabarena_reg_dir)
-    datasets.load_talent(cls_dir=args.talent_cls_dir, reg_dir=args.talent_reg_dir)
+        datasets.download_talent(reg_dir=args.talent_reg_dir)
+    datasets.load_tabarena(reg_dir=args.tabarena_reg_dir)
+    datasets.load_talent(reg_dir=args.talent_reg_dir)
     if args.openml_reg:
         datasets.load_openml_regression()
-    if args.custom_cls_dir:
-        datasets.load_custom_dir(args.custom_cls_dir, task_type="classification")
     if args.custom_reg_dir:
-        datasets.load_custom_dir(args.custom_reg_dir, task_type="regression")
+        datasets.load_custom_dir(args.custom_reg_dir)
 
     models = ModelRegistry(device=args.device)
     checkpoints = args.checkpoint or [f"Synthefy:{download_checkpoint()}"]
@@ -80,7 +72,6 @@ def main(argv: list[str] | None = None) -> None:
             label,
             path,
             device=args.device,
-            cls_config=args.cls_config,
             reg_config=args.reg_config,
         )
 
@@ -94,10 +85,9 @@ def main(argv: list[str] | None = None) -> None:
         no_cache=args.no_cache,
         gpu_mem_gb=args.gpu_mem_gb,
     )
-    df = runner.run(sources=args.sources, task_types=args.task_types)
+    df = runner.run(sources=args.sources)
     if df is not None and len(df) and "r2" in df.columns:
-        reg = df[df.task_type == "regression"] if "task_type" in df.columns else df
-        reg = reg.dropna(subset=["r2"])
+        reg = df.dropna(subset=["r2"])
         if len(reg):
             print("\nMean R^2 by source (regression):")
             for src, g in reg.groupby("source"):
