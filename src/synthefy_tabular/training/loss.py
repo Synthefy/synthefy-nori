@@ -9,6 +9,8 @@ The feature decoder outputs predictions in the model's normalized+grouped space,
 so we transform x_original into the same space for comparison.
 """
 
+from __future__ import annotations
+
 import torch
 import torch.nn.functional as F
 

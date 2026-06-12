@@ -1,5 +1,7 @@
 """Main training loop for Synthefy Tabular CCMM training."""
 
+from __future__ import annotations
+
 import json
 import os
 import time

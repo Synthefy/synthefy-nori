@@ -6,6 +6,8 @@ Three mask patterns (randomly selected per episode):
 3. Block masking: Select contiguous rectangular block(s) covering ~mask_ratio fraction
 """
 
+from __future__ import annotations
+
 import numpy as np
 
 

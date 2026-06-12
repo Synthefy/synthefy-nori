@@ -65,10 +65,17 @@ curl -X POST https://model-{MODEL_ID}.api.baseten.co/development/predict \
     "y_train": [0.1, 0.9, 0.5, 0.3],
     "X_test":  [[0.3, 0.7], [0.8, 0.2]]
   }'
-# -> {"task": "regression", "predictions": [0.34, 0.81]}
+# -> {"task": "regression", "predictions": [0.34, 0.81],
+#     "usage": {"input_tokens": 16, "output_tokens": 2, "total_tokens": 18}}
 ```
 
 `X_train`/`X_test` are `n_rows × n_features`; `y_train` aligns with `X_train`.
+
+Every successful response carries an OpenAI-compatible `usage` block:
+`input_tokens` counts every real (non-null) value sent across `X_train`,
+`y_train` and `X_test` (null/`NaN` cells are imputed server-side and not
+counted), `output_tokens` is one predicted target per `X_test` row, and
+`total_tokens` is their sum.
 
 ## Notes
 

@@ -16,6 +16,8 @@ synth_v4 (2026-02-19): TabICLv2-inspired diversity improvements:
   - Kumaraswamy warping
 """
 
+from __future__ import annotations
+
 import numpy as np
 
 

@@ -1,5 +1,7 @@
 """Public API for Synthefy Tabular."""
 
+from __future__ import annotations
+
 from synthefy_tabular.api import (
     SynthefyTabularRegressor,
     config_path,
@@ -7,7 +9,7 @@ from synthefy_tabular.api import (
     predict,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.2.2"
 
 __all__ = [
     "SynthefyTabularRegressor",

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from synthefy_tabular.inference.inference_method import InferenceAttentionMap, InferenceResultWithRetrieval
 from synthefy_tabular.inference.preprocess import (
     FeatureShuffler,
@@ -982,7 +984,7 @@ class SynthefyTabularPredictor:
                     y_chunk_combined = torch.cat([y_[:len(y_train)], y_chunk_test], dim=0)
                     
                     self.model.to(self.device)
-                    with(torch.autocast(device_type=self.device.type if isinstance(self.device, torch.device) else self.device, enabled=self.mix_precision), torch.inference_mode()):
+                    with torch.autocast(device_type=self.device.type if isinstance(self.device, torch.device) else self.device, enabled=self.mix_precision), torch.inference_mode():
                         x_in = x_chunk_combined.unsqueeze(0)
                         y_in = y_chunk_combined.unsqueeze(0)
                         chunk_output = self.model(x=x_in, y=y_in, eval_pos=len(y_train), task_type='cls')
@@ -1312,7 +1314,7 @@ class SynthefyTabularPredictor:
                     y_chunk_combined = torch.cat([y_[:len(y_train)], y_chunk_test], dim=0)
 
                     self.model.to(self.device)
-                    with(torch.autocast(device_type=self.device.type if isinstance(self.device, torch.device) else self.device, enabled=self.mix_precision), torch.inference_mode()):
+                    with torch.autocast(device_type=self.device.type if isinstance(self.device, torch.device) else self.device, enabled=self.mix_precision), torch.inference_mode():
                         x_in = x_chunk_combined.unsqueeze(0)
                         y_in = y_chunk_combined.unsqueeze(0)
 
