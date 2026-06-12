@@ -119,6 +119,8 @@ class DatasetRegistry:
     ):
         loaded = 0
         total_missing = 0
+        cls_list_path = self._resolve_list_path(cls_list_path, "talent_cls.csv")
+        reg_list_path = self._resolve_list_path(reg_list_path, "talent_reg.csv")
         for ttype, data_dir, list_path in [
             ("classification", cls_dir, cls_list_path),
             ("regression", reg_dir, reg_list_path),
@@ -172,6 +174,8 @@ class DatasetRegistry:
             return {"downloaded": 0, "skipped": 0, "failed": 0}
 
         totals = {"downloaded": 0, "skipped": 0, "failed": 0}
+        cls_list_path = self._resolve_list_path(cls_list_path, "talent_cls.csv")
+        reg_list_path = self._resolve_list_path(reg_list_path, "talent_reg.csv")
         for task_type, out_dir, list_path in [
             ("classification", cls_dir, cls_list_path),
             ("regression", reg_dir, reg_list_path),
@@ -200,6 +204,114 @@ class DatasetRegistry:
             f"{totals['downloaded']} downloaded, {totals['skipped']} skipped, {totals['failed']} failed"
         )
         return totals
+
+    def download_tabarena(
+        self,
+        reg_dir="cache/tabarena_reg",
+        reg_list_path="benchmark_list/tabarena_reg.csv",
+        force=False,
+    ):
+        """Download the official TabArena regression datasets from OpenML.
+
+        Uses the TabArena team's curated dataset uploads, pinned by OpenML
+        dataset ID (data on OpenML is immutable per ID), so the CSVs and the
+        seeded 70/30 split are bit-reproducible. Categorical columns are
+        label-encoded at download time with NaN preserved, matching the CSVs
+        the published benchmark numbers were computed on.
+        """
+        try:
+            import openml  # noqa: F401
+        except ImportError:
+            print("[DatasetRegistry] openml not installed. Use: uv add openml")
+            return {"downloaded": 0, "skipped": 0, "failed": 0}
+
+        totals = {"downloaded": 0, "skipped": 0, "failed": 0}
+        reg_list_path = self._resolve_list_path(reg_list_path, "tabarena_reg.csv")
+        pinned = self._read_pinned_dataset_list(reg_list_path)
+        if not pinned:
+            print(f"[DatasetRegistry] TabArena regression: list is empty or missing ({reg_list_path})")
+            return totals
+
+        os.makedirs(reg_dir, exist_ok=True)
+        print(f"[DatasetRegistry] Downloading TabArena regression: {len(pinned)} datasets")
+        for name, did in pinned:
+            status = self._download_pinned_openml_dataset(name, did, reg_dir, force=force)
+            totals[status] += 1
+
+        print(
+            "[DatasetRegistry] TabArena download complete: "
+            f"{totals['downloaded']} downloaded, {totals['skipped']} skipped, {totals['failed']} failed"
+        )
+        return totals
+
+    @staticmethod
+    def _read_pinned_dataset_list(list_path):
+        """Read a 'name,openml_dataset_id' list; returns [(name, did), ...]."""
+        out = []
+        for line in DatasetRegistry._read_dataset_list(list_path):
+            if "," not in line:
+                continue
+            name, _, did = line.rpartition(",")
+            try:
+                out.append((name.strip(), int(did)))
+            except ValueError:
+                continue
+        return out
+
+    def _download_pinned_openml_dataset(self, dataset_name, did, output_dir, force=False):
+        """Download one ID-pinned OpenML dataset and write seeded 70/30 train/test CSVs.
+
+        Mirrors the procedure that produced the published benchmark CSVs:
+        categoricals are label-encoded here (NaN preserved, lexicographic class
+        order), the target is written as-is, and the split is test_size=0.3
+        with the registry seed.
+        """
+        import openml
+
+        dataset_dir = os.path.join(output_dir, dataset_name)
+        train_path = os.path.join(dataset_dir, f"{dataset_name}_train.csv")
+        test_path = os.path.join(dataset_dir, f"{dataset_name}_test.csv")
+        if not force and os.path.exists(train_path) and os.path.exists(test_path):
+            print(f"  [SKIP] {dataset_name} already exists")
+            return "skipped"
+
+        try:
+            dataset = openml.datasets.get_dataset(did, download_data=True)
+            target = dataset.default_target_attribute
+            if target is None:
+                print(f"  [FAIL] {dataset_name} (did={did}) has no default target attribute")
+                return "failed"
+            X, y, _, _ = dataset.get_data(target=target)
+            if X is None or y is None:
+                print(f"  [FAIL] No data returned for {dataset_name} (did={did})")
+                return "failed"
+
+            X = X.copy()
+            for col in X.columns:
+                if not pd.api.types.is_numeric_dtype(X[col]):
+                    mask = X[col].isna()
+                    X[col] = X[col].astype(object).fillna("__MISSING__")
+                    X[col] = LabelEncoder().fit_transform(X[col].astype(str))
+                    if mask.any():
+                        X.loc[mask, col] = np.nan
+
+            df = X
+            df["target"] = y
+            train_df, test_df = train_test_split(
+                df, test_size=0.3, random_state=self.random_state
+            )
+
+            os.makedirs(dataset_dir, exist_ok=True)
+            train_df.to_csv(train_path, index=False)
+            test_df.to_csv(test_path, index=False)
+            print(
+                f"  [OK] {dataset_name}: {len(train_df)} train, "
+                f"{len(test_df)} test (did={did})"
+            )
+            return "downloaded"
+        except Exception as e:
+            print(f"  [FAIL] Error downloading {dataset_name} (did={did}): {e}")
+            return "failed"
 
     # ------------------------------------------------------------------
     # RelBench CTU (via redelex)
@@ -410,6 +522,20 @@ class DatasetRegistry:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _resolve_list_path(list_path, packaged_name):
+        """Prefer an existing local list file; fall back to the packaged list."""
+        if list_path and os.path.exists(list_path):
+            return list_path
+        try:
+            from importlib.resources import files
+            packaged = files("synthefy_tabular.evaluation.benchmark_lists") / packaged_name
+            if packaged.is_file():
+                return str(packaged)
+        except Exception:
+            pass
+        return list_path
+
     @staticmethod
     def _read_dataset_list(list_path):
         if not list_path or not os.path.exists(list_path):

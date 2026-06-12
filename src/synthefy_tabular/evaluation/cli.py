@@ -23,6 +23,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--output-dir", default="results/eval")
     parser.add_argument("--tabarena-cls-dir", default="cache/tabarena_cls")
     parser.add_argument("--tabarena-reg-dir", default="cache/tabarena_reg")
+    parser.add_argument("--talent-cls-dir", default="cache/talent_cls")
+    parser.add_argument("--talent-reg-dir", default="cache/talent_reg")
+    parser.add_argument("--openml-reg", action="store_true",
+                        help="Include the curated OpenML regression suite (downloads from OpenML)")
+    parser.add_argument("--download-benchmarks", action="store_true",
+                        help="Download the TabArena and TALENT regression CSV caches from OpenML first")
     parser.add_argument("--custom-cls-dir", default=None)
     parser.add_argument("--custom-reg-dir", default=None)
     parser.add_argument("--cls-config", default=config_path("cls_default_noretrieval.json"))
@@ -43,7 +49,13 @@ def main(argv: list[str] | None = None) -> None:
     from synthefy_tabular.hf import download_checkpoint
 
     datasets = DatasetRegistry(max_train_samples=args.max_train_samples)
+    if args.download_benchmarks:
+        datasets.download_tabarena(reg_dir=args.tabarena_reg_dir)
+        datasets.download_talent(cls_dir=None, reg_dir=args.talent_reg_dir)
     datasets.load_tabarena(cls_dir=args.tabarena_cls_dir, reg_dir=args.tabarena_reg_dir)
+    datasets.load_talent(cls_dir=args.talent_cls_dir, reg_dir=args.talent_reg_dir)
+    if args.openml_reg:
+        datasets.load_openml_regression()
     if args.custom_cls_dir:
         datasets.load_custom_dir(args.custom_cls_dir, task_type="classification")
     if args.custom_reg_dir:
@@ -70,7 +82,15 @@ def main(argv: list[str] | None = None) -> None:
         cache_dir=args.cache_dir,
         no_cache=args.no_cache,
     )
-    runner.run(sources=args.sources, task_types=args.task_types)
+    df = runner.run(sources=args.sources, task_types=args.task_types)
+    if df is not None and len(df) and "r2" in df.columns:
+        reg = df[df.task_type == "regression"] if "task_type" in df.columns else df
+        reg = reg.dropna(subset=["r2"])
+        if len(reg):
+            print("\nMean R^2 by source (regression):")
+            for src, g in reg.groupby("source"):
+                print(f"  {src:12s} N={len(g):3d}  R2={g['r2'].mean():.4f}")
+            print(f"  {'ALL':12s} N={len(reg):3d}  R2={reg['r2'].mean():.4f}")
 
 
 if __name__ == "__main__":

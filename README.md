@@ -10,18 +10,48 @@ Face checkpoint tooling.
 
 ## Results
 
-Mean R² across 96 regression tasks from three public benchmark suites:
+Mean R² of the base model across 96 regression tasks from three public
+benchmark suites:
 
 | Source | Tasks | Mean R² |
 |--------|------:|--------:|
-| OpenML Regression | 11 | 0.6104 |
-| TabArena | 13 | 0.8089 |
-| TALENT | 72 | 0.7591 |
+| OpenML Regression | 11 | 0.6106 |
+| TabArena | 13 | 0.8088 |
+| TALENT | 72 | 0.7566 |
 
 Large-N / long-context tables (common in TabArena) are the current focus of the
 large-table training stages.
 
-> **Thinking** is an inference-time reasoning extension. Details are forthcoming.
+> **Thinking** is an inference-time reasoning extension that improves these
+> numbers further. Details are forthcoming.
+
+### Reproducing these numbers
+
+```bash
+pip install "synthefy-tabular[eval]"
+
+synthefy-tabular-eval --download-benchmarks --openml-reg --task-types regression
+```
+
+The first run downloads the pretrained checkpoint from the Hugging Face Hub and
+fetches the benchmark datasets into `cache/` as CSVs: TabArena from the
+official TabArena curated uploads on OpenML (pinned by OpenML dataset ID, so
+the data is immutable), TALENT from OpenML by name, and the OpenML regression
+suite on the fly. Dataset membership is pinned by lists shipped with the
+package (`synthefy_tabular/evaluation/benchmark_lists/`), and train/test
+splits use a fixed seed, so the evaluation data is fully deterministic.
+Evaluation uses the bundled default inference config
+(`reg_allordinal_poly10_adaptive_svd256.json`).
+
+The command prints a per-source mean R² summary matching the table above and
+writes per-dataset metrics to `results/eval/all_results.csv`. Expect roughly
+half an hour on a single modern GPU (`--device cuda:0` by default; CPU works
+but is much slower).
+
+Exact per-dataset R² can move by ±0.001–0.002 across GPU models and
+PyTorch/NumPy versions; per-source means should match the table to within
+about ±0.003. The TALENT dataset `stock_fardamento02` has a heavy-tailed
+target and is the least stable single dataset across environments.
 
 ## How it works
 
@@ -212,7 +242,9 @@ synthefy-tabular-eval --checkpoint "Synthefy:path/to/checkpoint.pt"
 ```
 
 or `bash scripts/evaluate.sh`. See [docs/evaluation.md](docs/evaluation.md) for
-benchmark sources and how to evaluate a Synthefy Tabular checkpoint.
+benchmark sources and how to evaluate a Synthefy Tabular checkpoint, and
+[Reproducing these numbers](#reproducing-these-numbers) for the published
+benchmark run.
 
 ## Hugging Face
 

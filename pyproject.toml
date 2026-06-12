@@ -68,6 +68,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "synthefy_tabular.configs" = ["*.json"]
+"synthefy_tabular.evaluation.benchmark_lists" = ["*.csv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
