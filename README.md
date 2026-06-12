@@ -59,7 +59,7 @@ synthetic data generator covering real-world tabular regimes:
 - **Regression priors**: 9 target families (dense/sparse linear, GAM, interactions,
   random MLP, random tree, radial/RBF, Fourier features, chained trigonometric).
 - **Realism augmentations**: discretized features, noise features, correlated blocks,
-  structural missingness, label noise, class imbalance.
+  structural missingness, label noise.
 - **Learnability filter**: an ExtraTrees signal-quality filter rejects unlearnable
   datasets so training compute is spent on learnable tasks.
 
