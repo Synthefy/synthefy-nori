@@ -27,7 +27,7 @@ large-table training stages.
 
 ### Architecture
 
-Synthefy Tabular is a **FeaturesTransformer (~5.5M parameters)** that alternates
+Synthefy Tabular is a **FeaturesTransformer (~5.9M parameters)** that alternates
 two kinds of attention:
 
 - **Feature attention** learns relationships between columns.
@@ -51,7 +51,7 @@ synthetic data generator covering real-world tabular regimes:
 - **Regression priors**: 9 target families (dense/sparse linear, GAM, interactions,
   random MLP, random tree, radial/RBF, Fourier features, chained trigonometric).
 - **Realism augmentations**: discretized features, noise features, correlated blocks,
-  structural missingness, label noise, class imbalance.
+  structural missingness, label noise.
 - **Learnability filter**: an ExtraTrees signal-quality filter rejects unlearnable
   datasets so training compute is spent on learnable tasks.
 
