@@ -41,7 +41,7 @@ dependencies = [
     "pandas>=2.0",
     "scikit-learn>=1.4",
     "scipy>=1.13",
-    "torch>=2.0",
+    "torch>=2.8,<2.9",
     "tqdm>=4.65",
     "typing-extensions>=4.10",
 ]
@@ -62,6 +62,21 @@ synthefy-tabular-train = "synthefy_tabular.training.cli:main"
 synthefy-tabular-eval = "synthefy_tabular.evaluation.cli:main"
 synthefy-tabular-download = "synthefy_tabular.hf:download_cli"
 synthefy-tabular-upload = "synthefy_tabular.hf:upload_cli"
+
+# Resolve/lock only for CUDA-capable platforms; macOS/CPU are not supported here.
+[tool.uv]
+environments = ["sys_platform == 'linux'", "sys_platform == 'win32'"]
+
+# Install torch from PyTorch's CUDA 12.8 wheel index so `uv sync` reproduces the
+# GPU build the benchmarks were run on, without a manual install step.
+# Note: this only affects uv workflows; `pip install synthefy-tabular` is unaffected.
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
