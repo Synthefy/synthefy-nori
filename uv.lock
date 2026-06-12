@@ -3269,7 +3269,7 @@ wheels = [
 
 [[package]]
 name = "synthefy-tabular"
-version = "0.2.2"
+version = "0.2.3"
 source = { editable = "." }
 dependencies = [
     { name = "einops", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
