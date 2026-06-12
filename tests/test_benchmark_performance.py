@@ -36,6 +36,15 @@ import os
 import time
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+
+# NOTE: torch and synthefy_tabular are imported lazily inside main(), after
+# SYNTHEFY_MAX_ELEMENTS_BUDGET is set, since the predictor reads it at import.
+
 # OpenML regression dataset IDs. Fetched live via the openml package.
 OPENML_REGRESSION_IDS = [287, 422, 507, 546, 541, 1030, 23515, 42225, 42571, 43071, 43093]
 
@@ -47,9 +56,6 @@ DEFAULT_BENCH_ROOT = Path.home() / "SynthefyPFN"
 # Metrics (mirror evaluation/runner.py::compute_reg_metrics)
 # --------------------------------------------------------------------------- #
 def compute_reg_metrics(y_true, y_pred):
-    import numpy as np
-    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-
     y_true = np.asarray(y_true, dtype=np.float64)
     y_pred = np.asarray(y_pred, dtype=np.float64)
     mask = np.isfinite(y_pred) & np.isfinite(y_true)
@@ -68,10 +74,6 @@ def compute_reg_metrics(y_true, y_pred):
 # --------------------------------------------------------------------------- #
 def _prepare_xy(X_train_df, X_test_df):
     """Label-encode categorical columns (fit on train+test), coerce to float32."""
-    import numpy as np
-    import pandas as pd
-    from sklearn.preprocessing import LabelEncoder
-
     X_train_df = X_train_df.copy()
     X_test_df = X_test_df.copy()
     cat_cols = X_train_df.select_dtypes(include=["object", "category"]).columns
@@ -89,8 +91,6 @@ def _prepare_xy(X_train_df, X_test_df):
 
 def _subsample_train(X_train, y_train, max_samples):
     """Random train subsample (mirror runner.py regression path, RandomState(42))."""
-    import numpy as np
-
     if max_samples is None or X_train.shape[0] <= max_samples:
         return X_train, y_train
     idx = np.random.RandomState(42).choice(X_train.shape[0], max_samples, replace=False)
@@ -125,9 +125,6 @@ def _read_dataset_list(path: Path):
 
 def _load_csv_folder(folder: Path, name: str, source: str, test_size: float, random_state: int):
     """Load one cached dataset folder -> dict, or None if absent/unusable."""
-    import pandas as pd
-    from sklearn.model_selection import train_test_split
-
     train_path = folder / f"{name}_train.csv"
     test_path = folder / f"{name}_test.csv"
     if not train_path.exists():
@@ -144,9 +141,6 @@ def _load_csv_folder(folder: Path, name: str, source: str, test_size: float, ran
 
 
 def _finalize_entry(X_train_df, y_train, X_test_df, y_test, name, source):
-    import numpy as np
-    import pandas as pd
-
     y_train = pd.to_numeric(pd.Series(y_train).reset_index(drop=True), errors="coerce")
     y_test = pd.to_numeric(pd.Series(y_test).reset_index(drop=True), errors="coerce")
     # Drop rows with non-numeric targets (regression).
@@ -216,8 +210,6 @@ def load_openml_regression(test_size: float, random_state: int, max_datasets: in
               "(`uv pip install openml` to enable OpenML datasets)")
         return []
 
-    from sklearn.model_selection import train_test_split
-
     ids = OPENML_REGRESSION_IDS[: max_datasets] if max_datasets else OPENML_REGRESSION_IDS
     entries = []
     for did in ids:
@@ -281,8 +273,6 @@ def main():
     os.environ.setdefault("SYNTHEFY_MAX_ELEMENTS_BUDGET", str(args.max_elements_budget))
     base_budget = int(os.environ["SYNTHEFY_MAX_ELEMENTS_BUDGET"])
 
-    import numpy as np
-    import pandas as pd
     import torch
     from synthefy_tabular import SynthefyTabularRegressor
 
