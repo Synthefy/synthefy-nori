@@ -10,13 +10,21 @@ Face checkpoint tooling.
 
 ## Results
 
-Mean R² across 96 regression tasks from three public benchmark suites:
+Mean and median R² across 96 regression tasks from three public benchmark suites
+(6M-parameter model):
 
-| Source | Tasks | Mean R² |
-|--------|------:|--------:|
-| OpenML Regression | 11 | 0.6104 |
-| TabArena | 13 | 0.8089 |
-| TALENT | 72 | 0.7591 |
+| Suite | Datasets | Mean R² | Median R² |
+|-------|---------:|--------:|----------:|
+| TabArena | 13 | 0.8117 | 0.8763 |
+| TALENT | 72 | 0.7577 | 0.8808 |
+| OpenML | 11 | 0.6177 | 0.5729 |
+| **Overall** | **96** | **0.7490** | **0.8703** |
+
+Per-dataset numbers behind this table are in
+[`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv), reproduced
+with the benchmark script at
+[`tests/test_benchmark_performance.py`](tests/test_benchmark_performance.py) (see
+[Benchmarks](#benchmarks)).
 
 Large-N / long-context tables (common in TabArena) are the current focus of the
 large-table training stages.
@@ -27,7 +35,7 @@ large-table training stages.
 
 ### Architecture
 
-Synthefy Tabular is a **FeaturesTransformer (~5.9M parameters)** that alternates
+Synthefy Tabular is a **FeaturesTransformer (~6M parameters)** that alternates
 two kinds of attention:
 
 - **Feature attention** learns relationships between columns.
@@ -78,10 +86,12 @@ cd synthefy-tabular
 uv sync --extra dev
 ```
 
-`uv sync` installs a pinned PyTorch build. If that CUDA build does not match your
-driver, install a PyTorch wheel matching your CUDA version instead. The Muon
-optimizer used in training prefers `torch.optim.Muon`; if your PyTorch lacks it,
-the package automatically falls back to a built-in implementation.
+`uv sync` installs a **CUDA 12.8** PyTorch 2.8 build from PyTorch's wheel index.
+The lock targets CUDA-capable platforms (Linux/Windows) only. If cu128 does not
+match your driver, override the index in `[tool.uv.sources]` (e.g. swap
+`pytorch-cu128` for `pytorch-cu126`) or install a matching PyTorch wheel yourself.
+The Muon optimizer used in training prefers `torch.optim.Muon`; if your PyTorch
+lacks it, the package automatically falls back to a built-in implementation.
 
 ## Authentication (optional)
 
@@ -213,6 +223,55 @@ synthefy-tabular-eval --checkpoint "Synthefy:path/to/checkpoint.pt"
 
 or `bash scripts/evaluate.sh`. See [docs/evaluation.md](docs/evaluation.md) for
 benchmark sources and how to evaluate a Synthefy Tabular checkpoint.
+
+## Benchmarks
+
+The benchmark script lives at
+[`tests/test_benchmark_performance.py`](tests/test_benchmark_performance.py). It
+reproduces the [Results](#results) table by running the public
+`SynthefyTabularRegressor` API across the TabArena, TALENT, and OpenML regression
+suites.
+
+Most of the data comes from [OpenML](https://www.openml.org), so install the
+`eval` extra to pull in the `openml` package that fetches it:
+
+```bash
+pip install "synthefy-tabular[eval]"
+```
+
+**OpenML** — fetched automatically the first time you run the script; no extra
+step.
+
+**TALENT** — downloaded with the bundled helper into `./cache/talent_reg`:
+
+```python
+from synthefy_tabular.evaluation import DatasetRegistry
+DatasetRegistry().download_talent()   # fetches the TALENT regression datasets from OpenML
+```
+
+Point the script at that download with `--bench-root .` (see below).
+
+**TabArena** — no public downloader; supply the CSVs yourself, one folder per
+dataset under `<root>/cache/tabarena_reg/<name>/` containing `<name>_train.csv`
+and `<name>_test.csv` (target in the last column), then pass `--bench-root <root>`.
+
+Run from the repo root (`uv sync` installs a CUDA 12.8 torch build on Linux, so
+`uv run` works as-is):
+
+```bash
+# OpenML only — works out of the box
+uv run python tests/test_benchmark_performance.py --suites openml
+
+# TALENT, reading the helper's download in ./cache
+uv run python tests/test_benchmark_performance.py --suites talent --bench-root .
+
+# full table, writing per-dataset metrics to the benchmarks/ folder
+uv run python tests/test_benchmark_performance.py --device cuda:0 \
+    --bench-root . --output benchmarks/benchmark_results.csv
+```
+
+Per-dataset metrics are written to
+[`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv) by default.
 
 ## Hugging Face
 
