@@ -31,7 +31,7 @@ def _access_error_message(repo_id: str) -> str:
         f"  1. Request access at https://huggingface.co/{repo_id}\n"
         f"  2. Get a token at https://huggingface.co/settings/tokens (read scope)\n"
         f"  3. Provide it via `export HF_TOKEN=hf_...`, `hf auth login`,\n"
-        f"     or pass token=... to SynthefyTabularRegressor/Classifier.\n"
+        f"     or pass token=... to SynthefyTabularRegressor.\n"
         f"If you already have a local checkpoint, pass model_path=... to skip the download."
     )
 
@@ -57,7 +57,7 @@ def download_checkpoint(
         raise ImportError("Install huggingface-hub to download checkpoints.") from exc
 
     try:
-        return hf_hub_download(
+        path = hf_hub_download(
             repo_id=repo_id,
             filename=filename,
             revision=revision,
@@ -72,6 +72,23 @@ def download_checkpoint(
         if status in (401, 403):
             raise CheckpointAccessError(_access_error_message(repo_id)) from exc
         raise
+
+    if repo_id == DEFAULT_MODEL_REPO_ID and filename != "config.json":
+        # The Hub counts model downloads only via its query file (config.json),
+        # never via .pt requests, so fetch the small config alongside the
+        # checkpoint to make downloads show up in the repo's stats.
+        try:
+            hf_hub_download(
+                repo_id=repo_id,
+                filename="config.json",
+                revision=revision,
+                cache_dir=cache_dir,
+                token=token,
+            )
+        except Exception:
+            pass
+
+    return path
 
 
 def download_limix(
