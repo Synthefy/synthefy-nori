@@ -304,7 +304,7 @@ class DatasetRegistry:
         for col in df.select_dtypes(include=["object", "category", "string"]).columns:
             try:
                 le = LabelEncoder()
-                filled = df[col].fillna("__MISSING__").astype(str)
+                filled = df[col].astype(object).fillna("__MISSING__").astype(str)
                 if filled.nunique() > 100:
                     df = df.drop(columns=[col])
                     continue
@@ -627,16 +627,19 @@ class DatasetRegistry:
             X_test = pd.DataFrame(X_test) if not isinstance(X_test, pd.DataFrame) else X_test.copy()
             y_test = pd.Series(y_test) if not isinstance(y_test, pd.Series) else y_test.copy()
 
-        # Encode object/category columns
-        for col in list(X.select_dtypes(include=["object", "category"]).columns):
+        # Encode object/category/string columns. Cast to object before fillna:
+        # on category dtype, fillna with an unseen value raises, which used to
+        # silently drop every categorical column parsed from parquet/Arrow.
+        for col in list(X.select_dtypes(include=["object", "category", "string"]).columns):
             try:
                 le = LabelEncoder()
                 parts = [X[col]] + ([X_test[col]] if X_test is not None else [])
-                combined = pd.concat(parts).fillna("__MISSING__").astype(str)
+                combined = pd.concat(parts).astype(object).fillna("__MISSING__").astype(str)
                 le.fit(combined)
-                X[col] = le.transform(X[col].fillna("__MISSING__").astype(str))
+                X[col] = le.transform(X[col].astype(object).fillna("__MISSING__").astype(str))
                 if X_test is not None:
-                    X_test[col] = le.transform(X_test[col].fillna("__MISSING__").astype(str))
+                    X_test[col] = le.transform(
+                        X_test[col].astype(object).fillna("__MISSING__").astype(str))
             except Exception:
                 X = X.drop(columns=[col])
                 if X_test is not None:
