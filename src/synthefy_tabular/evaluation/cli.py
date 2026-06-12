@@ -38,10 +38,21 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--sources", nargs="+", default=None)
     parser.add_argument("--max-train-samples", type=int, default=50000)
     parser.add_argument("--max-predict-samples", type=int, default=50000)
+    parser.add_argument("--max-elements-budget", type=int, default=8_000_000,
+                        help="SYNTHEFY_MAX_ELEMENTS_BUDGET for inference chunking/subsampling. "
+                             "The 8M default targets large GPUs (>=80GB) and stays under CUDA "
+                             "kernel grid limits on the largest test sets; lower it (e.g. "
+                             "2000000) on smaller GPUs. An explicit env var wins.")
+    parser.add_argument("--gpu-mem-gb", type=float, default=None,
+                        help="Enable the memory-model train-row cap for smaller GPUs (e.g. 24). "
+                             "Default: uncapped — train rows bounded only by --max-train-samples.")
     parser.add_argument("--warmup", type=int, default=0)
     parser.add_argument("--no-cache", action="store_true")
     parser.add_argument("--cache-dir", default="cache/eval_cache")
     args = parser.parse_args(argv)
+
+    import os
+    os.environ.setdefault("SYNTHEFY_MAX_ELEMENTS_BUDGET", str(args.max_elements_budget))
 
     from synthefy_tabular.evaluation.datasets import DatasetRegistry
     from synthefy_tabular.evaluation.models import ModelRegistry
@@ -81,6 +92,7 @@ def main(argv: list[str] | None = None) -> None:
         max_samples=args.max_predict_samples,
         cache_dir=args.cache_dir,
         no_cache=args.no_cache,
+        gpu_mem_gb=args.gpu_mem_gb,
     )
     df = runner.run(sources=args.sources, task_types=args.task_types)
     if df is not None and len(df) and "r2" in df.columns:

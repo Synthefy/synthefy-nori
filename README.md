@@ -10,14 +10,20 @@ Face checkpoint tooling.
 
 ## Results
 
-Mean R² of the base model across 96 regression tasks from three public
-benchmark suites:
+Mean and median R² of the base model across 96 regression tasks from three
+public benchmark suites (~5.9M-parameter model):
 
-| Source | Tasks | Mean R² |
-|--------|------:|--------:|
-| OpenML Regression | 11 | 0.6106 |
-| TabArena | 13 | 0.8088 |
-| TALENT | 72 | 0.7566 |
+| Suite | Datasets | Mean R² | Median R² |
+|-------|---------:|--------:|----------:|
+| TabArena | 13 | 0.8117 | 0.8757 |
+| TALENT | 72 | 0.7569 | 0.8802 |
+| OpenML | 11 | 0.6373 | 0.5856 |
+| **Overall** | **96** | **0.7506** | **0.8702** |
+
+Per-dataset numbers behind this table are in
+[`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv); the
+table is produced by the one-command run in
+[Reproducing these numbers](#reproducing-these-numbers).
 
 Large-N / long-context tables (common in TabArena) are the current focus of the
 large-table training stages.
@@ -43,10 +49,17 @@ splits use a fixed seed, so the evaluation data is fully deterministic.
 Evaluation uses the bundled default inference config
 (`reg_allordinal_poly10_adaptive_svd256.json`).
 
+The benchmark uses the **large-GPU protocol**: up to 50,000 context rows per
+dataset (no memory-based row cap) and an inference element budget of 8M
+(`SYNTHEFY_MAX_ELEMENTS_BUDGET`, settable via `--max-elements-budget`). The
+table was produced on a single H200. On smaller GPUs, pass `--gpu-mem-gb
+<GiB>` to enable a memory-based cap on context rows and/or lower
+`--max-elements-budget` — the run then fits in memory, but results on the
+largest tables drop below the table above (more context is genuinely better).
+
 The command prints a per-source mean R² summary matching the table above and
 writes per-dataset metrics to `results/eval/all_results.csv`. Expect roughly
-half an hour on a single modern GPU (`--device cuda:0` by default; CPU works
-but is much slower).
+30–40 minutes on a single large GPU (`--device cuda:0` by default).
 
 Exact per-dataset R² can move by ±0.001–0.002 across GPU models and
 PyTorch/NumPy versions; per-source means should match the table to within
@@ -57,7 +70,7 @@ target and is the least stable single dataset across environments.
 
 ### Architecture
 
-Synthefy Tabular is a **FeaturesTransformer (~5.5M parameters)** that alternates
+Synthefy Tabular is a **FeaturesTransformer (~5.9M parameters)** that alternates
 two kinds of attention:
 
 - **Feature attention** learns relationships between columns.
@@ -81,7 +94,7 @@ synthetic data generator covering real-world tabular regimes:
 - **Regression priors**: 9 target families (dense/sparse linear, GAM, interactions,
   random MLP, random tree, radial/RBF, Fourier features, chained trigonometric).
 - **Realism augmentations**: discretized features, noise features, correlated blocks,
-  structural missingness, label noise, class imbalance.
+  structural missingness, label noise.
 - **Learnability filter**: an ExtraTrees signal-quality filter rejects unlearnable
   datasets so training compute is spent on learnable tasks.
 
@@ -108,10 +121,12 @@ cd synthefy-tabular
 uv sync --extra dev
 ```
 
-`uv sync` installs a pinned PyTorch build. If that CUDA build does not match your
-driver, install a PyTorch wheel matching your CUDA version instead. The Muon
-optimizer used in training prefers `torch.optim.Muon`; if your PyTorch lacks it,
-the package automatically falls back to a built-in implementation.
+`uv sync` installs a **CUDA 12.8** PyTorch 2.8 build from PyTorch's wheel index.
+The lock targets CUDA-capable platforms (Linux/Windows) only. If cu128 does not
+match your driver, override the index in `[tool.uv.sources]` (e.g. swap
+`pytorch-cu128` for `pytorch-cu126`) or install a matching PyTorch wheel yourself.
+The Muon optimizer used in training prefers `torch.optim.Muon`; if your PyTorch
+lacks it, the package automatically falls back to a built-in implementation.
 
 ## Authentication (optional)
 
@@ -245,6 +260,33 @@ or `bash scripts/evaluate.sh`. See [docs/evaluation.md](docs/evaluation.md) for
 benchmark sources and how to evaluate a Synthefy Tabular checkpoint, and
 [Reproducing these numbers](#reproducing-these-numbers) for the published
 benchmark run.
+
+## Benchmarks
+
+The published [Results](#results) table is produced by the packaged CLI — see
+[Reproducing these numbers](#reproducing-these-numbers). Per-dataset metrics
+are committed at
+[`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv).
+
+An alternative script-style harness that drives the public
+`SynthefyTabularRegressor` API directly lives at
+[`tests/test_benchmark_performance.py`](tests/test_benchmark_performance.py).
+It reads the same CSV caches under `./cache/`; populate them once with
+`synthefy-tabular-eval --download-benchmarks` (TabArena from the official
+TabArena uploads on OpenML pinned by dataset ID, TALENT by name), then run
+from the repo root (`uv sync` installs a CUDA 12.8 torch build on Linux, so
+`uv run` works as-is):
+
+```bash
+# OpenML only — works out of the box, no cached CSVs needed
+uv run python tests/test_benchmark_performance.py --suites openml
+
+# full sweep over the downloaded caches
+uv run python tests/test_benchmark_performance.py --device cuda:0
+```
+
+Note the script's OpenML suite uses its own 70/30 split (the packaged CLI uses
+80/20), so its OpenML numbers differ slightly from the Results table.
 
 ## Hugging Face
 

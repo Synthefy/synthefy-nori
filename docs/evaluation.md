@@ -21,6 +21,11 @@ synthefy-tabular-eval --download-benchmarks --openml-reg --task-types regression
 - With no `--checkpoint`, the published checkpoint is downloaded from the
   Hugging Face Hub and evaluated with the bundled default regression config
   (`reg_allordinal_poly10_adaptive_svd256.json`).
+- The default protocol targets large GPUs: up to `--max-train-samples` (50000)
+  context rows with no memory-based cap, and an inference element budget of 8M
+  (`--max-elements-budget`, exported as `SYNTHEFY_MAX_ELEMENTS_BUDGET`). On
+  smaller GPUs pass `--gpu-mem-gb <GiB>` to cap context rows by a memory model
+  and/or lower `--max-elements-budget`; large-table results will be lower.
 
 The command prints a per-source mean R² summary and writes per-dataset metrics
 to `results/eval/all_results.csv`.

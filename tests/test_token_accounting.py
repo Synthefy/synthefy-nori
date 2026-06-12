@@ -1,4 +1,4 @@
-"""Tests for baseten/token_accounting.py::compute_tokens.
+"""Tests for baseten/model/token_accounting.py::compute_tokens.
 
 ``baseten/`` is a deployment directory, not part of the installed
 ``synthefy_tabular`` package, so make the repo root importable here regardless
@@ -16,7 +16,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from baseten.token_accounting import compute_tokens, usage
+from baseten.model.token_accounting import compute_tokens, usage
 
 
 def test_dense_request_counts_every_known_value():

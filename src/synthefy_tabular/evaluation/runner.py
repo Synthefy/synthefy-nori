@@ -165,6 +165,7 @@ class EvalRunner:
         no_cache_models: Optional[Set[str]] = None,
         parallel_models: int = 1,
         allow_single_gpu_parallel: bool = False,
+        gpu_mem_gb: Optional[float] = None,
     ):
         self.models = model_registry
         self.datasets = dataset_registry
@@ -174,6 +175,10 @@ class EvalRunner:
         self.skip_on_error = skip_on_error
         self.verbose = verbose
         self.max_samples = max_samples
+        # None = uncapped (large-GPU protocol): train rows are bounded only by
+        # max_samples. Set a GiB value to enable the memory-model train cap on
+        # smaller GPUs (lowers results on large tables).
+        self.gpu_mem_gb = gpu_mem_gb
         self.results: List[EvalResult] = []
 
         # Result cache
@@ -194,7 +199,8 @@ class EvalRunner:
     def _cache_key(self, model_name: str, dataset_name: str, source: str,
                    task_type: str) -> str:
         """Deterministic cache key from evaluation parameters."""
-        raw = f"{model_name}|{dataset_name}|{source}|{task_type}|max={self.max_samples}"
+        raw = (f"{model_name}|{dataset_name}|{source}|{task_type}"
+               f"|max={self.max_samples}|memcap={self.gpu_mem_gb}")
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
     def _cache_path(self, key: str) -> Path:
@@ -473,10 +479,13 @@ class EvalRunner:
 
     def _eval_one(self, model_entry: ModelEntry, ds: DatasetEntry, prefix: str) -> EvalResult:
         """Evaluate one model on one dataset."""
-        # Use GPU memory budget to prevent OOM on high-dimensional datasets.
-        # For low-dim datasets (e.g. 9 features), this allows all rows through.
-        mem_max = self._compute_max_train(ds.n_test, ds.n_features)
-        max_train = min(self.max_samples, mem_max)
+        max_train = self.max_samples
+        if self.gpu_mem_gb:
+            # Memory-capped mode for smaller GPUs: bound train rows with the
+            # memory model so high-dim / large-N datasets do not OOM.
+            mem_max = self._compute_max_train(
+                ds.n_test, ds.n_features, gpu_mem_gb=self.gpu_mem_gb)
+            max_train = min(max_train, mem_max)
         X_train, y_train = self._subsample_train(
             ds.X_train, ds.y_train, max_train, ds.task_type,
         )
