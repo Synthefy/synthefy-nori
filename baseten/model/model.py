@@ -49,21 +49,21 @@ def _to_jsonable(value):
 def _load_token_accounting():
     """Import the sibling ``token_accounting`` module.
 
-    Works both in-repo, where it imports as ``baseten.token_accounting``, and on
-    the deployed Truss container, where ``model.py`` runs as a top-level module
-    and ``token_accounting.py`` sits one directory up. Import is deferred to call
-    time to keep ``model.py`` import-light (the module pulls in numpy).
+    ``token_accounting.py`` lives next to this file in ``model/`` so Truss
+    bundles it into the image — only ``model/``, ``packages/`` and ``data/`` are
+    shipped, so a module left at the Truss root is silently dropped (which
+    previously made every ``predict()`` 500 with ModuleNotFoundError). Add this
+    file's own directory to ``sys.path`` and import it directly. Works the same
+    in-repo and on the container. Deferred to call time to keep ``model.py``
+    import-light (the module pulls in numpy).
     """
-    try:
-        from baseten import token_accounting
-    except ImportError:
-        import sys
-        from pathlib import Path
+    import sys
+    from pathlib import Path
 
-        root = str(Path(__file__).resolve().parents[1])
-        if root not in sys.path:
-            sys.path.insert(0, root)
-        import token_accounting
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import token_accounting
 
     return token_accounting
 
