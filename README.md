@@ -10,32 +10,67 @@ Face checkpoint tooling.
 
 ## Results
 
-Mean and median R² across 96 regression tasks from three public benchmark suites
-(6M-parameter model):
+Mean and median R² of the base model across 96 regression tasks from three
+public benchmark suites (~5.9M-parameter model):
 
 | Suite | Datasets | Mean R² | Median R² |
 |-------|---------:|--------:|----------:|
-| TabArena | 13 | 0.8117 | 0.8763 |
-| TALENT | 72 | 0.7577 | 0.8808 |
-| OpenML | 11 | 0.6177 | 0.5729 |
-| **Overall** | **96** | **0.7490** | **0.8703** |
+| TabArena | 13 | 0.8117 | 0.8757 |
+| TALENT | 72 | 0.7569 | 0.8802 |
+| OpenML | 11 | 0.6373 | 0.5856 |
+| **Overall** | **96** | **0.7506** | **0.8702** |
 
 Per-dataset numbers behind this table are in
-[`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv), reproduced
-with the benchmark script at
-[`tests/test_benchmark_performance.py`](tests/test_benchmark_performance.py) (see
-[Benchmarks](#benchmarks)).
+[`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv); the
+table is produced by the one-command run in
+[Reproducing these numbers](#reproducing-these-numbers).
 
 Large-N / long-context tables (common in TabArena) are the current focus of the
 large-table training stages.
 
-> **Thinking** is an inference-time reasoning extension. Details are forthcoming.
+> **Thinking** is an inference-time reasoning extension that improves these
+> numbers further. Details are forthcoming.
+
+### Reproducing these numbers
+
+```bash
+pip install "synthefy-tabular[eval]"
+
+synthefy-tabular-eval --download-benchmarks --openml-reg
+```
+
+The first run downloads the pretrained checkpoint from the Hugging Face Hub and
+fetches the benchmark datasets into `cache/` as CSVs: TabArena from the
+official TabArena curated uploads on OpenML (pinned by OpenML dataset ID, so
+the data is immutable), TALENT from OpenML by name, and the OpenML regression
+suite on the fly. Dataset membership is pinned by lists shipped with the
+package (`synthefy_tabular/evaluation/benchmark_lists/`), and train/test
+splits use a fixed seed, so the evaluation data is fully deterministic.
+Evaluation uses the bundled default inference config
+(`reg_allordinal_poly10_adaptive_svd256.json`).
+
+The benchmark uses the **large-GPU protocol**: up to 50,000 context rows per
+dataset (no memory-based row cap) and an inference element budget of 8M
+(`SYNTHEFY_MAX_ELEMENTS_BUDGET`, settable via `--max-elements-budget`). The
+table was produced on a single H200. On smaller GPUs, pass `--gpu-mem-gb
+<GiB>` to enable a memory-based cap on context rows and/or lower
+`--max-elements-budget` — the run then fits in memory, but results on the
+largest tables drop below the table above (more context is genuinely better).
+
+The command prints a per-source mean R² summary matching the table above and
+writes per-dataset metrics to `results/eval/all_results.csv`. Expect roughly
+30–40 minutes on a single large GPU (`--device cuda:0` by default).
+
+Exact per-dataset R² can move by ±0.001–0.002 across GPU models and
+PyTorch/NumPy versions; per-source means should match the table to within
+about ±0.003. The TALENT dataset `stock_fardamento02` has a heavy-tailed
+target and is the least stable single dataset across environments.
 
 ## How it works
 
 ### Architecture
 
-Synthefy Tabular is a **FeaturesTransformer (~6M parameters)** that alternates
+Synthefy Tabular is a **FeaturesTransformer (~5.9M parameters)** that alternates
 two kinds of attention:
 
 - **Feature attention** learns relationships between columns.
@@ -222,56 +257,36 @@ synthefy-tabular-eval --checkpoint "Synthefy:path/to/checkpoint.pt"
 ```
 
 or `bash scripts/evaluate.sh`. See [docs/evaluation.md](docs/evaluation.md) for
-benchmark sources and how to evaluate a Synthefy Tabular checkpoint.
+benchmark sources and how to evaluate a Synthefy Tabular checkpoint, and
+[Reproducing these numbers](#reproducing-these-numbers) for the published
+benchmark run.
 
 ## Benchmarks
 
-The benchmark script lives at
-[`tests/test_benchmark_performance.py`](tests/test_benchmark_performance.py). It
-reproduces the [Results](#results) table by running the public
-`SynthefyTabularRegressor` API across the TabArena, TALENT, and OpenML regression
-suites.
+The published [Results](#results) table is produced by the packaged CLI — see
+[Reproducing these numbers](#reproducing-these-numbers). Per-dataset metrics
+are committed at
+[`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv).
 
-Most of the data comes from [OpenML](https://www.openml.org), so install the
-`eval` extra to pull in the `openml` package that fetches it:
-
-```bash
-pip install "synthefy-tabular[eval]"
-```
-
-**OpenML** — fetched automatically the first time you run the script; no extra
-step.
-
-**TALENT** — downloaded with the bundled helper into `./cache/talent_reg`:
-
-```python
-from synthefy_tabular.evaluation import DatasetRegistry
-DatasetRegistry().download_talent()   # fetches the TALENT regression datasets from OpenML
-```
-
-Point the script at that download with `--bench-root .` (see below).
-
-**TabArena** — no public downloader; supply the CSVs yourself, one folder per
-dataset under `<root>/cache/tabarena_reg/<name>/` containing `<name>_train.csv`
-and `<name>_test.csv` (target in the last column), then pass `--bench-root <root>`.
-
-Run from the repo root (`uv sync` installs a CUDA 12.8 torch build on Linux, so
+An alternative script-style harness that drives the public
+`SynthefyTabularRegressor` API directly lives at
+[`tests/test_benchmark_performance.py`](tests/test_benchmark_performance.py).
+It reads the same CSV caches under `./cache/`; populate them once with
+`synthefy-tabular-eval --download-benchmarks` (TabArena from the official
+TabArena uploads on OpenML pinned by dataset ID, TALENT by name), then run
+from the repo root (`uv sync` installs a CUDA 12.8 torch build on Linux, so
 `uv run` works as-is):
 
 ```bash
-# OpenML only — works out of the box
+# OpenML only — works out of the box, no cached CSVs needed
 uv run python tests/test_benchmark_performance.py --suites openml
 
-# TALENT, reading the helper's download in ./cache
-uv run python tests/test_benchmark_performance.py --suites talent --bench-root .
-
-# full table, writing per-dataset metrics to the benchmarks/ folder
-uv run python tests/test_benchmark_performance.py --device cuda:0 \
-    --bench-root . --output benchmarks/benchmark_results.csv
+# full sweep over the downloaded caches
+uv run python tests/test_benchmark_performance.py --device cuda:0
 ```
 
-Per-dataset metrics are written to
-[`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv) by default.
+Note the script's OpenML suite uses its own 70/30 split (the packaged CLI uses
+80/20), so its OpenML numbers differ slightly from the Results table.
 
 ## Hugging Face
 

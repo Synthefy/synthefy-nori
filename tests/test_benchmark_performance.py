@@ -9,8 +9,7 @@ public ``synthefy_tabular`` package API (the same one used by ``test.py``):
     model.fit(X_train, y_train)
     pred = model.predict(X_test)
 
-Data sources (regression only -- the public package exposes a regressor, not a
-classifier):
+Data sources (regression only):
 
   * TabArena / TALENT -- local CSV cache dirs in the outer repo, one folder per
     dataset containing ``{name}_train.csv`` and ``{name}_test.csv`` with the
@@ -48,8 +47,9 @@ from sklearn.preprocessing import LabelEncoder
 # OpenML regression dataset IDs. Fetched live via the openml package.
 OPENML_REGRESSION_IDS = [287, 422, 507, 546, 541, 1030, 23515, 42225, 42571, 43071, 43093]
 
-# Default location of the outer repo that holds the cached benchmark CSVs.
-DEFAULT_BENCH_ROOT = Path.home() / "SynthefyPFN"
+# Default root holding cache/ with the benchmark CSVs. Populate it with
+# `synthefy-tabular-eval --download-benchmarks` (run from the repo root).
+DEFAULT_BENCH_ROOT = Path(".")
 
 
 # --------------------------------------------------------------------------- #

@@ -1,7 +1,7 @@
 """Synthefy Tabular Evaluation Framework.
 
-Evaluate Synthefy Tabular checkpoints across TabArena, RelBench CTU,
-OpenML-CC18, and other benchmarks.
+Evaluate Synthefy Tabular checkpoints across the TabArena, TALENT, and
+OpenML regression benchmarks.
 """
 
 from __future__ import annotations
