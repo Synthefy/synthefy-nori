@@ -20,8 +20,14 @@ vendored copy is **gitignored** to avoid a second, drifting copy of `src/`, so
 you must generate it before the first push and re-sync it after any source change:
 
 ```bash
+# Drop any stale pre-rename vendored copy (one-time, if you vendored before the Nori rename):
+rm -rf packages/synthefy_tabular
 rm -rf packages/synthefy_nori && cp -R ../src/synthefy_nori packages/synthefy_nori
 ```
+
+> **Migrating from `synthefy_tabular`:** a `packages/synthefy_tabular/` left over
+> from the old vendoring step is no longer gitignored, so delete it (the command
+> above does) to avoid committing a stale copy or shadowing imports.
 
 ## One-time setup
 
