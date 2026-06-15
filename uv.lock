@@ -3268,7 +3268,7 @@ wheels = [
 ]
 
 [[package]]
-name = "synthefy-tabular"
+name = "synthefy-nori"
 version = "0.2.3"
 source = { editable = "." }
 dependencies = [

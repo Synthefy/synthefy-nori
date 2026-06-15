@@ -5,11 +5,11 @@ repo. Keep it accurate — update it when commands, layout, or conventions chang
 
 ## What this is
 
-`synthefy-tabular` is a small (~5.5M-parameter) tabular foundation model
+`synthefy-nori` is a small (~5.5M-parameter) tabular foundation model
 (`FeaturesTransformer`) for **regression** via in-context
 learning. Given a few labeled context rows, it predicts on query rows in a
 single forward pass — no task-specific training. It is trained entirely on
-synthetic data. The public API wraps an internal `SynthefyTabularPredictor`.
+synthetic data. The public API wraps an internal `NoriPredictor`.
 
 ## Setup
 
@@ -28,17 +28,17 @@ uv run ruff check src scripts tests
 uv build
 ```
 
-- Import smoke (what CI gates on first): `uv run python -c "import synthefy_tabular"`
+- Import smoke (what CI gates on first): `uv run python -c "import synthefy_nori"`
 - Full inference check (downloads the public ~47MB checkpoint, ~15s on CPU):
   `uv run pytest -m slow`
 
 ## How inference works (and how to test it)
 
 - The default checkpoint lives at the **public** HF repo
-  `Synthefy/synthefy-tabular` (file `synthefy-tabular.pt`). First use downloads
+  `Synthefy/synthefy-nori` (file `synthefy-nori.pt`). First use downloads
   and caches it — **no token or access request needed**. A token is only used
   for higher rate limits or for pointing at a private/custom repo.
-- Public API (`src/synthefy_tabular/api.py`): `SynthefyTabularRegressor`
+- Public API (`src/synthefy_nori/api.py`): `NoriRegressor`
   (sklearn-style `fit` / `predict`; `predict` takes
   `output_type="mean"/"median"/"mode"` per the `TabPFNRegressor` contract),
   plus the one-shot `infer` / `predict` helpers and `config_path`. The public
@@ -51,11 +51,11 @@ uv build
 ## Layout
 
 ```
-src/synthefy_tabular/
+src/synthefy_nori/
   api.py          Public API. Imports the heavy stack LAZILY — keep it import-light.
   hf.py           HF download/upload + console-script entry points
   model/          FeaturesTransformer architecture
-  inference/      SynthefyTabularPredictor + preprocessing
+  inference/      NoriPredictor + preprocessing
   training/       data generation, trainer, loss, config, CLI (GPU / DDP)
   evaluation/     benchmark runner + CLI
   configs/*.json  bundled inference configs (shipped via package-data)
@@ -68,7 +68,7 @@ tests/            fast unit/smoke tests + slow e2e tests (marked `slow`)
 ## Conventions & gotchas
 
 - **Keep `api.py` and the top-level import cheap.** `torch`/`numpy`/etc. are
-  imported lazily inside functions so `import synthefy_tabular` works before the
+  imported lazily inside functions so `import synthefy_nori` works before the
   heavy accelerator stack loads. Do not hoist heavy imports to module top level.
 - **Ruff is intentionally narrow**: only `E9,F821,F822,F823` (syntax +
   undefined names), line length 120, target `py310`. It is a correctness gate,
@@ -79,7 +79,7 @@ tests/            fast unit/smoke tests + slow e2e tests (marked `slow`)
   `*.pt`/`*.ckpt`/`*.safetensors`, `checkpoints/`, `data/`, `results/`,
   `wandb/`, `cache/`.
 - **Versioning & distribution**: the package is **public** and published to PyPI
-  (`pip install synthefy-tabular`). Keep `pyproject.toml` `version` and
+  (`pip install synthefy-nori`). Keep `pyproject.toml` `version` and
   `__init__.py` `__version__` in sync — `publish.yml` enforces a match with the
   release tag and uploads to PyPI over OIDC trusted publishing. Release process is
   in `RELEASING.md`.
@@ -91,12 +91,12 @@ tests/            fast unit/smoke tests + slow e2e tests (marked `slow`)
   CCMM/pinball loss → Muon step → checkpoint write) in 2 steps:
 
   ```bash
-  WANDB_MODE=disabled uv run synthefy-tabular-train \
+  WANDB_MODE=disabled uv run synthefy-nori-train \
     --device cpu --no-mixed-precision --no-prefetch --no-flash-attn \
     --task-type reg --total-steps 2 --run-steps 2 --save-interval 2 \
     --embed-dim 32 --hid-dim 64 --nlayers 2 --nhead 2 \
     --batch-size 2 --max-features 16 --max-budget 4000 \
-    --checkpoint-dir /tmp/st_smoke
+    --checkpoint-dir /tmp/nori_smoke
   ```
 - Shell scripts run with the project venv (`.venv/bin/python`); they do not rely
   on a bare `python`.
@@ -105,7 +105,7 @@ tests/            fast unit/smoke tests + slow e2e tests (marked `slow`)
 
 The codebase originated as a fork of **LimiX** (Apache-2.0,
 <https://github.com/limix-ldm-ai/LimiX>) and has since diverged; the vestigial
-`LimiX*` class names were renamed to `SynthefyTabular*`. The **canonical LimiX-2M
+`LimiX*` class names were renamed to `Nori*`. The **canonical LimiX-2M
 model is used in exactly one place** — an optional training-time ICL learnability
 filter, downloaded via `download_limix()` / `--icl-filter-model limix`. Those
 references name the real upstream model — leave them intact, and don't

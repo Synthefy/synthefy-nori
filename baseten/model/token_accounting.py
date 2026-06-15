@@ -1,4 +1,4 @@
-"""Token accounting for Synthefy Tabular inference requests.
+"""Token accounting for Nori inference requests.
 
 The deployed model is an in-context regressor: each request supplies context
 rows (``X_train``, ``y_train``) and query rows (``X_test``) and predicts one
@@ -24,7 +24,7 @@ def compute_tokens(
     """Compute ``(input_tokens, output_tokens)`` for one inference request.
 
     ``X_train``, ``y_train`` and ``X_test`` are typed ``np.ndarray`` to match
-    ``SynthefyTabularPredictor.predict``; array-likes (lists) are also accepted
+    ``NoriPredictor.predict``; array-likes (lists) are also accepted
     and coerced with the same dtypes ``fit``/``predict`` use.
     """
     X_train = np.asarray(X_train, dtype=np.float32)

@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "synthefy-tabular"
+name = "synthefy-nori"
 version = "0.2.3"
-description = "Synthefy Tabular foundation model training, inference, and evaluation"
+description = "Nori foundation model training, inference, and evaluation"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "Apache-2.0"
@@ -47,10 +47,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Synthefy/synthefy-tabular"
-Repository = "https://github.com/Synthefy/synthefy-tabular"
-Issues = "https://github.com/Synthefy/synthefy-tabular/issues"
-Changelog = "https://github.com/Synthefy/synthefy-tabular/releases"
+Homepage = "https://github.com/Synthefy/synthefy-nori"
+Repository = "https://github.com/Synthefy/synthefy-nori"
+Issues = "https://github.com/Synthefy/synthefy-nori/issues"
+Changelog = "https://github.com/Synthefy/synthefy-nori/releases"
 
 [project.optional-dependencies]
 train = ["wandb>=0.15.0", "xgboost"]
@@ -58,10 +58,10 @@ eval = ["matplotlib", "openml"]
 dev = ["build", "pytest", "ruff"]
 
 [project.scripts]
-synthefy-tabular-train = "synthefy_tabular.training.cli:main"
-synthefy-tabular-eval = "synthefy_tabular.evaluation.cli:main"
-synthefy-tabular-download = "synthefy_tabular.hf:download_cli"
-synthefy-tabular-upload = "synthefy_tabular.hf:upload_cli"
+synthefy-nori-train = "synthefy_nori.training.cli:main"
+synthefy-nori-eval = "synthefy_nori.evaluation.cli:main"
+synthefy-nori-download = "synthefy_nori.hf:download_cli"
+synthefy-nori-upload = "synthefy_nori.hf:upload_cli"
 
 # Resolve/lock only for CUDA-capable platforms; macOS/CPU are not supported here.
 [tool.uv]
@@ -69,7 +69,7 @@ environments = ["sys_platform == 'linux'", "sys_platform == 'win32'"]
 
 # Install torch from PyTorch's CUDA 12.8 wheel index so `uv sync` reproduces the
 # GPU build the benchmarks were run on, without a manual install step.
-# Note: this only affects uv workflows; `pip install synthefy-tabular` is unaffected.
+# Note: this only affects uv workflows; `pip install synthefy-nori` is unaffected.
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
@@ -82,8 +82,8 @@ torch = { index = "pytorch-cu128" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-"synthefy_tabular.configs" = ["*.json"]
-"synthefy_tabular.evaluation.benchmark_lists" = ["*.csv"]
+"synthefy_nori.configs" = ["*.json"]
+"synthefy_nori.evaluation.benchmark_lists" = ["*.csv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

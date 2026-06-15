@@ -14,7 +14,7 @@ jobs:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v8.2.0
       - run: uv sync --extra dev
-      - run: uv run python -c "import synthefy_tabular"
+      - run: uv run python -c "import synthefy_nori"
       - run: uv run pytest tests
       - run: uv run ruff check src scripts tests
       - run: uv build

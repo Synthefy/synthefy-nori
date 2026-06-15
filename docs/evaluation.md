@@ -3,9 +3,9 @@
 ## Reproduce the published benchmark
 
 ```bash
-pip install "synthefy-tabular[eval]"
+pip install "synthefy-nori[eval]"
 
-synthefy-tabular-eval --download-benchmarks --openml-reg
+synthefy-nori-eval --download-benchmarks --openml-reg
 ```
 
 - `--download-benchmarks` fetches the TabArena and TALENT regression datasets
@@ -13,7 +13,7 @@ synthefy-tabular-eval --download-benchmarks --openml-reg
   (skipped on later runs once the files exist). TabArena uses the official
   TabArena curated uploads, pinned by OpenML dataset ID; TALENT is fetched by
   dataset name. Membership is pinned by the lists shipped in
-  `synthefy_tabular/evaluation/benchmark_lists/`, and train/test splits use a
+  `synthefy_nori/evaluation/benchmark_lists/`, and train/test splits use a
   fixed seed (70/30, seed 42) — identical everywhere, so the CSVs are
   bit-reproducible.
 - `--openml-reg` adds the curated 11-dataset OpenML regression suite (loaded
@@ -33,7 +33,7 @@ to `results/eval/all_results.csv`.
 ## Evaluate your own checkpoint
 
 ```bash
-synthefy-tabular-eval --checkpoint "MyRun:checkpoints/best_reg_r2.pt"
+synthefy-nori-eval --checkpoint "MyRun:checkpoints/best_reg_r2.pt"
 ```
 
 `--checkpoint` is repeatable (`label:path`), so several checkpoints can be

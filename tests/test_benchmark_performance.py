@@ -1,11 +1,11 @@
 #!/usr/bin/env python
-"""Benchmark SynthefyTabularRegressor across TabArena, TALENT, and OpenML.
+"""Benchmark NoriRegressor across TabArena, TALENT, and OpenML.
 
 This mirrors the regression eval loop in the outer SynthefyPFN repo
 (``evaluation/datasets.py`` + ``evaluation/runner.py``), but driven through the
-public ``synthefy_tabular`` package API (the same one used by ``test.py``):
+public ``synthefy_nori`` package API (the same one used by ``test.py``):
 
-    model = SynthefyTabularRegressor()
+    model = NoriRegressor()
     model.fit(X_train, y_train)
     pred = model.predict(X_test)
 
@@ -19,7 +19,7 @@ Data sources (regression only):
 
 Metrics match the outer repo's ``compute_reg_metrics``: R2, RMSE, MAE.
 
-Run from the synthefy-tabular dir (``uv sync`` installs a cu128 torch build on
+Run from the synthefy-nori dir (``uv sync`` installs a cu128 torch build on
 Linux, so ``uv run`` works as-is):
 
     uv run python tests/test_benchmark_performance.py
@@ -41,14 +41,14 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 
-# NOTE: torch and synthefy_tabular are imported lazily inside main(), after
+# NOTE: torch and synthefy_nori are imported lazily inside main(), after
 # SYNTHEFY_MAX_ELEMENTS_BUDGET is set, since the predictor reads it at import.
 
 # OpenML regression dataset IDs. Fetched live via the openml package.
 OPENML_REGRESSION_IDS = [287, 422, 507, 546, 541, 1030, 23515, 42225, 42571, 43071, 43093]
 
 # Default root holding cache/ with the benchmark CSVs. Populate it with
-# `synthefy-tabular-eval --download-benchmarks` (run from the repo root).
+# `synthefy-nori-eval --download-benchmarks` (run from the repo root).
 DEFAULT_BENCH_ROOT = Path(".")
 
 
@@ -274,7 +274,7 @@ def main():
     base_budget = int(os.environ["SYNTHEFY_MAX_ELEMENTS_BUDGET"])
 
     import torch
-    from synthefy_tabular import SynthefyTabularRegressor
+    from synthefy_nori import NoriRegressor
 
     bench_root = args.bench_root.expanduser()
     max_train = args.max_train_samples if args.max_train_samples and args.max_train_samples > 0 else None
@@ -300,8 +300,8 @@ def main():
     print(f"\nTotal datasets to evaluate: {len(datasets)}\n")
 
     # ----- build the model once (predictor is cached across fit calls) ---- #
-    print(f"Loading SynthefyTabularRegressor on {args.device} ...")
-    model = SynthefyTabularRegressor(model_path=args.model_path, device=args.device)
+    print(f"Loading NoriRegressor on {args.device} ...")
+    model = NoriRegressor(model_path=args.model_path, device=args.device)
 
     # ----- evaluate ------------------------------------------------------- #
     rows = []

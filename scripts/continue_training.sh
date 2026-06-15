@@ -163,7 +163,7 @@ run_tier() {
   echo "============================================================"
 
   torchrun --nproc_per_node="${NPROC}" --master_port="${MASTER_PORT}" \
-    -m synthefy_tabular.training.cli \
+    -m synthefy_nori.training.cli \
     "${SHARED_ARGS[@]}" \
     --resume "${seed}" --resume-model-only \
     --checkpoint-dir "${outdir}" \

@@ -42,7 +42,7 @@ def Model():
 
 
 class _FakeRegressor:
-    """Stand-in for SynthefyTabularRegressor: one value per query row."""
+    """Stand-in for NoriRegressor: one value per query row."""
 
     def fit(self, X, y):  # noqa: D401 - signature mirrors the real fit
         self._fitted = True
