@@ -32,7 +32,7 @@ jobs:
         if: github.event_name == 'release'
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          wheel=$(basename dist/synthefy_tabular-*.whl)
+          wheel=$(basename dist/synthefy_nori-*.whl)
           pkg_version=$(echo "$wheel" | awk -F- '{print $2}')
           echo "tag=$tag pkg_version=$pkg_version wheel=$wheel"
           if [ "$tag" != "$pkg_version" ]; then
@@ -51,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: testpypi
-      url: https://test.pypi.org/project/synthefy-tabular/
+      url: https://test.pypi.org/project/synthefy-nori/
     permissions:
       id-token: write
     steps:
@@ -70,7 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/project/synthefy-tabular/
+      url: https://pypi.org/project/synthefy-nori/
     permissions:
       id-token: write
     steps:

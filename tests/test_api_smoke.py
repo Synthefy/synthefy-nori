@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from synthefy_tabular import SynthefyTabularRegressor, config_path
+from synthefy_nori import NoriRegressor, config_path
 
 
 def test_config_path_points_to_bundled_file():
@@ -12,7 +12,7 @@ def test_config_path_points_to_bundled_file():
 
 
 def test_regressor_uses_default_regression_config():
-    model = SynthefyTabularRegressor(model_path="local.pt")
+    model = NoriRegressor(model_path="local.pt")
     assert model.model_path == "local.pt"
     assert model.inference_config.endswith("reg_allordinal_poly10_adaptive_svd256.json")
 
@@ -20,7 +20,7 @@ def test_regressor_uses_default_regression_config():
 def test_predict_rejects_unsupported_output_types():
     # output_type is validated before the checkpoint is loaded, so these paths
     # exercise the TabPFN-contract guardrails without any model weights.
-    model = SynthefyTabularRegressor(model_path="local.pt")
+    model = NoriRegressor(model_path="local.pt")
 
     for output_type in ("quantiles", "main", "full"):
         with pytest.raises(NotImplementedError):

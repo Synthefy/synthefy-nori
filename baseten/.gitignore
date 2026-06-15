@@ -1,6 +1,8 @@
 # Vendored copy of the package, regenerated before `truss push` (see README.md):
-#   rm -rf packages/synthefy_tabular && cp -R ../src/synthefy_tabular packages/synthefy_tabular
+#   rm -rf packages/synthefy_nori && cp -R ../src/synthefy_nori packages/synthefy_nori
 # Kept out of git to avoid a second, drifting copy of src/.
+packages/synthefy_nori/
+# Legacy pre-rename vendored copy: still ignored so a stale local checkout can't be committed.
 packages/synthefy_tabular/
 
 # Bundled wheels / data artifacts

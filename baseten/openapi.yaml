@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Synthefy Tabular Inference API
+  title: Nori Inference API
   version: "1.0.0"
   description: |
     In-context learning model for tabular **regression**, served on Baseten.

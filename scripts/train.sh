@@ -81,7 +81,7 @@ export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
 export PATH="${REPO_ROOT}/.venv/bin:${PATH}"
 
 torchrun --nproc_per_node="${NPROC}" --master_port="${MASTER_PORT}" \
-  -m synthefy_tabular.training.cli \
+  -m synthefy_nori.training.cli \
   "${RESUME_ARGS[@]}" \
   --checkpoint-dir "${CKPT_DIR}" \
   --total-steps "${TOTAL_STEPS}" --run-steps "${TOTAL_STEPS}" \

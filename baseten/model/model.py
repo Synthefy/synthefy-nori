@@ -1,6 +1,6 @@
-"""Baseten custom model wrapper for the Synthefy Tabular foundation model.
+"""Baseten custom model wrapper for the Nori foundation model.
 
-Synthefy Tabular is an in-context learning model: there is no offline training
+Nori is an in-context learning model: there is no offline training
 step. Every request supplies the context rows (``X_train``, ``y_train``) and the
 query rows (``X_test``); the model conditions on the context and predicts targets
 for the queries in a single forward pass.
@@ -83,7 +83,7 @@ class Model:
     # ------------------------------------------------------------------ load
     def load(self):
         """Download the checkpoint and warm up the regression head once."""
-        from synthefy_tabular import SynthefyTabularRegressor
+        from synthefy_nori import NoriRegressor
 
         # The default checkpoint is public; a token is only needed if the repo is
         # gated. Honor an optional hf_access_token secret when present.
@@ -92,7 +92,7 @@ class Model:
             os.environ.setdefault("HF_TOKEN", token)
         self._token = token
 
-        self._regressor = SynthefyTabularRegressor(token=token)
+        self._regressor = NoriRegressor(token=token)
 
         # Trigger checkpoint download + weight load now (not on first request) by
         # running a tiny in-context prediction. The loaded predictor is cached on
@@ -108,10 +108,10 @@ class Model:
             self._regressor.predict(x[:1])
         except Exception as exc:  # pragma: no cover - surfaced in deploy logs
             raise RuntimeError(
-                "Failed to load the Synthefy Tabular checkpoint during warmup. "
+                "Failed to load the Nori checkpoint during warmup. "
                 "If this is an auth error, set the 'hf_access_token' secret in your "
                 "Baseten workspace to a Hugging Face token with read access to "
-                "'Synthefy/synthefy-tabular'."
+                "'Synthefy/Nori'."
             ) from exc
 
     # --------------------------------------------------------------- predict

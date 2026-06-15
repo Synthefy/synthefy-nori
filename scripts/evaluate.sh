@@ -12,4 +12,4 @@ export PATH="${REPO_ROOT}/.venv/bin:${PATH}"
 PY_BIN="${REPO_ROOT}/.venv/bin/python"
 [[ -x "${PY_BIN}" ]] || PY_BIN="$(command -v python3 || command -v python)"
 
-"${PY_BIN}" -m synthefy_tabular.evaluation.cli "$@"
+"${PY_BIN}" -m synthefy_nori.evaluation.cli "$@"

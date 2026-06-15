@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from synthefy_tabular.training.config import TrainingConfig, package_config_path
+from synthefy_nori.training.config import TrainingConfig, package_config_path
 
 
 def test_training_config_constructs():

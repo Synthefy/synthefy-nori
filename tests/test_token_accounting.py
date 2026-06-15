@@ -1,7 +1,7 @@
 """Tests for baseten/model/token_accounting.py::compute_tokens.
 
 ``baseten/`` is a deployment directory, not part of the installed
-``synthefy_tabular`` package, so make the repo root importable here regardless
+``synthefy_nori`` package, so make the repo root importable here regardless
 of how pytest is invoked. CI runs ``uv run pytest tests``, which only puts
 ``tests/`` on ``sys.path``; without this, ``import baseten`` fails.
 """
@@ -29,7 +29,7 @@ def test_dense_request_counts_every_known_value():
 
 def test_lists_and_numpy_inputs_agree():
     # compute_tokens is typed np.ndarray but must accept array-likes (lists)
-    # too, exactly like SynthefyTabularRegressor.fit/predict; both must agree.
+    # too, exactly like NoriRegressor.fit/predict; both must agree.
     X_train = [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]
     y_train = [0.1, 0.2, 0.3]
     X_test = [[7.0, 8.0], [9.0, 10.0]]

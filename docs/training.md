@@ -6,7 +6,7 @@ eval signal influences checkpoint selection. Runs write periodic
 `checkpoint_step_*.pt` files plus a final checkpoint, and each curriculum tier
 seeds from the previous tier's final checkpoint.
 
-`scripts/train.sh` calls `synthefy_tabular.training.cli` through `torchrun` and
+`scripts/train.sh` calls `synthefy_nori.training.cli` through `torchrun` and
 writes checkpoints under `checkpoints/`. Use environment variables to shorten or
 resize a run:
 

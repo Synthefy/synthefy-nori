@@ -1,6 +1,6 @@
-# Synthefy Tabular
+# Nori
 
-Synthefy Tabular is a tabular foundation model for **regression**
+Nori is a tabular foundation model for **regression**
 via in-context learning (ICL). Given a few labeled rows as context, it predicts on
 new query rows in a single forward pass, with no task-specific training or fine-tuning.
 The model is trained entirely on synthetic data.
@@ -34,9 +34,9 @@ large-table training stages.
 ### Reproducing these numbers
 
 ```bash
-pip install "synthefy-tabular[eval]"
+pip install "synthefy-nori[eval]"
 
-synthefy-tabular-eval --download-benchmarks --openml-reg
+synthefy-nori-eval --download-benchmarks --openml-reg
 ```
 
 The first run downloads the pretrained checkpoint from the Hugging Face Hub and
@@ -44,7 +44,7 @@ fetches the benchmark datasets into `cache/` as CSVs: TabArena from the
 official TabArena curated uploads on OpenML (pinned by OpenML dataset ID, so
 the data is immutable), TALENT from OpenML by name, and the OpenML regression
 suite on the fly. Dataset membership is pinned by lists shipped with the
-package (`synthefy_tabular/evaluation/benchmark_lists/`), and train/test
+package (`synthefy_nori/evaluation/benchmark_lists/`), and train/test
 splits use a fixed seed, so the evaluation data is fully deterministic.
 Evaluation uses the bundled default inference config
 (`reg_allordinal_poly10_adaptive_svd256.json`).
@@ -70,7 +70,7 @@ target and is the least stable single dataset across environments.
 
 ### Architecture
 
-Synthefy Tabular is a **FeaturesTransformer (~5.9M parameters)** that alternates
+Nori is a **FeaturesTransformer (~5.9M parameters)** that alternates
 two kinds of attention:
 
 - **Feature attention** learns relationships between columns.
@@ -103,21 +103,21 @@ See [docs/training.md](docs/training.md) for the full recipe.
 ## Install
 
 ```bash
-pip install synthefy-tabular
+pip install synthefy-nori
 ```
 
 Optional extras:
 
 ```bash
-pip install "synthefy-tabular[train]"   # training-only deps (wandb, xgboost)
-pip install "synthefy-tabular[eval]"    # evaluation-only deps (matplotlib, openml)
+pip install "synthefy-nori[train]"   # training-only deps (wandb, xgboost)
+pip install "synthefy-nori[eval]"    # evaluation-only deps (matplotlib, openml)
 ```
 
 ### Develop from source
 
 ```bash
-git clone https://github.com/Synthefy/synthefy-tabular
-cd synthefy-tabular
+git clone https://github.com/Synthefy/synthefy-nori
+cd synthefy-nori
 uv sync --extra dev
 ```
 
@@ -131,7 +131,7 @@ lacks it, the package automatically falls back to a built-in implementation.
 ## Authentication (optional)
 
 The default checkpoint at
-[`Synthefy/synthefy-tabular`](https://huggingface.co/Synthefy/synthefy-tabular)
+[`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori)
 is **public**: the first inference call downloads and caches it automatically,
 with no token and no access request.
 
@@ -149,8 +149,8 @@ hf auth login
 
 ```python
 # Option C: pass explicitly in code
-from synthefy_tabular import SynthefyTabularRegressor
-model = SynthefyTabularRegressor(token="hf_xxxxxxxx")
+from synthefy_nori import NoriRegressor
+model = NoriRegressor(token="hf_xxxxxxxx")
 ```
 
 Get a token at <https://huggingface.co/settings/tokens> (read scope is
@@ -160,19 +160,19 @@ needed at all.
 ## Inference
 
 Pretrained weights are hosted on the Hugging Face Hub at
-[`Synthefy/synthefy-tabular`](https://huggingface.co/Synthefy/synthefy-tabular).
+[`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori).
 The first call downloads and caches the checkpoint automatically, so a complete
 working example is just:
 
 ```python
 from sklearn.datasets import load_diabetes
 from sklearn.model_selection import train_test_split
-from synthefy_tabular import SynthefyTabularRegressor
+from synthefy_nori import NoriRegressor
 
 X, y = load_diabetes(return_X_y=True)
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=0)
 
-model = SynthefyTabularRegressor()    # downloads weights from the HF Hub on first use
+model = NoriRegressor()    # downloads weights from the HF Hub on first use
 model.fit(X_train, y_train)           # "fit" just stores the labeled rows as context
 pred = model.predict(X_test)          # predictions in a single forward pass, no training
 ```
@@ -181,14 +181,14 @@ It uses a GPU when one is available and falls back to CPU. A one-shot helper
 skips the object entirely:
 
 ```python
-from synthefy_tabular import predict
+from synthefy_nori import predict
 pred = predict(X_train, y_train, X_test, task="regression")
 ```
 
 To run from your own checkpoint instead of the Hub default, pass a path:
 
 ```python
-model = SynthefyTabularRegressor(model_path="path/to/checkpoint.pt")
+model = NoriRegressor(model_path="path/to/checkpoint.pt")
 ```
 
 `predict` follows the `TabPFNRegressor.predict` contract: pass
@@ -253,11 +253,11 @@ quantiles + a monotonicity penalty, and bf16 mixed precision with DDP. Pass
 ## Evaluation
 
 ```bash
-synthefy-tabular-eval --checkpoint "Synthefy:path/to/checkpoint.pt"
+synthefy-nori-eval --checkpoint "Synthefy:path/to/checkpoint.pt"
 ```
 
 or `bash scripts/evaluate.sh`. See [docs/evaluation.md](docs/evaluation.md) for
-benchmark sources and how to evaluate a Synthefy Tabular checkpoint, and
+benchmark sources and how to evaluate a Nori checkpoint, and
 [Reproducing these numbers](#reproducing-these-numbers) for the published
 benchmark run.
 
@@ -269,10 +269,10 @@ are committed at
 [`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv).
 
 An alternative script-style harness that drives the public
-`SynthefyTabularRegressor` API directly lives at
+`NoriRegressor` API directly lives at
 [`tests/test_benchmark_performance.py`](tests/test_benchmark_performance.py).
 It reads the same CSV caches under `./cache/`; populate them once with
-`synthefy-tabular-eval --download-benchmarks` (TabArena from the official
+`synthefy-nori-eval --download-benchmarks` (TabArena from the official
 TabArena uploads on OpenML pinned by dataset ID, TALENT by name), then run
 from the repo root (`uv sync` installs a CUDA 12.8 torch build on Linux, so
 `uv run` works as-is):
@@ -291,8 +291,8 @@ Note the script's OpenML suite uses its own 70/30 split (the packaged CLI uses
 ## Hugging Face
 
 ```bash
-synthefy-tabular-download                                            # fetch default checkpoint
-synthefy-tabular-upload path/to/checkpoint.pt --repo-id Synthefy/synthefy-tabular
+synthefy-nori-download                                            # fetch default checkpoint
+synthefy-nori-upload path/to/checkpoint.pt --repo-id Synthefy/Nori
 ```
 
 See [docs/huggingface.md](docs/huggingface.md).
@@ -300,8 +300,8 @@ See [docs/huggingface.md](docs/huggingface.md).
 ## Repository layout
 
 ```
-src/synthefy_tabular/
-  api.py            Public API (SynthefyTabularRegressor, infer, predict)
+src/synthefy_nori/
+  api.py            Public API (NoriRegressor, infer, predict)
   model/            FeaturesTransformer architecture
   training/         Data generation, trainer, loss, config, CLI
   inference/        Sklearn-compatible predictor + preprocessing

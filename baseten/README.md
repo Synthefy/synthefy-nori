@@ -1,7 +1,7 @@
-# Deploying Synthefy Tabular to Baseten
+# Deploying Nori to Baseten
 
 This is a [Truss](https://docs.baseten.co/development/model/custom-model-code)
-that serves the Synthefy Tabular in-context learning model on Baseten.
+that serves the Nori in-context learning model on Baseten.
 
 ## Layout
 
@@ -11,17 +11,23 @@ baseten/
 ├── model/
 │   └── model.py             # Model class: load() warms the checkpoint, predict() serves regression
 └── packages/
-    └── synthefy_tabular/    # the bundled package (configs included)
+    └── synthefy_nori/    # the bundled package (configs included)
 ```
 
-The `synthefy_tabular` package is vendored under `packages/` (auto-added to the
+The `synthefy_nori` package is vendored under `packages/` (auto-added to the
 container's `PYTHONPATH` by Truss) because it is not yet published to PyPI. The
 vendored copy is **gitignored** to avoid a second, drifting copy of `src/`, so
 you must generate it before the first push and re-sync it after any source change:
 
 ```bash
-rm -rf packages/synthefy_tabular && cp -R ../src/synthefy_tabular packages/synthefy_tabular
+# Drop any stale pre-rename vendored copy (one-time, if you vendored before the Nori rename):
+rm -rf packages/synthefy_tabular
+rm -rf packages/synthefy_nori && cp -R ../src/synthefy_nori packages/synthefy_nori
 ```
+
+> **Migrating from `synthefy_tabular`:** a `packages/synthefy_tabular/` left over
+> from the old vendoring step is no longer gitignored, so delete it (the command
+> above does) to avoid committing a stale copy or shadowing imports.
 
 ## One-time setup
 
@@ -32,7 +38,7 @@ rm -rf packages/synthefy_tabular && cp -R ../src/synthefy_tabular packages/synth
    truss login                  # paste a Baseten API key from https://app.baseten.co/settings/api_keys
    ```
 
-2. The default checkpoint (`Synthefy/synthefy-tabular`) is **public on Hugging
+2. The default checkpoint (`Synthefy/Nori`) is **public on Hugging
    Face**, so no token is required to download it. If you want authenticated
    downloads anyway (e.g. to avoid anonymous rate limits), add a Baseten secret
    named `hf_access_token` under **Settings → Secrets** set to a HF read token.

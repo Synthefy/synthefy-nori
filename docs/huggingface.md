@@ -3,18 +3,18 @@
 Download the default checkpoint:
 
 ```bash
-synthefy-tabular-download
+synthefy-nori-download
 ```
 
 Upload a checkpoint:
 
 ```bash
-synthefy-tabular-upload checkpoints/best_reg_r2.pt \
-  --repo-id Synthefy/synthefy-tabular
+synthefy-nori-upload checkpoints/best_reg_r2.pt \
+  --repo-id Synthefy/Nori
 ```
 
 Python API:
 
 ```python
-from synthefy_tabular.hf import download_checkpoint, push_checkpoint
+from synthefy_nori.hf import download_checkpoint, push_checkpoint
 ```
