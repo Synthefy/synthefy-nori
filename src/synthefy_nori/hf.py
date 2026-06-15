@@ -9,11 +9,11 @@ from pathlib import Path
 
 DEFAULT_MODEL_REPO_ID = os.environ.get(
     "SYNTHEFY_NORI_HF_REPO",
-    "Synthefy/synthefy-nori",
+    "Synthefy/Nori",
 )
 DEFAULT_CHECKPOINT_FILENAME = os.environ.get(
     "SYNTHEFY_NORI_HF_FILENAME",
-    "synthefy-nori.pt",
+    "nori.pt",
 )
 
 LIMIX_REPO_ID = "stableai-org/LimiX-2M"

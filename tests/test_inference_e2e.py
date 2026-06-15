@@ -4,7 +4,7 @@ These tests download the default HuggingFace checkpoint and run a real forward
 pass through the model. They are deselected by default (the ``slow`` marker)
 because they:
 
-* require network access to fetch the public ``Synthefy/synthefy-nori``
+* require network access to fetch the public ``Synthefy/Nori``
   checkpoint (no token required; one is used automatically if present in the
   environment, only to raise anonymous rate limits), and
 * take ~15s on CPU for the regression case.

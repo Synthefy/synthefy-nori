@@ -32,7 +32,7 @@ rm -rf packages/synthefy_nori && cp -R ../src/synthefy_nori packages/synthefy_no
    truss login                  # paste a Baseten API key from https://app.baseten.co/settings/api_keys
    ```
 
-2. The default checkpoint (`Synthefy/synthefy-nori`) is **public on Hugging
+2. The default checkpoint (`Synthefy/Nori`) is **public on Hugging
    Face**, so no token is required to download it. If you want authenticated
    downloads anyway (e.g. to avoid anonymous rate limits), add a Baseten secret
    named `hf_access_token` under **Settings → Secrets** set to a HF read token.

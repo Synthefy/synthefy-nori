@@ -111,7 +111,7 @@ class Model:
                 "Failed to load the Nori checkpoint during warmup. "
                 "If this is an auth error, set the 'hf_access_token' secret in your "
                 "Baseten workspace to a Hugging Face token with read access to "
-                "'Synthefy/synthefy-nori'."
+                "'Synthefy/Nori'."
             ) from exc
 
     # --------------------------------------------------------------- predict

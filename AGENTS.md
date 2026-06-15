@@ -35,7 +35,7 @@ uv build
 ## How inference works (and how to test it)
 
 - The default checkpoint lives at the **public** HF repo
-  `Synthefy/synthefy-nori` (file `synthefy-nori.pt`). First use downloads
+  `Synthefy/Nori` (file `nori.pt`). First use downloads
   and caches it — **no token or access request needed**. A token is only used
   for higher rate limits or for pointing at a private/custom repo.
 - Public API (`src/synthefy_nori/api.py`): `NoriRegressor`

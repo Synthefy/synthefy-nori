@@ -131,7 +131,7 @@ lacks it, the package automatically falls back to a built-in implementation.
 ## Authentication (optional)
 
 The default checkpoint at
-[`Synthefy/synthefy-nori`](https://huggingface.co/Synthefy/synthefy-nori)
+[`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori)
 is **public**: the first inference call downloads and caches it automatically,
 with no token and no access request.
 
@@ -160,7 +160,7 @@ needed at all.
 ## Inference
 
 Pretrained weights are hosted on the Hugging Face Hub at
-[`Synthefy/synthefy-nori`](https://huggingface.co/Synthefy/synthefy-nori).
+[`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori).
 The first call downloads and caches the checkpoint automatically, so a complete
 working example is just:
 
@@ -292,7 +292,7 @@ Note the script's OpenML suite uses its own 70/30 split (the packaged CLI uses
 
 ```bash
 synthefy-nori-download                                            # fetch default checkpoint
-synthefy-nori-upload path/to/checkpoint.pt --repo-id Synthefy/synthefy-nori
+synthefy-nori-upload path/to/checkpoint.pt --repo-id Synthefy/Nori
 ```
 
 See [docs/huggingface.md](docs/huggingface.md).

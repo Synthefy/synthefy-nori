@@ -10,7 +10,7 @@ Upload a checkpoint:
 
 ```bash
 synthefy-nori-upload checkpoints/best_reg_r2.pt \
-  --repo-id Synthefy/synthefy-nori
+  --repo-id Synthefy/Nori
 ```
 
 Python API:
