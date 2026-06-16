@@ -1,5 +1,8 @@
 # Nori
 
+[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-Synthefy%2FNori-blue?logo=huggingface&logoColor=FFD21E)](https://huggingface.co/Synthefy/Nori)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20710462.svg)](https://doi.org/10.5281/zenodo.20710462)
+
 Nori is a tabular foundation model for **regression**
 via in-context learning (ICL). Given a few labeled rows as context, it predicts on
 new query rows in a single forward pass, with no task-specific training or fine-tuning.
@@ -310,6 +313,31 @@ src/synthefy_nori/
 scripts/            train.sh, continue_training.sh, evaluate.sh
 docs/               training, inference, evaluation, huggingface guides
 examples/           Runnable inference / upload scripts
+```
+
+## Citation
+
+If you use this project, please cite it as:
+
+```bibtex
+@software{synthefy_2026_20710462,
+  author       = {Synthefy and
+                  Li, Po-han and
+                  Narayanan, Aditya and
+                  Narasimhan, Sai Shankar and
+                  Mallampalli, Raghav and
+                  Agrawal, Aahan and
+                  Ajan, Bekzat and
+                  Shah, Raimi and
+                  Agarwal, Shubhankar},
+  title        = {Synthefy Nori: Tabular Foundation Model for Regression},
+  month        = jun,
+  year         = 2026,
+  publisher    = {Zenodo},
+  version      = {0.3.0},
+  doi          = {10.5281/zenodo.20710462},
+  url          = {https://doi.org/10.5281/zenodo.20710462},
+}
 ```
 
 ## License
