@@ -3269,7 +3269,7 @@ wheels = [
 
 [[package]]
 name = "synthefy-nori"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "einops", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
