@@ -264,6 +264,29 @@ benchmark sources and how to evaluate a Nori checkpoint, and
 [Reproducing these numbers](#reproducing-these-numbers) for the published
 benchmark run.
 
+## Interpretability
+
+`NoriRegressor` is a scikit-learn estimator, so it works directly with shapiq and
+the sklearn interpretability ecosystem — Shapley values & interactions, partial
+dependence / ICE, and sequential feature selection:
+
+```bash
+pip install "synthefy-nori[interpretability]"
+```
+
+```python
+from synthefy_nori import NoriRegressor
+from synthefy_nori.interpretability.shapiq import get_nori_imputation_explainer
+
+model = NoriRegressor().fit(X_train, y_train)
+explainer = get_nori_imputation_explainer(model, X_train)   # imputation-based, model-agnostic
+sv = explainer.explain(X_test[:1], budget=128)              # Shapley values for one prediction
+sv.plot_waterfall()
+```
+
+Runnable: [`examples/interpretability_regression.py`](examples/interpretability_regression.py).
+More detail in [docs/interpretability.md](docs/interpretability.md).
+
 ## Benchmarks
 
 The published [Results](#results) table is produced by the packaged CLI — see
