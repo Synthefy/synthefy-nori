@@ -51,7 +51,7 @@ def test_pdp_and_feature_selection_wrappers_plumbing():
     """The PDP / feature-selection adapters are sklearn passthroughs — validate
     their plumbing with a fast sklearn estimator (model weights not needed; the
     NoriRegressor sklearn-compliance is covered by the clone test above)."""
-    import matplotlib
+    matplotlib = pytest.importorskip("matplotlib")  # PDP needs it; skip in core CI (dev extra only)
     matplotlib.use("Agg")
     from sklearn.linear_model import LinearRegression
 
