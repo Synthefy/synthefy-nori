@@ -9,6 +9,8 @@ from __future__ import annotations
 from importlib.resources import files
 from typing import Literal
 
+from sklearn.base import BaseEstimator, RegressorMixin
+
 
 Task = Literal["regression", "reg"]
 
@@ -40,8 +42,16 @@ def _resolve_model_path(model_path: str | None, token: str | bool | None = None)
     return download_checkpoint(token=token)
 
 
-class NoriRegressor:
-    """Scikit-learn-style regression wrapper around the Synthefy checkpoint."""
+class NoriRegressor(RegressorMixin, BaseEstimator):
+    """Scikit-learn regression estimator wrapping the Synthefy checkpoint.
+
+    Subclasses ``BaseEstimator``/``RegressorMixin`` so it works directly with the
+    scikit-learn ecosystem (``clone``, ``get_params``/``set_params``, ``score``,
+    partial dependence, sequential feature selection) and with shapiq — see
+    ``synthefy_nori.interpretability``. The ``__init__`` arguments are stored
+    verbatim (the only normalizations applied are idempotent), so ``clone`` round
+    trips correctly.
+    """
 
     def __init__(
         self,
@@ -73,6 +83,7 @@ class NoriRegressor:
         import numpy as np
 
         self.X_train_ = np.asarray(X, dtype=np.float32)
+        self.n_features_in_ = self.X_train_.shape[1]
         self.y_train_ = np.asarray(y, dtype=np.float64)
         self.y_mean_ = float(self.y_train_.mean())
         y_std = float(self.y_train_.std())
