@@ -101,6 +101,32 @@ model = NoriRegressor(model_path="path/to/checkpoint.pt")
 `output_type="mean"` (default), `"median"`, or `"mode"` to choose the point
 estimate drawn from the model's predictive distribution.
 
+### Probabilistic output (quantiles)
+
+The default checkpoint has a 999-quantile pinball head, so the full predictive
+distribution is available — not just a point estimate. Use
+`output_type="quantiles"` for specific levels, or `output_type="full"` for the
+whole quantile bank (handy for CRPS / interval scoring, calibration, and
+prediction intervals):
+
+```python
+model = NoriRegressor().fit(X_train, y_train)
+
+# Quantiles at chosen levels -> shape (n_levels, n_samples)
+q10, q50, q90 = model.predict(X_test, output_type="quantiles",
+                              quantiles=[0.1, 0.5, 0.9])
+
+# Full distribution as a per-row quantile function
+dist = model.predict(X_test, output_type="full")
+dist["quantiles"]  # (n_samples, K) ascending quantile values, K = 999
+dist["taus"]       # (K,) quantile levels, evenly spaced in (0, 1)
+dist["mean"]       # (n_samples,) distribution mean (== output_type="mean")
+```
+
+Quantiles are returned in original-`y` units and sorted to a valid (monotone)
+quantile function per row. `quantiles`/`full` require the default pinball
+checkpoint; a `bar_distribution` checkpoint raises `NotImplementedError`.
+
 Runnable example: [`examples/inference_regression.py`](examples/inference_regression.py).
 More detail in [docs/inference.md](docs/inference.md).
 

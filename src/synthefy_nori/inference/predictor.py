@@ -523,7 +523,8 @@ class NoriPredictor:
         return categorical_idx
         
     
-    def predict(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray) -> np.ndarray:
+    def predict(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray,
+                return_distribution: bool = False) -> np.ndarray:
         """
         Perform regression inference using the Nori model
 
@@ -531,7 +532,16 @@ class NoriPredictor:
         x_train: Training data x
         y_train: Training data y
         x_test:  Testing data x
+        return_distribution: when True, return the full per-row quantile bank
+            (shape [n_test, num_reg_quantiles] for a pinball head, or the
+            ensemble-averaged bar-distribution logits [n_test, num_bars] for a
+            bar_distribution head) WITHOUT collapsing to a point estimate. The
+            point-estimate post-processing (quantile collapse, discrete-y snap)
+            and the Yeo-Johnson point ensemble are skipped — the raw decoder
+            output is the predictive distribution callers want for scoring.
         """
+        if return_distribution:
+            return self._predict_reg(x_train, y_train, x_test, return_distribution=True)
         preds = self._predict_reg(x_train, y_train, x_test)
         # V12r3: discrete-y snap. If training y has very low unique
         # count (≤ discrete_y_snap_max_unique, default 30), snap each
@@ -599,6 +609,24 @@ class NoriPredictor:
         except Exception:
             # Fail open — never break inference because of the snap helper.
             return preds
+
+    def _bare_model(self):
+        """Unwrap DDP / torch.compile wrappers to reach the backbone module."""
+        model_ref = self.model
+        if hasattr(model_ref, "module"):
+            model_ref = model_ref.module
+        if hasattr(model_ref, "_orig_mod"):
+            model_ref = model_ref._orig_mod
+        return model_ref
+
+    @property
+    def regression_head(self) -> str:
+        """'bar_distribution' or 'pinball' (quantile) — the decoder head type."""
+        return str(getattr(self._bare_model(), "regression_loss", "pinball"))
+
+    @property
+    def num_reg_quantiles(self) -> int:
+        return int(getattr(self._bare_model(), "num_reg_quantiles", 1))
 
     def _collapse_regression_output(self, output: torch.Tensor) -> torch.Tensor:
         """Convert regression decoder output to one point prediction per test row.
@@ -909,7 +937,8 @@ class NoriPredictor:
                     feature_pred = restored.copy()
         return feature_pred
         
-    def _predict_reg(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray) -> np.ndarray:
+    def _predict_reg(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray,
+                     return_distribution: bool = False) -> np.ndarray:
         """Regression predict with optional inference-time augmentations.
 
         Default: single pass on raw y_train.
@@ -921,7 +950,14 @@ class NoriPredictor:
         winning stock_fardamento02 (skew 17.7, +0.077 R²). The skew threshold
         default (5.0) preserves the wins on extreme-skew datasets while
         skipping moderately-skewed ones where YJ harms predictions.
+
+        When return_distribution=True the YJ point ensemble is bypassed: it
+        averages point predictions in original-y space and has no
+        distribution-level analogue, so the distribution path returns the raw
+        single-pass quantile bank.
         """
+        if return_distribution:
+            return self._predict_reg_single(x_train, y_train, x_test, return_distribution=True)
         base_pred = self._predict_reg_single(x_train, y_train, x_test)
         if 'yj' not in self.augmentations:
             return base_pred
@@ -990,7 +1026,8 @@ class NoriPredictor:
                   f"falling back to identity-only prediction")
             return base_pred
 
-    def _predict_reg_single(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray) -> np.ndarray:
+    def _predict_reg_single(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray,
+                            return_distribution: bool = False) -> np.ndarray:
         # Check size constraints to avoid OOM
         n_features = x_train.shape[1] if x_train.ndim > 1 else 1
         n_samples_train = x_train.shape[0]
@@ -1197,6 +1234,12 @@ class NoriPredictor:
                     outputs.append(output)
             
         output = torch.stack(outputs).mean(dim=0)
+        if return_distribution:
+            # Return the ensemble-averaged decoder output BEFORE collapse: the
+            # per-row quantile bank [n_test, num_reg_quantiles] (pinball head) or
+            # bar-distribution logits [n_test, num_bars]. mask_prediction is not
+            # combined with the distribution path.
+            return output
         output = self._collapse_regression_output(output)
         mask_prediction = np.stack(mask_predictions).mean(axis=0) if mask_predictions != [] else None
         
