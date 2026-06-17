@@ -16,7 +16,188 @@ The model is trained entirely on synthetic data.
 This repository contains the public training, inference, evaluation, and Hugging
 Face checkpoint tooling.
 
-## Results
+Across 96 public regression tasks it averages **0.75 mean / 0.87 median R²** — see
+[Benchmarks](#benchmarks) for the full breakdown and how to reproduce it.
+
+## Table of contents
+
+- [Install](#install)
+- [Quickstart](#quickstart)
+- [Authentication](#authentication-optional)
+- [How it works](#how-it-works)
+- [Interpretability](#interpretability)
+- [Benchmarks](#benchmarks)
+- [Training](#training)
+- [Evaluation](#evaluation)
+- [Hugging Face](#hugging-face)
+- [Repository layout](#repository-layout)
+- [Citation](#citation)
+- [License](#license)
+
+## Install
+
+```bash
+pip install synthefy-nori
+```
+
+Optional extras:
+
+```bash
+pip install "synthefy-nori[train]"   # training-only deps (wandb, xgboost)
+pip install "synthefy-nori[eval]"    # evaluation-only deps (matplotlib, openml)
+```
+
+### Develop from source
+
+```bash
+git clone https://github.com/Synthefy/synthefy-nori
+cd synthefy-nori
+uv sync --extra dev
+```
+
+`uv sync` installs a **CUDA 12.8** PyTorch 2.8 build from PyTorch's wheel index.
+The lock targets CUDA-capable platforms (Linux/Windows) only. If cu128 does not
+match your driver, override the index in `[tool.uv.sources]` (e.g. swap
+`pytorch-cu128` for `pytorch-cu126`) or install a matching PyTorch wheel yourself.
+The Muon optimizer used in training prefers `torch.optim.Muon`; if your PyTorch
+lacks it, the package automatically falls back to a built-in implementation.
+
+## Quickstart
+
+Pretrained weights are hosted on the Hugging Face Hub at
+[`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori).
+The first call downloads and caches the checkpoint automatically, so a complete
+working example is just:
+
+```python
+from sklearn.datasets import load_diabetes
+from sklearn.model_selection import train_test_split
+from synthefy_nori import NoriRegressor
+
+X, y = load_diabetes(return_X_y=True)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=0)
+
+model = NoriRegressor()    # downloads weights from the HF Hub on first use
+model.fit(X_train, y_train)           # "fit" just stores the labeled rows as context
+pred = model.predict(X_test)          # predictions in a single forward pass, no training
+```
+
+It uses a GPU when one is available and falls back to CPU. A one-shot helper
+skips the object entirely:
+
+```python
+from synthefy_nori import predict
+pred = predict(X_train, y_train, X_test, task="regression")
+```
+
+To run from your own checkpoint instead of the Hub default, pass a path:
+
+```python
+model = NoriRegressor(model_path="path/to/checkpoint.pt")
+```
+
+`predict` follows the `TabPFNRegressor.predict` contract: pass
+`output_type="mean"` (default), `"median"`, or `"mode"` to choose the point
+estimate drawn from the model's predictive distribution.
+
+Runnable example: [`examples/inference_regression.py`](examples/inference_regression.py).
+More detail in [docs/inference.md](docs/inference.md).
+
+## Authentication (optional)
+
+The default checkpoint at
+[`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori)
+is **public**: the first inference call downloads and caches it automatically,
+with no token and no access request.
+
+A Hugging Face token is only worth setting if you hit anonymous download rate
+limits, or if you point the package at a private/gated checkpoint of your own.
+Provide one in any of these ways:
+
+```bash
+# Option A: env var (one-shot)
+export HF_TOKEN=hf_xxxxxxxx
+
+# Option B: persist via the HF CLI (huggingface-hub >= 1.0)
+hf auth login
+```
+
+```python
+# Option C: pass explicitly in code
+from synthefy_nori import NoriRegressor
+model = NoriRegressor(token="hf_xxxxxxxx")
+```
+
+Get a token at <https://huggingface.co/settings/tokens> (read scope is
+sufficient). If you supply a local `model_path=` instead, no network access is
+needed at all.
+
+## How it works
+
+### Architecture
+
+Nori is a **FeaturesTransformer (~5.9M parameters)** that alternates
+two kinds of attention:
+
+- **Feature attention** learns relationships between columns.
+- **Sample attention** learns relationships between rows (context and query).
+- **In-context learning**: predictions condition on labeled context rows, with no
+  gradient updates at inference.
+
+Key config: 16 transformer layers, embed_dim 128, hidden 384, 2 heads, the
+**v2-lite** block (SwiGLU + RMSNorm + pre-norm), features grouped in pairs
+(`features_per_group=2`), with **column-specific y-aware** feature attention.
+Features are encoded with RBF embeddings; missing values are handled natively
+via learned mask embeddings.
+
+### Synthetic data
+
+The model never sees real data during training. Its capability comes from a diverse
+synthetic data generator covering real-world tabular regimes:
+
+- **Structural Causal Models (SCM)**: hierarchical DAGs with 8 edge-function types
+  (MLP, decision tree, piecewise-linear, polynomial, periodic, RBF, log/exp, conv1d).
+- **Regression priors**: 9 target families (dense/sparse linear, GAM, interactions,
+  random MLP, random tree, radial/RBF, Fourier features, chained trigonometric).
+- **Realism augmentations**: discretized features, noise features, correlated blocks,
+  structural missingness, label noise.
+- **Learnability filter**: an ExtraTrees signal-quality filter rejects unlearnable
+  datasets so training compute is spent on learnable tasks.
+
+See [docs/training.md](docs/training.md) for the full recipe.
+
+## Interpretability
+
+Explain Nori's predictions with **SHAP / Shapley values**, feature interactions,
+partial dependence / ICE, and sequential feature selection — see which features
+drive a prediction, detect interactions, and debug unexpected outputs. Because
+`NoriRegressor` is a scikit-learn estimator, it works directly with
+[shapiq](https://github.com/mmschlk/shapiq) (a fast SHAP implementation with
+native Shapley-interaction support) and the sklearn interpretability ecosystem —
+no adapters needed beyond the thin convenience wrappers in
+`synthefy_nori.interpretability`.
+
+```bash
+pip install "synthefy-nori[interpretability]"
+```
+
+```python
+from synthefy_nori import NoriRegressor
+from synthefy_nori.interpretability.shapiq import get_nori_imputation_explainer
+
+model = NoriRegressor().fit(X_train, y_train)
+explainer = get_nori_imputation_explainer(model, X_train)   # imputation-based, model-agnostic
+sv = explainer.explain(X_test[:1], budget=128)              # SHAP/Shapley values for one prediction
+sv.plot_waterfall()                                         # additive contribution waterfall
+```
+
+Also available: `interpretability.pdp.partial_dependence_plots` (global feature
+effects) and `interpretability.feature_selection.feature_selection`. Regression
+only. Runnable example:
+[`examples/interpretability_regression.py`](examples/interpretability_regression.py);
+full guide in [docs/interpretability.md](docs/interpretability.md).
+
+## Benchmarks
 
 Mean and median R² of the base model across 96 regression tasks from three
 public benchmark suites (~5.9M-parameter model):
@@ -29,9 +210,7 @@ public benchmark suites (~5.9M-parameter model):
 | **Overall** | **96** | **0.7506** | **0.8702** |
 
 Per-dataset numbers behind this table are in
-[`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv); the
-table is produced by the one-command run in
-[Reproducing these numbers](#reproducing-these-numbers).
+[`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv).
 
 Large-N / long-context tables (common in TabArena) are the current focus of the
 large-table training stages.
@@ -74,137 +253,26 @@ PyTorch/NumPy versions; per-source means should match the table to within
 about ±0.003. The TALENT dataset `stock_fardamento02` has a heavy-tailed
 target and is the least stable single dataset across environments.
 
-## How it works
+### Script-style harness
 
-### Architecture
-
-Nori is a **FeaturesTransformer (~5.9M parameters)** that alternates
-two kinds of attention:
-
-- **Feature attention** learns relationships between columns.
-- **Sample attention** learns relationships between rows (context and query).
-- **In-context learning**: predictions condition on labeled context rows, with no
-  gradient updates at inference.
-
-Key config: 16 transformer layers, embed_dim 128, hidden 384, 2 heads, the
-**v2-lite** block (SwiGLU + RMSNorm + pre-norm), features grouped in pairs
-(`features_per_group=2`), with **column-specific y-aware** feature attention.
-Features are encoded with RBF embeddings; missing values are handled natively
-via learned mask embeddings.
-
-### Synthetic data
-
-The model never sees real data during training. Its capability comes from a diverse
-synthetic data generator covering real-world tabular regimes:
-
-- **Structural Causal Models (SCM)**: hierarchical DAGs with 8 edge-function types
-  (MLP, decision tree, piecewise-linear, polynomial, periodic, RBF, log/exp, conv1d).
-- **Regression priors**: 9 target families (dense/sparse linear, GAM, interactions,
-  random MLP, random tree, radial/RBF, Fourier features, chained trigonometric).
-- **Realism augmentations**: discretized features, noise features, correlated blocks,
-  structural missingness, label noise.
-- **Learnability filter**: an ExtraTrees signal-quality filter rejects unlearnable
-  datasets so training compute is spent on learnable tasks.
-
-See [docs/training.md](docs/training.md) for the full recipe.
-
-## Install
+An alternative harness drives the public `NoriRegressor` API directly at
+[`tests/test_benchmark_performance.py`](tests/test_benchmark_performance.py).
+It reads the same CSV caches under `./cache/`; populate them once with
+`synthefy-nori-eval --download-benchmarks` (TabArena from the official
+TabArena uploads on OpenML pinned by dataset ID, TALENT by name), then run
+from the repo root (`uv sync` installs a CUDA 12.8 torch build on Linux, so
+`uv run` works as-is):
 
 ```bash
-pip install synthefy-nori
+# OpenML only — works out of the box, no cached CSVs needed
+uv run python tests/test_benchmark_performance.py --suites openml
+
+# full sweep over the downloaded caches
+uv run python tests/test_benchmark_performance.py --device cuda:0
 ```
 
-Optional extras:
-
-```bash
-pip install "synthefy-nori[train]"   # training-only deps (wandb, xgboost)
-pip install "synthefy-nori[eval]"    # evaluation-only deps (matplotlib, openml)
-```
-
-### Develop from source
-
-```bash
-git clone https://github.com/Synthefy/synthefy-nori
-cd synthefy-nori
-uv sync --extra dev
-```
-
-`uv sync` installs a **CUDA 12.8** PyTorch 2.8 build from PyTorch's wheel index.
-The lock targets CUDA-capable platforms (Linux/Windows) only. If cu128 does not
-match your driver, override the index in `[tool.uv.sources]` (e.g. swap
-`pytorch-cu128` for `pytorch-cu126`) or install a matching PyTorch wheel yourself.
-The Muon optimizer used in training prefers `torch.optim.Muon`; if your PyTorch
-lacks it, the package automatically falls back to a built-in implementation.
-
-## Authentication (optional)
-
-The default checkpoint at
-[`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori)
-is **public**: the first inference call downloads and caches it automatically,
-with no token and no access request.
-
-A Hugging Face token is only worth setting if you hit anonymous download rate
-limits, or if you point the package at a private/gated checkpoint of your own.
-Provide one in any of these ways:
-
-```bash
-# Option A: env var (one-shot)
-export HF_TOKEN=hf_xxxxxxxx
-
-# Option B: persist via the HF CLI (huggingface-hub >= 1.0)
-hf auth login
-```
-
-```python
-# Option C: pass explicitly in code
-from synthefy_nori import NoriRegressor
-model = NoriRegressor(token="hf_xxxxxxxx")
-```
-
-Get a token at <https://huggingface.co/settings/tokens> (read scope is
-sufficient). If you supply a local `model_path=` instead, no network access is
-needed at all.
-
-## Inference
-
-Pretrained weights are hosted on the Hugging Face Hub at
-[`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori).
-The first call downloads and caches the checkpoint automatically, so a complete
-working example is just:
-
-```python
-from sklearn.datasets import load_diabetes
-from sklearn.model_selection import train_test_split
-from synthefy_nori import NoriRegressor
-
-X, y = load_diabetes(return_X_y=True)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=0)
-
-model = NoriRegressor()    # downloads weights from the HF Hub on first use
-model.fit(X_train, y_train)           # "fit" just stores the labeled rows as context
-pred = model.predict(X_test)          # predictions in a single forward pass, no training
-```
-
-It uses a GPU when one is available and falls back to CPU. A one-shot helper
-skips the object entirely:
-
-```python
-from synthefy_nori import predict
-pred = predict(X_train, y_train, X_test, task="regression")
-```
-
-To run from your own checkpoint instead of the Hub default, pass a path:
-
-```python
-model = NoriRegressor(model_path="path/to/checkpoint.pt")
-```
-
-`predict` follows the `TabPFNRegressor.predict` contract: pass
-`output_type="mean"` (default), `"median"`, or `"mode"` to choose the point
-estimate drawn from the model's predictive distribution.
-
-Runnable example: [`examples/inference_regression.py`](examples/inference_regression.py).
-More detail in [docs/inference.md](docs/inference.md).
+Note the script's OpenML suite uses its own 70/30 split (the packaged CLI uses
+80/20), so its OpenML numbers differ slightly from the table above.
 
 ## Performance (inference speedups)
 
@@ -324,64 +392,6 @@ or `bash scripts/evaluate.sh`. See [docs/evaluation.md](docs/evaluation.md) for
 benchmark sources and how to evaluate a Nori checkpoint, and
 [Reproducing these numbers](#reproducing-these-numbers) for the published
 benchmark run.
-
-## Interpretability
-
-Explain Nori's predictions with **SHAP / Shapley values**, feature interactions,
-partial dependence / ICE, and sequential feature selection — see which features
-drive a prediction, detect interactions, and debug unexpected outputs. Because
-`NoriRegressor` is a scikit-learn estimator, it works directly with
-[shapiq](https://github.com/mmschlk/shapiq) (a fast SHAP implementation with
-native Shapley-interaction support) and the sklearn interpretability ecosystem —
-no adapters needed beyond the thin convenience wrappers in
-`synthefy_nori.interpretability`.
-
-```bash
-pip install "synthefy-nori[interpretability]"
-```
-
-```python
-from synthefy_nori import NoriRegressor
-from synthefy_nori.interpretability.shapiq import get_nori_imputation_explainer
-
-model = NoriRegressor().fit(X_train, y_train)
-explainer = get_nori_imputation_explainer(model, X_train)   # imputation-based, model-agnostic
-sv = explainer.explain(X_test[:1], budget=128)              # SHAP/Shapley values for one prediction
-sv.plot_waterfall()                                         # additive contribution waterfall
-```
-
-Also available: `interpretability.pdp.partial_dependence_plots` (global feature
-effects) and `interpretability.feature_selection.feature_selection`. Regression
-only. Runnable example:
-[`examples/interpretability_regression.py`](examples/interpretability_regression.py);
-full guide in [docs/interpretability.md](docs/interpretability.md).
-
-## Benchmarks
-
-The published [Results](#results) table is produced by the packaged CLI — see
-[Reproducing these numbers](#reproducing-these-numbers). Per-dataset metrics
-are committed at
-[`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv).
-
-An alternative script-style harness that drives the public
-`NoriRegressor` API directly lives at
-[`tests/test_benchmark_performance.py`](tests/test_benchmark_performance.py).
-It reads the same CSV caches under `./cache/`; populate them once with
-`synthefy-nori-eval --download-benchmarks` (TabArena from the official
-TabArena uploads on OpenML pinned by dataset ID, TALENT by name), then run
-from the repo root (`uv sync` installs a CUDA 12.8 torch build on Linux, so
-`uv run` works as-is):
-
-```bash
-# OpenML only — works out of the box, no cached CSVs needed
-uv run python tests/test_benchmark_performance.py --suites openml
-
-# full sweep over the downloaded caches
-uv run python tests/test_benchmark_performance.py --device cuda:0
-```
-
-Note the script's OpenML suite uses its own 70/30 split (the packaged CLI uses
-80/20), so its OpenML numbers differ slightly from the Results table.
 
 ## Hugging Face
 
