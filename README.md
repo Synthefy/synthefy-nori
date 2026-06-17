@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="synthefy_nori_banner.png" alt="Nori" width="100%">
+</p>
+
 # Nori
 
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-Synthefy%2FNori-blue?logo=huggingface&logoColor=FFD21E)](https://huggingface.co/Synthefy/Nori)
