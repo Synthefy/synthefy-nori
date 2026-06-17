@@ -15,7 +15,7 @@ Face through `synthefy_nori.hf.download_checkpoint()`.
 
 ## Output types
 
-`predict` mirrors the `TabPFNRegressor.predict` contract via `output_type`:
+`predict` selects what it returns via `output_type`:
 
 | `output_type` | Returns | Shape |
 | --- | --- | --- |

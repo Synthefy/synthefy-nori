@@ -18,13 +18,11 @@ def test_regressor_uses_default_regression_config():
 
 
 def test_predict_rejects_unsupported_output_types():
-    # NoriRegressor.predict deliberately mirrors the TabPFNRegressor.predict
-    # contract (same output_type values). output_type is validated before the
-    # checkpoint is loaded, so these paths exercise the guardrails without any
-    # model weights.
+    # output_type is validated before the checkpoint is loaded, so these paths
+    # exercise the guardrails without any model weights.
     model = NoriRegressor(model_path="local.pt")
 
-    # "main" is a valid TabPFNRegressor output_type that Nori does not implement.
+    # "main" is a recognized output_type name that Nori does not implement.
     with pytest.raises(NotImplementedError):
         model.predict([[0.0, 1.0]], output_type="main")
 

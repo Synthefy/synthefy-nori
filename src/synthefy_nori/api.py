@@ -101,8 +101,8 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
     def predict(self, X, *, output_type: str = "mean", quantiles: list[float] | None = None):
         """Predict targets for the query rows.
 
-        Mirrors the ``TabPFNRegressor.predict`` contract. ``output_type`` selects
-        what is returned from the model's predictive distribution:
+        ``output_type`` selects what is returned from the model's predictive
+        distribution:
 
         - ``"mean"``   — distribution mean (default; identical to prior behavior)
         - ``"median"`` — distribution median (the ``tau=0.5`` quantile)
@@ -114,7 +114,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
           ``"quantiles"`` (``(n_samples, K)`` ascending quantile values),
           ``"taus"`` (``(K,)`` quantile levels), and ``"mean"`` (``(n_samples,)``)
 
-        ``"main"`` is part of the TabPFN contract but is not supported here.
+        ``"main"`` is a recognized output_type name but is not supported here.
         ``"quantiles"`` / ``"full"`` are only available for the pinball
         (quantile-head) checkpoint shipped by default; a ``bar_distribution``
         checkpoint raises ``NotImplementedError``.
@@ -123,8 +123,8 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
             return self._predict_distribution(X, output_type=output_type, quantiles=quantiles)
         if output_type == "main":
             raise NotImplementedError(
-                "output_type='main' is part of the TabPFN contract but is not "
-                "supported here. Use 'mean', 'median', 'mode', 'quantiles', or 'full'."
+                "output_type='main' is not supported. Use 'mean', 'median', "
+                "'mode', 'quantiles', or 'full'."
             )
         if output_type not in ("mean", "median", "mode"):
             raise ValueError(
