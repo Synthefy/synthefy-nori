@@ -31,6 +31,9 @@ uv build
 - Import smoke (what CI gates on first): `uv run python -c "import synthefy_nori"`
 - Full inference check (downloads the public ~47MB checkpoint, ~15s on CPU):
   `uv run pytest -m slow`
+- **Before finalizing a PR, run `/review` and/or `/code-review`** to catch bugs
+  and reuse/simplification issues in the diff. (`/code-review` reviews the
+  current diff for correctness + cleanups; `/review` reviews a pull request.)
 
 ## How inference works (and how to test it)
 
@@ -52,7 +55,7 @@ uv build
 
 ```
 src/synthefy_nori/
-  api.py          Public API. Imports the heavy stack LAZILY — keep it import-light.
+  api.py          Public API (sklearn-style NoriRegressor + one-shot helpers).
   hf.py           HF download/upload + console-script entry points
   model/          FeaturesTransformer architecture
   inference/      NoriPredictor + preprocessing
@@ -67,9 +70,13 @@ tests/            fast unit/smoke tests + slow e2e tests (marked `slow`)
 
 ## Conventions & gotchas
 
-- **Keep `api.py` and the top-level import cheap.** `torch`/`numpy`/etc. are
-  imported lazily inside functions so `import synthefy_nori` works before the
-  heavy accelerator stack loads. Do not hoist heavy imports to module top level.
+- **Imports go at the top of the file, never inside functions.** `torch`,
+  `numpy`, etc. are imported at module top (`torch` is a hard dependency, so
+  `import synthefy_nori` loads it regardless). The one deliberately deferred
+  import in `api.py` is the internal `NoriPredictor` (loaded in
+  `_get_predictor`), kept lazy only to avoid pulling the model/inference stack
+  in at package-import time — not a license to move package imports into
+  functions.
 - **Ruff is intentionally narrow**: only `E9,F821,F822,F823` (syntax +
   undefined names), line length 120, target `py310`. It is a correctness gate,
   not a full style/format gate. A pre-commit hook (`ruff`) is configured.
