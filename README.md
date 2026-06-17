@@ -379,7 +379,7 @@ If you use this project, please cite it as:
   month        = jun,
   year         = 2026,
   publisher    = {Zenodo},
-  version      = {0.3.0},
+  version      = {0.4.0},
   doi          = {10.5281/zenodo.20710462},
   url          = {https://doi.org/10.5281/zenodo.20710462},
 }
