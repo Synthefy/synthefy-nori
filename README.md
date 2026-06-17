@@ -206,6 +206,62 @@ estimate drawn from the model's predictive distribution.
 Runnable example: [`examples/inference_regression.py`](examples/inference_regression.py).
 More detail in [docs/inference.md](docs/inference.md).
 
+## Performance (inference speedups)
+
+The speedups below are **on by default** and **deterministic** — identical results
+run-to-run with the same settings — and the published [Results](#results) were
+produced with them on. The **KV cache** is exactly result-identical to the
+un-cached path (`cache==chunked`). The **preprocessing speedups** are **R²-neutral**:
+toggling them shifts individual predictions by a tiny, R²-equivalent amount (below
+cross-environment noise), not bit-for-bit. For the exact un-accelerated path, set
+each to its off value (see below).
+
+| Env var | Default | What it does |
+|---|---|---|
+| `SYNTHEFY_GPU_SVD` | `1` (on) | Run the high-dimensional feature SVD on the GPU (exact, not randomized). Acts when features ≥256; set `0` for the CPU/randomized path. |
+| `SYNTHEFY_CAP_QUANTILES` | `1` (on) | Cap quantile-transform resolution + subsample its fit. Acts on large context (>2000 rows); set `0` to disable. |
+| `SYNTHEFY_QUANTILE_MAX` / `SYNTHEFY_QUANTILE_SUBSAMPLE` | — | Tune the cap above (max quantiles / fit-subsample size). |
+| `SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE` | `2000` | Fit preprocessing on at most this many rows, apply to all rows. Acts on large context; set `0` to fit on all rows. |
+| `SYNTHEFY_ENABLE_CACHED_INFERENCE` | `1` (on) | Reuse the train-side attention K/V across test chunks (KV cache); ~2-3x faster on large test sets that chunk. Set `0` to disable. |
+| `SYNTHEFY_CACHE_MAX_GB` | `6.0` | Skip the KV cache if its estimated footprint would exceed this. |
+| `SYNTHEFY_MAX_ELEMENTS_BUDGET` | `2000000` | Inference element budget; raise on large GPUs for full-context inference. |
+
+### Preprocessing speedups (on by default)
+
+`SYNTHEFY_GPU_SVD`, `SYNTHEFY_CAP_QUANTILES`, and `SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE`
+accelerate the inductive preprocessing pipeline (fit on train, apply to test) and
+are enabled by default. They only act on the data shapes named above — most small tables (≤1000 rows,
+<256 features) see little or no change. In an internal regression benchmark on a
+single H200 they cut end-to-end wall-clock by roughly 1.8× with
+mean R² unchanged (0.8087 → 0.8089). A large-scale A/B restricted to the tables
+where they actually engage (n>5000) measured a mean ΔR² of +0.00002 (max |Δ|
+0.0004) — within run-to-run noise.
+
+### KV caching (on by default)
+
+The cached prediction path is **enabled by default**. It projects the train-side
+sequence-attention keys/values **once** and streams the test rows through the
+layers reusing that cache, instead of recomputing the train K/V for every test
+chunk — measured **~2-3x faster** on multi-chunk inference (the win scales with
+the number of chunks). It only activates when the test set is large enough that
+inference is already chunking (`n_test > chunk_size`), so it does not change the
+chunking and therefore does not change the result. We verified `cache == chunked`
+directly: identical R² and a max prediction difference of ~1e-5 on CPU and exactly
+0 R² difference on GPU (floating-point reduction-order noise). The cache is skipped
+automatically if its estimated footprint exceeds `SYNTHEFY_CACHE_MAX_GB` (falling
+back to the identical chunked path). Disable it with
+`SYNTHEFY_ENABLE_CACHED_INFERENCE=0` or the `SYNTHEFY_DISABLE_CACHED_INFERENCE=1`
+kill switch.
+
+```bash
+# All speedups (preprocessing + KV cache) are on by default — nothing to enable.
+
+# To disable them all (e.g. for exact reproducibility / debugging):
+SYNTHEFY_GPU_SVD=0 SYNTHEFY_CAP_QUANTILES=0 SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE=0 \
+SYNTHEFY_ENABLE_CACHED_INFERENCE=0 \
+python your_inference_script.py
+```
+
 ## Training
 
 Smoke test (2 steps, single GPU, no logging):
