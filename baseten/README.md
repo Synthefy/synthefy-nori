@@ -64,7 +64,7 @@ given, must be `"regression"` (or `"reg"`).
 
 ```bash
 curl -X POST https://model-{MODEL_ID}.api.baseten.co/development/predict \
-  -H "Authorization: Api-Key $BASETEN_API_KEY" \
+  -H "Authorization: Api-Key $SYNTHEFY_NORI_API_KEY" \
   -d '{
     "task": "regression",
     "X_train": [[0.0, 1.0], [1.0, 0.0], [0.5, 0.5], [0.2, 0.8]],
