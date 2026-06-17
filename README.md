@@ -4,6 +4,7 @@
 
 # Nori
 
+[![Docs](https://img.shields.io/badge/Docs-docs.synthefy.com-2ea44f?logo=readthedocs&logoColor=white)](https://docs.synthefy.com/nori/)
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-Synthefy%2FNori-blue?logo=huggingface&logoColor=FFD21E)](https://huggingface.co/Synthefy/Nori)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20710462.svg)](https://doi.org/10.5281/zenodo.20710462)
 
