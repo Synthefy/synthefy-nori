@@ -138,16 +138,9 @@ class NoriTrainer:
                     )
                 self.quality_rules = None
 
-        # Offline dataset pool (pre-generated Parquet shards)
-        self.pool_loader = None
-        if config.offline_pool_dir:
-            from synthefy_nori.training.parquet_loader import ParquetPoolLoader
-            self.pool_loader = ParquetPoolLoader(
-                config.offline_pool_dir, tier=config.offline_pool_tier)
-
-        # Async data prefetching (skip if using offline pool)
+        # Async data prefetching
         self.prefetcher = None
-        if config.prefetch_workers > 0 and self.pool_loader is None:
+        if config.prefetch_workers > 0:
             self.prefetcher = DataPrefetcher(
                 num_workers=config.prefetch_workers,
                 prefetch_count=config.prefetch_count,
@@ -192,39 +185,6 @@ class NoriTrainer:
         """
         cfg = self.config
         rng = self.shared_rng  # Same across all ranks
-
-        # Offline pool: sample directly from available bucket shapes to
-        # avoid NaN-padding when the trainer asks for an unavailable shape.
-        if self.pool_loader is not None:
-            # Filter pool buckets to those within the configured tier limits
-            min_s = cfg.min_samples
-            max_s = cfg.max_samples
-            min_f = cfg.min_features
-            max_f = cfg.max_features
-            budget = cfg.max_sample_feature_budget
-            valid_keys = [
-                k for k in self.pool_loader._index.keys()
-                if min_s <= k[0] <= max_s
-                and min_f <= k[1] <= max_f
-                and k[0] * k[1] <= budget
-                and len(self.pool_loader._index[k]) > 0
-            ]
-            if not valid_keys:
-                # Fall back to all keys if filter is too strict
-                valid_keys = [k for k in self.pool_loader._index.keys()
-                              if len(self.pool_loader._index[k]) > 0]
-            # Consume the same number of rng draws as the random path to keep
-            # shared_rng in sync (uniform for samples, uniform for features)
-            rng.uniform(0, 1)
-            rng.uniform(0, 1)
-            idx = int(rng.integers(0, len(valid_keys)))
-            n_samples, n_features = valid_keys[idx]
-            task_type = cfg.task_type if cfg.task_type != 'both' else 'reg'
-            # Consume task rng draw
-            rng.random()
-            n_classes = None
-            context_ratio = rng.uniform(cfg.context_ratio_min, cfg.context_ratio_max)
-            return n_samples, n_features, task_type, n_classes, context_ratio
 
         if cfg.fixed_n_samples is not None and cfg.fixed_n_features is not None:
             # Fixed size mode: skip random sampling but still consume rng
@@ -1039,11 +999,7 @@ class NoriTrainer:
 
         # --- Generate batch + forward + loss (can error) ---
         try:
-            if self.pool_loader is not None:
-                # Offline pool path: read pre-generated, pre-filtered datasets
-                X_batch, y_batch, n_classes = self.pool_loader.get_batch(
-                    cfg.batch_size, n_samples, n_features, rng=self.rng)
-            elif self.prefetcher is not None:
+            if self.prefetcher is not None:
                 # Async path: get pre-generated batch from prefetcher.
                 # The batch for THIS step was submitted earlier (in
                 # _prefill_pipeline or previous train_step). We also
