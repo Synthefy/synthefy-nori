@@ -27,9 +27,116 @@ from synthefy_nori.utils.data_utils import NoriInferenceDataset
 from torch.cuda import OutOfMemoryError
 
 import hashlib
+import os
 from kditransform import KDITransformer
 
 MAXINT_RANDOM_SEED = int(np.iinfo(np.int32).max)
+
+
+class CappedQuantileTransformer(QuantileTransformer):
+    """QuantileTransformer that caps ``n_quantiles`` and ``subsample`` at fit time.
+
+    sklearn's QuantileTransformer fit (``np.nanpercentile``) is slow when
+    ``n_quantiles`` is large and fit on all rows. Quantile boundaries are
+    statistically stable far below the raw request, so capping is
+    ~accuracy-neutral while much faster. Gated by ``SYNTHEFY_CAP_QUANTILES``
+    (default on) so it can be A/B'd against the uncapped path.
+    """
+
+    def fit(self, X, y=None):
+        if os.environ.get("SYNTHEFY_CAP_QUANTILES", "1") == "1":
+            cap_q = int(os.environ.get("SYNTHEFY_QUANTILE_MAX", "256"))
+            cap_s = int(os.environ.get("SYNTHEFY_QUANTILE_SUBSAMPLE", "10000"))
+            n = X.shape[0] if hasattr(X, "shape") else len(X)
+            self.n_quantiles = max(2, min(int(self.n_quantiles), n, cap_q))
+            self.subsample = min(int(self.subsample), cap_s)
+        return super().fit(X, y)
+
+
+# Device used for GPU SVD; set by NoriPredictor.__init__ to its own device.
+# Falls back to the current CUDA device (or CPU) when unset.
+_GPU_SVD_DEVICE = None
+
+
+def _resolve_svd_device():
+    if _GPU_SVD_DEVICE is not None:
+        return torch.device(_GPU_SVD_DEVICE)
+    if torch.cuda.is_available():
+        return torch.device("cuda", torch.cuda.current_device())
+    return torch.device("cpu")
+
+
+class _TorchTruncatedSVD(BaseEstimator, TransformerMixin):
+    """Drop-in for sklearn ``TruncatedSVD`` computing the exact truncated SVD on
+    GPU via ``torch.linalg.svd``.
+
+    ``transform(X) == X @ components_.T`` and ``fit_transform`` returns ``U * S``
+    — the same contract as sklearn's TruncatedSVD, with the same
+    ``svd_flip(u_based_decision=True)`` sign convention (so output matches up to
+    the randomized-vs-exact gap). sklearn's CPU TruncatedSVD dominates inference
+    cost on high-dimensional datasets; the GPU exact SVD collapses that. Falls
+    back to sklearn on any error and is gated by ``SYNTHEFY_GPU_SVD`` (default
+    on). Randomized-only kwargs (algorithm/n_iter/n_oversamples) are accepted and
+    ignored so it slots into sklearn Pipelines unchanged.
+    """
+
+    def __init__(self, n_components=2, *, random_state=None, algorithm=None,
+                 n_iter=None, n_oversamples=None):
+        self.n_components = int(n_components)
+        self.random_state = random_state
+        self.algorithm = algorithm
+        self.n_iter = n_iter
+        self.n_oversamples = n_oversamples
+
+    def _sklearn_fallback(self, X):
+        algo = self.algorithm or "randomized"
+        m = TruncatedSVD(n_components=self.n_components, algorithm=algo,
+                         random_state=self.random_state)
+        out = m.fit_transform(X)
+        self.components_ = m.components_
+        return out
+
+    def fit(self, X, y=None):
+        self.fit_transform(X)
+        return self
+
+    def fit_transform(self, X, y=None):
+        if os.environ.get("SYNTHEFY_GPU_SVD", "1") != "1":
+            return self._sklearn_fallback(X)
+        try:
+            Xnp = np.asarray(X, dtype=np.float64)
+            n, p = Xnp.shape
+            k = max(1, min(int(self.n_components), p, n))
+            dev = _resolve_svd_device()
+            Xt = torch.from_numpy(Xnp).to(dev)
+            U, S, Vh = torch.linalg.svd(Xt, full_matrices=False)
+            U = U[:, :k]; S = S[:k]; Vh = Vh[:k]
+            # svd_flip, u_based_decision=True (sklearn's default for both solvers):
+            # sign each component so the largest-|.| entry of its U column is +.
+            idx = U.abs().argmax(dim=0)
+            signs = torch.sign(U[idx, torch.arange(k, device=dev)])
+            signs = torch.where(signs == 0, torch.ones_like(signs), signs)
+            Vh = Vh * signs[:, None]
+            US = U * (S * signs)[None, :]
+            self.components_ = Vh.detach().cpu().numpy()
+            return US.detach().cpu().numpy()
+        except Exception:
+            return self._sklearn_fallback(X)
+
+    def transform(self, X):
+        Xnp = np.asarray(X, dtype=np.float64)
+        # Projection matmul X @ components_.T is large on wide test sets; do it on
+        # GPU when available (same result as numpy), else fall back to numpy.
+        if os.environ.get("SYNTHEFY_GPU_SVD", "1") == "1":
+            try:
+                dev = _resolve_svd_device()
+                if dev.type == "cuda":
+                    Xt = torch.from_numpy(Xnp).to(dev)
+                    Ct = torch.from_numpy(self.components_).to(dev)
+                    return (Xt @ Ct.T).detach().cpu().numpy()
+            except Exception:
+                pass
+        return Xnp @ self.components_.T
 
 class SelectiveInversePipeline(Pipeline):
     def __init__(self, steps, skip_inverse=None):
@@ -229,7 +336,7 @@ class AdaptiveColumnTransformer(BaseEstimator, TransformerMixin):
         if cat == 'skewed':
             return _PowerImpl(method='yeo-johnson', standardize=True)
         # 'other'
-        return QuantileTransformer(
+        return CappedQuantileTransformer(
             output_distribution='normal',
             n_quantiles=self.n_quantiles,
             random_state=self.random_state,
@@ -238,20 +345,36 @@ class AdaptiveColumnTransformer(BaseEstimator, TransformerMixin):
 
     def fit(self, X: np.ndarray, y=None) -> 'AdaptiveColumnTransformer':
         X = np.asarray(X, dtype=np.float64)
-        n_features = X.shape[1]
+        n_samples, n_features = X.shape
         self.column_categories_: list[str] = []
         self.column_transformers_: list[Any] = []
+        # Row-subsample for *fitting* the per-column transformers. The box-cox /
+        # yeo-johnson lambda is a 1-parameter MLE and the standardize mean/std
+        # are 2-parameter estimates, all converging tightly well below the full
+        # row count, so fitting on a capped subsample is ~indistinguishable in
+        # output but avoids O(n) scipy iterations over every row (a dominant
+        # inference cost on many-row datasets). Categorization (the column *type*
+        # decision) still runs on the FULL column so routing is byte-identical;
+        # only fitted parameters come from the subsample, and transform() always
+        # applies to all rows. SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE=0 -> exact legacy.
+        cap = int(os.environ.get("SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE", "2000"))
+        if cap > 0 and n_samples > cap:
+            fit_idx = np.random.default_rng(self.random_state).choice(
+                n_samples, size=cap, replace=False)
+            X_fit = X[fit_idx]
+        else:
+            X_fit = X
         for i in range(n_features):
-            col = X[:, i:i + 1]
-            cat = self._categorize(col[:, 0])
+            cat = self._categorize(X[:, i])          # exact: full column
             t = self._make_transformer(cat)
+            fit_col = X_fit[:, i:i + 1]               # cheap: fit on subsample
             try:
                 # sklearn ColumnTransformer-style: fit a 2D slice
-                t.fit(col)
+                t.fit(fit_col)
             except Exception:
                 # Degenerate column (all-NaN, all-equal): fall back to identity
                 t = FunctionTransformer()
-                t.fit(col)
+                t.fit(X[:, i:i + 1])
                 cat = 'identity'
             self.column_categories_.append(cat)
             self.column_transformers_.append(t)
@@ -857,19 +980,19 @@ class RebalanceFeatureDistribution(BasePreprocess):
                                         ])
                 # trans_ixs = cont_ix
             elif worker_tag == "quantile_uniform_10":
-                sworker = QuantileTransformer(
+                sworker = CappedQuantileTransformer(
                     output_distribution="uniform",
                     n_quantiles=max(n_samples // 10, 2),
                     random_state=static_seed,
                 )
             elif worker_tag == "quantile_uniform_5":
-                sworker = QuantileTransformer(
+                sworker = CappedQuantileTransformer(
                     output_distribution="uniform",
                     n_quantiles=max(n_samples // 5, 2),
                     random_state=static_seed,
                 )
             elif worker_tag == "quantile_uniform_all_data":
-                sworker = QuantileTransformer(
+                sworker = CappedQuantileTransformer(
                     output_distribution="uniform",
                     n_quantiles=max(n_samples // 5, 2),
                     random_state=static_seed,
@@ -917,7 +1040,7 @@ class RebalanceFeatureDistribution(BasePreprocess):
                     random_state=static_seed,
                 )
             elif worker_tag == "quantile_norm_all_data":
-                sworker = QuantileTransformer(
+                sworker = CappedQuantileTransformer(
                     output_distribution="normal",
                     n_quantiles=max(n_samples // 5, 2),
                     random_state=static_seed,
@@ -987,7 +1110,7 @@ class RebalanceFeatureDistribution(BasePreprocess):
                                     ("standard", StandardScaler(with_mean=False)) ,
                                     ("i2n_post", FunctionTransformer(func=lambda x: np.nan_to_num(x, nan=np.nan, neginf=np.nan, posinf=np.nan),inverse_func=lambda x: x, check_inverse=False)),
                                     ("fill_missing_post", SimpleImputer(missing_values=np.nan, strategy="mean", keep_empty_features=True))])),
-                                    ("svd",TruncatedSVD(algorithm="arpack",n_components=max(1,min(n_samples // 10 + 1,n_features // 2)),random_state=static_seed))]))
+                                    ("svd",_TorchTruncatedSVD(algorithm="arpack",n_components=max(1,min(n_samples // 10 + 1,n_features // 2)),random_state=static_seed))]))
                     ])
             self.svd_n_comp = max(1,min(n_samples // 10 + 1,n_features // 2))
             worker = Pipeline([("worker", CT_worker), ("svd_worker", svd_worker)])
@@ -1325,7 +1448,7 @@ class HighDimFeatureSelector(BasePreprocess):
                 n_samples - 1,
             ))
             try:
-                self.svd_model_ = TruncatedSVD(n_components=n_components, random_state=seed_int)
+                self.svd_model_ = _TorchTruncatedSVD(n_components=n_components, random_state=seed_int)
                 self.svd_model_.fit(x_binary)
             except Exception:
                 return self._activate_passthrough(categorical_features)
@@ -1339,7 +1462,7 @@ class HighDimFeatureSelector(BasePreprocess):
             x_imp = np.where(np.isnan(x), 0.0, x)
             n_components = max(1, min(self.svd_components, n_features - 1, n_samples - 1))
             try:
-                self.svd_model_ = TruncatedSVD(n_components=n_components, random_state=seed_int)
+                self.svd_model_ = _TorchTruncatedSVD(n_components=n_components, random_state=seed_int)
                 self.svd_model_.fit(x_imp)
             except Exception:
                 return self._activate_passthrough(categorical_features)

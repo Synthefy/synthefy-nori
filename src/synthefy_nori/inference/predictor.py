@@ -74,6 +74,13 @@ class NoriPredictor:
                 raise ValueError(f"inference_config is not a config file path: {inference_config}")
         self.model_path = model_path
         self.device = device
+        # Route GPU SVD (preprocess._TorchTruncatedSVD) to this predictor's
+        # device so high-dim SVD runs on the same GPU as the model.
+        try:
+            import synthefy_nori.inference.preprocess as _pp
+            _pp._GPU_SVD_DEVICE = device
+        except Exception:
+            pass
         self.mix_precision = mix_precision
         self.categorical_features_indices = categorical_features_indices
         self.seed = seed
