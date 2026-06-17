@@ -7,6 +7,7 @@
 [![Docs](https://img.shields.io/badge/Docs-docs.synthefy.com-2ea44f?logo=readthedocs&logoColor=white)](https://docs.synthefy.com/nori/)
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-Synthefy%2FNori-blue?logo=huggingface&logoColor=FFD21E)](https://huggingface.co/Synthefy/Nori)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20710462.svg)](https://doi.org/10.5281/zenodo.20710462)
+[![Discord](https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/rTCCJkht4)
 
 Nori is a tabular foundation model for **regression**
 via in-context learning (ICL). Given a few labeled rows as context, it predicts on
@@ -436,7 +437,7 @@ If you use this project, please cite it as:
   month        = jun,
   year         = 2026,
   publisher    = {Zenodo},
-  version      = {0.3.0},
+  version      = {0.5.0},
   doi          = {10.5281/zenodo.20710462},
   url          = {https://doi.org/10.5281/zenodo.20710462},
 }
