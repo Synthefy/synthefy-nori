@@ -266,9 +266,14 @@ benchmark run.
 
 ## Interpretability
 
-`NoriRegressor` is a scikit-learn estimator, so it works directly with shapiq and
-the sklearn interpretability ecosystem — Shapley values & interactions, partial
-dependence / ICE, and sequential feature selection:
+Explain Nori's predictions with **SHAP / Shapley values**, feature interactions,
+partial dependence / ICE, and sequential feature selection — see which features
+drive a prediction, detect interactions, and debug unexpected outputs. Because
+`NoriRegressor` is a scikit-learn estimator, it works directly with
+[shapiq](https://github.com/mmschlk/shapiq) (a fast SHAP implementation with
+native Shapley-interaction support) and the sklearn interpretability ecosystem —
+no adapters needed beyond the thin convenience wrappers in
+`synthefy_nori.interpretability`.
 
 ```bash
 pip install "synthefy-nori[interpretability]"
@@ -280,12 +285,15 @@ from synthefy_nori.interpretability.shapiq import get_nori_imputation_explainer
 
 model = NoriRegressor().fit(X_train, y_train)
 explainer = get_nori_imputation_explainer(model, X_train)   # imputation-based, model-agnostic
-sv = explainer.explain(X_test[:1], budget=128)              # Shapley values for one prediction
-sv.plot_waterfall()
+sv = explainer.explain(X_test[:1], budget=128)              # SHAP/Shapley values for one prediction
+sv.plot_waterfall()                                         # additive contribution waterfall
 ```
 
-Runnable: [`examples/interpretability_regression.py`](examples/interpretability_regression.py).
-More detail in [docs/interpretability.md](docs/interpretability.md).
+Also available: `interpretability.pdp.partial_dependence_plots` (global feature
+effects) and `interpretability.feature_selection.feature_selection`. Regression
+only. Runnable example:
+[`examples/interpretability_regression.py`](examples/interpretability_regression.py);
+full guide in [docs/interpretability.md](docs/interpretability.md).
 
 ## Benchmarks
 
