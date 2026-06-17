@@ -78,3 +78,41 @@ def test_regressor_output_types_match_tabpfn_contract():
         pred = model.predict(X_test, output_type=output_type)
         assert pred.shape == (n_test,), output_type
         assert np.all(np.isfinite(pred)), output_type
+
+
+def test_regressor_distribution_outputs():
+    from synthefy_nori import NoriRegressor
+
+    rng = np.random.default_rng(0)
+    n_train, n_test, d = 200, 50, 4
+    X_train = rng.normal(size=(n_train, d)).astype(np.float32)
+    true_w = rng.normal(size=d).astype(np.float32)
+    y_train = (X_train @ true_w + rng.normal(scale=0.1, size=n_train)).astype(np.float32)
+    X_test = rng.normal(size=(n_test, d)).astype(np.float32)
+
+    model = NoriRegressor(**_checkpoint_kwargs())
+    model.fit(X_train, y_train)
+
+    # output_type="full": a per-row quantile function plus the matching levels.
+    dist = model.predict(X_test, output_type="full")
+    Q, taus, mean = dist["quantiles"], dist["taus"], dist["mean"]
+    K = Q.shape[1]
+    assert Q.shape == (n_test, K)
+    assert taus.shape == (K,)
+    assert mean.shape == (n_test,)
+    assert np.all(np.isfinite(Q))
+    # Quantiles are sorted to a valid (monotone non-decreasing) quantile function.
+    assert np.all(np.diff(Q, axis=1) >= -1e-6)
+    assert taus[0] > 0.0 and taus[-1] < 1.0
+
+    # output_type="full" mean matches the default point estimate. The two come
+    # from independent forward passes under mixed precision, so they agree only
+    # up to GPU/autocast nondeterminism rather than bit-for-bit.
+    np.testing.assert_allclose(mean, model.predict(X_test, output_type="mean"), rtol=5e-3, atol=5e-3)
+
+    # output_type="quantiles": shape (n_levels, n_samples), ordered across levels.
+    levels = [0.1, 0.5, 0.9]
+    qs = model.predict(X_test, output_type="quantiles", quantiles=levels)
+    assert qs.shape == (len(levels), n_test)
+    assert np.all(np.isfinite(qs))
+    assert np.all(qs[0] <= qs[1] + 1e-6) and np.all(qs[1] <= qs[2] + 1e-6)

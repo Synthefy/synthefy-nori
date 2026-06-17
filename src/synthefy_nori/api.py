@@ -110,31 +110,38 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         """Predict targets for the query rows.
 
         Mirrors the ``TabPFNRegressor.predict`` contract. ``output_type`` selects
-        the point estimate taken from the model's predictive distribution:
+        what is returned from the model's predictive distribution:
 
         - ``"mean"``   — distribution mean (default; identical to prior behavior)
         - ``"median"`` — distribution median (the ``tau=0.5`` quantile)
         - ``"mode"``   — distribution mode
+        - ``"quantiles"`` — quantiles at the levels given in ``quantiles=`` (a
+          list of taus in (0, 1)); returns an array of shape
+          ``(len(quantiles), n_samples)``
+        - ``"full"`` — the full predictive distribution as a dict with keys
+          ``"quantiles"`` (``(n_samples, K)`` ascending quantile values),
+          ``"taus"`` (``(K,)`` quantile levels), and ``"mean"`` (``(n_samples,)``)
 
-        The distributional outputs ``"quantiles"``, ``"main"`` and ``"full"`` (and
-        the ``quantiles=`` argument) are part of the TabPFN contract but are not
-        yet supported here; requesting them raises ``NotImplementedError``.
+        ``"main"`` is part of the TabPFN contract but is not supported here.
+        ``"quantiles"`` / ``"full"`` are only available for the pinball
+        (quantile-head) checkpoint shipped by default; a ``bar_distribution``
+        checkpoint raises ``NotImplementedError``.
         """
-        if output_type in ("quantiles", "main", "full"):
+        if output_type in ("quantiles", "full"):
+            return self._predict_distribution(X, output_type=output_type, quantiles=quantiles)
+        if output_type == "main":
             raise NotImplementedError(
-                f"output_type={output_type!r} returns the full predictive "
-                "distribution, which NoriRegressor does not yet "
-                "support. Use 'mean', 'median', or 'mode'."
+                "output_type='main' is part of the TabPFN contract but is not "
+                "supported here. Use 'mean', 'median', 'mode', 'quantiles', or 'full'."
             )
         if output_type not in ("mean", "median", "mode"):
             raise ValueError(
                 f"Unknown output_type={output_type!r}; expected one of "
-                "'mean', 'median', 'mode', 'quantiles', 'main', 'full'."
+                "'mean', 'median', 'mode', 'quantiles', 'full'."
             )
         if quantiles is not None:
             raise ValueError(
-                "quantiles= is only valid with output_type='quantiles', which "
-                "is not yet supported."
+                "quantiles= is only valid with output_type='quantiles'."
             )
 
         import numpy as np
@@ -164,6 +171,69 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
             pred = pred.detach().cpu().numpy()
         pred = np.asarray(pred, dtype=np.float64).squeeze()
         return pred * self.y_std_ + self.y_mean_
+
+    def _predict_distribution(self, X, *, output_type: str, quantiles: list[float] | None):
+        """Return the model's predictive distribution as quantiles.
+
+        Backs ``output_type in {"quantiles", "full"}``. Reads the raw per-row
+        quantile bank from the predictor (no point collapse, no Yeo-Johnson
+        ensemble), denormalizes it back to original-y units, and enforces
+        monotonicity by sorting each row's quantiles ascending.
+        """
+        import numpy as np
+        import torch
+
+        if not hasattr(self, "X_train_"):
+            raise ValueError("Call fit(X, y) before predict(X).")
+        if output_type == "quantiles":
+            if not quantiles:
+                raise ValueError(
+                    "output_type='quantiles' requires quantiles=[...] with at "
+                    "least one tau level in (0, 1)."
+                )
+            q_levels = np.asarray(quantiles, dtype=np.float64)
+            if np.any((q_levels <= 0.0) | (q_levels >= 1.0)):
+                raise ValueError("quantiles must lie strictly in (0, 1).")
+
+        predictor = self._get_predictor()
+        if predictor.regression_head == "bar_distribution":
+            raise NotImplementedError(
+                "output_type='quantiles'/'full' is not supported for "
+                "bar_distribution checkpoints yet; the default pinball "
+                "(quantile-head) checkpoint is required."
+            )
+
+        X_test = np.asarray(X, dtype=np.float32)
+        y_norm = ((self.y_train_ - self.y_mean_) / self.y_std_).astype(np.float32)
+
+        bank = predictor.predict(self.X_train_, y_norm, X_test, return_distribution=True)
+        if isinstance(bank, torch.Tensor):
+            bank = bank.detach().cpu().numpy()
+        bank = np.asarray(bank, dtype=np.float64)
+        if bank.ndim == 1:  # single query row -> [1, K]
+            bank = bank[None, :]
+
+        # Denormalize (affine, monotone) then sort each row to a valid quantile
+        # function. K quantiles sit at evenly spaced taus = i/(K+1).
+        bank = bank * self.y_std_ + self.y_mean_
+        Q = np.sort(bank, axis=1)
+        K = Q.shape[1]
+        taus = (np.arange(K, dtype=np.float64) + 1.0) / (K + 1.0)
+
+        if output_type == "full":
+            return {"quantiles": Q, "taus": taus, "mean": Q.mean(axis=1)}
+
+        # output_type == "quantiles": interpolate the inverse-CDF at each level.
+        out = np.empty((q_levels.shape[0], Q.shape[0]), dtype=np.float64)
+        for i, level in enumerate(q_levels):
+            # np.interp is 1-D in the x-grid (shared taus) but loops rows; do a
+            # vectorized linear interpolation across all rows for this level.
+            pos = np.interp(level, taus, np.arange(K))
+            lo = int(np.floor(pos))
+            hi = min(lo + 1, K - 1)
+            w = pos - lo
+            out[i] = (1.0 - w) * Q[:, lo] + w * Q[:, hi]
+        return out
 
 
 def infer(
