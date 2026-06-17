@@ -1,7 +1,7 @@
 # Nori: in-context learning tabular foundation model. Each request
 # carries the context rows (X_train, y_train) and the query rows (X_test); the
 # model predicts in a single forward pass. See model/model.py for the API.
-model_name: Nori
+model_name: Synthefy Nori
 python_version: py311
 
 # Runtime dependencies. The synthefy_nori package itself is shipped via the
