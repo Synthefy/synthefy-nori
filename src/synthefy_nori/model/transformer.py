@@ -367,6 +367,233 @@ class FeaturesTransformer(nn.Module):
         return output_decoded
 
     
+    def _build_x_preprocess_inputs(
+            self,
+            x: torch.Tensor,
+            eval_pos: int,
+    ) -> tuple[dict[str, torch.Tensor | int], int]:
+        batch_size, seq_len, num_feature = x.shape
+        x_dict: dict[str, torch.Tensor | int] = {
+            'data': x,
+            'mask': torch.isnan(x).to(torch.int32).to(x.device),
+        }
+        feature_to_add = (-num_feature) % self.features_per_group
+        if feature_to_add > 0:
+            for k in ('data', 'mask'):
+                value = x_dict[k]
+                assert isinstance(value, torch.Tensor)
+                x_dict[k] = torch.cat(
+                    (
+                        value,
+                        torch.zeros(
+                            batch_size,
+                            seq_len,
+                            feature_to_add,
+                            device=value.device,
+                            dtype=value.dtype,
+                        ),
+                    ),
+                    dim=-1,
+                )
+        for k in ('data', 'mask'):
+            value = x_dict[k]
+            assert isinstance(value, torch.Tensor)
+            x_dict[k] = value.reshape(
+                batch_size,
+                seq_len,
+                value.shape[2] // self.features_per_group,
+                self.features_per_group,
+            )
+        x_dict['eval_pos'] = eval_pos
+        return x_dict, feature_to_add
+
+    def _slice_preprocessed_x(
+            self,
+            preprocessed_x: dict[str, torch.Tensor | int],
+            row_slice: slice,
+            total_rows: int,
+    ) -> dict[str, torch.Tensor | int]:
+        sliced: dict[str, torch.Tensor | int] = {}
+        for k, v in preprocessed_x.items():
+            if torch.is_tensor(v) and v.dim() >= 2 and v.shape[1] == total_rows:
+                sliced[k] = v[:, row_slice].contiguous()
+            else:
+                sliced[k] = v
+        return sliced
+
+    def make_feature_positional_embeddings(
+            self,
+            n_groups: int,
+            *,
+            device: torch.device,
+            dtype: torch.dtype,
+    ) -> torch.Tensor | None:
+        if self.feature_positional_embedding_type == "subortho":
+            with autocast(device_type=device.type, enabled=False):
+                embs = torch.randn(
+                    (n_groups, self.embed_dim // 4),
+                    device=device,
+                    dtype=torch.float32,
+                )
+                torch.nn.init.orthogonal_(embs)
+            return self.feature_positional_embedding(embs.to(dtype))
+        if self.feature_positional_embedding_type == "learned":
+            n_slots = self.feature_positional_embedding_num_slots
+            slot_indices = torch.randperm(n_slots, device=device)[:n_groups]
+            return self.feature_positional_embedding(slot_indices).to(dtype)
+        if self.feature_positional_embedding_type is None or self.feature_positional_embedding_type == "none":
+            return None
+        raise ValueError(f"Unknown feature_positional_embedding_type={self.feature_positional_embedding_type}")
+
+    def apply_feature_positional_embeddings(
+            self,
+            x: torch.Tensor,
+            embs: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if embs is None:
+            return x
+        return x + embs[None, None, :, :]
+
+    def _encode_x_rows(
+            self,
+            preprocessed_x: dict[str, torch.Tensor | int],
+            row_slice: slice,
+            *,
+            total_rows: int,
+            feature_pos_emb: torch.Tensor | None,
+    ) -> torch.Tensor:
+        x_part = self._slice_preprocessed_x(preprocessed_x, row_slice, total_rows)
+        encoded = self.encoder_x(x_part)['data']
+        return self.apply_feature_positional_embeddings(encoded, feature_pos_emb)
+
+    def _encode_y_full(
+            self,
+            y: torch.Tensor,
+            *,
+            total_rows: int,
+            eval_pos: int,
+            task_type: Literal['reg', 'cls'],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        y_dict: dict[str, torch.Tensor] = {'data': y}
+        for k in y_dict:
+            y_dict[k] = y_dict[k].unsqueeze(-1)
+            if y_dict[k].shape[1] < total_rows:
+                y_dict[k] = torch.cat(
+                    (
+                        y_dict[k],
+                        torch.full(
+                            (
+                                y_dict[k].shape[0],
+                                total_rows - y_dict[k].shape[1],
+                                y_dict[k].shape[2],
+                            ),
+                            float("nan"),
+                            device=y_dict[k].device,
+                            dtype=y_dict[k].dtype,
+                        ),
+                    ),
+                    dim=1,
+                )
+        target_aware_y = y_dict["data"].squeeze(-1).clone()
+        seq_positions = torch.arange(total_rows, device=y_dict["data"].device)
+        y_data_masked = torch.where(
+            seq_positions.view(1, -1, 1) >= eval_pos,
+            torch.tensor(float('nan'), device=y_dict["data"].device, dtype=y_dict["data"].dtype),
+            y_dict["data"],
+        )
+        y_enc_input = {'data': y_data_masked, 'eval_pos': eval_pos}
+        if task_type == 'cls':
+            embedded_y = self.cls_y_encoder(y_enc_input)['data'].squeeze(2)
+        else:
+            embedded_y = self.reg_y_encoder(y_enc_input)['data'].squeeze(2)
+        return target_aware_y, embedded_y
+
+    def forward_cached_regression(
+            self,
+            x: torch.Tensor,
+            y: torch.Tensor,
+            eval_pos: int,
+            *,
+            row_chunk_size: int | None = None,
+    ) -> torch.Tensor:
+        """Regression-only cached prediction path for chunked inference.
+
+        The train-side transformer states and projected sequence-attention K/Vs
+        are computed once. Test rows are then streamed through the same layers
+        using those train caches. Preprocessing still sees the full transductive
+        X table once, preserving the existing inference semantics.
+        """
+        if self.mask_prediction:
+            raise NotImplementedError("forward_cached_regression requires mask_prediction=False")
+        if x is None or y is None:
+            raise AssertionError("x and y must not be none")
+        if eval_pos <= 0:
+            raise AssertionError("eval_pos must be a positive number")
+        if len(x.shape) != 3:
+            raise AssertionError("x must be [Batch, seq, Feature]")
+        if len(y.shape) != 2:
+            raise AssertionError("y must be [Batch, label]")
+        if eval_pos >= x.shape[1] or eval_pos > y.shape[1]:
+            raise AssertionError("Invalid eval_pos for cached regression")
+
+        total_rows = x.shape[1]
+        x_dict, _feature_to_add = self._build_x_preprocess_inputs(x, eval_pos)
+        preprocessed_x = self.x_preprocess(x_dict)
+        preprocessed_x = self.process_4_x(preprocessed_x)
+        data_tensor = preprocessed_x['data']
+        assert isinstance(data_tensor, torch.Tensor)
+        feature_pos_emb = self.make_feature_positional_embeddings(
+            data_tensor.shape[2],
+            device=data_tensor.device,
+            dtype=data_tensor.dtype,
+        )
+        target_aware_y, embedded_y = self._encode_y_full(
+            y,
+            total_rows=total_rows,
+            eval_pos=eval_pos,
+            task_type='reg',
+        )
+
+        x_train = self._encode_x_rows(
+            preprocessed_x,
+            slice(0, eval_pos),
+            total_rows=total_rows,
+            feature_pos_emb=feature_pos_emb,
+        )
+        x_train = self.apply_target_aware_embedding(
+            x_train,
+            target_aware_y[:, :eval_pos],
+            task_type='reg',
+            eval_pos=eval_pos,
+        )
+        train_tokens = torch.cat((x_train, embedded_y[:, :eval_pos].unsqueeze(2)), dim=2)
+        _, caches = self.transformer_encoder.build_train_cache(
+            train_tokens,
+            feature_atten_mask=None,
+        )
+
+        n_test = total_rows - eval_pos
+        if row_chunk_size is None or row_chunk_size <= 0:
+            row_chunk_size = n_test
+        outputs = []
+        for start in range(eval_pos, total_rows, row_chunk_size):
+            end = min(start + row_chunk_size, total_rows)
+            x_test = self._encode_x_rows(
+                preprocessed_x,
+                slice(start, end),
+                total_rows=total_rows,
+                feature_pos_emb=feature_pos_emb,
+            )
+            test_tokens = torch.cat((x_test, embedded_y[:, start:end].unsqueeze(2)), dim=2)
+            test_out = self.transformer_encoder.forward_test_with_cache(
+                test_tokens,
+                caches,
+                feature_atten_mask=None,
+            )
+            test_out = self.encoder_out_norm(test_out)
+            outputs.append(self.reg_y_decoder(test_out[:, :, -1]))
+        return torch.cat(outputs, dim=1)
+
     @torch.compiler.disable
     def mixed_y_embedding(self, y:dict, y_type:torch.Tensor, eval_pos:int):
         y = y['data']

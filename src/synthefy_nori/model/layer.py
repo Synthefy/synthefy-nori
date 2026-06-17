@@ -300,6 +300,80 @@ class MultiheadAttention(torch.nn.Module):
             factor = self.attn_temperature.abs() * factor
         return q * factor
 
+    def project_kv_cache(
+            self,
+            x_kv: torch.Tensor,
+            *,
+            copy_first_head_kv: bool = False,
+    ) -> dict[str, torch.Tensor | int]:
+        """Project and cache K/V for qkv_combined=False attention.
+
+        The sequence-attention path calls this with x_kv shaped like the
+        normal forward input after transposing rows/features: [B, G, N, E].
+        We cache the flattened projected K/V tensor so repeated test chunks do
+        not re-run train-side K/V projection.
+        """
+        if self.qkv_combined:
+            raise ValueError("project_kv_cache is only valid for separate Q/KV attention")
+        B, S, _, _ = x_kv.shape
+        x_kv_flat = x_kv.reshape(-1, *x_kv.shape[-2:])
+        kv_proj_weight = self.qkv_proj_weight[1:]
+        if copy_first_head_kv:
+            kv_weights = kv_proj_weight[:, :1]
+            kv = torch.einsum("... s, j h d s -> ... j h d", x_kv_flat, kv_weights)
+            expand_shape = [-1 for _ in kv.shape]
+            expand_shape[-2] = self.num_heads
+            kv = kv.expand(*expand_shape)
+        else:
+            kv = torch.einsum("... s, j h d s -> ... j h d", x_kv_flat, kv_proj_weight)
+        return {"kv": kv.contiguous(), "batch": B, "groups": S}
+
+    def forward_with_kv_cache(
+            self,
+            x: torch.Tensor,
+            kv_cache: dict[str, torch.Tensor | int],
+            *,
+            calculate_sample_attention: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Run cross-attention using a projected train K/V cache."""
+        if self.qkv_combined:
+            raise ValueError("forward_with_kv_cache is only valid for separate Q/KV attention")
+        B, S, _, _ = x.shape
+        if int(kv_cache["batch"]) != B or int(kv_cache["groups"]) != S:
+            raise ValueError(
+                "KV cache shape does not match query shape: "
+                f"cache=({kv_cache['batch']}, {kv_cache['groups']}), query=({B}, {S})"
+            )
+        x_flat = x.reshape(-1, *x.shape[-2:])
+        q_proj_weight = self.qkv_proj_weight[0]
+        q = torch.einsum("... s, h d s -> ... h d", x_flat, q_proj_weight)
+        kv = kv_cache["kv"]
+        assert isinstance(kv, torch.Tensor)
+        if self.use_qassmax:
+            q = self.apply_qassmax(q, kv.shape[1])
+
+        if self.qkv_proj_weight.device.type == "cuda" and not torch.compiler.is_compiling():
+            if HAVE_FLASH_ATTN_4:
+                atten_out = self.compute_attention_by_flashattn4(None, q, kv)
+            elif HAVE_FLASH_ATTN:
+                atten_out = self.compute_attention_by_flashattn(None, q, kv)
+            else:
+                atten_out = self.compute_attention_by_torch(None, q, kv, None)
+        else:
+            atten_out = self.compute_attention_by_torch(None, q, kv, None)
+
+        atten_out = atten_out.reshape(x_flat.shape[0], x_flat.shape[1], self.num_heads, self.head_dim)
+        sample_attention = None
+        if calculate_sample_attention:
+            k, _ = kv.unbind(dim=2)
+            sample_attention = self.caculate_attention_score(q[-1], k[-1])
+        out = torch.einsum(
+            "... h d, h d s -> ... s",
+            atten_out,
+            self.out_proj_weight,
+        )
+        return out.reshape(B, S, *out.shape[1:]), sample_attention
+
     def compute_attention_by_torch(self, qkv:torch.Tensor|None, q:torch.Tensor|None, kv:torch.Tensor|None, attn_mask:torch.Tensor|None) -> torch.Tensor:
         '''Since flash attention does not support attn_mask, use scaled_dot_product_attention to compute attention when attn_mask is not None'''
         if qkv is not None:
@@ -841,6 +915,169 @@ class EncoderBaseLayer(nn.Module):
         else:
             return x_train, None, None
 
+    def _residual_add(self, residual: torch.Tensor, update: torch.Tensor) -> torch.Tensor:
+        if self.deepnorm_alpha is not None:
+            return residual + self.deepnorm_alpha * update
+        return residual + update
+
+    def _run_non_sequence_step(
+            self,
+            x: torch.Tensor,
+            *,
+            step_idx: int,
+            feature_atten_mask: torch.Tensor | None,
+            eval_pos: int,
+    ) -> torch.Tensor:
+        sublayer = self.layer_steps[step_idx]
+        layer_norm = self.layer_norms[step_idx]
+        if self.pre_norm:
+            residual = x
+            x_norm = layer_norm(x)
+            if isinstance(sublayer, functools.partial):
+                out = sublayer(x_norm, feature_atten_mask, eval_pos)
+                if isinstance(out, tuple):
+                    out = out[0]
+            else:
+                out = sublayer(x_norm)
+                if isinstance(out, tuple):
+                    out = out[0]
+            return self._residual_add(residual, out)
+
+        residual = x
+        if isinstance(sublayer, functools.partial):
+            out = sublayer(x, feature_atten_mask, eval_pos)
+            if isinstance(out, tuple):
+                out = out[0]
+        else:
+            out = sublayer(x)
+            if isinstance(out, tuple):
+                out = out[0]
+        return layer_norm(out + residual)
+
+    def forward_train_cache(
+            self,
+            x_train: torch.Tensor,
+            feature_atten_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, dict[str, dict[str, torch.Tensor | int]]]:
+        """Run the train rows through one layer and cache train K/V for tests.
+
+        This mirrors forward(..., eval_pos=n_train) for the train side, but it
+        also stores projected K/V for the subsequent test cross-attention. It
+        is intentionally inference-only; training still uses the standard path.
+        """
+        if self.layer_arch == 'fmfmsm':
+            pre_seq_steps = (0, 1, 2, 3)
+            seq_step = 4
+            post_seq_steps = (5,)
+            seq_index = 0
+        elif self.layer_arch == 'smf':
+            pre_seq_steps = ()
+            seq_step = 0
+            post_seq_steps = (1, 2)
+            seq_index = 0
+        else:
+            raise NotImplementedError(
+                "Cached inference currently supports layer_arch='fmfmsm' and 'smf'"
+            )
+
+        eval_pos = x_train.shape[1]
+        for step_idx in pre_seq_steps:
+            x_train = self._run_non_sequence_step(
+                x_train, step_idx=step_idx, feature_atten_mask=feature_atten_mask, eval_pos=eval_pos)
+
+        index1 = seq_index * 2 if self.seq_attn_isolated else seq_index
+        index2 = index1 + 1 if self.seq_attn_isolated else index1
+        seq_attn_train = self.sequence_attentions[index1]
+        seq_attn_test = self.sequence_attentions[index2]
+        seq_norm = self.layer_norms[seq_step]
+
+        if self.pre_norm:
+            residual = x_train
+            x_norm = seq_norm(x_train)
+            train_attn = seq_attn_train(
+                x=x_norm.transpose(1, 2),
+                x_kv=x_norm.transpose(1, 2),
+                copy_first_head_kv=True if self.self_share_all_kv_heads else False,
+            )[0].transpose(1, 2)
+            kv_source = train_attn if self.seq_attn_serial else x_norm
+            seq_kv_cache = seq_attn_test.project_kv_cache(
+                kv_source.transpose(1, 2),
+                copy_first_head_kv=True if self.cross_share_all_kv_heads else False,
+            )
+            x_train = self._residual_add(residual, train_attn)
+        else:
+            residual = x_train
+            train_attn = seq_attn_train(
+                x=x_train.transpose(1, 2),
+                x_kv=x_train.transpose(1, 2),
+                copy_first_head_kv=True if self.self_share_all_kv_heads else False,
+            )[0].transpose(1, 2)
+            kv_source = train_attn if self.seq_attn_serial else x_train
+            seq_kv_cache = seq_attn_test.project_kv_cache(
+                kv_source.transpose(1, 2),
+                copy_first_head_kv=True if self.cross_share_all_kv_heads else False,
+            )
+            x_train = seq_norm(train_attn + residual)
+
+        for step_idx in post_seq_steps:
+            x_train = self._run_non_sequence_step(
+                x_train, step_idx=step_idx, feature_atten_mask=feature_atten_mask, eval_pos=eval_pos)
+        return x_train, {"seq_kv": seq_kv_cache}
+
+    def forward_test_with_cache(
+            self,
+            x_test: torch.Tensor,
+            cache: dict[str, dict[str, torch.Tensor | int]],
+            feature_atten_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Run test rows through one layer using train K/V from forward_train_cache."""
+        if self.layer_arch == 'fmfmsm':
+            pre_seq_steps = (0, 1, 2, 3)
+            seq_step = 4
+            post_seq_steps = (5,)
+            seq_index = 0
+        elif self.layer_arch == 'smf':
+            pre_seq_steps = ()
+            seq_step = 0
+            post_seq_steps = (1, 2)
+            seq_index = 0
+        else:
+            raise NotImplementedError(
+                "Cached inference currently supports layer_arch='fmfmsm' and 'smf'"
+            )
+
+        eval_pos = x_test.shape[1]
+        for step_idx in pre_seq_steps:
+            x_test = self._run_non_sequence_step(
+                x_test, step_idx=step_idx, feature_atten_mask=feature_atten_mask, eval_pos=eval_pos)
+
+        index1 = seq_index * 2 if self.seq_attn_isolated else seq_index
+        index2 = index1 + 1 if self.seq_attn_isolated else index1
+        seq_attn_test = self.sequence_attentions[index2]
+        seq_norm = self.layer_norms[seq_step]
+        if self.pre_norm:
+            residual = x_test
+            x_norm = seq_norm(x_test)
+            test_attn, _ = seq_attn_test.forward_with_kv_cache(
+                x_norm.transpose(1, 2),
+                cache["seq_kv"],
+            )
+            test_attn = test_attn.transpose(1, 2)
+            x_test = self._residual_add(residual, test_attn)
+        else:
+            residual = x_test
+            test_attn, _ = seq_attn_test.forward_with_kv_cache(
+                x_test.transpose(1, 2),
+                cache["seq_kv"],
+            )
+            test_attn = test_attn.transpose(1, 2)
+            x_test = seq_norm(test_attn + residual)
+
+        for step_idx in post_seq_steps:
+            x_test = self._run_non_sequence_step(
+                x_test, step_idx=step_idx, feature_atten_mask=feature_atten_mask, eval_pos=eval_pos)
+        return x_test
+
     def forward(self, x: torch.Tensor, feature_atten_mask: torch.Tensor, eval_pos: int,**kwargs) -> tuple[torch.Tensor,torch.Tensor | None,torch.Tensor | None]:
         calculate_sample_attention = kwargs.get("calculate_sample_attention", False)
         calculate_feature_attention = kwargs.get("calculate_feature_attention", False)
@@ -911,3 +1148,26 @@ class LayerStack(nn.Module):
             else:
                 x,feature_attention,sample_attention = layer(x,**kwargs)
         return x,feature_attention,sample_attention
+
+    def build_train_cache(self, x_train, **kwargs):
+        caches = []
+        feature_atten_mask = kwargs.get("feature_atten_mask", None)
+        for layer in self.layers:
+            x_train, layer_cache = layer.forward_train_cache(
+                x_train,
+                feature_atten_mask=feature_atten_mask,
+            )
+            caches.append(layer_cache)
+        return x_train, caches
+
+    def forward_test_with_cache(self, x_test, caches, **kwargs):
+        feature_atten_mask = kwargs.get("feature_atten_mask", None)
+        if len(caches) != len(self.layers):
+            raise ValueError(f"Expected {len(self.layers)} layer caches, got {len(caches)}")
+        for layer, layer_cache in zip(self.layers, caches):
+            x_test = layer.forward_test_with_cache(
+                x_test,
+                layer_cache,
+                feature_atten_mask=feature_atten_mask,
+            )
+        return x_test
