@@ -6,37 +6,6 @@ import numpy as np
 from synthefy_nori.model.transformer import FeaturesTransformer
 
 def build_model(config:dict):
-    if config.get('architecture') == 'v14':
-        from synthefy_nori.model.transformer_v14 import FeaturesTransformerV14
-
-        decoder_config = config.get('decoder_config', {})
-        return FeaturesTransformerV14(
-            embed_dim=config.get('embed_dim', 128),
-            feature_group_size=config.get('v14_feature_group_size', 3),
-            num_cls_tokens=config.get('v14_num_cls_tokens', 4),
-            dist_embed_num_blocks=config.get('v14_dist_embed_num_blocks', 3),
-            dist_embed_num_inducing_points=config.get('v14_dist_embed_num_inducing_points', 128),
-            dist_embed_num_heads=config.get('v14_dist_embed_num_heads', 8),
-            feat_agg_num_blocks=config.get('v14_feat_agg_num_blocks', 3),
-            feat_agg_num_heads=config.get('v14_feat_agg_num_heads', 8),
-            icl_num_layers=config.get('v14_icl_num_layers', 16),
-            icl_num_heads=config.get('v14_icl_num_heads', 8),
-            icl_num_kv_heads_test=config.get('v14_icl_num_kv_heads_test', 1),
-            shared_test_kv_projection=config.get('v14_shared_test_kv_projection', False),
-            num_reg_quantiles=decoder_config.get(
-                'num_reg_quantiles',
-                config.get('num_reg_quantiles', 999),
-            ),
-            ff_factor=config.get('v14_ff_factor', 2),
-            rope_base=config.get('v14_rope_base', 100_000.0),
-            native_missing_indicators=config.get('v14_native_missing_indicators', True),
-            context_standardize=config.get('v14_context_standardize', False),
-            input_clip_value=config.get('v14_input_clip_value', 100.0),
-            inference_row_chunk_size=config.get('v14_inference_row_chunk_size', 2048),
-            device=config.get('device', None),
-            dtype=config.get('dtype', None),
-        )
-
     model = FeaturesTransformer(
         preprocess_config_x=config['preprocess_config_x'],
         encoder_config_x=config['encoder_config_x'],

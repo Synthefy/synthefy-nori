@@ -97,10 +97,6 @@ class TrainingConfig:
     wandb_tags: tuple[str, ...] = field(default_factory=tuple)
     ema_decay: float = 0.0
 
-    # Offline dataset pool (pre-generated Parquet shards)
-    offline_pool_dir: str = ''
-    offline_pool_tier: int = 1  # Which tier subdir to read from
-
     # Compilation
     compile: bool = False
 
