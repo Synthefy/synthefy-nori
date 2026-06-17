@@ -1,14 +1,12 @@
-"""Small public inference API.
-
-The heavy numerical stack is imported lazily so `import synthefy_nori`
-works before optional accelerator dependencies are installed.
-"""
+"""Small public inference API."""
 
 from __future__ import annotations
 
 from importlib.resources import files
 from typing import Literal
 
+import numpy as np
+import torch
 from sklearn.base import BaseEstimator, RegressorMixin
 
 
@@ -21,14 +19,10 @@ def config_path(filename: str) -> str:
 
 
 def _default_device():
-    import torch
-
     return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 def _as_device(device):
-    import torch
-
     if device is None:
         return _default_device()
     return torch.device(device)
@@ -80,8 +74,6 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         self._predictor = None
 
     def fit(self, X, y):
-        import numpy as np
-
         self.X_train_ = np.asarray(X, dtype=np.float32)
         self.n_features_in_ = self.X_train_.shape[1]
         self.y_train_ = np.asarray(y, dtype=np.float64)
@@ -144,9 +136,6 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 "quantiles= is only valid with output_type='quantiles'."
             )
 
-        import numpy as np
-        import torch
-
         if not hasattr(self, "X_train_"):
             raise ValueError("Call fit(X, y) before predict(X).")
 
@@ -180,9 +169,6 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         ensemble), denormalizes it back to original-y units, and enforces
         monotonicity by sorting each row's quantiles ascending.
         """
-        import numpy as np
-        import torch
-
         if not hasattr(self, "X_train_"):
             raise ValueError("Call fit(X, y) before predict(X).")
         if output_type == "quantiles":
