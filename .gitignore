@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+build/
+dist/
+
+cache/
+checkpoints/
+data/
+results/
+wandb/
+
+*.pt
+*.ckpt
+*.safetensors
+*.onnx
+
+# Local agent / tooling state
+.claude/
+
+# Environment files — may contain secrets, never commit
+.env
+*.env

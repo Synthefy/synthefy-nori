@@ -1,0 +1,20 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v8.2.0
+      - run: uv sync --extra dev
+      - run: uv run python -c "import synthefy_nori"
+      - run: uv run pytest tests
+      - run: uv run ruff check src scripts tests
+      - run: uv build

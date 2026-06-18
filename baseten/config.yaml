@@ -1,0 +1,34 @@
+# Nori: in-context learning tabular foundation model. Each request
+# carries the context rows (X_train, y_train) and the query rows (X_test); the
+# model predicts in a single forward pass. See model/model.py for the API.
+model_name: Synthefy Nori
+python_version: py311
+
+# Runtime dependencies. The synthefy_nori package itself is shipped via the
+# bundled `packages/` directory (auto-added to PYTHONPATH by Truss), so only its
+# third-party deps are listed here. Kept in sync with pyproject.toml.
+requirements:
+  - einops>=0.7
+  - huggingface-hub>=1.0
+  - kditransform>=1.0
+  - numpy>=2.0
+  - pandas>=2.0
+  - scikit-learn>=1.4
+  - scipy>=1.13
+  - torch>=2.0
+  - tqdm>=4.65
+  - typing-extensions>=4.10
+
+resources:
+  accelerator: T4
+  cpu: "4"
+  memory: 16Gi
+  use_gpu: true
+
+# The default checkpoint (Synthefy/Nori) is PUBLIC and un-gated on the
+# Hugging Face Hub (verified: private=false, gated=false), so no token is required —
+# warmup downloads it anonymously and this secret can stay null. Only set
+# hf_access_token (a HF token with read access, via the Baseten workspace:
+# Settings -> Secrets) if the repo is ever made private or re-gated.
+secrets:
+  hf_access_token: null
