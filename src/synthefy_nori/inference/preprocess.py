@@ -33,6 +33,26 @@ from kditransform import KDITransformer
 MAXINT_RANDOM_SEED = int(np.iinfo(np.int32).max)
 
 
+# Module-level helpers for FunctionTransformer steps. These must be importable
+# (i.e. not local lambdas) so that fitted pipelines — and the NoriRegressor that
+# owns them — can be serialized with stdlib pickle, which only pickles functions
+# by reference. See GitHub issue #45.
+def _inf_to_nan(x):
+    return np.nan_to_num(x, nan=np.nan, neginf=np.nan, posinf=np.nan)
+
+
+def _identity(x):
+    return x
+
+
+def _shift_to_nonnegative(x):
+    return x + np.abs(np.nanmin(x))
+
+
+def _add_epsilon(x):
+    return x + 1e-10
+
+
 class CappedQuantileTransformer(QuantileTransformer):
     """QuantileTransformer that caps ``n_quantiles`` and ``subsample`` at fit time.
 
@@ -959,21 +979,19 @@ class RebalanceFeatureDistribution(BasePreprocess):
                                         ("save_standard", Pipeline(steps=[
                                             ("i2n_pre",
                                              FunctionTransformer(
-                                                 func=lambda x: np.nan_to_num(x, nan=np.nan, neginf=np.nan,
-                                                                              posinf=np.nan),
-                                                 inverse_func=lambda x: x, check_inverse=False)),
+                                                 func=_inf_to_nan,
+                                                 inverse_func=_identity, check_inverse=False)),
                                             ("fill_missing_pre",
                                              SimpleImputer(missing_values=np.nan, strategy="mean",
                                                            keep_empty_features=True)),
                                             ("feature_shift",
-                                             FunctionTransformer(func=lambda x: x + np.abs(np.nanmin(x)))),
-                                            ("add_epsilon", FunctionTransformer(func=lambda x: x + 1e-10)),
+                                             FunctionTransformer(func=_shift_to_nonnegative)),
+                                            ("add_epsilon", FunctionTransformer(func=_add_epsilon)),
                                             ("logNormal", FunctionTransformer(np.log, validate=False)),
                                             ("i2n_post",
                                              FunctionTransformer(
-                                                 func=lambda x: np.nan_to_num(x, nan=np.nan, neginf=np.nan,
-                                                                              posinf=np.nan),
-                                                 inverse_func=lambda x: x, check_inverse=False)),
+                                                 func=_inf_to_nan,
+                                                 inverse_func=_identity, check_inverse=False)),
                                             ("fill_missing_post",
                                              SimpleImputer(missing_values=np.nan, strategy="mean",
                                                            keep_empty_features=True))])),
@@ -1011,15 +1029,15 @@ class RebalanceFeatureDistribution(BasePreprocess):
                                 steps=[
                                     ("power_transformer", RobustPowerTransformer(standardize=False)),
                                     ("inf_to_nan_1", FunctionTransformer(
-                                                        func=lambda x: np.nan_to_num(x, nan=np.nan, neginf=np.nan, posinf=np.nan),
-                                                        inverse_func=lambda x: x,
+                                                        func=_inf_to_nan,
+                                                        inverse_func=_identity,
                                                         check_inverse=False,
                                                     )),
                                     ("nan_to_mean_1", nan_to_mean_transformer),
                                     ("scaler", StandardScaler()),
                                     ("inf_to_nan_2", FunctionTransformer(
-                                                        func=lambda x: np.nan_to_num(x, nan=np.nan, neginf=np.nan, posinf=np.nan),
-                                                        inverse_func=lambda x: x,
+                                                        func=_inf_to_nan,
+                                                        inverse_func=_identity,
                                                         check_inverse=False,
                                                     )),
                                     ("nan_to_mean_2", nan_to_mean_transformer),
@@ -1084,7 +1102,7 @@ class RebalanceFeatureDistribution(BasePreprocess):
             elif worker_tag=="kdi_uni":
                 sworker = KDIX(alpha=1.0, output_distribution="uniform")
             elif worker_tag is None:
-                sworker = FunctionTransformer(lambda x: x)
+                sworker = FunctionTransformer(_identity)
             elif worker_tag.startswith("kdi_uni_alpha_"):
                 alpha = float(worker_tag.split("_")[-1])
                 sworker = KDIX(alpha=alpha, output_distribution="uniform")
@@ -1094,7 +1112,7 @@ class RebalanceFeatureDistribution(BasePreprocess):
             elif worker_tag=="kdi_norm":
                 sworker = KDIX(alpha=1.0, output_distribution="normal")
             else:
-                sworker = FunctionTransformer(lambda x: x)
+                sworker = FunctionTransformer(_identity)
             if worker_tag in ["quantile_uniform_10", "quantile_uniform_5", "quantile_uniform_all_data"]:
                 self.n_quantile_features = len(trans_ixs)
             workers.append((f"feat_transform_{worker_tag}", sworker, trans_ixs))
@@ -1102,13 +1120,13 @@ class RebalanceFeatureDistribution(BasePreprocess):
         CT_worker = ColumnTransformer(workers,remainder="drop",sparse_threshold=0.0)
         if self.svd_tag == "svd" and n_features >= 2:
             svd_worker = FeatureUnion([
-                    ("default", FunctionTransformer(func=lambda x: x)),
+                    ("default", FunctionTransformer(func=_identity)),
                     ("svd",Pipeline(steps=[
                                     ("save_standard",Pipeline(steps=[
-                                    ("i2n_pre", FunctionTransformer(func=lambda x: np.nan_to_num(x, nan=np.nan, neginf=np.nan, posinf=np.nan),inverse_func=lambda x: x, check_inverse=False)),
+                                    ("i2n_pre", FunctionTransformer(func=_inf_to_nan,inverse_func=_identity, check_inverse=False)),
                                     ("fill_missing_pre", SimpleImputer(missing_values=np.nan, strategy="mean", keep_empty_features=True)),
                                     ("standard", StandardScaler(with_mean=False)) ,
-                                    ("i2n_post", FunctionTransformer(func=lambda x: np.nan_to_num(x, nan=np.nan, neginf=np.nan, posinf=np.nan),inverse_func=lambda x: x, check_inverse=False)),
+                                    ("i2n_post", FunctionTransformer(func=_inf_to_nan,inverse_func=_identity, check_inverse=False)),
                                     ("fill_missing_post", SimpleImputer(missing_values=np.nan, strategy="mean", keep_empty_features=True))])),
                                     ("svd",_TorchTruncatedSVD(algorithm="arpack",n_components=max(1,min(n_samples // 10 + 1,n_features // 2)),random_state=static_seed))]))
                     ])
