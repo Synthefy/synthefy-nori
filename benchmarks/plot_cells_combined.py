@@ -10,6 +10,7 @@ Usage: uv run --no-sync --with matplotlib python benchmarks/plot_cells_combined.
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -20,6 +21,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
+# Axis scaling: "loglog" (default), "linear" (both linear), or "logx" (log x, linear y).
+SCALE = sys.argv[1] if len(sys.argv) > 1 else "loglog"
 
 
 def load(name, label):
@@ -50,21 +53,25 @@ def main():
     ax.plot(xx, A * xx ** p, "k--", lw=2,
             label=f"power-law fit: {A:.3g}·cells$^{{{p:.2f}}}$   ($R^2$={r2:.3f})")
 
-    ax.set_xscale("log"); ax.set_yscale("log")
+    if SCALE in ("loglog", "logx"):
+        ax.set_xscale("log")
+    if SCALE == "loglog":
+        ax.set_yscale("log")
     ax.set_xlabel("number of cells in X_train  (n_rows × n_cols)")
     ax.set_ylabel("mean latency (s)")
-    ax.set_title("Nori inference latency vs dataset size — both sweeps (H100 80GB HBM3)")
+    ax.set_title(f"Nori inference latency vs dataset size — both sweeps ({SCALE} axes)")
     ax.grid(alpha=0.3, which="both")
     ax.legend(loc="upper left", fontsize=9)
     fig.tight_layout()
-    fig.savefig(HERE / "latency_vs_cells_combined.png", dpi=140)
+    suffix = "" if SCALE == "loglog" else f"_{SCALE}"
+    fig.savefig(HERE / f"latency_vs_cells_combined{suffix}.png", dpi=140)
     plt.close(fig)
 
     print(f"combined points: {len(both)}  (small={len(small)}, large={len(large)})")
     print(f"cells span: {both.cells.min():,} .. {both.cells.max():,}")
     print(f"latency span: {both.lat_s.min():.2f}s .. {both.lat_s.max():.2f}s")
     print(f"power-law fit: latency = {A:.4g} * cells^{p:.3f}   R2={r2:.3f}")
-    print("wrote: latency_vs_cells_combined.png")
+    print(f"wrote: latency_vs_cells_combined{suffix}.png  ({SCALE} axes)")
 
 
 if __name__ == "__main__":
