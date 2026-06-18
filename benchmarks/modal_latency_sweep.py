@@ -106,8 +106,14 @@ def _grid(mode: str):
         rows, cols, nw, nm, out = [2500, 5000, 7500, 10000], [5, 50, 100], 2, 3, "latency_probe.csv"
     elif mode == "full":     # the real grid
         rows, cols, nw, nm, out = list(range(100, 10_001, 100)), list(range(5, 101, 5)), 3, 10, "latency_sweep_h100.csv"
+    elif mode == "large":    # large grid: 10k..100k rows x 50..1000 cols
+        rows = list(range(10_000, 100_001, 5_000))    # 19 values
+        cols = list(range(50, 1_001, 100)) + [1_000]  # 50,150,..,950,1000 (11 values)
+        nw, nm, out = 3, 10, "latency_sweep_large.csv"
+    elif mode == "large_probe":  # 4 corners (cheapest + most expensive) -- feasibility/OOM/timing
+        rows, cols, nw, nm, out = [10_000, 100_000], [50, 1_000], 1, 2, "latency_large_probe.csv"
     else:
-        raise SystemExit(f"unknown mode {mode!r}; use smoke|probe|full")
+        raise SystemExit(f"unknown mode {mode!r}; use smoke|probe|full|large|large_probe")
     return [(r, c) for r in rows for c in cols], nw, nm, out
 
 
@@ -136,7 +142,7 @@ def _balance(combos, n_shards):
 @app.function(
     image=image,
     gpu="H100",
-    timeout=2 * 60 * 60,           # 2h per shard; a balanced shard runs ~25min
+    timeout=6 * 60 * 60,           # generous: large-grid shards can hold minutes-long combos
     retries=2,                     # self-heal transient container/preemption failures
     max_containers=128,            # allow aggressive fan-out (capped by acct quota)
     volumes={RESULTS_DIR: results_vol, "/cache": cache_vol},
@@ -202,7 +208,7 @@ def run_shard(shard_id: int, combos: list, n_warmup: int, n_measured: int):
                 std_ms=float(lat.std(ddof=1)) if n_measured > 1 else 0.0,
                 min_ms=float(lat.min()), max_ms=float(lat.max()),
             )
-        except RuntimeError as exc:  # e.g. CUDA OOM -- record and keep going
+        except Exception as exc:  # OOM / context- or feature-limit errors -- record, keep going
             rec.update(mean_ms=float("nan"), p90_ms=float("nan"), p99_ms=float("nan"),
                        std_ms=float("nan"), min_ms=float("nan"), max_ms=float("nan"),
                        error=str(exc)[:300])
@@ -308,7 +314,7 @@ def run_pinned(combos: list, n_warmup: int = 3, n_measured: int = 10,
                        p99_ms=float(np.percentile(lat, 99)),
                        std_ms=float(lat.std(ddof=1)) if n_measured > 1 else 0.0,
                        min_ms=float(lat.min()), max_ms=float(lat.max()))
-        except RuntimeError as exc:
+        except Exception as exc:  # OOM / context- or feature-limit errors -- record, keep going
             rec.update(mean_ms=float("nan"), p90_ms=float("nan"), p99_ms=float("nan"),
                        std_ms=float("nan"), min_ms=float("nan"), max_ms=float("nan"),
                        error=str(exc)[:300])

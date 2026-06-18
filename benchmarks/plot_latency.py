@@ -22,6 +22,9 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 CSV = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "latency_sweep_h100.csv"
+# Output filename prefix (argv[2]); default "latency" keeps the original small-grid
+# plot names. Pass e.g. "latency_large" so a second grid's plots don't overwrite them.
+PREFIX = sys.argv[2] if len(sys.argv) > 2 else "latency"
 
 
 def _grid(df, value):
@@ -74,7 +77,7 @@ def cells_plot(df, gpu):
         ax.legend(loc="upper left", fontsize=9)
     fig.colorbar(sc, ax=axes, label="n_cols (features)")
     fig.suptitle(f"Nori latency vs dataset size (cells) on {gpu}", fontsize=13)
-    fig.savefig(HERE / "latency_vs_cells.png", dpi=140, bbox_inches="tight")
+    fig.savefig(HERE / f"{PREFIX}_vs_cells.png", dpi=140, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -91,7 +94,7 @@ def main():
             f"(fit+predict, 10 measured runs/combo; X_test = ceil(0.25*n_rows))",
             "mean latency (s)")
     fig.tight_layout()
-    fig.savefig(HERE / "latency_heatmap_mean.png", dpi=140)
+    fig.savefig(HERE / f"{PREFIX}_heatmap_mean.png", dpi=140)
     plt.close(fig)
 
     # 2) Overview: mean + p99 heatmaps, and line cuts along each axis
@@ -99,9 +102,15 @@ def main():
     heatmap(axes[0, 0], Zmean, rows, cols, "Mean latency", "mean latency (s)")
     heatmap(axes[0, 1], Zp99, rows, cols, "p99 latency", "p99 latency (s)")
 
+    # Pick ~5 representative values from the ACTUAL grid (works for any grid).
+    def pick(vals, k=5):
+        u = sorted(set(vals))
+        idx = np.linspace(0, len(u) - 1, min(k, len(u))).round().astype(int)
+        return [u[i] for i in sorted(set(idx))]
+
     # latency vs rows, one line per selected col
     axr = axes[1, 0]
-    for c in [5, 25, 50, 75, 100]:
+    for c in pick(df.n_cols):
         sub = df[df.n_cols == c].sort_values("n_rows")
         axr.plot(sub.n_rows, sub.mean_ms / 1000.0, marker=".", ms=3, lw=1, label=f"{c} cols")
     axr.set(xlabel="n_rows (context rows)", ylabel="mean latency (s)",
@@ -110,7 +119,7 @@ def main():
 
     # latency vs cols, one line per selected row
     axc = axes[1, 1]
-    for r in [500, 2000, 5000, 8000, 10000]:
+    for r in pick(df.n_rows):
         sub = df[df.n_rows == r].sort_values("n_cols")
         axc.plot(sub.n_cols, sub.mean_ms / 1000.0, marker=".", ms=4, lw=1, label=f"{r} rows")
     axc.set(xlabel="n_cols (features)", ylabel="mean latency (s)",
@@ -119,7 +128,7 @@ def main():
 
     fig.suptitle(f"Nori latency sweep -- {len(df)} combos on {gpu}", fontsize=13)
     fig.tight_layout(rect=[0, 0, 1, 0.98])
-    fig.savefig(HERE / "latency_overview.png", dpi=140)
+    fig.savefig(HERE / f"{PREFIX}_overview.png", dpi=140)
     plt.close(fig)
 
     # 3) latency vs number of cells in X_train
@@ -127,7 +136,7 @@ def main():
 
     print(f"latency range: {df.mean_ms.min()/1000:.2f}s .. {df.mean_ms.max()/1000:.2f}s "
           f"(median {df.mean_ms.median()/1000:.2f}s) over {len(df)} combos")
-    print("wrote: latency_heatmap_mean.png, latency_overview.png, latency_vs_cells.png")
+    print(f"wrote: {PREFIX}_heatmap_mean.png, {PREFIX}_overview.png, {PREFIX}_vs_cells.png")
 
 
 if __name__ == "__main__":
