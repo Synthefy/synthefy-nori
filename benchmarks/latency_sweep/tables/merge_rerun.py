@@ -16,9 +16,10 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import median_filter
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent      # benchmarks/latency_sweep/data
+PROV = HERE / "provenance"                   # captured de-throttle inputs/backups
 # argv[1] = re-run CSV (defaults to the first pass); argv[2] = main CSV to update.
-RERUN = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "latency_rerun_pinned.csv"
+RERUN = Path(sys.argv[1]) if len(sys.argv) > 1 else PROV / "latency_rerun_pinned.csv"
 MAIN = Path(sys.argv[2]) if len(sys.argv) > 2 else HERE / "latency_sweep_h100.csv"
 MEASURE_COLS = ["mean_ms", "p90_ms", "p99_ms", "std_ms", "min_ms", "max_ms", "gpu", "error"]
 
@@ -53,7 +54,8 @@ def main():
     out = main_df.reset_index().sort_values(["n_rows", "n_cols"]).reset_index(drop=True)
     after_spikes, infl = spike_count(out)
 
-    backup = MAIN.with_name(MAIN.stem + ".orig.csv")  # preserve the very first original
+    PROV.mkdir(exist_ok=True)
+    backup = PROV / (MAIN.stem + ".orig.csv")  # preserve the very first original
     if not backup.exists():
         shutil.copy(MAIN, backup)
     out.to_csv(MAIN, index=False)

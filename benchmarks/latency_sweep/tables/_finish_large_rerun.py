@@ -15,6 +15,8 @@ import pandas as pd
 
 HERE = Path(__file__).resolve().parent
 MAIN = HERE / "latency_sweep_large.csv"
+PROV = HERE / "provenance"   # de-throttle audit; only the concat (latency_large_rerun_all.csv)
+                             # is retained -- the 4 per-shard rerun CSVs were pruned.
 MEASURE = ["mean_ms", "p90_ms", "p99_ms", "std_ms", "min_ms", "max_ms", "gpu", "error"]
 
 
@@ -31,7 +33,7 @@ def max_dom_excess(df):
 def main():
     parts = []
     for gi in range(4):
-        p = HERE / f"latency_large_rerun_{gi}.csv"
+        p = PROV / f"latency_large_rerun_{gi}.csv"   # per-shard files (pruned post-run)
         if p.exists():
             parts.append(pd.read_csv(p))
     rerun = pd.concat(parts, ignore_index=True)
@@ -39,7 +41,8 @@ def main():
 
     main_df = pd.read_csv(MAIN)
     before = max_dom_excess(main_df)
-    backup = MAIN.with_name(MAIN.stem + ".orig.csv")
+    PROV.mkdir(exist_ok=True)
+    backup = PROV / (MAIN.stem + ".orig.csv")
     if not backup.exists():
         shutil.copy(MAIN, backup)
 

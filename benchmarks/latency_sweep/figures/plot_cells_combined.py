@@ -26,7 +26,7 @@ SCALE = sys.argv[1] if len(sys.argv) > 1 else "loglog"
 
 
 def load(name, label):
-    df = pd.read_csv(HERE / name)
+    df = pd.read_csv(HERE.parent / "tables" / name)
     df = df[df["error"].fillna("") == ""].copy()
     df["cells"] = df.n_rows * df.n_cols
     df["lat_s"] = df.mean_ms / 1000.0

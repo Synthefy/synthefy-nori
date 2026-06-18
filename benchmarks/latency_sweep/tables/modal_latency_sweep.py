@@ -69,8 +69,16 @@ def _build_image():
         .env({"HF_HOME": "/cache/hf"})
     )
     if modal.is_local():
+        # Walk up from this file to find the repo-root dist/ (this script lives a few
+        # levels deep under benchmarks/latency_sweep/data/).
         here = os.path.dirname(os.path.abspath(__file__))
-        wheels = sorted(glob.glob(os.path.join(here, "..", "dist", "synthefy_nori-*-py3-none-any.whl")))
+        wheels, d = [], here
+        for _ in range(6):
+            found = glob.glob(os.path.join(d, "dist", "synthefy_nori-*-py3-none-any.whl"))
+            if found:
+                wheels = sorted(found)
+                break
+            d = os.path.dirname(d)
         if not wheels:
             raise SystemExit("No wheel in dist/. Build it first: `uv build`")
         wheel = wheels[-1]

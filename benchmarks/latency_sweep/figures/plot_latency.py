@@ -21,7 +21,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
-CSV = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "latency_sweep_h100.csv"
+DATA = HERE.parent / "tables"   # CSVs live in ../tables; PNGs are written here
+CSV = Path(sys.argv[1]) if len(sys.argv) > 1 else DATA / "latency_sweep_h100.csv"
 # Output filename prefix (argv[2]); default "latency" keeps the original small-grid
 # plot names. Pass e.g. "latency_large" so a second grid's plots don't overwrite them.
 PREFIX = sys.argv[2] if len(sys.argv) > 2 else "latency"
