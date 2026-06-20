@@ -416,6 +416,15 @@ wheels = [
 ]
 
 [[package]]
+name = "colour"
+version = "0.1.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a0/d4/5911a7618acddc3f594ddf144ecd8a03c29074a540f4494670ad8f153efe/colour-0.1.5.tar.gz", hash = "sha256:af20120fefd2afede8b001fbef2ea9da70ad7d49fafdb6489025dae8745c3aee", size = 24776, upload-time = "2017-11-19T23:20:08.015Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/74/46/e81907704ab203206769dee1385dc77e1407576ff8f50a0681d0a6b541be/colour-0.1.5-py2.py3-none-any.whl", hash = "sha256:33f6db9d564fadc16e59921a56999b79571160ce09916303d35346dddc17978c", size = 23772, upload-time = "2017-11-19T23:20:04.56Z" },
+]
+
+[[package]]
 name = "contourpy"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -826,6 +835,21 @@ resolution-markers = [
 sdist = { url = "https://files.pythonhosted.org/packages/d5/8d/1c51c094345df128ca4a990d633fe1a0ff28726c9e6b3c41ba65087bba1d/fsspec-2026.4.0.tar.gz", hash = "sha256:301d8ac70ae90ef3ad05dcf94d6c3754a097f9b5fe4667d2787aa359ec7df7e4", size = 312760, upload-time = "2026-04-29T20:42:38.635Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d5/0c/043d5e551459da400957a1395e0febbf771446ff34291afcbe3d8be2a279/fsspec-2026.4.0-py3-none-any.whl", hash = "sha256:11ef7bb35dab8a394fde6e608221d5cf3e8499401c249bebaeaad760a1a8dec2", size = 203402, upload-time = "2026-04-29T20:42:36.842Z" },
+]
+
+[[package]]
+name = "galois"
+version = "0.4.11"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numba", version = "0.65.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'linux') or (python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'win32')" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.10.*' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform == 'win32')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.11.*' and sys_platform == 'linux') or (python_full_version == '3.11.*' and sys_platform == 'win32')" },
+    { name = "typing-extensions", marker = "(python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'linux') or (python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'win32')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/08/84/996f1c4a7e8fe973a7f8e4d7901e125a91d0abb62615e35076ff47e9383a/galois-0.4.11.tar.gz", hash = "sha256:f5055546c4b39d1e36decae9d4f21f3d66d9c6c7c9aec39189cb5d2284e9022f", size = 7402587, upload-time = "2026-05-02T18:21:28.615Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/05/89/dc69acbd34bde07b9dee9f9f88d7ce61ff97fd99d6d576d72d2db1461349/galois-0.4.11-py3-none-any.whl", hash = "sha256:d2e12a2b7fd44b108cc15d7de27dabcb8a98a556ea2c69c94fe695139629d9aa", size = 4197346, upload-time = "2026-05-02T18:21:26.868Z" },
 ]
 
 [[package]]
@@ -3229,6 +3253,98 @@ wheels = [
 ]
 
 [[package]]
+name = "shapiq"
+version = "1.2.1"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.10' and sys_platform == 'linux'",
+    "python_full_version < '3.10' and sys_platform == 'win32'",
+]
+dependencies = [
+    { name = "colour", marker = "(python_full_version < '3.10' and sys_platform == 'linux') or (python_full_version < '3.10' and sys_platform == 'win32')" },
+    { name = "matplotlib", version = "3.9.4", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.10' and sys_platform == 'linux') or (python_full_version < '3.10' and sys_platform == 'win32')" },
+    { name = "networkx", version = "3.2.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.10' and sys_platform == 'linux') or (python_full_version < '3.10' and sys_platform == 'win32')" },
+    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.10' and sys_platform == 'linux') or (python_full_version < '3.10' and sys_platform == 'win32')" },
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.10' and sys_platform == 'linux') or (python_full_version < '3.10' and sys_platform == 'win32')" },
+    { name = "requests", version = "2.32.5", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.10' and sys_platform == 'linux') or (python_full_version < '3.10' and sys_platform == 'win32')" },
+    { name = "scikit-learn", version = "1.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.10' and sys_platform == 'linux') or (python_full_version < '3.10' and sys_platform == 'win32')" },
+    { name = "scipy", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.10' and sys_platform == 'linux') or (python_full_version < '3.10' and sys_platform == 'win32')" },
+    { name = "tqdm", marker = "(python_full_version < '3.10' and sys_platform == 'linux') or (python_full_version < '3.10' and sys_platform == 'win32')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fa/52/efce67a5be4661e716ba450eff16efdc306e518f1b28060e02cd40a7ffdc/shapiq-1.2.1.tar.gz", hash = "sha256:bd8cf707104e56ce22c34c587b433a430da10d3e91cb9441c84a7fd2d0c0e28b", size = 191239, upload-time = "2025-02-17T22:15:09.438Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/04/1c/175ab917ba004ddb7bba0cc2d4289ab59bade3583b59ca66bdc57fda7c2f/shapiq-1.2.1-py3-none-any.whl", hash = "sha256:4c4a4e869c2d4a9363ddce519174cbb698622456e2e12901343a0ebb729595c5", size = 241832, upload-time = "2025-02-17T22:15:05.89Z" },
+]
+
+[[package]]
+name = "shapiq"
+version = "1.4.1"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version == '3.11.*' and sys_platform == 'linux'",
+    "python_full_version == '3.10.*' and sys_platform == 'linux'",
+    "python_full_version == '3.11.*' and sys_platform == 'win32'",
+    "python_full_version == '3.10.*' and sys_platform == 'win32'",
+]
+dependencies = [
+    { name = "colour", marker = "(python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'linux') or (python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'win32')" },
+    { name = "galois", marker = "(python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'linux') or (python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'win32')" },
+    { name = "joblib", marker = "(python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'linux') or (python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'win32')" },
+    { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'linux') or (python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'win32')" },
+    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.10.*' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform == 'win32')" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.11.*' and sys_platform == 'linux') or (python_full_version == '3.11.*' and sys_platform == 'win32')" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.10.*' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform == 'win32')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.11.*' and sys_platform == 'linux') or (python_full_version == '3.11.*' and sys_platform == 'win32')" },
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.10.*' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform == 'win32')" },
+    { name = "pandas", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.11.*' and sys_platform == 'linux') or (python_full_version == '3.11.*' and sys_platform == 'win32')" },
+    { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'linux') or (python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'win32')" },
+    { name = "requests", version = "2.34.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'linux') or (python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'win32')" },
+    { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.10.*' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform == 'win32')" },
+    { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.11.*' and sys_platform == 'linux') or (python_full_version == '3.11.*' and sys_platform == 'win32')" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.10.*' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform == 'win32')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.11.*' and sys_platform == 'linux') or (python_full_version == '3.11.*' and sys_platform == 'win32')" },
+    { name = "sparse-transform", marker = "(python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'linux') or (python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'win32')" },
+    { name = "tqdm", marker = "(python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'linux') or (python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'win32')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a8/20/8e7bf8e1d2ad5e50c5ddb884760fe67657eee38b0ebe9d9996a0ab227221/shapiq-1.4.1.tar.gz", hash = "sha256:7f612c84fcfe4746ff826db72efa2944f9aa693c5c00c6e17a882613471534f8", size = 5781786, upload-time = "2025-11-10T19:43:31.882Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/af/cc/13fefd7203ffe71d5107221be939dd64945378b93f7c0a7cb82d7f281071/shapiq-1.4.1-py3-none-any.whl", hash = "sha256:c86667eb28ea0de56005fbe9fd072783242b74aa87fede11e07b6b915b93e7b3", size = 5871550, upload-time = "2025-11-10T19:43:29.858Z" },
+]
+
+[[package]]
+name = "shapiq"
+version = "1.5.2"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.14' and sys_platform == 'linux'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'linux'",
+    "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'win32'",
+]
+dependencies = [
+    { name = "colour", marker = "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')" },
+    { name = "joblib", marker = "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')" },
+    { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')" },
+    { name = "pandas", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')" },
+    { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')" },
+    { name = "requests", version = "2.34.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')" },
+    { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')" },
+    { name = "tqdm", marker = "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ec/bb/940b6af2c90238873b4f22011a2f2f924111bde12abeac83294d32111a94/shapiq-1.5.2.tar.gz", hash = "sha256:6336d764ce27836b69a1d3283392d69c8c2f4dcd3f52e19d2ad037d5aac1708c", size = 15210062, upload-time = "2026-06-12T22:37:09.726Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e8/17/88285cdb09af0ba8b134d3820b83681c297e606c97550b9e00a7ba0c6b88/shapiq-1.5.2-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7d33fb803e344fd7308da4f4b5756040b789eceaa75b5ef103ba48931ff530e9", size = 17368899, upload-time = "2026-06-12T22:36:47.311Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/81/747eb3f7b1e2e956b58d6de2b8eee2067f2f1680984ab6fc1c422dd5eca1/shapiq-1.5.2-cp312-cp312-win_amd64.whl", hash = "sha256:81e934435d2f91069b43aff7fe8280a7f0a43a2872c17a906e8bae6be0369c99", size = 15907854, upload-time = "2026-06-12T22:36:49.705Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/e6/f91675239f7bea75d3f2cfe43c9203cd022ca801d2511b435e1520a14e85/shapiq-1.5.2-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:93f7579f33256ff203663a41c89b018ea1306b49c732f407b0f1f1b3764ba89c", size = 17376618, upload-time = "2026-06-12T22:36:56.434Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/f2/68c5d5a178601c5e4bd8b7c0bc57e580020da98c101d1a542e339b7b49a8/shapiq-1.5.2-cp313-cp313-win_amd64.whl", hash = "sha256:c46560a9e63a7e986210dde141cad90f1bcb073702f4130e24eb71158524ea11", size = 15907857, upload-time = "2026-06-12T22:36:58.538Z" },
+    { url = "https://files.pythonhosted.org/packages/45/83/fdd74ce3d181195d9d3b79fc757ff979e90913417a70679e0f6c94a0069b/shapiq-1.5.2-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0323c0bc8e2ec0fa2340afdbb282644c5545fc939479cf5f399ce7a04ea34e67", size = 17377074, upload-time = "2026-06-12T22:37:05.5Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/48/e3595c9c650875dbe93a298f9f18b87ef4d125f1122ca7ee661f117e7c13/shapiq-1.5.2-cp314-cp314-win_amd64.whl", hash = "sha256:6779bcc55841fe4977384a60051db54fc415fac3ffdb96feff969918937c1144", size = 15791234, upload-time = "2026-06-12T22:37:07.53Z" },
+]
+
+[[package]]
 name = "shellingham"
 version = "1.5.4"
 source = { registry = "https://pypi.org/simple" }
@@ -3256,6 +3372,25 @@ wheels = [
 ]
 
 [[package]]
+name = "sparse-transform"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "galois", marker = "(python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'linux') or (python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'win32')" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.10.*' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform == 'win32')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.11.*' and sys_platform == 'linux') or (python_full_version == '3.11.*' and sys_platform == 'win32')" },
+    { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.10.*' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform == 'win32')" },
+    { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.11.*' and sys_platform == 'linux') or (python_full_version == '3.11.*' and sys_platform == 'win32')" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.10.*' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform == 'win32')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.11.*' and sys_platform == 'linux') or (python_full_version == '3.11.*' and sys_platform == 'win32')" },
+    { name = "tqdm", marker = "(python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'linux') or (python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'win32')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d5/da/82132137fdc207c4a14abb52fedcd8cc3dd697175f548cfb8689bd2afab8/sparse_transform-0.2.1.tar.gz", hash = "sha256:470d54c884600d97254469a3d85fac775480d18a8aa2c43574350695e1015c66", size = 24803, upload-time = "2025-04-03T08:11:39.47Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/64/ec/c85f95289e4638faf889ca02b588ad3af0f3ef8f92b99bee3ce936ef3860/sparse_transform-0.2.1-py3-none-any.whl", hash = "sha256:d01b19f8add68e2b4c98a17272830af0e03d163667f03b1dc2b0c9eb8471727b", size = 27034, upload-time = "2025-04-03T08:11:38.551Z" },
+]
+
+[[package]]
 name = "sympy"
 version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3269,7 +3404,7 @@ wheels = [
 
 [[package]]
 name = "synthefy-nori"
-version = "0.4.0"
+version = "0.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "einops", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -3305,6 +3440,13 @@ eval = [
     { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.10' and sys_platform == 'linux') or (python_full_version >= '3.10' and sys_platform == 'win32')" },
     { name = "openml", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
+interpretability = [
+    { name = "matplotlib", version = "3.9.4", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.10' and sys_platform == 'linux') or (python_full_version < '3.10' and sys_platform == 'win32')" },
+    { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.10' and sys_platform == 'linux') or (python_full_version >= '3.10' and sys_platform == 'win32')" },
+    { name = "shapiq", version = "1.2.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.10' and sys_platform == 'linux') or (python_full_version < '3.10' and sys_platform == 'win32')" },
+    { name = "shapiq", version = "1.4.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'linux') or (python_full_version >= '3.10' and python_full_version < '3.12' and sys_platform == 'win32')" },
+    { name = "shapiq", version = "1.5.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')" },
+]
 train = [
     { name = "wandb", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "xgboost", version = "2.1.4", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.10' and sys_platform == 'linux') or (python_full_version < '3.10' and sys_platform == 'win32')" },
@@ -3318,6 +3460,7 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=1.0" },
     { name = "kditransform", specifier = ">=1.0" },
     { name = "matplotlib", marker = "extra == 'eval'" },
+    { name = "matplotlib", marker = "extra == 'interpretability'" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "openml", marker = "extra == 'eval'" },
     { name = "pandas", specifier = ">=2.0" },
@@ -3325,13 +3468,14 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "scikit-learn", specifier = ">=1.4" },
     { name = "scipy", specifier = ">=1.13" },
+    { name = "shapiq", marker = "extra == 'interpretability'", specifier = ">=1.0" },
     { name = "torch", specifier = ">=2.8,<2.9", index = "https://download.pytorch.org/whl/cu128" },
     { name = "tqdm", specifier = ">=4.65" },
     { name = "typing-extensions", specifier = ">=4.10" },
     { name = "wandb", marker = "extra == 'train'", specifier = ">=0.15.0" },
     { name = "xgboost", marker = "extra == 'train'" },
 ]
-provides-extras = ["train", "eval", "dev"]
+provides-extras = ["train", "eval", "interpretability", "dev"]
 
 [[package]]
 name = "threadpoolctl"

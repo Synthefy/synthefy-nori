@@ -116,7 +116,6 @@ torchrun --nproc_per_node="${NPROC}" --master_port="${MASTER_PORT}" \
   --min-features 2 --max-features 250 \
   --dim-bias-samples 1.5 --dim-bias-features 1.3 \
   --prefetch-workers 4 --prefetch-count 6 \
-  --no-flash-attn \
   --gradient-checkpointing \
   --save-interval 15000 --log-interval 1000 \
   --wandb-project "${WANDB_PROJECT}" --wandb-group "${WANDB_GROUP}" \
