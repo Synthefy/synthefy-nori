@@ -1,9 +1,36 @@
 from __future__ import annotations
 
+import pickle
+
 import torch
 import random
 import numpy as np
 from synthefy_nori.model.transformer import FeaturesTransformer
+
+
+def _safe_torch_load(path):
+    """Load a checkpoint without executing code embedded in it.
+
+    ``weights_only=True`` uses torch's restricted unpickler — it reconstructs
+    only tensors and plain data (dicts/lists/primitives), never arbitrary
+    classes or callables — so a malicious checkpoint cannot run code on load.
+    The public checkpoint is slim (``model_config`` dict + state-dict tensors)
+    and loads under this restriction with no allowlist.
+
+    Raw *training* checkpoints additionally pickle our own ``TrainingConfig``
+    dataclass. That single class is safe to reconstruct (it has no custom
+    ``__reduce__``/``__setstate__``, so unpickling is plain attribute
+    assignment), so we allowlist exactly it and retry. We never fall back to the
+    unsafe full unpickler, so anything else (e.g. ``os.system``) stays blocked.
+    See SECURITY.md.
+    """
+    try:
+        return torch.load(path, map_location="cpu", weights_only=True)
+    except pickle.UnpicklingError:
+        from synthefy_nori.training.config import TrainingConfig
+
+        with torch.serialization.safe_globals([TrainingConfig]):
+            return torch.load(path, map_location="cpu", weights_only=True)
 
 def build_model(config:dict):
     model = FeaturesTransformer(
@@ -43,7 +70,7 @@ def build_model(config:dict):
     return model
 
 def load_model(model_path, mask_prediction:bool=False, base_config_path:str=None):
-    state_dict = torch.load(model_path, map_location="cpu", weights_only=False)
+    state_dict = _safe_torch_load(model_path)
 
     # Support both pretrained (.ckpt) and training checkpoint (.pt) formats
     if 'model_config' in state_dict:
@@ -59,7 +86,7 @@ def load_model(model_path, mask_prediction:bool=False, base_config_path:str=None
                 "Provide base_config_path pointing to the pretrained .ckpt file."
             )
         print(f"Loading model architecture config from {base_config_path}")
-        base_state = torch.load(base_config_path, map_location="cpu", weights_only=False)
+        base_state = _safe_torch_load(base_config_path)
         config = base_state['config']
         weights = state_dict.get('ema_state_dict') or state_dict['model_state_dict']
     else:
