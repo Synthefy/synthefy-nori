@@ -7,6 +7,10 @@ does) but outputs numpy arrays: dict(X, y, n_classes).
 
 Reference: https://github.com/soda-inria/tabicl
            Schlegel et al., "TabICL" (ICML 2025)
+
+Derived from TabICL (https://github.com/soda-inria/tabicl), licensed under the
+BSD 3-Clause License, Copyright (c) 2025, Soda team @ Inria. Modified by
+Synthefy. See the NOTICE file and licenses/TabICL-BSD-3-Clause.txt for details.
 """
 
 from __future__ import annotations

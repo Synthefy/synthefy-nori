@@ -9,7 +9,7 @@ description = "Nori foundation model training, inference, and evaluation"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "Apache-2.0"
-license-files = ["LICENSE", "NOTICE"]
+license-files = ["LICENSE", "NOTICE", "licenses/*"]
 authors = [{ name = "Synthefy" }]
 keywords = [
     "tabular",

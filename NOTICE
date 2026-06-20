@@ -2,25 +2,48 @@ Nori
 Copyright 2026 Synthefy
 
 This product includes software developed by Synthefy and is licensed under
-the Apache License, Version 2.0.
+the Apache License, Version 2.0. The full license text is in the LICENSE file
+at the root of this distribution.
+
+==============================================================================
+Third-party software
+==============================================================================
+
+This project incorporates components from the projects below. Their full
+license texts are reproduced in the licenses/ directory, and their required
+copyright notices are reproduced here.
 
 ------------------------------------------------------------------------------
-Third-party attributions
-------------------------------------------------------------------------------
-
-This project originated as a fork of LimiX and incorporates components derived
-from the projects below. Their respective licenses and copyright notices are
-acknowledged here.
-
 LimiX
-  https://github.com/limix-ldm-ai/LimiX
-  Licensed under the Apache License, Version 2.0.
-  The canonical LimiX-2M model is used as an optional training-time in-context
-  learnability filter (downloaded on demand; see synthefy_nori/hf.py).
+------------------------------------------------------------------------------
+  Source:   https://github.com/limix-ldm-ai/LimiX
+  License:  Apache License, Version 2.0 (see licenses/Apache-2.0.txt)
 
+  This codebase originated as a fork of LimiX and has since substantially
+  diverged. MODIFICATIONS: numerous source files derived from LimiX have been
+  changed by Synthefy, including renaming the upstream `LimiX*` classes to
+  `Nori*` and reworking training, inference, and data-generation code.
+
+  The canonical LimiX-2M model is additionally used, unmodified, as an
+  optional training-time in-context-learnability filter (downloaded on demand;
+  see src/synthefy_nori/hf.py). Use of the LimiX model weights is subject to
+  LimiX's separate Model License; no model weights are redistributed with this
+  project.
+
+  LimiX does not distribute a NOTICE file, so there are no upstream NOTICE
+  contents to propagate.
+
+------------------------------------------------------------------------------
 TabICL
-  https://github.com/soda-inria/tabicl
-  Licensed under the BSD 3-Clause License.
+------------------------------------------------------------------------------
+  Source:   https://github.com/soda-inria/tabicl
+  License:  BSD 3-Clause License (see licenses/TabICL-BSD-3-Clause.txt)
+
+  Copyright (c) 2025, Soda team @ Inria
+  All rights reserved.
+
   Parts of the synthetic-data prior generator
-  (synthefy_nori/training/scm_prior_generator.py) are derived from TabICL's
-  prior system.
+  (src/synthefy_nori/training/scm_prior_generator.py) are derived from and
+  modified by Synthefy from TabICL's prior system (MLP/Tree SCM, Reg2Cls,
+  meta-distribution sampling, activation library). Only TabICL's BSD-3-Clause
+  prior code is used; the Apache-2.0 `forecast` component of TabICL is not used.
