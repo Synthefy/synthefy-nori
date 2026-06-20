@@ -18,3 +18,19 @@ jobs:
       - run: uv run pytest tests
       - run: uv run ruff check src scripts tests
       - run: uv build
+
+  # Merge gate: a real inference forward pass + one real training step on CPU.
+  # Mark this job as a required status check in branch protection so it blocks
+  # the merge button (see .github/branch-protection.md).
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v8.2.0
+      - run: uv sync --extra dev
+      # Inference: downloads the public Synthefy/Nori checkpoint and runs a
+      # real forward pass. Training: runs one optimizer step from scratch on CPU.
+      - run: uv run pytest -m slow tests/test_inference_e2e.py tests/test_training_smoke.py
