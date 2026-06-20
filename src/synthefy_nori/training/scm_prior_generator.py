@@ -18,11 +18,10 @@ import warnings
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 try:
     from sklearn.tree import DecisionTreeRegressor
-    from sklearn.ensemble import ExtraTreesRegressor, RandomForestRegressor
+    from sklearn.ensemble import ExtraTreesRegressor
     HAS_SKLEARN = True
 except ImportError:
     HAS_SKLEARN = False
@@ -140,26 +139,6 @@ class RandomFunctionActivation(nn.Module):
         x = torch.sin(self.freqs * x[..., None] + self.bias)
         x = (self.l2_weights * x).sum(dim=-1)
         return x
-
-
-class RandomFreqSineActivation(nn.Module):
-    """Sine with log-uniform frequency, random phase, and internal StdScaleLayer."""
-
-    def __init__(self, min_scale=0.1, max_scale=100):
-        super().__init__()
-        log_min = math.log(min_scale)
-        log_max = math.log(max_scale)
-        self.scale = nn.Parameter(
-            torch.exp(torch.tensor(log_min + (log_max - log_min) * pyrandom.random())),
-            requires_grad=False,
-        )
-        self.bias = nn.Parameter(
-            torch.tensor(2 * math.pi * pyrandom.random()), requires_grad=False
-        )
-        self.stdscaler = StdScaleLayer()
-
-    def forward(self, x):
-        return torch.sin(self.scale * self.stdscaler(x) + self.bias)
 
 
 class StdRandomScaleFactory:
@@ -553,12 +532,6 @@ class TreeLayer:
                     n_estimators=n_estimators,
                     random_state=int(rng.integers(0, 2**31)),
                 )
-            elif tree_model == "random_forest" and HAS_SKLEARN:
-                model = RandomForestRegressor(
-                    max_depth=max_depth,
-                    n_estimators=n_estimators,
-                    random_state=int(rng.integers(0, 2**31)),
-                )
             else:
                 model = DecisionTreeRegressor(
                     max_depth=max_depth,
@@ -875,9 +848,6 @@ def sample_hyperparams(rng, n_features, device="cpu"):
     hp["tree_model"] = "xgboost" if HAS_XGB else "extra_trees"
     hp["max_depth_lambda"] = 0.5
     hp["n_estimators_lambda"] = 0.5
-
-    # Reg2Cls
-    hp["multiclass_type"] = meta_choice(rng, ["value", "rank"])()
 
     return hp
 

@@ -3,8 +3,8 @@
 
 Usage:
     # Single GPU
-    synthefy-nori-train --device cuda:2
-    synthefy-nori-train --device cuda:2 --total-steps 10 --no-wandb
+    synthefy-nori-train --device cuda:0
+    synthefy-nori-train --device cuda:0 --total-steps 10 --no-wandb
 
     # Multi-GPU DDP
     torchrun --nproc_per_node=4 -m synthefy_nori.training.cli --batch-size 8
@@ -65,7 +65,7 @@ def parse_tags(raw: str | None) -> tuple[str, ...]:
 
 def main():
     parser = argparse.ArgumentParser(description='Train Nori from scratch')
-    parser.add_argument('--device', type=str, default='cuda:2')
+    parser.add_argument('--device', type=str, default='cuda:0')
     parser.add_argument('--checkpoint', type=str, default=None,
                         help='Checkpoint (.ckpt/.pt) or JSON file to load model architecture config from. '
                              'Defaults to the bundled model_base.json.')

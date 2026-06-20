@@ -3,3 +3,24 @@ Copyright 2026 Synthefy
 
 This product includes software developed by Synthefy and is licensed under
 the Apache License, Version 2.0.
+
+------------------------------------------------------------------------------
+Third-party attributions
+------------------------------------------------------------------------------
+
+This project originated as a fork of LimiX and incorporates components derived
+from the projects below. Their respective licenses and copyright notices are
+acknowledged here.
+
+LimiX
+  https://github.com/limix-ldm-ai/LimiX
+  Licensed under the Apache License, Version 2.0.
+  The canonical LimiX-2M model is used as an optional training-time in-context
+  learnability filter (downloaded on demand; see synthefy_nori/hf.py).
+
+TabICL
+  https://github.com/soda-inria/tabicl
+  Licensed under the BSD 3-Clause License.
+  Parts of the synthetic-data prior generator
+  (synthefy_nori/training/scm_prior_generator.py) are derived from TabICL's
+  prior system.

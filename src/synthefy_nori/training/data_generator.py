@@ -12,7 +12,6 @@ synth_v4 (2026-02-19): TabICLv2-inspired diversity improvements:
   - Remove Gaussian edge noise
   - Richer aggregation (max, logsumexp)
   - Quadratic + product edge functions
-  - Random feature rescaling
   - Kumaraswamy warping
 """
 
@@ -1376,16 +1375,6 @@ def _apply_kumaraswamy_warping(X, col, rng):
     v_scaled = np.clip(v_scaled, 1e-8, 1 - 1e-8)
 
     X[:, col] = 1 - (1 - v_scaled ** a) ** b
-
-
-def _apply_feature_rescaling(X, rng):
-    """Apply random per-column rescaling: multiply each column by LogUniform(0.1, 10).
-
-    Inspired by TabICLv2's "random rescale" step. Real features have different scales.
-    """
-    n_features = X.shape[1]
-    scales = np.exp(rng.uniform(np.log(0.1), np.log(10.0), n_features))
-    return X * scales[np.newaxis, :]
 
 
 def _inject_heavy_tails(X, rng, causal_cols=None, exclude_cols=None):

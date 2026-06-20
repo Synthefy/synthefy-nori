@@ -392,8 +392,6 @@ class NoriTrainer:
           - ``'org/repo'`` -- auto-download from a custom HuggingFace repo
           - Local file paths (.pt/.ckpt) -- uses native forward pass
         """
-        self._icl_filter_type = 'limix'  # default
-
         model_path = self._resolve_icl_filter_path(model_path)
         from synthefy_nori.utils.loading import load_model
         m = load_model(model_path, mask_prediction=True)
@@ -402,7 +400,6 @@ class NoriTrainer:
         for p in m.parameters():
             p.requires_grad_(False)
         self._icl_filter_model = m
-        self._icl_filter_type = 'limix'
         if self.is_main:
             print(f"GPU ICL filter: LimiX {model_path} -> {self.device}")
 
@@ -862,8 +859,6 @@ class NoriTrainer:
 
     def _log_diagnostics(self, output):
         """Print diagnostic information for debugging convergence."""
-        import torch
-
         # --- Gradient norms by component (after unscale, before clip) ---
         component_norms = {}
         n_zero = 0

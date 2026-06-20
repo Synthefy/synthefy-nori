@@ -104,26 +104,3 @@ def find_top_K_indice(sample_attention: torch.Tensor | np.ndarray, threshold: fl
     return result_indices
 
 
-def find_top_K_class(X: torch.Tensor, num_class: int = 10):
-    unique_classes, counts = torch.unique(X, return_counts=True)
-
-    sorted_indices = torch.argsort(counts, descending=True)
-    top_K_classes = unique_classes[sorted_indices[:num_class]]
-
-    all_occurrence_indices = []
-    for cls in top_K_classes:
-        indices = (X == cls).nonzero(as_tuple=True)[0]
-        all_occurrence_indices.append(indices)
-
-    all_indices_flat = torch.cat(all_occurrence_indices) if all_occurrence_indices else torch.tensor([])
-    return all_indices_flat
-
-
-if __name__ == '__main__':
-    y_train = torch.tensor([[[7],[7],[8], [5]],[[4], [3],[3], [6]]])
-    output = np.array([[0.2, 2, 0.5, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
-                       [0.2, 2, 0.5, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]],dtype=np.float32)
-
-    relabel = RelabelRetrievalY(y_train)
-    y_train, label_y = relabel.transform_y()
-    output = relabel.inverse_transform_y(output)
