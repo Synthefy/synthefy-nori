@@ -61,11 +61,6 @@ class TrainingConfig:
     mask_ratio_min: float = 0.1
     mask_ratio_max: float = 0.4
 
-    # Context feature masking: lower ratio keeps normalization stats stable
-    # while still teaching the model to handle missing context features.
-    context_mask_ratio_min: float = 0.01
-    context_mask_ratio_max: float = 0.15
-
     # Loss
     feature_loss_weight: float = 0.5
     feature_loss_weight_end: float | None = None
@@ -80,7 +75,7 @@ class TrainingConfig:
     debug_dump_steps: int = 5
 
     # Hardware
-    device: str = "cuda:2"
+    device: str = "cuda:0"
     mixed_precision: bool = True
     gradient_clip: float = 1.0
 

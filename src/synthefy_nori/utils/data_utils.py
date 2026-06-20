@@ -1,14 +1,8 @@
 from __future__ import annotations
 
-import os
-
 import numpy as np
-import pandas as pd
 import torch
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler, LabelEncoder
-from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
+from torch.utils.data import Dataset
 from typing import List, Literal
 
 from synthefy_nori.utils.retrieval_utils import find_top_K_indice
@@ -123,7 +117,7 @@ class NoriInferenceDataset(Dataset):
                      mixed_method: str = "max",
                      threshold: float = None
                      ):
-        #TODO jianshengli Confirm the dimensions of each tensor
+        # TODO: Confirm the dimensions of each tensor
         if use_retrieval:
             if use_cluster:
                 if use_threshold:
@@ -187,13 +181,18 @@ def cluster_test_data(top_k_indices: torch.Tensor | List[torch.Tensor], k_groups
         n_test_samples = len(top_k_indices)
         # max_train_len is the maximum length of the 1D tensors
         max_train_len = max(t.shape[0] for t in top_k_indices) if n_test_samples > 0 else 0
+        # Derive the working device from the input rather than hardcoding cuda,
+        # so CPU-only installs do not crash.
+        device = top_k_indices[0].device
         # We don't need to create a unified 2D tensor; we process the list directly.
         # processed_top_k_indices conceptually remains the list itself for this path.
 
     else:  # It's a single 2D tensor
         if not isinstance(top_k_indices, torch.Tensor) or top_k_indices.dim() != 2:
             raise TypeError("Input 'top_k_indices' must be a 2D torch.Tensor or a List of 1D torch.Tensors.")
-        top_k_indices = top_k_indices.to("cuda")
+        # Derive the working device from the input rather than hardcoding cuda,
+        # so CPU-only installs do not crash.
+        device = top_k_indices.device
         n_test_samples = top_k_indices.shape[0]
         max_train_len = top_k_indices.shape[1]
 
@@ -232,9 +231,9 @@ def cluster_test_data(top_k_indices: torch.Tensor | List[torch.Tensor], k_groups
         if all_rows_list:
             all_rows = torch.cat(all_rows_list)
             all_cols = torch.cat(all_cols_list)
-            data = torch.ones(len(all_rows), dtype=torch.float,device="cuda")
+            data = torch.ones(len(all_rows), dtype=torch.float,device=device)
 
-            indices = torch.stack([all_rows, all_cols]).to("cuda")
+            indices = torch.stack([all_rows, all_cols]).to(device)
             binary_matrix_sparse = torch.sparse_coo_tensor(
                 indices, data,
                 size=(n_test_samples, len(index_to_col))
@@ -264,9 +263,9 @@ def cluster_test_data(top_k_indices: torch.Tensor | List[torch.Tensor], k_groups
             k_fixed
         )
 
-        data = torch.ones(n_test_samples * k_fixed, dtype=torch.float,device="cuda")
+        data = torch.ones(n_test_samples * k_fixed, dtype=torch.float,device=device)
 
-        indices = torch.stack([rows, cols]).to("cuda")
+        indices = torch.stack([rows, cols]).to(device)
         binary_matrix_sparse = torch.sparse_coo_tensor(
             indices, data,
             size=(n_test_samples, len(index_to_col))
@@ -280,17 +279,17 @@ def cluster_test_data(top_k_indices: torch.Tensor | List[torch.Tensor], k_groups
     binary_dense = binary_matrix_sparse.to_dense()
     # Matrix multiplication to get pairwise overlaps (n_test_samples x n_test_samples)
     # This works even if the original "k" was variable, as the dense matrix captures the relationship.
-    overlap_matrix = torch.mm(binary_dense, binary_dense.t()).to("cuda")
+    overlap_matrix = torch.mm(binary_dense, binary_dense.t()).to(device)
 
     # Adjust diagonal: overlap of a sample with itself
     # For variable k, the self-overlap is the number of indices for that specific sample.
-    diag_indices = torch.arange(n_test_samples, device="cuda")
+    diag_indices = torch.arange(n_test_samples, device=device)
     if is_list_input:
         # Diagonal entry (i,i) should be the count of indices for sample i
-        diag_values = torch.tensor([len(t) for t in top_k_indices], dtype=torch.float, device="cuda")
+        diag_values = torch.tensor([len(t) for t in top_k_indices], dtype=torch.float, device=device)
     else:
         # For fixed k tensor, diagonal is simply k
-        diag_values = torch.full((n_test_samples,), max_train_len, dtype=torch.float, device="cuda")
+        diag_values = torch.full((n_test_samples,), max_train_len, dtype=torch.float, device=device)
 
     overlap_matrix[diag_indices, diag_indices] = diag_values
 
@@ -315,7 +314,7 @@ def cluster_test_data(top_k_indices: torch.Tensor | List[torch.Tensor], k_groups
                     if indices_to_concat:  # Check if list is not empty
                         union_indices = torch.unique(torch.cat(indices_to_concat, dim=0))
                     else:
-                        union_indices = torch.empty(0, dtype=torch.long, device="cuda")  # Or appropriate device
+                        union_indices = torch.empty(0, dtype=torch.long, device=device)  # Or appropriate device
                 else:
                     union_indices = torch.unique(top_k_indices[indices_in_cluster, :])
 
@@ -327,7 +326,7 @@ def cluster_test_data(top_k_indices: torch.Tensor | List[torch.Tensor], k_groups
                     if indices_to_concat:
                         union_indices = torch.cat(indices_to_concat, dim=0)
                     else:
-                        union_indices = torch.empty(0, dtype=torch.long, device="cuda")
+                        union_indices = torch.empty(0, dtype=torch.long, device=device)
                 else:
                     union_indices = top_k_indices[indices_in_cluster, :].flatten()
 
@@ -394,40 +393,4 @@ def fix_data_shape(X:torch.Tensor,data_type:Literal["feature","label"]="feature"
 
 
 
-def load_data(data_root,folder):
-    le = LabelEncoder()
-    train_path = os.path.join(data_root,folder, folder + '_train.csv')
-    test_path = os.path.join(data_root,folder, folder + '_test.csv')
-    if os.path.exists(train_path):
-        train_df = pd.read_csv(train_path)
-        if os.path.exists(test_path):
-            test_df = pd.read_csv(test_path)
-        else:
-            train_df, test_df = train_test_split(train_df, test_size=0.5, random_state=42)
-    X_train = train_df.iloc[:, :-1]
-    y_train = train_df.iloc[:, -1]
-    X_test = test_df.iloc[:, :-1]
-    y_test = test_df.iloc[:, -1]
-    for col in X_train.columns:
-        if X_train[col].dtype == 'object':
-            try:
-                le = LabelEncoder()
-                X_train[col] = le.fit_transform(X_train[col])
-                X_test[col] = le.transform(X_test[col])
-            except Exception as e:
-                X_train = X_train.drop(columns=[col])
-                X_test = X_test.drop(columns=[col])
-    y_train = le.fit_transform(y_train)
-    y_test = le.transform(y_test)
-    trainX, trainy = X_train, y_train
-    trainX = np.asarray(trainX, dtype=np.float32)
-    trainy = np.asarray(trainy, dtype=np.int64)
-
-
-    testX, testy = X_test, y_test
-    testX = np.asarray(testX, dtype=np.float32)
-    testy = np.asarray(testy, dtype=np.int64)
-    return trainX, trainy, testX, testy
-if __name__ == '__main__':
-    pass
 

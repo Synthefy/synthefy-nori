@@ -17,11 +17,10 @@ import torch
 from typing import List, Literal
 import random
 from sklearn.utils.validation import check_X_y, check_array
-from sklearn.preprocessing import LabelEncoder, OrdinalEncoder
+from sklearn.preprocessing import OrdinalEncoder
 from sklearn.compose import ColumnTransformer, make_column_selector
 from sklearn.preprocessing import FunctionTransformer
 import numpy as np
-from itertools import chain, repeat
 import pandas as pd
 import einops
 import json
@@ -79,8 +78,9 @@ class NoriPredictor:
         try:
             import synthefy_nori.inference.preprocess as _pp
             _pp._GPU_SVD_DEVICE = device
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"WARNING: could not route GPU SVD to {device} "
+                  f"({type(_e).__name__}: {_e}); using default SVD device.")
         self.mix_precision = mix_precision
         self.categorical_features_indices = categorical_features_indices
         self.seed = seed
@@ -606,8 +606,10 @@ class NoriPredictor:
             return chosen.reshape(np.asarray(preds).shape).astype(
                 np.asarray(preds).dtype
             )
-        except Exception:
+        except Exception as _e:
             # Fail open — never break inference because of the snap helper.
+            print(f"WARNING: discrete-y snap failed "
+                  f"({type(_e).__name__}: {_e}); returning unsnapped predictions.")
             return preds
 
     def _bare_model(self):
@@ -643,11 +645,7 @@ class NoriPredictor:
         the loaded model, we skip the quantile-collapse path and decode via
         softmax → point estimate (mean/mode/median of the predicted density).
         """
-        model_ref = self.model
-        if hasattr(model_ref, "module"):
-            model_ref = model_ref.module
-        if hasattr(model_ref, "_orig_mod"):
-            model_ref = model_ref._orig_mod
+        model_ref = self._bare_model()
         num_reg_quantiles = int(getattr(model_ref, "num_reg_quantiles", 1))
         regression_loss = str(getattr(model_ref, "regression_loss", "pinball"))
         if output.ndim == 0:
@@ -915,9 +913,6 @@ class NoriPredictor:
                     feature_pred = feature_pred[:, :-step.n_quantile_features]
                 elif step.worker_tags[0] == "power":
                     raise ValueError(f"Missing value imputation does not currently support the preprocessing method of power!")
-                    cont_features_indices = [idx for idx in range(feature_pred.shape[1]) if idx not in step.dis_ix]
-                    feature_pred[:, cont_features_indices] = step.worker.named_transformers_['feat_transform'].inverse_transform(feature_pred[:, cont_features_indices])
-                    # reverse feature order
                 if step.feature_indices is not None:
                     inv_p = np.argsort(step.feature_indices)
                     feature_pred = feature_pred[:, inv_p]
@@ -948,7 +943,7 @@ class NoriPredictor:
 
         Ablation (96 datasets) showed unconditional YJ was net negative despite
         winning stock_fardamento02 (skew 17.7, +0.077 R²). The skew threshold
-        default (5.0) preserves the wins on extreme-skew datasets while
+        default (10.0) preserves the wins on extreme-skew datasets while
         skipping moderately-skewed ones where YJ harms predictions.
 
         When return_distribution=True the YJ point ensemble is bypassed: it
@@ -1137,9 +1132,11 @@ class NoriPredictor:
                                              task_type="reg")
                 outputs.append(output)
             if not self.inference_config[id_pipe]["retrieval_config"]["use_retrieval"] and not self.inference_with_DDP:
-                # Calculate max allowed test samples per batch to avoid OOM
-                # We need: (n_train + chunk_size) * n_features <= MAX_ELEMENTS_BUDGET
-                chunk_size = max(256, (MAX_ELEMENTS_BUDGET // n_features) - n_samples_train)
+                # Calculate max allowed test samples per batch to avoid OOM.
+                # We need: (n_train + chunk_size) * budget_n_features <= MAX_ELEMENTS_BUDGET.
+                # Use the post-HighDimFeatureSelector feature count — the model
+                # never sees the raw count when the config reduces dimensionality.
+                chunk_size = max(256, (MAX_ELEMENTS_BUDGET // budget_n_features) - n_samples_train)
 
                 # --- Cached train-KV fast path (ON by default) ---
                 # Numerically equivalent to the chunked path below (cache==chunked,

@@ -92,7 +92,7 @@ def quantile_dist_mean_batch(
     dq_left = q_left[..., -1] - q_left[..., 0]
     dlog_left = log_tau_left[-1] - log_tau_left[0]
     lambda_L = (dq_left / dlog_left.clamp(min=1e-12)).clamp(min=0)
-    left_area = tau_t[0] * q[..., 0] - lambda_L * tau_t[0] * (torch.log(tau_t[0].clamp(min=1e-12)) - 1.0 + 1.0)
+    left_area = tau_t[0] * q[..., 0] - lambda_L * tau_t[0] * torch.log(tau_t[0].clamp(min=1e-12))
 
     # Right tail: estimate λ_R from slope of last n quantiles
     q_right = q[..., -n:]
@@ -102,7 +102,7 @@ def quantile_dist_mean_batch(
     dlog_right = log_1mtau_right[0] - log_1mtau_right[-1]
     lambda_R = (dq_right / dlog_right.clamp(min=1e-12)).clamp(min=0)
     rem = 1.0 - tau_t[-1]
-    right_area = rem * q[..., -1] + lambda_R * rem * (torch.log(rem.clamp(min=1e-12)) - 1.0 + 1.0)
+    right_area = rem * q[..., -1] + lambda_R * rem * torch.log(rem.clamp(min=1e-12))
 
     # Fallback: if tail estimate is non-finite, use simple boundary
     left_simple = tau_t[0] * q[..., 0]

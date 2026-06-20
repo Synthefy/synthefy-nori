@@ -217,8 +217,6 @@ class FeaturesTransformer(nn.Module):
             )
             nn.init.normal_(self.feature_positional_embedding.weight, std=0.02)
             self.feature_positional_embedding_num_slots = feature_positional_embedding_num_slots
-        elif feature_positional_embedding_type == "subspace":
-            self.feature_positional_embedding = nn.Linear(self.embed_dim // 4, self.embed_dim)
         elif feature_positional_embedding_type == "subortho":
             self.feature_positional_embedding = nn.Linear(self.embed_dim // 4, self.embed_dim)
         
@@ -594,50 +592,6 @@ class FeaturesTransformer(nn.Module):
             outputs.append(self.reg_y_decoder(test_out[:, :, -1]))
         return torch.cat(outputs, dim=1)
 
-    @torch.compiler.disable
-    def mixed_y_embedding(self, y:dict, y_type:torch.Tensor, eval_pos:int):
-        y = y['data']
-        batch_size, seq_len, y_num = y.shape
-        y_flat = y.reshape(-1)
-        y_type_flat = y_type.reshape(-1)
-        
-        idx = torch.arange(len(y_flat), device=y.device)
-        idx_cls = idx[y_type_flat == 0]
-        idx_reg = idx[y_type_flat == 1]
-        y_cls = y_flat[idx_cls]
-        y_reg = y_flat[idx_reg]
-
-        y_cls = y_cls.reshape(-1, seq_len, y_num)
-        y_reg = y_reg.reshape(-1, seq_len, y_num)
-        y_cls = {'data': y_cls, 'eval_pos':eval_pos}
-        y_reg = {'data': y_reg, 'eval_pos':eval_pos}
-
-        cls_y_emb = self.cls_y_encoder(y_cls) if len(idx_cls) > 0 else None
-        reg_y_emb = self.reg_y_encoder(y_reg) if len(idx_reg) > 0 else None
-        cls_y_emb = cls_y_emb['data'] if cls_y_emb is not None else None
-        reg_y_emb = reg_y_emb['data'] if reg_y_emb is not None else None
-        
-        emb_size = self.embed_dim
-        # Determine dtype from encoder outputs (bf16 under autocast) to avoid
-        # index_put dtype mismatch between float32 y_flat and bf16 embeddings.
-        if cls_y_emb is not None:
-            out_dtype = cls_y_emb.dtype
-        elif reg_y_emb is not None:
-            out_dtype = reg_y_emb.dtype
-        else:
-            out_dtype = y_flat.dtype
-        out = torch.empty(len(y_flat), emb_size, dtype=out_dtype, device=y_flat.device)
-        if cls_y_emb is not None:
-            cls_y_emb_flat = cls_y_emb.reshape(-1, emb_size)
-            out.index_put_((idx_cls,), cls_y_emb_flat)
-
-        if reg_y_emb is not None:
-            reg_y_emb_flat = reg_y_emb.reshape(-1, emb_size)
-            out.index_put_((idx_reg,), reg_y_emb_flat)
-
-        output = out.reshape(batch_size, seq_len, emb_size)
-        return output
-
     def apply_target_aware_embedding(
         self,
         x: torch.Tensor,
@@ -729,24 +683,4 @@ class FeaturesTransformer(nn.Module):
         else:
             raise ValueError(f"Unknown feature_positional_embedding_type={self.feature_positional_embedding_type}")
         return x
-    
-    @torch.compiler.disable
-    def y_decoder(self, test_encoder_out, test_y_type):
-        _, seq_len, emb_size = test_encoder_out.shape
-        flat_test_encoder_out = test_encoder_out.reshape(-1, emb_size)
-        flat_test_y_type = test_y_type.reshape(-1)
-        
-        idx = torch.arange(len(flat_test_encoder_out), device=flat_test_encoder_out.device)
-        idx_cls = idx[flat_test_y_type == 0]
-        idx_reg = idx[flat_test_y_type == 1]
-
-        cls_y_encoder_out = flat_test_encoder_out[idx_cls]
-        reg_y_encoder_out = flat_test_encoder_out[idx_reg]
-        cls_y_encoder_out = cls_y_encoder_out.reshape(-1, seq_len, emb_size)
-        reg_y_encoder_out = reg_y_encoder_out.reshape(-1, seq_len, emb_size)
-
-        cls_y = self.cls_y_decoder(cls_y_encoder_out)
-        reg_y = self.reg_y_decoder(reg_y_encoder_out)
-
-        return cls_y, reg_y
     

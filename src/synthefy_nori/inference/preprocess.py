@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import numpy as np
-from torch.utils.data import DataLoader, Dataset
 import torch
 import warnings
-import scipy
 from typing_extensions import override
 from typing import Literal, Any
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -164,14 +162,14 @@ class SelectiveInversePipeline(Pipeline):
         self.skip_inverse = skip_inverse or []
     
     def inverse_transform(self, X):
-        """跳过指定步骤的inverse_transform"""
+        """inverse_transform that skips the configured steps."""
         if X.shape[1] == 0:
             return X
         for step_idx in range(len(self.steps) - 1, -1, -1):
             name, transformer = self.steps[step_idx]
             try:
                 check_is_fitted(transformer)
-            except:
+            except Exception:
                 continue
             
             if name in self.skip_inverse:
@@ -903,7 +901,7 @@ class RebalanceFeatureDistribution(BasePreprocess):
     def __init__(
             self,
             *,
-            worker_tags: list[str] | None = ["quantile"],
+            worker_tags: list[str] | None = None,
             discrete_flag: bool = False,
             original_flag: bool = False,
             svd_tag: Literal['svd'] | None = None,
@@ -911,7 +909,7 @@ class RebalanceFeatureDistribution(BasePreprocess):
             joined_log_normal: bool = True,
     ):
         super().__init__()
-        self.worker_tags = worker_tags
+        self.worker_tags = worker_tags if worker_tags is not None else ["quantile"]
         self.discrete_flag = discrete_flag
         self.original_flag = original_flag
         self.random_state = None
@@ -1169,7 +1167,7 @@ class SubSampleData():
             if self.use_type == "mixed":
                 y_feature_attention_score = feature_attention_score[:, -1, :].squeeze().permute(1, 0).unsqueeze(
                     -1) # shape [features,test_sample_lens,1] broadcast to [features,test_sample_lens,train_sample_lens]
-                #TODO jianshengli may cause OOM
+                # TODO: this elementwise product may cause OOM on large inputs
                 try:
                     self.attention_score = torch.mean(sample_attention_score.to("cuda") * y_feature_attention_score.to("cuda"),
                                                       dim=0).cpu()  # shape [test_sample_lens,train_sample_lens]
@@ -1457,7 +1455,6 @@ class HighDimFeatureSelector(BasePreprocess):
         if self.strategy == 'svd_binary':
             if binary_frac < self.binary_threshold or int(binary_mask.sum()) < 2:
                 return self._activate_passthrough(categorical_features)
-            from sklearn.decomposition import TruncatedSVD
             x_binary = x[:, binary_mask]
             x_binary = np.where(np.isnan(x_binary), 0.0, x_binary)
             n_components = max(1, min(
@@ -1476,7 +1473,6 @@ class HighDimFeatureSelector(BasePreprocess):
             return self._remap_categorical_svd_binary(categorical_features)
 
         if self.strategy == 'svd_all':
-            from sklearn.decomposition import TruncatedSVD
             x_imp = np.where(np.isnan(x), 0.0, x)
             n_components = max(1, min(self.svd_components, n_features - 1, n_samples - 1))
             try:

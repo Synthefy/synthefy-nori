@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import gc
-import time
-from typing import Literal, Tuple
+from typing import Literal
 import numpy as np
 import torch
 from torch import nn
@@ -164,7 +163,7 @@ class InferenceResultWithRetrieval:
                     total_indice.append(indices)
             show_tqdm=False
             for inference_idx in tqdm(range(len(cluster_test_sample_indices)), desc=f"inference",
-                                      bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [耗时:{elapsed}]",
+                                      bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [elapsed:{elapsed}]",
                                       leave=False) if show_tqdm else range(len(cluster_test_sample_indices)):
                 X_train_ = X_train[inference_idx]
                 y_ = y_train[inference_idx].to(device).unsqueeze(0)
@@ -194,62 +193,65 @@ class InferenceResultWithRetrieval:
                 dataset = self._prepare_data(X_train, y_train, X_test, attention_score, self.retrieval_len)
             self.rank, self.world_size = setup()
 
-            model = self.model.cuda(self.rank)
-            model = DDP(model, device_ids=[self.rank], find_unused_parameters=False)
-            sampler = NonPaddingDistributedSampler(dataset, num_replicas=self.world_size, rank=self.rank, shuffle=False)
-            outputs = []
-            dataloader = DataLoader(dataset,
-                                    batch_size=min(max(1, 000, 000 // self.retrieval_len // X_train.shape[1], 1),
-                                                   8) if self.sample_selection_type == "AM" else 1024,
-                                    shuffle=False,
-                                    drop_last=False,
-                                    sampler=sampler
-                                    )
-            indice = []
-            for batch_idx, data in tqdm(enumerate(dataloader), total=len(dataloader), desc=f"inference",
-                                        bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [耗时:{elapsed}]",
-                                        leave=False) if self.rank == 0 else enumerate(
-                dataloader):
-                with torch.autocast(
-                    device.type if isinstance(device, torch.device) else device, enabled=True
-                ), torch.inference_mode():
-                    indice.append(data["idx"])
-                    X_train = data["X_train"]
-                    X_test = data["X_test"].unsqueeze(1)
-                    y_ = data["y_train"]
-                    x_ = torch.cat([X_train, X_test], dim=1)
-                    if task_type == "cls":
-                        relabel = RelabelRetrievalY(y_)
-                        y_ = relabel.transform_y().to(device)
-                    output = model(x=x_, y=y_.squeeze(-1), eval_pos=y_.shape[1], task_type=task_type)
-                    if len(output.shape) == 3:
-                        output = output.view(-1, output.shape[-1])
-                    if task_type == "cls":
-                        output = output.cpu().numpy()
-                        output = relabel.inverse_transform_y(output,
-                                                             num_classes=max(10, torch.unique(y_train).shape[0]))
-                        output = torch.tensor(output, dtype=torch.float32, device=model.device)
+            try:
+                model = self.model.cuda(self.rank)
+                model = DDP(model, device_ids=[self.rank], find_unused_parameters=False)
+                sampler = NonPaddingDistributedSampler(dataset, num_replicas=self.world_size, rank=self.rank, shuffle=False)
+                outputs = []
+                dataloader = DataLoader(dataset,
+                                        batch_size=min(max(1_000_000 // self.retrieval_len // X_train.shape[1], 1),
+                                                       8) if self.sample_selection_type == "AM" else 1024,
+                                        shuffle=False,
+                                        drop_last=False,
+                                        sampler=sampler
+                                        )
+                indice = []
+                for batch_idx, data in tqdm(enumerate(dataloader), total=len(dataloader), desc=f"inference",
+                                            bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [elapsed:{elapsed}]",
+                                            leave=False) if self.rank == 0 else enumerate(
+                    dataloader):
+                    with torch.autocast(
+                        device.type if isinstance(device, torch.device) else device, enabled=True
+                    ), torch.inference_mode():
+                        indice.append(data["idx"])
+                        X_train = data["X_train"]
+                        X_test = data["X_test"].unsqueeze(1)
+                        y_ = data["y_train"]
+                        x_ = torch.cat([X_train, X_test], dim=1)
+                        if task_type == "cls":
+                            relabel = RelabelRetrievalY(y_)
+                            y_ = relabel.transform_y().to(device)
+                        output = model(x=x_, y=y_.squeeze(-1), eval_pos=y_.shape[1], task_type=task_type)
+                        if len(output.shape) == 3:
+                            output = output.view(-1, output.shape[-1])
+                        if task_type == "cls":
+                            output = output.cpu().numpy()
+                            output = relabel.inverse_transform_y(output,
+                                                                 num_classes=max(10, torch.unique(y_train).shape[0]))
+                            output = torch.tensor(output, dtype=torch.float32, device=model.device)
 
-                outputs.append(output.cpu())
-                del output
+                    outputs.append(output.cpu())
+                    del output
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                del model
+                outputs = torch.cat(outputs, dim=0)
+                local_result_cpu = outputs.cpu()
+                indice = torch.cat(indice, dim=0)
+                local_indice_cpu = indice.cpu()
+                outputs = [None for _ in range(self.world_size)]
+                gathered_indice = [None for _ in range(self.world_size)]
+                dist.all_gather_object(gathered_indice, local_indice_cpu)
+                dist.all_gather_object(outputs, local_result_cpu)
+                del local_result_cpu
+                outputs = torch.cat(outputs, dim=0).to(torch.float32)
+                gathered_indice = torch.cat(gathered_indice, dim=0)
+                outputs = swap_rows_back(outputs, gathered_indice)
                 gc.collect()
                 torch.cuda.empty_cache()
-            del model
-            outputs = torch.cat(outputs, dim=0)
-            local_result_cpu = outputs.cpu()
-            indice = torch.cat(indice, dim=0)
-            local_indice_cpu = indice.cpu()
-            outputs = [None for _ in range(self.world_size)]
-            gathered_indice = [None for _ in range(self.world_size)]
-            dist.all_gather_object(gathered_indice, local_indice_cpu)
-            dist.all_gather_object(outputs, local_result_cpu)
-            del local_result_cpu
-            outputs = torch.cat(outputs, dim=0).to(torch.float32)
-            gathered_indice = torch.cat(gathered_indice, dim=0)
-            outputs = swap_rows_back(outputs, gathered_indice)
-            gc.collect()
-            torch.cuda.empty_cache()
-            return outputs.squeeze(0)
+                return outputs.squeeze(0)
+            finally:
+                cleanup()
 
 
 class InferenceAttentionMap:

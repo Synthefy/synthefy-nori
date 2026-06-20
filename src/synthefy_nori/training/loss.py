@@ -172,7 +172,6 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
         loss_dict: dict with individual loss components for logging
     """
     process_config = model_output['process_config']
-    fpg = 2  # features_per_group is always 2 in the model
     n_x_padding = process_config['n_x_padding']
     # num_used_features: [B, n_groups, 1]
     num_used_features = process_config['num_used_features']
@@ -185,8 +184,12 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
     std_norm = process_config['std_for_normalization']
     if std_norm is not None:
         std_norm = std_norm.detach()
-    # features_per_group: actual ValidFeatureEncoder num_features (a scalar-like tensor)
+    # features_per_group: actual ValidFeatureEncoder num_features (a scalar-like tensor).
+    # By construction (cli.py propagates features_per_group into the encoder's
+    # num_features), this equals the model's reshape grouping dimension, so we
+    # derive the grouping size `fpg` from it rather than hardcoding 2.
     model_fpg = process_config['features_per_group']
+    fpg = int(model_fpg.item()) if isinstance(model_fpg, torch.Tensor) else int(model_fpg)
 
     batch_size = y_true.shape[0]
     n_query = y_true.shape[1]
