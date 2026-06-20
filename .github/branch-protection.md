@@ -28,16 +28,20 @@ default branch:
    pushed**, and **Do not allow bypassing the above settings** (include
    administrators), so the rule cannot be sidestepped by accounts outside any
    explicitly configured bypass list.
-4. **Require status checks to pass before merging**, and add the **`smoke`** job
+4. **Require status checks to pass before merging**, and add these two jobs
    (from [`workflows/ci.yml`](workflows/ci.yml)) to the required checks. This is
-   what actually blocks the merge button on a broken model: `smoke` runs a real
-   inference forward pass (downloads the public `Synthefy/Nori` checkpoint) plus
-   one real training step on CPU. *(Add the fast `test` job too if you want lint
-   / unit tests / build to gate merges as well.)*
+   what actually blocks the merge button on a broken model:
+   - **`CI test inference`** — runs a real inference forward pass (downloads the
+     public `Synthefy/Nori` checkpoint).
+   - **`CI test train step`** — runs one real training step from scratch on CPU.
+
+   *(Add the fast `test` job too if you want lint / unit tests / build to gate
+   merges as well.)*
 
 > A workflow only *reports* status — only a required status check *blocks* the
-> merge. The check name GitHub matches is the job name (`smoke`); it appears in
-> the list once the workflow has run at least once on a PR.
+> merge. The check name GitHub matches is the job's display name (`CI test
+> inference` / `CI test train step`); each appears in the list once the workflow
+> has run at least once on a PR.
 
 > Code owners must have **write** access to the repo, or GitHub ignores their
 > `CODEOWNERS` entries.
