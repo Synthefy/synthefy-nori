@@ -1,0 +1,51 @@
+name: gpu-ci
+
+# GPU merge gate via Modal. A free ubuntu-latest runner drives `modal run`, which
+# executes the inference e2e + one training step on an (Ampere+) Modal GPU in a
+# fresh, isolated, ephemeral container. The job's exit code is the gate.
+#
+# PREREQUISITES (one-time):
+#   1. A Modal account (https://modal.com), token via `modal token new`.
+#   2. Repo secrets MODAL_TOKEN_ID and MODAL_TOKEN_SECRET (Settings -> Secrets
+#      and variables -> Actions). These are the token_id / token_secret values
+#      from ~/.modal.toml -- add the two values, NOT the file.
+#
+# Until those secrets exist the job is a green no-op (see the guard below), so it
+# never blocks merges before you've set Modal up. GitHub does not pass secrets to
+# fork-PR workflows, so this job is also skipped for forks (a maintainer reruns
+# after review). Do not mark it a required check until the secrets are set.
+#
+# COST: a Modal GPU runs on every non-fork PR push (a few minutes, scales to
+# zero between runs). To cut spend, drop `pull_request:` and rely on push/dispatch.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  gpu-modal:
+    name: GPU test inference + train step (Modal)
+    runs-on: ubuntu-latest
+    # Skip for fork PRs (they have no access to the Modal secrets).
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.fork == false
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install modal
+      - name: Inference + one training step on a Modal GPU
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          if [ -z "$MODAL_TOKEN_ID" ] || [ -z "$MODAL_TOKEN_SECRET" ]; then
+            echo "Modal secrets not configured; skipping GPU gate (no-op)."
+            echo "Set MODAL_TOKEN_ID / MODAL_TOKEN_SECRET to enable it."
+            exit 0
+          fi
+          modal run ci/modal_gpu_smoke.py

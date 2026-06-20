@@ -90,7 +90,7 @@ where = ["src"]
 testpaths = ["tests"]
 addopts = "-m 'not slow'"
 markers = [
-    "slow: end-to-end tests that download checkpoints and run real inference (run with `pytest -m slow`)",
+    "slow: opt-in end-to-end tests — download checkpoints + run real inference, or run a real training step (run with `pytest -m slow`)",
 ]
 
 [tool.ruff]

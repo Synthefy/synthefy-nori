@@ -2,6 +2,7 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -18,3 +19,32 @@ jobs:
       - run: uv run pytest tests
       - run: uv run ruff check src scripts tests
       - run: uv build
+
+  # Merge gate (part 1): a real inference forward pass on CPU. Downloads the
+  # public Synthefy/Nori checkpoint. Mark this job as a required status check in
+  # branch protection so it blocks the merge button (see branch-protection.md).
+  inference:
+    name: CI test inference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v8.2.0
+      - run: uv sync --extra dev
+      - run: uv run pytest -m slow tests/test_inference_e2e.py
+
+  # Merge gate (part 2): one real training step from scratch on CPU (data-gen ->
+  # loss -> optimizer step -> checkpoint write). Offline; no checkpoint download.
+  train-step:
+    name: CI test train step
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v8.2.0
+      - run: uv sync --extra dev
+      - run: uv run pytest -m slow tests/test_training_smoke.py

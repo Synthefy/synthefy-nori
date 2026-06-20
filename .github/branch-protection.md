@@ -28,6 +28,31 @@ default branch:
    pushed**, and **Do not allow bypassing the above settings** (include
    administrators), so the rule cannot be sidestepped by accounts outside any
    explicitly configured bypass list.
+4. **Require status checks to pass before merging**, and add these two jobs
+   (from [`workflows/ci.yml`](workflows/ci.yml)) to the required checks. This is
+   what actually blocks the merge button on a broken model:
+   - **`CI test inference`** — runs a real inference forward pass (downloads the
+     public `Synthefy/Nori` checkpoint).
+   - **`CI test train step`** — runs one real training step from scratch on CPU.
+
+   *(Add the fast `test` job too if you want lint / unit tests / build to gate
+   merges as well.)*
+
+   **Optional GPU gate** — [`workflows/gpu-ci.yml`](workflows/gpu-ci.yml) adds a
+   **`GPU test inference + train step (Modal)`** job that runs the same two
+   checks on an (Ampere+) GPU via [Modal](https://modal.com), catching
+   CUDA-only / dtype / autocast regressions the CPU gate cannot. A free
+   `ubuntu-latest` runner drives `modal run`; the GPU work happens in an
+   ephemeral Modal container. Prerequisite: repo secrets `MODAL_TOKEN_ID` and
+   `MODAL_TOKEN_SECRET` (the `token_id` / `token_secret` from `~/.modal.toml`).
+   Until those are set the job is a green no-op; fork PRs are skipped (no secret
+   access). **Do not mark this job required until the secrets are set** —
+   otherwise it would pass without actually testing.
+
+> A workflow only *reports* status — only a required status check *blocks* the
+> merge. The check name GitHub matches is the job's display name (`CI test
+> inference` / `CI test train step`); each appears in the list once the workflow
+> has run at least once on a PR.
 
 > Code owners must have **write** access to the repo, or GitHub ignores their
 > `CODEOWNERS` entries.
