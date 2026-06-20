@@ -38,6 +38,16 @@ default branch:
    *(Add the fast `test` job too if you want lint / unit tests / build to gate
    merges as well.)*
 
+   **Optional GPU gate** — [`workflows/gpu-ci.yml`](workflows/gpu-ci.yml) adds a
+   **`GPU test inference + train step`** job that runs the same two checks on a
+   CUDA device, catching CUDA-only / dtype / autocast regressions the CPU gate
+   cannot. It needs a runner labelled `gpu` (a GitHub-hosted GPU larger runner,
+   provisioned by an org admin under **Settings → Actions → Runners → New
+   runner**). **Do not mark this job required until that runner exists** — with
+   no runner the check sits queued forever and would block every merge. Note the
+   hosted GPU runner is an NVIDIA T4 (sm75), so it cannot run FlashAttention-2
+   (needs Ampere+); the flash-attn step in that workflow is left disabled.
+
 > A workflow only *reports* status — only a required status check *blocks* the
 > merge. The check name GitHub matches is the job's display name (`CI test
 > inference` / `CI test train step`); each appears in the list once the workflow

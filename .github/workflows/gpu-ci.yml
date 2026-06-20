@@ -1,0 +1,51 @@
+name: gpu-ci
+
+# GPU merge gate: a real inference forward pass + one training step on a CUDA
+# device. Catches the CUDA-only / dtype / autocast class of regression that the
+# CPU `ci` workflow structurally cannot reach.
+#
+# REQUIRES a GPU runner labelled `gpu`. GitHub-hosted GPU larger runners
+# (NVIDIA T4, sm75) must be provisioned by an org/enterprise admin under
+# Settings -> Actions -> Runners -> "New runner" -> larger runner with a
+# GPU-enabled image, given the label `gpu`. Until that runner exists this job
+# has nowhere to run and will sit queued -- do NOT mark it a required status
+# check until the runner is live (see .github/branch-protection.md).
+#
+# COST: a hosted GPU runner bills per minute on every PR push. To cut spend,
+# either (a) restrict to push/dispatch by removing `pull_request:` below, or
+# (b) gate per-PR runs behind a label (see the commented `if:` on the job).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  gpu-smoke:
+    name: GPU test inference + train step
+    runs-on: gpu
+    # Cost control option (b): only run on PRs that carry the `gpu` label.
+    # if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'gpu')
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v8.2.0
+      - run: uv sync --extra dev
+      # Fail fast with a clear message if the runner has no usable GPU.
+      - name: Assert CUDA is available
+        run: uv run python -c "import torch; assert torch.cuda.is_available(), 'no CUDA device on this runner'; print('GPU:', torch.cuda.get_device_name(0))"
+      # OPTIONAL flash-attn coverage. Disabled because (1) the codebase currently
+      # has no flash path, so installing it exercises nothing, and (2) the hosted
+      # T4 (sm75) does not support FlashAttention-2 (needs Ampere+ / sm80+).
+      # Enable only on an Ampere/Hopper runner AND once flash code is reintroduced
+      # (it is a long source build -- consider a prebuilt wheel or caching):
+      # - run: uv pip install flash-attn --no-build-isolation
+      # Inference auto-selects the GPU when available; the train step is pinned
+      # to cuda:0 via the env var and keeps mixed precision on (autocast path).
+      - name: Inference + one training step on GPU
+        env:
+          SYNTHEFY_NORI_SMOKE_DEVICE: cuda:0
+        run: uv run pytest -m slow tests/test_inference_e2e.py tests/test_training_smoke.py

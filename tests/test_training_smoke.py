@@ -9,9 +9,14 @@ No network access is required (it trains a tiny model from scratch, no checkpoin
 download), but it is marked ``slow`` because it spins up the full training stack
 and is opt-in alongside the other end-to-end tests.
 
+By default it runs on CPU. Set ``SYNTHEFY_NORI_SMOKE_DEVICE`` (e.g. ``cuda:0``)
+to exercise the GPU training path instead; on a CUDA device it also leaves mixed
+precision enabled so the autocast path is covered.
+
 Run explicitly with::
 
     pytest -m slow tests/test_training_smoke.py
+    SYNTHEFY_NORI_SMOKE_DEVICE=cuda:0 pytest -m slow tests/test_training_smoke.py
 """
 from __future__ import annotations
 
@@ -25,12 +30,13 @@ import pytest
 pytestmark = pytest.mark.slow
 
 
-def test_single_cpu_training_step_writes_checkpoint(tmp_path):
+def test_single_training_step_writes_checkpoint(tmp_path):
     checkpoint_dir = tmp_path / "smoke"
+    device = os.environ.get("SYNTHEFY_NORI_SMOKE_DEVICE", "cpu")
 
     cmd = [
         sys.executable, "-m", "synthefy_nori.training.cli",
-        "--device", "cpu", "--no-mixed-precision", "--no-prefetch", "--no-wandb",
+        "--device", device, "--no-prefetch", "--no-wandb",
         "--task-type", "reg",
         "--total-steps", "1", "--run-steps", "1", "--save-interval", "1",
         # Tiny architecture so the step is fast on a CPU runner.
@@ -38,6 +44,10 @@ def test_single_cpu_training_step_writes_checkpoint(tmp_path):
         "--batch-size", "2", "--max-features", "16", "--max-budget", "4000",
         "--checkpoint-dir", str(checkpoint_dir),
     ]
+    # CPU has no autocast support here; on CUDA, keep mixed precision on (default)
+    # so the GPU run also exercises the autocast path.
+    if device == "cpu":
+        cmd.append("--no-mixed-precision")
 
     env = dict(os.environ, WANDB_MODE="disabled")
     result = subprocess.run(
