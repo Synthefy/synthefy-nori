@@ -14,13 +14,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import os
 from datetime import datetime
-
-# Must set before model imports which check this env var at module load time
-if '--no-flash-attn' in sys.argv:
-    os.environ["SYNTHEFY_NORI_NO_FLASH_ATTN"] = "1"
 
 import torch
 
@@ -349,8 +344,6 @@ def main():
                         help='Exponent to bias n_samples toward larger tables (1.0=uniform, 1.5=40%% > 1000)')
     parser.add_argument('--dim-bias-features', type=float, default=1.3,
                         help='Exponent to bias n_features toward larger feature counts (1.0=uniform)')
-    parser.add_argument('--no-flash-attn', action='store_true',
-                        help='Disable flash attention (use PyTorch SDPA fallback)')
     parser.add_argument('--prefetch-workers', type=int, default=4,
                         help='Number of async data generation workers (0 to disable prefetching)')
     parser.add_argument('--prefetch-count', type=int, default=4,

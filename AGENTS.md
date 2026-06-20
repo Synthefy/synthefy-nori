@@ -99,7 +99,7 @@ tests/            fast unit/smoke tests + slow e2e tests (marked `slow`)
 
   ```bash
   WANDB_MODE=disabled uv run synthefy-nori-train \
-    --device cpu --no-mixed-precision --no-prefetch --no-flash-attn \
+    --device cpu --no-mixed-precision --no-prefetch \
     --task-type reg --total-steps 2 --run-steps 2 --save-interval 2 \
     --embed-dim 32 --hid-dim 64 --nlayers 2 --nhead 2 \
     --batch-size 2 --max-features 16 --max-budget 4000 \
@@ -120,5 +120,6 @@ re-introduce `LimiX*` naming for Synthefy's own classes. Parts of the
 synthetic-data prior generator draw on **TabICL** (BSD-3-Clause,
 <https://github.com/soda-inria/tabicl>).
 
-Keep the `LICENSE`/`NOTICE` attributions intact; check those files before
-removing upstream names.
+Keep the `LICENSE`, `NOTICE`, and `licenses/` attributions intact; check those
+files before removing upstream names. The full upstream license texts live in
+`licenses/` and are shipped via `license-files` in `pyproject.toml`.

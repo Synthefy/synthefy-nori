@@ -3,36 +3,12 @@ from __future__ import annotations
 from typing import Callable, Literal, Optional
 import functools
 import math
-import os
 
 import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 from functools import partial
 from torch.amp import autocast
-
-
-
-
-if os.environ.get("SYNTHEFY_NORI_NO_FLASH_ATTN", "0") == "1":
-    HAVE_FLASH_ATTN = False
-    HAVE_FLASH_ATTN_4 = False
-else:
-    # FlashAttention-4 (CuTeDSL, Hopper/Blackwell optimized)
-    HAVE_FLASH_ATTN_4 = False
-    try:
-        from flash_attn.cute import flash_attn_func as flash_attn_4_func
-        HAVE_FLASH_ATTN_4 = True
-    except (ModuleNotFoundError, ImportError):
-        pass
-
-    # FlashAttention-2 fallback
-    try:
-        from flash_attn.flash_attn_interface import flash_attn_varlen_kvpacked_func, flash_attn_varlen_qkvpacked_func
-        from flash_attn import flash_attn_func
-        HAVE_FLASH_ATTN = True
-    except (ModuleNotFoundError, ImportError):
-        HAVE_FLASH_ATTN = False
 
 from typing_extensions import override
 
@@ -260,15 +236,6 @@ class MultiheadAttention(torch.nn.Module):
             return q
         return self.qassmax(q, key_len)
     
-    def get_cu_seqlens(self, batch_size: int, seqlen: int, device: torch.device) -> torch.Tensor:
-        return torch.arange(
-            0,
-            (batch_size + 1) * seqlen,
-            step=seqlen,
-            dtype=torch.int32,
-            device=device,
-        )
-    
     def _apply_extra_attn_scale(self, q: torch.Tensor, n_keys: int) -> torch.Tensor:
         """Pre-multiply Q by (temperature * logN factor) so SDPA's internal
         1/sqrt(d) scaling combines to the desired final attention scale.
@@ -351,15 +318,7 @@ class MultiheadAttention(torch.nn.Module):
         if self.use_qassmax:
             q = self.apply_qassmax(q, kv.shape[1])
 
-        if self.qkv_proj_weight.device.type == "cuda" and not torch.compiler.is_compiling():
-            if HAVE_FLASH_ATTN_4:
-                atten_out = self.compute_attention_by_flashattn4(None, q, kv)
-            elif HAVE_FLASH_ATTN:
-                atten_out = self.compute_attention_by_flashattn(None, q, kv)
-            else:
-                atten_out = self.compute_attention_by_torch(None, q, kv, None)
-        else:
-            atten_out = self.compute_attention_by_torch(None, q, kv, None)
+        atten_out = self.compute_attention_by_torch(None, q, kv, None)
 
         atten_out = atten_out.reshape(x_flat.shape[0], x_flat.shape[1], self.num_heads, self.head_dim)
         sample_attention = None
@@ -374,7 +333,7 @@ class MultiheadAttention(torch.nn.Module):
         return out.reshape(B, S, *out.shape[1:]), sample_attention
 
     def compute_attention_by_torch(self, qkv:torch.Tensor|None, q:torch.Tensor|None, kv:torch.Tensor|None, attn_mask:torch.Tensor|None) -> torch.Tensor:
-        '''Since flash attention does not support attn_mask, use scaled_dot_product_attention to compute attention when attn_mask is not None'''
+        '''Compute attention with PyTorch scaled_dot_product_attention (supports attn_mask).'''
         if qkv is not None:
             q, k, v = qkv.unbind(dim=-3)
         elif kv is not None and q is not None:
@@ -398,86 +357,6 @@ class MultiheadAttention(torch.nn.Module):
             )
         attention_outputs = attention_outputs.transpose(1, 2)
         return attention_outputs
-    
-    def compute_attention_by_flashattn4(self, qkv:torch.Tensor|None, q:torch.Tensor|None, kv:torch.Tensor|None) -> torch.Tensor:
-        """Compute attention using FlashAttention-4 (CuTeDSL, Hopper/Blackwell optimized).
-
-        Uses the batched interface (q, k, v) instead of varlen packing.
-        All sequences in a batch have equal length, so no cu_seqlens needed.
-        """
-        assert HAVE_FLASH_ATTN_4, "FlashAttention-4 not installed. pip install flash-attn-4"
-        # FA4 beta backward kernels fail for the model's native head_dim=16 on H100. Padding the
-        # per-head dimension to 128 keeps q·k and weighted-v math unchanged as long as we also
-        # preserve the original softmax scale.
-        flash_head_dim = 128 if self.head_dim < 128 else self.head_dim
-        softmax_scale = self.head_dim ** -0.5
-        if self.qkv_combined and qkv is not None:
-            # qkv: [BS, F, 3, num_heads, head_dim]
-            q_, k_, v_ = qkv.unbind(dim=-3)
-            if flash_head_dim != self.head_dim:
-                pad = (0, flash_head_dim - self.head_dim)
-                q_ = torch.nn.functional.pad(q_, pad)
-                k_ = torch.nn.functional.pad(k_, pad)
-                v_ = torch.nn.functional.pad(v_, pad)
-            atten_out = flash_attn_4_func(
-                q_.contiguous(), k_.contiguous(), v_.contiguous(), causal=False, softmax_scale=softmax_scale,
-            )
-        elif not self.qkv_combined and q is not None and kv is not None:
-            # q: [BS, F_q, num_heads, head_dim]
-            # kv: [BS, F_kv, 2, num_heads, head_dim] (may be expanded from GQA)
-            k_, v_ = kv.unbind(dim=-3)
-            if flash_head_dim != self.head_dim:
-                pad = (0, flash_head_dim - self.head_dim)
-                q = torch.nn.functional.pad(q, pad)
-                k_ = torch.nn.functional.pad(k_, pad)
-                v_ = torch.nn.functional.pad(v_, pad)
-            atten_out = flash_attn_4_func(
-                q.contiguous(), k_.contiguous(), v_.contiguous(), causal=False, softmax_scale=softmax_scale,
-            )
-        else:
-            raise ValueError("Either qkv or (q, kv) must be provided")
-        # FA4 returns `(out, lse)` even when `return_lse=False`; only the attention output
-        # should flow into the rest of the projection path.
-        if isinstance(atten_out, tuple):
-            atten_out = atten_out[0]
-        if flash_head_dim != self.head_dim:
-            atten_out = atten_out[..., :self.head_dim].contiguous()
-        # Returns [BS, F, num_heads, head_dim] — compatible with reshape in forward()
-        return atten_out
-
-    def compute_attention_by_flashattn(self, qkv:torch.Tensor|None, q:torch.Tensor|None, kv:torch.Tensor|None) -> torch.Tensor:
-        "Compute attention using flash attention"
-        assert HAVE_FLASH_ATTN, "Flash attention is not supported. Please install/reinstall flash attention."
-        if self.qkv_combined and qkv is not None:
-            B,S = qkv.shape[:2]
-            atten_out = flash_attn_varlen_qkvpacked_func( # type: ignore
-                        qkv.reshape(B * S, 3, self.num_heads, self.head_dim),
-                        self.get_cu_seqlens(B, S, qkv.device),
-                        S,
-                        dropout_p=self.dropout,
-                        softmax_scale=None,
-                        causal=False,
-                        return_attn_probs=False,
-                        deterministic=False,
-                    )
-        elif not self.qkv_combined and q is not None and kv is not None:
-            B,S = q.shape[:2]
-            kv_shape = kv.shape
-            atten_out = flash_attn_varlen_kvpacked_func( # type: ignore
-                    q.reshape(B * S, self.num_heads, self.head_dim),
-                    kv.reshape(B * kv_shape[1], 2, self.num_heads, self.head_dim),
-                    self.get_cu_seqlens(B, S, q.device),
-                    self.get_cu_seqlens(B, kv_shape[1], kv.device),
-                    S,
-                    kv_shape[1],
-                    dropout_p=self.dropout,
-                    causal=False,
-                    return_attn_probs=False,
-                    deterministic=False,
-                )
-        else:
-            raise ValueError("compute_attention_by_flashattn: expected packed qkv or separate q+kv")
-        return atten_out # type: ignore
 
     def caculate_attention_score(self, q: torch.Tensor | None, k: torch.Tensor | None) -> torch.Tensor:
         if len(q.shape) == 3:
@@ -540,15 +419,7 @@ class MultiheadAttention(torch.nn.Module):
             if self.use_qassmax:
                 q = self.apply_qassmax(q, kv.shape[1])
 
-        if attn_mask is None and self.qkv_proj_weight.device.type == "cuda" and not torch.compiler.is_compiling():
-            if HAVE_FLASH_ATTN_4:
-                atten_out = self.compute_attention_by_flashattn4(qkv, q, kv)
-            elif HAVE_FLASH_ATTN:
-                atten_out = self.compute_attention_by_flashattn(qkv, q, kv)
-            else:
-                atten_out = self.compute_attention_by_torch(qkv, q, kv, attn_mask)
-        else:
-            atten_out = self.compute_attention_by_torch(qkv, q, kv, attn_mask)
+        atten_out = self.compute_attention_by_torch(qkv, q, kv, attn_mask)
 
         atten_out = atten_out.reshape(BS, F, self.num_heads, self.head_dim)
 

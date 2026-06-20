@@ -137,7 +137,6 @@ SHARED_ARGS=(
   --nlayers 16
   --prefetch-workers 4
   --prefetch-count 6
-  --no-flash-attn
   --gradient-checkpointing
 )
 
