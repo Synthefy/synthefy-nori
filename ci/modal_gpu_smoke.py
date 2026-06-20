@@ -76,6 +76,9 @@ def gpu_smoke() -> None:
         **os.environ,
         "SYNTHEFY_NORI_SMOKE_DEVICE": "cuda:0",
         "WANDB_MODE": "disabled",
+        # Stream subprocess (uv / pytest) output to the GitHub Actions log in
+        # real time instead of in buffered chunks.
+        "PYTHONUNBUFFERED": "1",
     }
 
     subprocess.run(["uv", "sync", "--extra", "dev"], cwd=repo, env=env, check=True)
