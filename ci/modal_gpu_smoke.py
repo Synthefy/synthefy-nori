@@ -89,11 +89,20 @@ def gpu_smoke() -> None:
          " print('GPU:', torch.cuda.get_device_name(0))"],
         cwd=repo, env=env, check=True,
     )
-    # OPTIONAL flash-attn coverage (A100 is sm80, so FA2 is supported). Left off
-    # because the codebase currently has no flash path; enable only once flash
-    # code returns (it is a long source build):
-    # subprocess.run(["uv", "pip", "install", "flash-attn", "--no-build-isolation"],
-    #                cwd=repo, env=env, check=True)
+    # PROOF RUN ONLY (throwaway branch): turn flash-attention ON to show the GPU
+    # gate catches the bug. Prebuilt wheel matching torch 2.8 / cu12 / cp311 /
+    # cxx11abiTRUE (source build would need nvcc, which the image lacks).
+    flash_wheel = (
+        "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3.post1/"
+        "flash_attn-2.8.3.post1+cu12torch2.8cxx11abiTRUE-cp311-cp311-linux_x86_64.whl"
+    )
+    subprocess.run(["uv", "pip", "install", flash_wheel], cwd=repo, env=env, check=True)
+    subprocess.run(
+        ["uv", "run", "python", "-c",
+         "import flash_attn, synthefy_nori.model.layer as L;"
+         " print('flash_attn', flash_attn.__version__, 'HAVE_FLASH_ATTN', L.HAVE_FLASH_ATTN)"],
+        cwd=repo, env=env, check=True,
+    )
     subprocess.run(
         [
             "uv", "run", "pytest", "-m", "slow",
