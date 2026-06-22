@@ -45,7 +45,10 @@ uv build
   (sklearn-style `fit` / `predict`; `predict` takes
   `output_type="mean"/"median"/"mode"` per the `TabPFNRegressor` contract),
   plus the one-shot `infer` / `predict` helpers and `config_path`. The public
-  API is **regression-only** as of 0.2.0 (classification was removed in #10).
+  API is regression-first; `NoriClassifier` (sklearn-style `fit` /
+  `predict_proba` / `predict`) re-exposes the checkpoint's trained
+  classification head for the RelBench classification tasks. (`infer`/`predict`
+  accept `task="classification"`.)
 - `fit()` only stores the context rows; all compute happens in `predict()`.
   Uses GPU when available, else CPU.
 - Pass `model_path="…/checkpoint.pt"` to run a local checkpoint and skip the

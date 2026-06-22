@@ -1,0 +1,25 @@
+# RelBench entity tasks (classification + regression) across the seven canonical
+# RelBench datasets — the set tracked by the public leaderboard. Recommendation /
+# link-prediction tasks are excluded (not a tabular-model fit).
+# Format: dataset,task   (task_type is read from relbench at runtime)
+rel-amazon,user-churn
+rel-amazon,item-churn
+rel-amazon,user-ltv
+rel-amazon,item-ltv
+rel-avito,user-clicks
+rel-avito,user-visits
+rel-avito,ad-ctr
+rel-event,user-repeat
+rel-event,user-ignore
+rel-event,user-attendance
+rel-f1,driver-dnf
+rel-f1,driver-top3
+rel-f1,driver-position
+rel-hm,user-churn
+rel-hm,item-sales
+rel-stack,user-engagement
+rel-stack,user-badge
+rel-stack,post-votes
+rel-trial,study-outcome
+rel-trial,study-adverse
+rel-trial,site-success

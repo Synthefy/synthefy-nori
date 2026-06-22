@@ -5,5 +5,7 @@ def test_public_imports():
     assert callable(synthefy_nori.predict)
     assert callable(synthefy_nori.infer)
     assert synthefy_nori.NoriRegressor is not None
-    # The classifier is intentionally not part of the published package.
-    assert not hasattr(synthefy_nori, "NoriClassifier")
+    # NoriClassifier is re-exposed for the RelBench classification tasks
+    # (entity-table tabular protocol); it reuses the trained cls head shipped in
+    # the checkpoint.
+    assert synthefy_nori.NoriClassifier is not None

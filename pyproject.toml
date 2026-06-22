@@ -55,6 +55,7 @@ Changelog = "https://github.com/Synthefy/synthefy-nori/releases"
 [project.optional-dependencies]
 train = ["wandb>=0.15.0", "xgboost"]
 eval = ["matplotlib", "openml"]
+relbench = ["relbench"]
 interpretability = ["shapiq>=1.0", "matplotlib"]
 dev = ["build", "pytest", "ruff"]
 

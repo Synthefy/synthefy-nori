@@ -25,6 +25,21 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--talent-reg-dir", default="cache/talent_reg")
     parser.add_argument("--openml-reg", action="store_true",
                         help="Include the curated OpenML regression suite (downloads from OpenML)")
+    parser.add_argument("--relbench", action="store_true",
+                        help="Run the RelBench entity tasks (classification + regression) via the "
+                             "entity-table tabular protocol. Requires the 'relbench' extra. This is a "
+                             "self-contained suite: it ignores the TabArena/TALENT/OpenML loaders above "
+                             "and writes its own per-type results.")
+    parser.add_argument("--relbench-mode", choices=["entity", "temporal", "ds_sql"], default="entity",
+                        help="RelBench feature regime: 'entity' (entity-table merge only), "
+                             "'temporal' (adds per-entity temporal aggregations), or 'ds_sql' "
+                             "(RelBench's published Data-Scientist hand-engineered SQL features, "
+                             "run via DuckDB — model-vs-model comparison on identical features).")
+    parser.add_argument("--relbench-tasks", nargs="+", default=None,
+                        help="Subset of RelBench tasks as 'dataset/task' (default: the full pinned list).")
+    parser.add_argument("--relbench-out", default="results/relbench",
+                        help="Output directory for RelBench results (classification.csv, regression.csv, "
+                             "SUBMISSION.md).")
     parser.add_argument("--download-benchmarks", action="store_true",
                         help="Download the TabArena and TALENT regression CSV caches from OpenML first")
     parser.add_argument("--custom-reg-dir", default=None)
@@ -47,6 +62,29 @@ def main(argv: list[str] | None = None) -> None:
 
     import os
     os.environ.setdefault("SYNTHEFY_MAX_ELEMENTS_BUDGET", str(args.max_elements_budget))
+
+    if args.relbench:
+        from synthefy_nori.evaluation.relbench_tasks import load_task_list, run_suite
+
+        if args.relbench_tasks:
+            tasks = []
+            for spec in args.relbench_tasks:
+                ds, _, tk = spec.partition("/")
+                if not ds or not tk:
+                    parser.error(f"--relbench-tasks expects 'dataset/task', got {spec!r}")
+                tasks.append((ds, tk))
+        else:
+            tasks = load_task_list()
+        run_suite(
+            tasks,
+            mode=args.relbench_mode,
+            device=args.device,
+            inference_config=args.reg_config,
+            max_train=args.max_train_samples,
+            out_dir=args.relbench_out,
+            download=True,
+        )
+        return
 
     from synthefy_nori.evaluation.datasets import DatasetRegistry
     from synthefy_nori.evaluation.models import ModelRegistry

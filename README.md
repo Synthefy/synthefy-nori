@@ -482,6 +482,12 @@ benchmark sources and how to evaluate a Nori checkpoint, and
 [Reproducing these numbers](#reproducing-these-numbers) for the published
 benchmark run.
 
+Nori can also be evaluated on the [RelBench](https://relbench.stanford.edu)
+relational benchmark via the entity-table tabular protocol
+(`pip install "synthefy-nori[relbench]"; synthefy-nori-eval --relbench`). See
+[docs/evaluation.md](docs/evaluation.md#relbench-relational-tasks) for details
+and the current submission status.
+
 ## Hugging Face
 
 ```bash

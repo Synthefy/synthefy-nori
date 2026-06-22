@@ -7,10 +7,10 @@ from typing import Literal
 
 import numpy as np
 import torch
-from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 
 
-Task = Literal["regression", "reg"]
+Task = Literal["regression", "reg", "classification", "cls"]
 
 
 def config_path(filename: str) -> str:
@@ -222,6 +222,102 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         return out
 
 
+class NoriClassifier(ClassifierMixin, BaseEstimator):
+    """Scikit-learn classification estimator wrapping the Synthefy checkpoint.
+
+    Mirrors ``NoriRegressor`` for ``__init__``/device/model-path/config
+    plumbing, but drives the model's ``task_type='cls'`` head and returns
+    calibrated-ish class probabilities suitable for binary AUROC scoring.
+
+    Subclasses ``BaseEstimator``/``ClassifierMixin`` so it works with the
+    scikit-learn ecosystem (``clone``, ``get_params``/``set_params``,
+    ``score``). The ``__init__`` arguments are stored verbatim so ``clone``
+    round trips correctly.
+    """
+
+    def __init__(
+        self,
+        model_path: str | None = None,
+        *,
+        device=None,
+        inference_config: str | None = None,
+        token: str | bool | None = None,
+        augmentations: tuple[str, ...] | list[str] | None = ("yj",),
+        yj_skew_threshold: float = 10.0,
+        quantile_collapse: str = "mean",
+        bar_temperature: float = 1.0,
+        bar_point_estimator: str = "mean",
+    ) -> None:
+        self.model_path = model_path
+        self.device = device
+        self.token = token
+        self.inference_config = inference_config or config_path(
+            "reg_allordinal_poly10_adaptive_svd256.json"
+        )
+        self.augmentations = tuple(augmentations) if augmentations else ()
+        self.yj_skew_threshold = float(yj_skew_threshold)
+        self.quantile_collapse = quantile_collapse
+        self.bar_temperature = float(bar_temperature)
+        self.bar_point_estimator = bar_point_estimator
+        self._predictor = None
+
+    def fit(self, X, y):
+        self.X_train_ = np.asarray(X, dtype=np.float32)
+        self.n_features_in_ = self.X_train_.shape[1]
+        self.classes_, y_enc = np.unique(y, return_inverse=True)
+        self.y_train_ = y_enc.astype(np.int64)
+        self.n_classes_ = len(self.classes_)
+        return self
+
+    def _get_predictor(self):
+        if self._predictor is None:
+            from synthefy_nori.inference.predictor import NoriPredictor
+
+            self._predictor = NoriPredictor(
+                device=_as_device(self.device),
+                model_path=_resolve_model_path(self.model_path, self.token),
+                inference_config=self.inference_config,
+                augmentations=self.augmentations,
+                yj_skew_threshold=self.yj_skew_threshold,
+                quantile_collapse=self.quantile_collapse,
+                bar_temperature=self.bar_temperature,
+                bar_point_estimator=self.bar_point_estimator,
+            )
+        return self._predictor
+
+    def predict_proba(self, X):
+        """Return class probabilities, shape ``(n_test, n_classes_)``.
+
+        Rows sum to 1.0. The model's cls head is fixed at 10 classes; we slice
+        to the observed classes and renormalize so each row is a valid
+        probability vector over ``self.classes_``.
+        """
+        if not hasattr(self, "X_train_"):
+            raise ValueError("Call fit(X, y) before predict_proba(X).")
+
+        X_test = np.asarray(X, dtype=np.float32)
+        predictor = self._get_predictor()
+        y_int = self.y_train_.astype(np.int64)
+
+        proba_full = predictor.predict_cls(self.X_train_, y_int, X_test)
+        proba_full = np.asarray(proba_full, dtype=np.float64)
+        if proba_full.ndim == 1:
+            proba_full = proba_full[None, :]
+
+        # Slice the fixed 10-wide head down to the observed classes and
+        # renormalize each row to sum to 1.0.
+        proba = proba_full[:, : self.n_classes_]
+        row_sums = proba.sum(axis=1, keepdims=True)
+        row_sums = np.where(row_sums > 0.0, row_sums, 1.0)
+        proba = proba / row_sums
+        return proba
+
+    def predict(self, X):
+        """Return predicted class labels for the query rows."""
+        proba = self.predict_proba(X)
+        return self.classes_[np.argmax(proba, axis=1)]
+
+
 def infer(
     X_train,
     y_train,
@@ -232,10 +328,18 @@ def infer(
     token: str | bool | None = None,
     **kwargs,
 ):
-    """Fit on context rows and infer labels for query rows."""
+    """Fit on context rows and infer labels for query rows.
+
+    For classification tasks the returned array is the class-probability
+    matrix from ``predict_proba`` (shape ``(n_test, n_classes)``), suitable for
+    AUROC scoring; regression returns point predictions.
+    """
     if task in ("regression", "reg"):
         model = NoriRegressor(model_path=model_path, token=token, **kwargs).fit(X_train, y_train)
         return model.predict(X_test)
+    if task in ("classification", "cls"):
+        model = NoriClassifier(model_path=model_path, token=token, **kwargs).fit(X_train, y_train)
+        return model.predict_proba(X_test)
     raise ValueError(f"Unsupported task: {task!r}")
 
 

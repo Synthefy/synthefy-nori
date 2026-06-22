@@ -495,6 +495,32 @@ class NoriPredictor:
             preds = self._maybe_snap_discrete_y(y_train, preds)
         return preds
 
+    def predict_cls(self, x_train: np.ndarray, y_train_int: np.ndarray,
+                    x_test: np.ndarray) -> np.ndarray:
+        """Classification inference: return class probabilities.
+
+        Args:
+            x_train: Training features, shape [n_train, n_features].
+            y_train_int: Integer class labels in 0..K-1, shape [n_train].
+            x_test: Query features, shape [n_test, n_features].
+
+        Returns the temperatured-softmax probabilities over the model's full
+        cls head (num_classes=10), shape [n_test, 10]. The caller slices to the
+        observed classes and renormalizes. Shares the regression inference loop
+        via _predict_reg_single(..., task_type="cls"), which returns the
+        ensemble-averaged class logits without regression collapse.
+        """
+        logits = self._predict_reg_single(
+            x_train, y_train_int, x_test, task_type="cls",
+        )
+        if not torch.is_tensor(logits):
+            logits = torch.as_tensor(logits)
+        if logits.ndim == 1:
+            logits = logits.unsqueeze(0)
+        temperature = float(getattr(self, "softmax_temperature", 1.0)) or 1.0
+        proba = torch.softmax(logits.float() / temperature, dim=-1)
+        return proba.detach().cpu().numpy()
+
     @staticmethod
     def _unwrap_model_output(output, *, task_type: str):
         """Normalize model forward outputs across training/inference contracts.
@@ -963,7 +989,8 @@ class NoriPredictor:
             return base_pred
 
     def _predict_reg_single(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray,
-                            return_distribution: bool = False) -> np.ndarray:
+                            return_distribution: bool = False,
+                            task_type: str = "reg") -> np.ndarray:
         # Check size constraints to avoid OOM
         n_features = x_train.shape[1] if x_train.ndim > 1 else 1
         n_samples_train = x_train.shape[0]
@@ -1014,7 +1041,7 @@ class NoriPredictor:
                     feature_attention_score, sample_attention_score = step.inference(X_train=x_train_.astype(np.float32),
                                                                                      y_train=y_.astype(np.float32),
                                                                                      X_test=x_test_.astype(np.float32),
-                                                                                     task_type="reg",device=self.device)
+                                                                                     task_type=task_type,device=self.device)
                     
                 elif isinstance(step, SubSampleData):
                     step.fit(torch.from_numpy(x_train_), torch.from_numpy(y_train),
@@ -1058,7 +1085,7 @@ class NoriPredictor:
                                                  "use_cluster", False),
                                              cluster_num=self.inference_config[id_pipe]["retrieval_config"].get(
                                                  "cluster_num", 20),
-                                             task_type="reg",
+                                             task_type=task_type,
                                              use_threshold=self.inference_config[id_pipe]["retrieval_config"].get(
                                                  "use_threshold", False),
                                              threshold=self.inference_config[id_pipe]["retrieval_config"].get(
@@ -1070,7 +1097,7 @@ class NoriPredictor:
                 inference = InferenceResultWithRetrieval(model=self.model,
                                                          sample_selection_type="DDP")
                 output = inference.inference(x_[:len(y_train)].squeeze(1), y_, x_[len(y_train):].squeeze(1),
-                                             task_type="reg")
+                                             task_type=task_type)
                 outputs.append(output)
             if not self.inference_config[id_pipe]["retrieval_config"]["use_retrieval"] and not self.inference_with_DDP:
                 # Calculate max allowed test samples per batch to avoid OOM.
@@ -1078,6 +1105,18 @@ class NoriPredictor:
                 # Use the post-HighDimFeatureSelector feature count — the model
                 # never sees the raw count when the config reduces dimensionality.
                 chunk_size = max(256, (MAX_ELEMENTS_BUDGET // budget_n_features) - n_samples_train)
+
+                # Also bound the chunk by a max sequence length. The per-forward
+                # sequence is (n_samples_train + chunk_size); a CUDA kernel grid
+                # dimension is tied to it and overflows the 65535 grid-dim limit
+                # ("invalid configuration argument") on long sequences. This is
+                # only reachable when budget_n_features is small (few features),
+                # which lets the element-budget chunk above grow huge — e.g. flat
+                # RelBench entity tables. With many features the element budget
+                # already yields a far smaller chunk, so this cap is a no-op for
+                # the standard tabular benchmarks. Override via SYNTHEFY_MAX_SEQ_LEN.
+                max_seq_len = int(os.environ.get("SYNTHEFY_MAX_SEQ_LEN", "60000"))
+                chunk_size = min(chunk_size, max(256, max_seq_len - n_samples_train))
 
                 # --- Cached train-KV fast path (ON by default) ---
                 # Numerically equivalent to the chunked path below (cache==chunked,
@@ -1090,7 +1129,8 @@ class NoriPredictor:
                 # SYNTHEFY_DISABLE_CACHED_INFERENCE=1 kill switch.
                 bare_model = self.model.module if hasattr(self.model, "module") else self.model
                 use_cached = (
-                    hasattr(bare_model, "forward_cached_regression")
+                    task_type == "reg"
+                    and hasattr(bare_model, "forward_cached_regression")
                     and not self.mask_prediction
                     and n_samples_test > chunk_size
                     and os.environ.get("SYNTHEFY_ENABLE_CACHED_INFERENCE", "1") == "1"
@@ -1120,7 +1160,7 @@ class NoriPredictor:
                                 eval_pos=len(y_train),
                                 row_chunk_size=chunk_size,
                             )
-                        output = self._unwrap_model_output(output, task_type="reg").squeeze(0)
+                        output = self._unwrap_model_output(output, task_type=task_type).squeeze(0)
                         if not torch.isfinite(output).all():
                             output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
                         outputs.append(output)
@@ -1138,7 +1178,9 @@ class NoriPredictor:
                     # Recombine train + test chunk
                     x_chunk_combined = torch.cat([x_[:len(y_train)], x_chunk_test], dim=0)
                     
-                    # Create dummy y for test chunk
+                    # Create dummy y for test chunk. For cls the padding rows
+                    # must be integer class labels (the model indexes the cls
+                    # head with integer y); reg uses the float y dtype as before.
                     y_chunk_test = torch.zeros(end_idx - i, dtype=y_.dtype, device=y_.device)
                     y_chunk_combined = torch.cat([y_[:len(y_train)], y_chunk_test], dim=0)
 
@@ -1147,7 +1189,7 @@ class NoriPredictor:
                         x_in = x_chunk_combined.unsqueeze(0)
                         y_in = y_chunk_combined.unsqueeze(0)
 
-                        chunk_output = self.model(x=x_in, y=y_in, eval_pos=len(y_train), task_type='reg')
+                        chunk_output = self.model(x=x_in, y=y_in, eval_pos=len(y_train), task_type=task_type)
 
                     if self.mask_prediction:
                         process_config = chunk_output['process_config']
@@ -1156,7 +1198,7 @@ class NoriPredictor:
                         mask_predictions.append(chunk_output_feature_pred)
                         chunk_output = chunk_output['reg_output']
 
-                    chunk_output = self._unwrap_model_output(chunk_output, task_type="reg").squeeze(0)
+                    chunk_output = self._unwrap_model_output(chunk_output, task_type=task_type).squeeze(0)
                     if not torch.isfinite(chunk_output).all():
                         chunk_output = torch.nan_to_num(
                             chunk_output,
@@ -1172,6 +1214,11 @@ class NoriPredictor:
                     outputs.append(output)
             
         output = torch.stack(outputs).mean(dim=0)
+        if task_type == "cls":
+            # Classification: return the ensemble-averaged class logits
+            # [n_test, num_classes] WITHOUT regression collapse. The caller
+            # (predict_cls) applies the temperatured softmax + class slicing.
+            return output
         if return_distribution:
             # Return the ensemble-averaged decoder output BEFORE collapse: the
             # per-row quantile bank [n_test, num_reg_quantiles] (pinball head) or
