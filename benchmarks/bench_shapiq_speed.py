@@ -15,15 +15,22 @@ the explanation to a small subset of the highest-variance features, and (c)
 explain a small fixed set of test rows, reporting the mean per-explanation time.
 The model is warmed up with one throwaway ``predict`` before any timing.
 
+Data:
+    Expects ``<name>_train.csv`` / ``<name>_test.csv`` (header row, last column is
+    the target) for the ``superconductivity`` OpenML dataset. Point the script at
+    your local copy with the ``NORI_BENCH_DATA_DIR`` environment variable; it
+    defaults to ``cache/eval_datasets/superconductivity`` under the repo root.
+
 Run:
     uv run python benchmarks/bench_shapiq_speed.py
-    # or: /home/pohanli/synthefy-nori/.venv/bin/python benchmarks/bench_shapiq_speed.py
+    NORI_BENCH_DATA_DIR=/path/to/superconductivity uv run python benchmarks/bench_shapiq_speed.py
 
 Outputs a results table to stdout and saves benchmarks/plots/shapiq_speed.png.
 """
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -38,7 +45,9 @@ from synthefy_nori import NoriRegressor
 from synthefy_nori.interpretability.shapiq import get_nori_imputation_explainer
 
 # --- Configuration -----------------------------------------------------------
-DATA_DIR = Path("cache/pr30_two/superconductivity")
+DATA_DIR = Path(
+    os.environ.get("NORI_BENCH_DATA_DIR", "cache/eval_datasets/superconductivity")
+)
 TRAIN_CSV = DATA_DIR / "superconductivity_train.csv"
 TEST_CSV = DATA_DIR / "superconductivity_test.csv"
 PLOT_PATH = Path("benchmarks/plots/shapiq_speed.png")

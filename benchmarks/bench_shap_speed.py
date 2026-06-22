@@ -24,13 +24,22 @@ This script benchmarks two things on a small feature subset of the
 Results are printed as a table and a labeled plot is saved to
 ``benchmarks/plots/shap_speed.png``.
 
+Data
+----
+Expects ``<name>_train.csv`` / ``<name>_test.csv`` (header row, last column is the
+target) for the ``superconductivity`` OpenML dataset. Point the script at your
+local copy with the ``NORI_BENCH_DATA_DIR`` environment variable; it defaults to
+``cache/eval_datasets/superconductivity`` under the repo root.
+
 How to run
 ----------
     uv run python benchmarks/bench_shap_speed.py
+    NORI_BENCH_DATA_DIR=/path/to/superconductivity uv run python benchmarks/bench_shap_speed.py
 """
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -47,7 +56,11 @@ from synthefy_nori.interpretability.shapiq import get_nori_imputation_explainer
 
 # --- Benchmark configuration ------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = REPO_ROOT / "cache" / "pr30_two" / "superconductivity"
+DATA_DIR = Path(
+    os.environ.get(
+        "NORI_BENCH_DATA_DIR", REPO_ROOT / "cache" / "eval_datasets" / "superconductivity"
+    )
+)
 TRAIN_CSV = DATA_DIR / "superconductivity_train.csv"
 TEST_CSV = DATA_DIR / "superconductivity_test.csv"
 PLOT_PATH = REPO_ROOT / "benchmarks" / "plots" / "shap_speed.png"

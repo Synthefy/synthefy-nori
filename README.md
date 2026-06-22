@@ -237,15 +237,14 @@ hovering near the ~1.9 s single-batched-predict floor. The takeaway: you can rai
 `budget` for far more accurate attributions at near-zero extra cost, and
 interaction order barely changes runtime.
 
-![SHAPIQ explanation speed](benchmarks/plots/shapiq_speed.png)
-
-Reproduce: `uv run python benchmarks/bench_shapiq_speed.py`
+Reproduce (prints the results table and writes `benchmarks/plots/shapiq_speed.png`):
+`uv run python benchmarks/bench_shapiq_speed.py`
 
 ### SHAP explanation speed
 
 The classic `shap` library also works on Nori via a `model.predict` callable. The
-plot below benchmarks per-row explanation time as the evaluation budget grows on a
-12-feature subset of `superconductivity` (context = 1500 rows, 5 test rows, H200).
+benchmark below measures per-row explanation time as the evaluation budget grows on
+a 12-feature subset of `superconductivity` (context = 1500 rows, 5 test rows, H200).
 Because every coalition is one Nori forward pass, `shap.KernelExplainer` stays
 roughly flat (~3.0–3.7 s/row from nsamples 32 to 256, ~6.2 s/row at 512) while
 `shap.PermutationExplainer` scales near-linearly with `max_evals`, climbing from
@@ -254,9 +253,8 @@ roughly flat (~3.0–3.7 s/row from nsamples 32 to 256, ~6.2 s/row at 512) while
 regardless of budget — roughly 2–4× faster than KernelExplainer and up to ~20×
 faster than PermutationExplainer at high budgets.
 
-![SHAP explanation speed](benchmarks/plots/shap_speed.png)
-
-Reproduce: `uv run python benchmarks/bench_shap_speed.py`
+Reproduce (prints the results table and writes `benchmarks/plots/shap_speed.png`):
+`uv run python benchmarks/bench_shap_speed.py`
 
 ## Benchmarks
 
@@ -335,6 +333,22 @@ uv run python tests/test_benchmark_performance.py --device cuda:0
 Note the script's OpenML suite uses its own 70/30 split (the packaged CLI uses
 80/20), so its OpenML numbers differ slightly from the table above.
 
+### RelBench (relational tasks)
+
+Nori also runs on the [RelBench](https://relbench.stanford.edu) leaderboard
+tasks via the entity-table tabular protocol (the regime tabular foundation
+models like TabPFN are listed under), covering the classification (AUROC) and
+regression (MAE) entity tasks across the seven canonical RelBench datasets:
+
+```bash
+pip install "synthefy-nori[relbench]"
+synthefy-nori-eval --relbench
+```
+
+Results (split by task type) and a submission package land in
+`results/relbench/`. See [`docs/evaluation.md`](docs/evaluation.md#relbench-relational-tasks)
+for details, including the current RelBench submission status.
+
 ## Performance (inference speedups)
 
 The speedups below are **on by default** and **deterministic** — identical results
@@ -382,8 +396,8 @@ back to the identical chunked path). Disable it with
 `SYNTHEFY_ENABLE_CACHED_INFERENCE=0` or the `SYNTHEFY_DISABLE_CACHED_INFERENCE=1`
 kill switch.
 
-On the 1024-feature QSAR-TID-11 set (single H200), the plot below shows `predict`
-wall-clock vs. test-set size with the cache OFF vs. ON: the OFF time grows linearly
+On the 1024-feature QSAR-TID-11 set (single H200), `predict` wall-clock vs.
+test-set size with the cache OFF vs. ON shows the OFF time grows linearly
 with the chunk count while the ON time stays roughly flat, reaching a **2.57×**
 speedup on the full 1723-row test set (10.7 s vs. 27.4 s; ~1.3–1.9× at smaller
 sizes). Predictions are effectively identical (max abs diff ~1.5e-3, attributable
@@ -393,9 +407,8 @@ which happens readily on many-feature tables or large test sets (here forced via
 `SYNTHEFY_MAX_ELEMENTS_BUDGET=1050000`, driving `chunk_size` to its 256-row floor →
 7 chunks).
 
-![KV cache speedup](benchmarks/plots/kv_cache_speed.png)
-
-Reproduce: `uv run python benchmarks/bench_kv_cache.py`
+Reproduce (prints the results table and writes `benchmarks/plots/kv_cache_speed.png`):
+`uv run python benchmarks/bench_kv_cache.py`
 
 ```bash
 # All speedups (preprocessing + KV cache) are on by default — nothing to enable.

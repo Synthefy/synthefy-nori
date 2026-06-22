@@ -23,9 +23,15 @@ with the cache ON and OFF (best-of-2, after one throwaway warm-up predict, with
 actually activated (multi-chunk), and verify the two prediction vectors are
 near-identical (max abs diff ~1e-5 or smaller).
 
+Data:
+    Expects ``<name>_train.csv`` / ``<name>_test.csv`` (header row, last column is
+    the target) for the 1024-feature ``QSAR-TID-11`` OpenML dataset. Point the
+    script at your local copy with the ``NORI_BENCH_DATA_DIR`` environment
+    variable; it defaults to ``cache/eval_datasets/QSAR-TID-11`` under the repo root.
+
 Run:
     uv run python benchmarks/bench_kv_cache.py
-    # or: /home/pohanli/synthefy-nori/.venv/bin/python benchmarks/bench_kv_cache.py
+    NORI_BENCH_DATA_DIR=/path/to/QSAR-TID-11 uv run python benchmarks/bench_kv_cache.py
 
 Outputs a results table to stdout and saves benchmarks/plots/kv_cache_speed.png.
 """
@@ -47,7 +53,9 @@ import torch
 from synthefy_nori import NoriRegressor
 
 # --- Configuration -----------------------------------------------------------
-DATA_DIR = Path("cache/pr30_two/QSAR-TID-11")
+DATA_DIR = Path(
+    os.environ.get("NORI_BENCH_DATA_DIR", "cache/eval_datasets/QSAR-TID-11")
+)
 TRAIN_CSV = DATA_DIR / "QSAR-TID-11_train.csv"
 TEST_CSV = DATA_DIR / "QSAR-TID-11_test.csv"
 PLOT_PATH = Path("benchmarks/plots/kv_cache_speed.png")
