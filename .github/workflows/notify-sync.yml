@@ -1,0 +1,24 @@
+name: notify-sync
+
+# On every push to public main, ask synthefy-nori-internal to run rebase-sync.
+# This (public) repo holds NO code-write credential: SYNC_DISPATCH_TOKEN is a
+# narrow fine-grained PAT scoped to "Actions: write" on synthefy-nori-internal
+# ONLY, so it can trigger that one workflow but cannot read or write any code.
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger rebase-sync in internal
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_DISPATCH_TOKEN }}
+        run: |
+          gh workflow run rebase-sync.yml \
+            --repo Synthefy/synthefy-nori-internal \
+            --ref main \
+            -f reason="public@${GITHUB_SHA:0:10} pushed"
