@@ -1,10 +1,5 @@
 # Synthefy Individual Contributor License Agreement
 
-> **⚠️ TEMPLATE — pending legal review.** This is a standard starter CLA adapted
-> from widely used open-source templates. Synthefy's legal team should review and
-> replace this wording before relying on it. The CI mechanism that records
-> signatures works regardless of the exact text here.
-
 Thank you for your interest in contributing to Synthefy's open-source project
 **Nori** (the "Project"). This Contributor License Agreement ("Agreement")
 documents the rights granted by contributors to Synthefy, Inc. ("Synthefy").
