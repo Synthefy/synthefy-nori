@@ -8,11 +8,13 @@ from synthefy_nori.api import (
     infer,
     predict,
 )
+from synthefy_nori.pricing import billable_price
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 __all__ = [
     "NoriRegressor",
+    "billable_price",
     "config_path",
     "infer",
     "predict",
