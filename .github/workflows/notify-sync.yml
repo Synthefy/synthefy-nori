@@ -1,9 +1,16 @@
 name: notify-sync
 
-# On every push to public main, ask synthefy-nori-internal to run rebase-sync.
-# This (public) repo holds NO code-write credential: SYNC_DISPATCH_TOKEN is a
-# narrow fine-grained PAT scoped to "Actions: write" on synthefy-nori-internal
-# ONLY, so it can trigger that one workflow but cannot read or write any code.
+# On a push to main of public OR staging, ask synthefy-nori-internal to run
+# rebase-sync (staging rebases onto public, then internal onto staging).
+#
+# This file lives in synthefy-nori and propagates DOWN the chain, so copies also
+# exist in synthefy-nori-staging and -internal. The `if` makes it run on public
+# and staging (both can dispatch) but SKIP on internal, where a self-triggered
+# cascade is redundant (and would re-fire on the cascade's own force-push).
+#
+# SYNC_DISPATCH_TOKEN is a narrow fine-grained PAT — "Actions: write" on
+# synthefy-nori-internal ONLY (cannot touch code). It must be set on BOTH
+# synthefy-nori AND synthefy-nori-staging for their dispatches to work.
 on:
   push:
     branches: [main]
@@ -12,6 +19,7 @@ permissions: {}
 
 jobs:
   notify:
+    if: github.repository != 'Synthefy/synthefy-nori-internal'
     runs-on: ubuntu-latest
     steps:
       - name: Trigger rebase-sync in internal
@@ -21,4 +29,4 @@ jobs:
           gh workflow run rebase-sync.yml \
             --repo Synthefy/synthefy-nori-internal \
             --ref main \
-            -f reason="public@${GITHUB_SHA:0:10} pushed"
+            -f reason="${{ github.repository }}@${GITHUB_SHA:0:10} pushed"
