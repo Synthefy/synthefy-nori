@@ -762,14 +762,6 @@ class CategoricalFeatureEncoder(BasePreprocess):
         self.fit(x, categorical_features, seed, **kwargs)
         return self.transform(x, **kwargs)
 
-    def _fit_transform(
-        self,
-        X: np.ndarray,
-        categorical_features: list[int],
-    ) -> tuple[np.ndarray, list[int]]:
-        self.fit(X, categorical_features, self.random_seed)
-        return self.transform(X)
-
     @staticmethod
     def get_least_common_category_count(column: np.ndarray) -> int:
         """Retrieve the smallest count value among categorical features"""

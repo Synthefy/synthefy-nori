@@ -80,15 +80,3 @@ def get_nori_imputation_explainer(
         random_state=random_state,
         **kwargs,
     )
-
-
-def get_nori_explainer(model, data, *, index: str = "k-SII", max_order: int = 2, **kwargs: Any):
-    """Auto-detected shapiq explainer over the model object.
-
-    A convenience over :func:`get_nori_imputation_explainer` that hands the
-    estimator to ``shapiq.Explainer`` and lets shapiq pick the backend. Prefer the
-    imputation explainer above; this exists for parity with shapiq's generic entry
-    point.
-    """
-    shapiq = _require_shapiq()
-    return shapiq.Explainer(model=model, data=data, index=index, max_order=max_order, **kwargs)
