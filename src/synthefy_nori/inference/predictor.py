@@ -168,24 +168,6 @@ class NoriPredictor:
 
         self.build_preprocess_pipeline()
 
-    def set_inference_config(self, inference_config: list|str, softmax_temperature:float|None=None, seed:int|None=None):
-        if isinstance(inference_config, str):
-            if os.path.isfile(inference_config):
-                with open(inference_config, 'r') as f:
-                    inference_config = json.load(f)
-            else:
-                raise ValueError(f"inference_config is not a config file path: {inference_config}")
-        self.inference_config = inference_config
-        n_estimators = len(inference_config)
-        assert n_estimators > 0, f"Invalid configuration file! the number of pipelines is 0!"
-        self.n_estimators = n_estimators
-        
-        if softmax_temperature is not None:
-            self.softmax_temperature = softmax_temperature
-        if seed is not None:
-            self.seed = seed
-        self.build_preprocess_pipeline()
-
     def build_preprocess_pipeline(self):
         self.preprocess_pipelines = []
         self.preprocess_configs = []
@@ -324,47 +306,6 @@ class NoriPredictor:
             x[integer_columns] = x[integer_columns].astype(dtypes)
         return x
     
-    def convert_category2num(self, x, dtype:np.floating=np.float64, placeholder: str = NA_PLACEHOLDER,):
-        # --- Drop high-cardinality string columns (e.g. IDs) before encoding ---
-        string_cols_pre = x.select_dtypes(include=["string", "object"]).columns
-        cols_to_drop = []
-        for col in string_cols_pre:
-            n_unique = x[col].nunique()
-            n_samples = len(x[col])
-            # If > 90% of values are unique (and there are at least 50 samples), it's likely an ID column
-            if n_samples > 50 and n_unique / n_samples > 0.90:
-                cols_to_drop.append(col)
-        if cols_to_drop:
-            x = x.drop(columns=cols_to_drop)
-
-        ordinal_encoder = OrdinalEncoder(categories="auto",
-                                        dtype=dtype,
-                                        handle_unknown="use_encoded_value",
-                                        unknown_value=-1,
-                                        encoded_missing_value=np.nan)
-        col_encoder = ColumnTransformer(transformers=[("encoder", ordinal_encoder, make_column_selector(dtype_include=["category", "string", "bool"]))],
-                                        remainder=FunctionTransformer(),
-                                        sparse_threshold=0.0,
-                                        verbose_feature_names_out=False,
-                                    )
-        
-        string_cols = x.select_dtypes(include=["string", "object"]).columns
-        if len(string_cols) > 0:
-            x[string_cols] = x[string_cols].fillna(placeholder)
-        
-        X_encoded = col_encoder.fit_transform(x)
-
-        string_cols_ix = [x.columns.get_loc(col) for col in string_cols]
-        placeholder_mask = x[string_cols] == placeholder
-        string_cols_ix_2 = list(range(len(string_cols_ix)))
-        X_encoded[:, string_cols_ix_2] = np.where(
-            placeholder_mask,
-            np.nan,
-            X_encoded[:, string_cols_ix_2],
-        )
-
-        return X_encoded
-
     def _drop_high_cardinality_string_columns(
         self,
         x_train: pd.DataFrame,

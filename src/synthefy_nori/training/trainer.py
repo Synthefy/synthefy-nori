@@ -7,7 +7,7 @@ import os
 import time
 import math
 import warnings
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 
 import numpy as np
 import torch
@@ -1317,20 +1317,6 @@ class NoriTrainer:
                     ema_tensor.mul_(self.ema_decay).add_(tensor.detach(), alpha=1.0 - self.ema_decay)
                 else:
                     ema_tensor.copy_(tensor)
-
-    @contextmanager
-    def _swap_in_ema_weights(self):
-        if self.ema_state_dict is None:
-            yield
-            return
-
-        model = self._get_bare_model()
-        current_state = self._clone_current_model_state()
-        model.load_state_dict(self.ema_state_dict, strict=True)
-        try:
-            yield
-        finally:
-            model.load_state_dict(current_state, strict=True)
 
     def save_checkpoint(self, path=None):
         """Save a training checkpoint (rank 0 only in DDP)."""

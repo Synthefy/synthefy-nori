@@ -102,48 +102,6 @@ class LinearEncoder(nn.Module):
         input[self.out_key] = self.layer(x)
         return input
 
-class MLPEncoder(nn.Module):
-    """MLP input encoder"""
-    def __init__(
-                self,
-                num_features: int,
-                emsize: int,
-                nan_to_zero: bool = False,
-                bias: bool = True,
-                in_keys: list[str] = ['data'],
-                out_key: str = 'data',
-    ):
-        """Initialize the MLPEncoder.
-
-        Args:
-            num_features: The number of input features.
-            emsize: The embedding size, i.e. the number of output features.
-            nan_to_zero: Whether to replace NaN values in the input by zero. Defaults to False.
-            bias: Whether to use a bias term in the linear layer. Defaults to True.
-        """
-        super().__init__()
-        self.layer = nn.Sequential(
-            nn.Linear(num_features, emsize * 2, bias=bias),
-            nn.LayerNorm(emsize * 2),
-            nn.GELU(),
-            nn.Linear(emsize * 2, emsize, bias=bias),
-            nn.LayerNorm(emsize),
-            nn.GELU()
-        )
-        self.nan_to_zero = nan_to_zero
-        self.in_keys = in_keys
-        self.out_key = out_key
-        
-    def forward(self, input:dict[str, torch.Tensor|int])->dict[str, torch.Tensor]:
-        assert 'data' in input and 'nan_encoding' in input
-        x = [input[key] for key in self.in_keys]
-        x = torch.cat(x, dim=-1) # type: ignore
-        if self.nan_to_zero:
-            x = torch.nan_to_num(x, nan=0.0)
-        input[self.out_key] = self.layer(x)
-        return input
-
-
 class RBFembedding(nn.Module):
     def __init__(
         self, 
