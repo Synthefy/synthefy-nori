@@ -12,6 +12,7 @@ It auto-requests review from the authorized maintainers and satisfies GitHub's
 - `yogabbagabb`
 - `raimishah`
 - `adityanarayanan03`
+- `PohanLi-Synthefy`
 
 ## One-time setup (requires repo admin)
 
