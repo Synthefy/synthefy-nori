@@ -40,4 +40,14 @@ jobs:
           path-to-signatures: 'signatures/cla.json'
           path-to-document: 'https://github.com/Synthefy/synthefy-nori/blob/main/CLA.md'
           branch: 'cla-signatures'
-          allowlist: '*[bot]'
+          # Comma-separated GitHub usernames that are exempt from signing the CLA.
+          # Internal Synthefy contributors are covered by Synthefy's employment/IP
+          # agreements, so they don't need to sign the individual CLA — only
+          # external contributors do. Keep this in sync with the internal team
+          # (mirrors .github/CODEOWNERS).
+          #
+          # Humans only — bots are intentionally NOT allowlisted. A bot cannot
+          # sign (the flow requires the PR author to comment the agreement), so a
+          # bot-authored PR will sit with a red CLA check. If that ever needs to
+          # merge, add the specific bot login here (e.g. copilot-swe-agent[bot]).
+          allowlist: 'sagarwal-atg,d31003,yogabbagabb,raimishah,adityanarayanan03,PohanLi-Synthefy'
