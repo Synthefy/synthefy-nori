@@ -296,10 +296,10 @@ def main():
                         help='Enable synth_v5 SCM improvements (informative categoricals, concat aggregation, multi-dim nodes)')
     parser.add_argument('--synth-v5-mixture', action='store_true',
                         help='Enable synth_v5 mixture prior (25%% v4, 35%% v5c, 40%% v5a per dataset)')
-    parser.add_argument('--model-v2', action='store_true',
-                        help='v2 arch: SwiGLU + RMSNorm + pre-norm/DeepNorm + PBLD')
-    parser.add_argument('--model-v2-lite', action='store_true',
-                        help='v2-lite arch: SwiGLU + RMSNorm + pre-norm/DeepNorm, keep RBF (no PBLD)')
+    parser.add_argument('--model-v1', action='store_true',
+                        help='v1 arch: SwiGLU + RMSNorm + pre-norm/DeepNorm + PBLD')
+    parser.add_argument('--model-v1-lite', action='store_true',
+                        help='v1-lite arch: SwiGLU + RMSNorm + pre-norm/DeepNorm, keep RBF (no PBLD)')
     parser.add_argument('--embed-dim', type=int, default=None,
                         help='Override embedding dimension (default: from checkpoint)')
     parser.add_argument('--hid-dim', type=int, default=None,
@@ -497,8 +497,7 @@ def main():
         if local_rank == 0:
             print(f"Propagated features_per_group={fpg} to preprocess_config_x and encoder_config_x")
 
-    # Apply v2 architecture overrides
-    if args.model_v2:
+    if args.model_v1:
         model_config['activation'] = 'swiglu'
         model_config['norm_type'] = 'rmsnorm'
         model_config['pre_norm'] = True
@@ -506,15 +505,15 @@ def main():
         model_config['encoder_config_x']['numeric_embed_type'] = 'PBLD'
         model_config['encoder_config_x']['PBLD_config'] = {'n_frequencies': 48}
         if local_rank == 0:
-            print("Model v2 enabled: SwiGLU + RMSNorm + pre-norm/DeepNorm + PBLD")
-    elif args.model_v2_lite:
+            print("Model v1 enabled: SwiGLU + RMSNorm + pre-norm/DeepNorm + PBLD")
+    elif args.model_v1_lite:
         model_config['activation'] = 'swiglu'
         model_config['norm_type'] = 'rmsnorm'
         model_config['pre_norm'] = True
         model_config['deepnorm_alpha'] = model_config['nlayers'] ** (-0.5)
         # Keep RBF numeric embedding (no PBLD) for speed
         if local_rank == 0:
-            print("Model v2-lite enabled: SwiGLU + RMSNorm + pre-norm/DeepNorm (RBF kept)")
+            print("Model v1-lite enabled: SwiGLU + RMSNorm + pre-norm/DeepNorm (RBF kept)")
     if local_rank == 0:
         print(
             f"Architecture extras: QASSMax={'on' if model_config['use_qassmax'] else 'off'}, "

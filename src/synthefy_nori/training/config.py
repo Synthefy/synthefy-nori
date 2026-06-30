@@ -106,8 +106,7 @@ class TrainingConfig:
     target_aware_init_scale: float = 1.0
     target_aware_warmup_steps: int = 0
 
-    # Model v2 architecture (SwiGLU, RMSNorm, pre-norm+DeepNorm, PBLD)
-    model_v2: bool = False
+    model_v1: bool = False
 
     # Synthetic data v2 augmentations
     synth_v2: bool = True

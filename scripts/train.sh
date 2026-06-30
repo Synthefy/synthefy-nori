@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Training: tier 1 (from scratch).
 #
-# Architecture: 16 layers, E=128, H=384, nhead=2, model_v2_lite,
+# Architecture: 16 layers, E=128, H=384, nhead=2,
 # column_specific_y_aware, ~5.5M params. Regression via a 999-quantile pinball
 # loss with a monotonicity penalty.
 #
@@ -108,7 +108,7 @@ torchrun --nproc_per_node="${NPROC}" --master_port="${MASTER_PORT}" \
   --icl-filter-model "${ICL_FILTER_MODEL:-limix}" \
   --icl-filter-reg-min-r2 0.05 \
   --quality-filter-max-retries 5 \
-  --model-v2-lite \
+  --model-v1-lite \
   --column-specific-y-aware \
   --embed-dim 128 --hid-dim 384 --nhead 2 --nlayers 16 \
   --batch-size "${BATCH_SIZE}" \

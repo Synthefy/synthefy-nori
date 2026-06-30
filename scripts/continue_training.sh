@@ -129,7 +129,7 @@ SHARED_ARGS=(
   --icl-filter-model "${ICL_FILTER_MODEL:-limix}"
   --icl-filter-reg-min-r2 0.05
   --quality-filter-max-retries 5
-  --model-v2-lite
+  --model-v1-lite
   --column-specific-y-aware
   --embed-dim 128
   --hid-dim 384
