@@ -50,4 +50,4 @@ jobs:
           # sign (the flow requires the PR author to comment the agreement), so a
           # bot-authored PR will sit with a red CLA check. If that ever needs to
           # merge, add the specific bot login here (e.g. copilot-swe-agent[bot]).
-          allowlist: 'sagarwal-atg,d31003,yogabbagabb,raimishah,adityanarayanan03,PohanLi-Synthefy'
+          allowlist: 'sagarwal-atg,d31003,yogabbagabb,raimishah,adityanarayanan03,PohanLi-Synthefy,minkyu-choi07'
