@@ -6,8 +6,8 @@ from synthefy_nori import NoriRegressor, config_path
 
 
 def test_config_path_points_to_bundled_file():
-    path = Path(config_path("reg_default_noretrieval.json"))
-    assert path.name == "reg_default_noretrieval.json"
+    path = Path(config_path("reg_allordinal_poly10_adaptive_svd256.json"))
+    assert path.name == "reg_allordinal_poly10_adaptive_svd256.json"
     assert path.exists()
 
 
