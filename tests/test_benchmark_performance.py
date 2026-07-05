@@ -39,7 +39,6 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
 
 # NOTE: torch and synthefy_nori are imported lazily inside main(), after
 # SYNTHEFY_MAX_ELEMENTS_BUDGET is set, since the predictor reads it at import.
@@ -73,16 +72,19 @@ def compute_reg_metrics(y_true, y_pred):
 # Preprocessing (mirror evaluation/datasets.py: categorical encode + coerce)
 # --------------------------------------------------------------------------- #
 def _prepare_xy(X_train_df, X_test_df):
-    """Label-encode categorical columns (fit on train+test), coerce to float32."""
+    """Ordinal-encode categorical columns (fit on train+test), coerce to float32."""
+    # Lazy import (module-level synthefy_nori imports are deferred, see NOTE
+    # above); reusing the loader's encoder keeps this mirror from drifting.
+    from synthefy_nori.evaluation.datasets import encode_categorical_column
+
     X_train_df = X_train_df.copy()
     X_test_df = X_test_df.copy()
     cat_cols = X_train_df.select_dtypes(include=["object", "category"]).columns
     for col in cat_cols:
-        le = LabelEncoder()
-        combined = pd.concat([X_train_df[col], X_test_df[col]]).fillna("__MISSING__").astype(str)
-        le.fit(combined)
-        X_train_df[col] = le.transform(X_train_df[col].fillna("__MISSING__").astype(str))
-        X_test_df[col] = le.transform(X_test_df[col].fillna("__MISSING__").astype(str))
+        combined = pd.concat([X_train_df[col], X_test_df[col]])
+        _, classes = encode_categorical_column(combined)
+        X_train_df[col], _ = encode_categorical_column(X_train_df[col], classes)
+        X_test_df[col], _ = encode_categorical_column(X_test_df[col], classes)
 
     X_train = X_train_df.apply(pd.to_numeric, errors="coerce").fillna(0).astype(np.float32).to_numpy()
     X_test = X_test_df.apply(pd.to_numeric, errors="coerce").fillna(0).astype(np.float32).to_numpy()

@@ -20,7 +20,32 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
+# Keep in sync with synthefy_nori.inference.predictor.NA_PLACEHOLDER (not
+# imported: this module must stay importable without pulling in torch).
+NA_PLACEHOLDER = "__MISSING__"
+
+
+def encode_categorical_column(col, classes=None):
+    """Ordinal-encode one categorical feature column to sorted-unique int64
+    codes 0..K-1 — exactly what sklearn's LabelEncoder produced here, via the
+    same primitives (np.unique / searchsorted), minus the 0-row raise.
+
+    Missing values are mapped to NA_PLACEHOLDER so they get a real code
+    (callers that want NaN restore it afterwards). Cast to object before
+    fillna: on category dtype, fillna with an unseen value raises. When
+    ``classes`` is given the codes index into it (every value must be present,
+    e.g. classes derived from train+test combined); otherwise classes are
+    derived from ``col``. Returns ``(codes, classes)``.
+    """
+    arr = col.astype(object).fillna(NA_PLACEHOLDER).astype(str).to_numpy()
+    if classes is None:
+        classes, codes = np.unique(arr, return_inverse=True)
+        # numpy 2.0.0 briefly returned a 2-D inverse; ravel so codes are 1-D
+        # on any numpy>=2.0 (keeps written CSV codes reproducible).
+        codes = codes.ravel()
+    else:
+        codes = np.searchsorted(classes, arr)
+    return codes.astype(np.int64), classes
 
 
 @dataclass
@@ -262,8 +287,9 @@ class DatasetRegistry:
             for col in X.columns:
                 if not pd.api.types.is_numeric_dtype(X[col]):
                     mask = X[col].isna()
-                    X[col] = X[col].astype(object).fillna("__MISSING__")
-                    X[col] = LabelEncoder().fit_transform(X[col].astype(str))
+                    # int64 codes keep the written CSVs byte-identical to the
+                    # published ones (same sorted-unique codes as before).
+                    X[col], _ = encode_categorical_column(X[col])
                     if mask.any():
                         X.loc[mask, col] = np.nan
 
@@ -534,19 +560,15 @@ class DatasetRegistry:
             X_test = pd.DataFrame(X_test) if not isinstance(X_test, pd.DataFrame) else X_test.copy()
             y_test = pd.Series(y_test) if not isinstance(y_test, pd.Series) else y_test.copy()
 
-        # Encode object/category/string columns. Cast to object before fillna:
-        # on category dtype, fillna with an unseen value raises, which used to
-        # silently drop every categorical column parsed from parquet/Arrow.
+        # Encode object/category/string columns, classes fit on train+test
+        # combined so a test-only value can't fall outside the code range.
         for col in list(X.select_dtypes(include=["object", "category", "string"]).columns):
             try:
-                le = LabelEncoder()
                 parts = [X[col]] + ([X_test[col]] if X_test is not None else [])
-                combined = pd.concat(parts).astype(object).fillna("__MISSING__").astype(str)
-                le.fit(combined)
-                X[col] = le.transform(X[col].astype(object).fillna("__MISSING__").astype(str))
+                _, classes = encode_categorical_column(pd.concat(parts))
+                X[col], _ = encode_categorical_column(X[col], classes)
                 if X_test is not None:
-                    X_test[col] = le.transform(
-                        X_test[col].astype(object).fillna("__MISSING__").astype(str))
+                    X_test[col], _ = encode_categorical_column(X_test[col], classes)
             except Exception:
                 X = X.drop(columns=[col])
                 if X_test is not None:
