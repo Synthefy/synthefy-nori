@@ -789,6 +789,42 @@ class NoriPredictor:
             # components) — leave the budget conservative (no reduction).
         return max(1, eff)
 
+    def _default_max_elements_budget(self) -> int:
+        """Default per-forward element budget, scaled to the GPU's total VRAM.
+
+        Anchored at 2M elements for a ~24GB GPU (the historical conservative
+        default) and linear in total VRAM, so e.g. a 140GB H200 gets ~11.7M
+        without manual tuning. Falls back to the 2M floor on CPU, when CUDA is
+        unavailable, or if the device can't be queried. Overridden by
+        SYNTHEFY_MAX_ELEMENTS_BUDGET when that env var is set.
+        """
+        base = 2_000_000
+        try:
+            dev = self.device if isinstance(self.device, torch.device) else torch.device(self.device)
+            if dev.type == "cuda" and torch.cuda.is_available():
+                total_gb = torch.cuda.get_device_properties(dev).total_memory / (1024 ** 3)
+                return max(base, int(base * (total_gb / 24.0)))
+        except Exception:
+            pass
+        return base
+
+    def _resolve_max_elements_budget(self) -> int:
+        """Per-forward element budget: ``SYNTHEFY_MAX_ELEMENTS_BUDGET`` when set,
+        else the VRAM-aware default. Single source of truth shared by the predict
+        (``_predict_reg_single``) and embedding (``get_embeddings``) paths, which
+        had duplicated — and drifted on — this resolution.
+        """
+        env_budget = os.environ.get("SYNTHEFY_MAX_ELEMENTS_BUDGET")
+        return int(env_budget) if env_budget else self._default_max_elements_budget()
+
+    @staticmethod
+    def _chunk_size(max_elements: int, budget_n_features: int, n_train: int) -> int:
+        """Query rows per forward so ``(n_train + chunk) * budget_n_features``
+        stays within ``max_elements``; floored at 256. Shared by predict and
+        ``get_embeddings`` so the chunking formula cannot drift between them.
+        """
+        return max(256, (max_elements // max(budget_n_features, 1)) - n_train)
+
     def PostProcessInModel(self, feature_pred:torch.tensor, config: dict) -> torch.tensor:
         # Revert preprocess in model forward
         feature_pred = feature_pred / torch.sqrt(config['features_per_group'] / config['num_used_features'].to(self.device))
@@ -873,6 +909,162 @@ class NoriPredictor:
                     feature_pred = restored.copy()
         return feature_pred
         
+    def get_embeddings(self, x_train: np.ndarray, y_train: np.ndarray,
+                       x_test: np.ndarray | None = None,
+                       data_source: Literal["test", "train"] = "test") -> np.ndarray:
+        """Extract per-row Nori embeddings for a context/query split.
+
+        Runs each preprocessing pipeline (the inference ensemble) through the
+        backbone with ``return_embeddings=True`` and collects the final-layer
+        target-token representation for the requested rows.
+
+        Args:
+            x_train, y_train: context rows the model conditions on.
+            x_test: query rows to embed. Required for ``data_source="test"``;
+                genuinely ignored for ``data_source="train"`` (may be ``None``) —
+                the context embeddings depend only on ``x_train``.
+            data_source: ``"test"`` returns one embedding per query row,
+                ``"train"`` returns one embedding per context row.
+
+        Returns:
+            ``np.ndarray`` of shape ``(n_estimators, n_samples, embed_dim)`` —
+            one slice per preprocessing pipeline, never averaged. ``n_samples``
+            is ``len(x_test)`` for ``data_source="test"`` and ``len(x_train)``
+            for ``data_source="train"``.
+        """
+        if data_source not in ("test", "train"):
+            raise ValueError(
+                f"data_source must be 'test' or 'train', got {data_source!r}.")
+
+        x_train, y_train = self.validate_data(
+            x_train, y_train, reset=True, validate_separately=False,
+            accept_sparse=False, dtype=None, ensure_all_finite=False)
+        if data_source == "train":
+            # Context embeddings ignore the query rows entirely (the train branch
+            # below uses a dummy query drawn from the context). Replace whatever
+            # the caller passed with a single context row so no feature-count
+            # check or full-size query preprocessing applies to unused input —
+            # this is what lets x_test be omitted / mismatched for "train".
+            x_test = x_train[:1]
+        else:
+            if x_test is None:
+                raise ValueError(
+                    "get_embeddings requires x_test for data_source='test'.")
+            x_test = self.validate_data(
+                x_test, reset=False, validate_separately=False,
+                accept_sparse=False, dtype=None, ensure_all_finite=False)
+
+        x_train_base, x_test_base, categorical_idx = self._prepare_inductive_features(
+            x_train, x_test,
+        )
+
+        n_train = len(y_train)
+        n_test = len(x_test)
+        # Chunk the query rows along the same element budget the predictor uses,
+        # so wide/large tables don't OOM while embedding.
+        budget_n_features = self._effective_budget_n_features(
+            x_train.shape[1] if x_train.ndim > 1 else 1, x_train)
+        max_elements = self._resolve_max_elements_budget()
+
+        # Context-size guard. Chunking below only splits the QUERY rows; every
+        # forward still concatenates the full train context (and data_source=
+        # "train" runs one unchunked forward over it). So when the context alone
+        # is over budget, chunking cannot prevent an OOM. Unlike predict(), we do
+        # NOT subsample the context here: it would silently change which rows
+        # condition each embedding (breaking the NoriEmbedding OOF leakage
+        # guarantee), and for data_source="train" it would return fewer rows than
+        # requested. Raise a clear error instead — anything but OOM. This also
+        # honors SYNTHEFY_FORBID_SUBSAMPLE by construction (we never subsample).
+        base_elements = (n_train + 1) * budget_n_features
+        if base_elements > max_elements:
+            raise RuntimeError(
+                f"get_embeddings: train context too large for the element budget "
+                f"(n_train={n_train}, eff_features={budget_n_features}, "
+                f"base_elements={base_elements} > budget={max_elements}). "
+                f"Unlike predict(), embedding does not subsample the context "
+                f"(it would change embedding semantics). Raise "
+                f"SYNTHEFY_MAX_ELEMENTS_BUDGET or reduce the context size to run."
+            )
+        chunk_size = self._chunk_size(max_elements, budget_n_features, n_train)
+
+        # Run embeddings through the UNWRAPPED backbone (skip torch.compile). The
+        # compiled graph is specialized for predict() and guards on the
+        # return_embeddings bool (a dynamo constant); calling it with
+        # return_embeddings=True fails those guards and triggers a second
+        # multi-minute cold compile of a structurally different graph (early
+        # return before the decoder) — a stall the predict-only warmup cannot
+        # hide. The embedding path early-returns before the decoder, so it gains
+        # nothing from the compiled decoder graph; eager is the right default for
+        # this offline/OOF path.
+        bare_model = self._bare_model()
+
+        per_pipeline = []
+        for id_pipe, pipe in enumerate(self.preprocess_pipelines):
+            x_train_ = x_train_base.copy()
+            x_test_ = x_test_base.copy()
+            y_ = y_train.copy()
+            categorical_idx_ = categorical_idx.copy()
+            for id_step, step in enumerate(pipe):
+                if isinstance(step, (InferenceAttentionMap, SubSampleData)):
+                    raise NotImplementedError(
+                        "get_embeddings does not support retrieval-based inference "
+                        "configs (per-query-row context selection makes the train "
+                        "embedding ill-defined). Use a non-retrieval config such as "
+                        "reg_default_noretrieval.json.")
+                x_train_, x_test_, categorical_idx_ = self._fit_transform_step_inductive(
+                    step, x_train_, x_test_, categorical_idx_,
+                    self.seeds[id_pipe * self.preprocess_num
+                               + self._seed_step_index(pipe, id_step)],
+                    y_train=y_,
+                )
+
+            y_dev = torch.from_numpy(y_).float().to(self.device)
+            train_t = torch.from_numpy(x_train_).float().to(self.device)
+            # Feature positional embeddings are regenerated randomly on EVERY
+            # forward pass (add_embeddings -> randn + orthogonal_). Reseed
+            # immediately before each forward (below) so every query chunk — and
+            # the data_source="train" forward — is embedded under the SAME random
+            # basis. Seeding once here would leave chunks 2+ in an incomparable
+            # subspace, adding a spurious chunk-boundary artifact and making
+            # transform(X) depend on len(X). Mirrors _predict_reg_single.
+
+            if data_source == "train":
+                # Context embeddings are independent of the query rows, so one
+                # forward with a single dummy query row suffices.
+                x_all = torch.cat([train_t, train_t[:1]], dim=0).unsqueeze(0)
+                y_all = torch.cat([y_dev, y_dev[:1]], dim=0).unsqueeze(0)
+                bare_model.to(self.device)
+                torch.manual_seed(self.seed)
+                torch.cuda.manual_seed_all(self.seed)
+                with torch.autocast(
+                    device_type=self.device.type if isinstance(self.device, torch.device) else self.device,
+                    enabled=self.mix_precision), torch.inference_mode():
+                    emb = bare_model(x=x_all, y=y_all, eval_pos=n_train,
+                                     task_type='reg', return_embeddings=True)
+                per_pipeline.append(emb[0, :n_train].float().cpu().numpy())
+                continue
+
+            # data_source == "test": embed every query row, chunked.
+            test_t = torch.from_numpy(x_test_).float().to(self.device)
+            chunks = []
+            for i in range(0, n_test, chunk_size):
+                end = min(i + chunk_size, n_test)
+                x_all = torch.cat([train_t, test_t[i:end]], dim=0).unsqueeze(0)
+                y_pad = torch.zeros(end - i, dtype=y_dev.dtype, device=y_dev.device)
+                y_all = torch.cat([y_dev, y_pad], dim=0).unsqueeze(0)
+                bare_model.to(self.device)
+                torch.manual_seed(self.seed)
+                torch.cuda.manual_seed_all(self.seed)
+                with torch.autocast(
+                    device_type=self.device.type if isinstance(self.device, torch.device) else self.device,
+                    enabled=self.mix_precision), torch.inference_mode():
+                    emb = bare_model(x=x_all, y=y_all, eval_pos=n_train,
+                                     task_type='reg', return_embeddings=True)
+                chunks.append(emb[0, n_train:].float().cpu().numpy())
+            per_pipeline.append(np.concatenate(chunks, axis=0))
+
+        return np.stack(per_pipeline, axis=0)
+
     def _predict_reg(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray,
                      return_distribution: bool = False) -> np.ndarray:
         """Regression predict with optional inference-time augmentations.
@@ -970,12 +1162,13 @@ class NoriPredictor:
         n_samples_test = x_test.shape[0]
         
         # If the number of elements is too large, we must chunk the test set to avoid OOM.
-        # The default (2M elements) is conservative for ~24GB GPUs. On larger GPUs
-        # (A100/H100/H200) raise it via SYNTHEFY_MAX_ELEMENTS_BUDGET so big tables use
-        # their full context instead of being silently subsampled — e.g. set
-        # SYNTHEFY_MAX_ELEMENTS_BUDGET=16000000 for large-context (50K-row) inference.
-        MAX_ELEMENTS_BUDGET = int(os.environ.get("SYNTHEFY_MAX_ELEMENTS_BUDGET", "2000000"))
-        
+        # The default is VRAM-aware: anchored at 2M elements for a ~24GB GPU (the
+        # historical conservative value) and scaled linearly with total VRAM, so a
+        # large GPU (A100/H100/H200) uses big tables' full context instead of
+        # silently subsampling, without manual tuning. SYNTHEFY_MAX_ELEMENTS_BUDGET
+        # still overrides explicitly when set.
+        MAX_ELEMENTS_BUDGET = self._resolve_max_elements_budget()
+
         # Calculate elements for one full forward pass (train + 1 test row at
         # minimum). Use the post-HighDimFeatureSelector feature count — the
         # model never sees the raw count when the config reduces dimensionality.
@@ -1077,7 +1270,7 @@ class NoriPredictor:
                 # We need: (n_train + chunk_size) * budget_n_features <= MAX_ELEMENTS_BUDGET.
                 # Use the post-HighDimFeatureSelector feature count — the model
                 # never sees the raw count when the config reduces dimensionality.
-                chunk_size = max(256, (MAX_ELEMENTS_BUDGET // budget_n_features) - n_samples_train)
+                chunk_size = self._chunk_size(MAX_ELEMENTS_BUDGET, budget_n_features, n_samples_train)
 
                 # --- Cached train-KV fast path (ON by default) ---
                 # Numerically equivalent to the chunked path below (cache==chunked,

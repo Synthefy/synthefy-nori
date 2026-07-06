@@ -230,6 +230,7 @@ class FeaturesTransformer(nn.Module):
                 task_type: Literal['reg', 'cls'] = 'cls',
                 calculate_sample_attention: bool = False,
                 calculate_feature_attention: bool = False,
+                return_embeddings: bool = False,
                 **kwargs
                 ) -> torch.Tensor | dict[str, torch.Tensor] | tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         '''
@@ -237,6 +238,10 @@ class FeaturesTransformer(nn.Module):
             y: The input y, which includes both train y and test y, Shape: [batch, label]
             eval_pos: Train x and train y split point
             task_type: Type of task, options: cls(classification), reg(regression)
+            return_embeddings: when True, skip the decoder head and return the
+                per-row target-token representation from the final encoder layer
+                (post encoder_out_norm), shape [batch, seq, embed_dim]. Callers
+                slice context (``:eval_pos``) vs query (``eval_pos:``) themselves.
         '''
         assert x is not None and y is not None, "x and y must not be none"
         assert eval_pos > 0, "eval_pos must be a positive number"
@@ -325,6 +330,14 @@ class FeaturesTransformer(nn.Module):
             pass
         encoder_out = self.transformer_encoder(embedded_all, feature_atten_mask=None, eval_pos=eval_pos, **kwargs)[0]
         encoder_out = self.encoder_out_norm(encoder_out)
+
+        if return_embeddings:
+            # Per-row target-token representation at the final encoder layer.
+            # The target token is the last feature-group slot (index -1); this
+            # is the same representation the regression/classification decoders
+            # consume. [batch, seq, embed_dim] — context rows are [:, :eval_pos]
+            # and query rows are [:, eval_pos:].
+            return encoder_out[:, :, -1]
 
         test_encoder_out = encoder_out[:, eval_pos:, -1]
         encoder_out_4_feature = encoder_out[:, :, :-1, :]
