@@ -161,6 +161,40 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         pred = np.asarray(pred, dtype=np.float64).squeeze()
         return pred * self.y_std_ + self.y_mean_
 
+    def get_embeddings(self, X=None, *, data_source: str = "test") -> np.ndarray:
+        """Return the model's learned representation of rows.
+
+        Embeds ``X`` against the context stored by ``fit`` and returns the
+        final-layer target-token representation per row.
+
+        - ``data_source="test"`` (default): embed the query rows ``X`` (required).
+        - ``data_source="train"``: embed the stored context rows. ``X`` is
+          genuinely ignored here and may be omitted — the context embeddings
+          depend only on the data passed to ``fit`` — so it is neither validated
+          against the fitted feature count nor preprocessed.
+
+        Returns an array of shape ``(n_estimators, n_samples, embed_dim)``,
+        where ``n_estimators`` is the number of preprocessing pipelines in the
+        inference config. Pick a member (``embeds[0]``) or average across
+        ``axis=0`` for a 2D feature matrix.
+        """
+        if not hasattr(self, "X_train_"):
+            raise ValueError("Call fit(X, y) before get_embeddings(X).")
+        y_norm = ((self.y_train_ - self.y_mean_) / self.y_std_).astype(np.float32)
+        predictor = self._get_predictor()
+        if data_source == "train":
+            # X is ignored for context embeddings; do not touch it so a
+            # missing/mismatched X cannot raise. The predictor synthesizes a
+            # dummy query from the context.
+            return predictor.get_embeddings(
+                self.X_train_, y_norm, None, data_source=data_source)
+        if X is None:
+            raise ValueError(
+                "get_embeddings requires X for data_source='test'.")
+        X_test = np.asarray(X, dtype=np.float32)
+        return predictor.get_embeddings(
+            self.X_train_, y_norm, X_test, data_source=data_source)
+
     def _predict_distribution(self, X, *, output_type: str, quantiles: list[float] | None):
         """Return the model's predictive distribution as quantiles.
 

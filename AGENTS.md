@@ -59,6 +59,7 @@ src/synthefy_nori/
   hf.py           HF download/upload + console-script entry points
   model/          FeaturesTransformer architecture
   inference/      NoriPredictor + preprocessing
+  embedding/      NoriEmbedding (sklearn transformer for row embeddings)
   training/       data generation, trainer, loss, config, CLI (GPU / DDP)
   evaluation/     benchmark runner + CLI
   configs/*.json  bundled inference configs (shipped via package-data)

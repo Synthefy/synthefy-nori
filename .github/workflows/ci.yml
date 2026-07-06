@@ -48,3 +48,21 @@ jobs:
       - uses: astral-sh/setup-uv@v8.2.0
       - run: uv sync --extra dev
       - run: uv run pytest -m slow tests/test_training_smoke.py
+
+  # Merge gate (part 3): the embedding feature end-to-end — NoriEmbedding, the
+  # get_embeddings API, the clustering-quality checks, and the shipped examples
+  # (run on tiny data). Downloads the public checkpoint. These are `slow`, so the
+  # default `test` job deselects them; this job is what actually exercises the
+  # real embedding path (and the examples) on every PR. Needs the `eval` extra
+  # for the TabArena example's dataset registry.
+  embedding:
+    name: CI test embeddings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v8.2.0
+      - run: uv sync --extra dev --extra eval
+      - run: uv run pytest -m slow tests/embedding/
