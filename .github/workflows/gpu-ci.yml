@@ -15,8 +15,15 @@ name: gpu-ci
 # fork-PR workflows, so this job is also skipped for forks (a maintainer reruns
 # after review). Do not mark it a required check until the secrets are set.
 #
-# COST: a Modal GPU runs on every non-fork PR push (a few minutes, scales to
-# zero between runs). To cut spend, drop `pull_request:` and rely on push/dispatch.
+# COST: the Modal GPU only spins up when a change actually touches code the gate
+# exercises (src / tests / deps / the CI driver) -- see the "Detect relevant
+# changes" step. A docs-, license-, or config-only PR runs the job as a fast
+# green no-op that never reaches Modal. The filtering is done INSIDE the job (not
+# via a `paths:`/`paths-ignore:` trigger) on purpose: a trigger-level filter makes
+# the check "expected, never reported" on a docs-only PR, which would deadlock the
+# merge button if this job is ever a required check. Filtering in-job keeps the
+# check always-reported, so it stays safe to require. To cut spend further, drop
+# `pull_request:` and rely on push/dispatch.
 
 on:
   pull_request:
@@ -34,11 +41,72 @@ jobs:
       github.event.pull_request.head.repo.fork == false
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full history so we can diff the PR/push against its base commit.
+          fetch-depth: 0
+      - name: Detect relevant changes
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -uo pipefail
+          run_gate()  { echo "relevant=true"  >> "$GITHUB_OUTPUT"; echo "$1"; exit 0; }
+          skip_gate() { echo "relevant=false" >> "$GITHUB_OUTPUT"; echo "$1"; exit 0; }
+
+          # Manual runs are always intentional -> run the gate.
+          [ "$EVENT_NAME" = "workflow_dispatch" ] && run_gate "workflow_dispatch -> run gate"
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$PR_BASE_SHA"
+          else
+            base="$PUSH_BEFORE_SHA"
+          fi
+
+          # Fail SAFE: if we cannot resolve a base commit (branch creation,
+          # force-push, shallow clone), run the gate rather than risk skipping a
+          # real change.
+          zero="0000000000000000000000000000000000000000"
+          if [ -z "$base" ] || [ "$base" = "$zero" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            run_gate "no resolvable base commit -> run gate (fail-safe)"
+          fi
+
+          changed="$(git diff --name-only "$base" HEAD)" || run_gate "git diff failed -> run gate (fail-safe)"
+          echo "changed files:"; printf '%s\n' "$changed" | sed 's/^/  /'
+
+          # DENYLIST, fail-safe: the gate runs unless EVERY changed file is a
+          # known-inert path. A file the gate exercises (src, tests, pyproject,
+          # uv.lock, ci/, this workflow) -- or any NEW path not listed here --
+          # falls through to the default case and runs the gate. Only docs,
+          # licenses, images, and unrelated workflows are treated as inert.
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              *.md|docs/*|examples/*|benchmarks/*|scripts/*|licenses/*) ;;
+              LICENSE|NOTICE|CITATION.cff|CLA.md|SECURITY.md|CONTRIBUTING.md) ;;
+              .gitignore|.pre-commit-config.yaml|*.png) ;;
+              .github/workflows/ci.yml|.github/workflows/cla.yml) ;;
+              .github/workflows/notify-sync.yml|.github/workflows/publish.yml) ;;
+              *) run_gate "relevant change ($f) -> run gate" ;;
+            esac
+          done <<EOF
+          $changed
+          EOF
+          skip_gate "only inert paths changed -> skip GPU gate (no-op)"
+
+      - name: GPU gate skipped (no relevant changes)
+        if: steps.filter.outputs.relevant != 'true'
+        run: echo "No src / tests / deps / ci changes -> GPU gate skipped (green no-op)."
+
       - uses: actions/setup-python@v6
+        if: steps.filter.outputs.relevant == 'true'
         with:
           python-version: "3.11"
       - run: pip install modal
+        if: steps.filter.outputs.relevant == 'true'
       - name: Inference + one training step on a Modal GPU
+        if: steps.filter.outputs.relevant == 'true'
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
