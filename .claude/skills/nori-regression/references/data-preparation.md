@@ -23,6 +23,13 @@ means in practice:
 - **Feature count:** tens of features is the sweet spot. With hundreds,
   select or project first (see `feature_selection` in
   `references/interpretability.md`, or a domain-driven cut).
+- **Engineer richer features, then sweep them.** Domain-informed combinations
+  of raw columns often beat the raw columns: differences of related
+  quantities (process − ambient temperature), physical products (torque ×
+  rotational speed = power), ratios, and load×wear interactions. Build a few
+  candidate feature sets, score each under the one fixed evaluation protocol
+  (`references/evaluation.md`), and keep a richer set only when it wins by
+  more than the fold noise — iterate until gains stop.
 
 ## Target (y)
 
