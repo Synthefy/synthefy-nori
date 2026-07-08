@@ -22,8 +22,9 @@ benchmarks/plots/
 *.safetensors
 *.onnx
 
-# Local agent / tooling state
-.claude/
+# Local agent / tooling state — but ship the project skills
+.claude/*
+!.claude/skills/
 
 # Environment files — may contain secrets, never commit
 .env
