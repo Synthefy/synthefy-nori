@@ -96,8 +96,9 @@ via their CLI flags; don't hardcode paths.
 6. **Forecasting a time series?** Build leak-safe lag/rolling/seasonal
    features, refit at every origin (fit is free), and score against last-value
    and seasonal-naive baselines over a rolling backtest — never a random
-   split. → `templates/forecast_one_step.py`,
-   `references/one-step-forecasting.md`
+   split. Need h periods ahead? Use the direct recipe — newest legal lag is
+   `lag_h`. → `templates/forecast_one_step.py`,
+   `templates/forecast_multi_step.py`, `references/one-step-forecasting.md`
 7. **Tune the practical knobs only if needed.** `device` for GPU, `model_path`
    for a local/pinned checkpoint, `HF_HUB_OFFLINE=1` for air-gapped runs,
    context subsampling for big datasets. → `references/api.md`,

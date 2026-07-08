@@ -54,9 +54,12 @@ band (nominal 0.80). `templates/forecast_one_step.py` runs this end-to-end.
 ## Beyond one step
 
 - **Multi-step:** either *recursive* (feed predictions back as lags — simple,
-  but errors compound and the bands stop being honest) or *direct* (train a
-  separate frame with target `y.shift(-h)` per horizon `h` — one Nori fit per
-  horizon, honest quantiles). Prefer direct when the horizon matters.
+  but errors compound and the bands stop being honest) or *direct* (reframe
+  the table per horizon — one Nori fit per horizon, honest quantiles). Prefer
+  direct; `templates/forecast_multi_step.py` is the runnable recipe. The
+  leak trap at horizon *h*: `lag_1..lag_{h-1}` reference periods that are
+  **not yet observed** at forecast time — the newest legal lag is `lag_h`,
+  and context targets must also stop at `t-h`.
 - **Many related series (a panel):** pool rows across series with a shared
   feature schema and a scale-free target so one model serves them all — that,
   plus cold-start handling, exogenous signals, and ensembling, is the
