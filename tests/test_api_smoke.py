@@ -17,6 +17,31 @@ def test_regressor_uses_default_regression_config():
     assert model.inference_config.endswith("reg_allordinal_poly10_adaptive_svd256.json")
 
 
+def test_regressor_stores_model_variant_verbatim():
+    # stored as-is so sklearn clone/get_params round-trips (BaseEstimator contract)
+    model = NoriRegressor(model="nori-30m")
+    assert model.model == "nori-30m"
+    assert model.get_params()["model"] == "nori-30m"
+    assert NoriRegressor().model is None  # default: base 6M
+
+
+def test_resolve_model_path_threads_variant_to_download(monkeypatch):
+    from synthefy_nori import api
+
+    seen = {}
+
+    def fake_download(*, model=None, token=None):
+        seen["model"] = model
+        return "/tmp/resolved.pt"
+
+    monkeypatch.setattr("synthefy_nori.hf.download_checkpoint", fake_download)
+    # variant flows through to the download
+    assert api._resolve_model_path(None, None, "nori-30m") == "/tmp/resolved.pt"
+    assert seen["model"] == "nori-30m"
+    # an explicit local checkpoint still wins over the variant
+    assert api._resolve_model_path("/my/ckpt.pt", None, "nori-30m") == "/my/ckpt.pt"
+
+
 def test_predict_rejects_unsupported_output_types():
     # output_type is validated before the checkpoint is loaded, so these paths
     # exercise the guardrails without any model weights.
