@@ -9,6 +9,13 @@ import numpy as np
 import torch
 from sklearn.base import BaseEstimator, RegressorMixin
 
+from synthefy_nori.discretize import (
+    DISCRETIZE_METHODS,
+    SNAP_METHODS,
+    discretize_predictions,
+    target_levels,
+)
+
 
 Task = Literal["regression", "reg"]
 
@@ -61,6 +68,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         quantile_collapse: str = "mean",
         bar_temperature: float = 1.0,
         bar_point_estimator: str = "mean",
+        discrete_y_snap_max_unique: int = 0,
     ) -> None:
         self.model_path = model_path
         # Variant selector: "nori" (default, ~6M base) / "nori-6m" / "nori-30m", resolved to a
@@ -76,6 +84,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         self.quantile_collapse = quantile_collapse
         self.bar_temperature = float(bar_temperature)
         self.bar_point_estimator = bar_point_estimator
+        self.discrete_y_snap_max_unique = int(discrete_y_snap_max_unique)
         self._predictor = None
 
     def fit(self, X, y):
@@ -100,10 +109,20 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 quantile_collapse=self.quantile_collapse,
                 bar_temperature=self.bar_temperature,
                 bar_point_estimator=self.bar_point_estimator,
+                discrete_y_snap_max_unique=self.discrete_y_snap_max_unique,
             )
         return self._predictor
 
-    def predict(self, X, *, output_type: str = "mean", quantiles: list[float] | None = None):
+    def predict(
+        self,
+        X,
+        *,
+        output_type: str = "mean",
+        quantiles: list[float] | None = None,
+        categorical_target: bool = False,
+        discretize: str | None = None,
+        categorical_levels=None,
+    ):
         """Predict targets for the query rows.
 
         ``output_type`` selects what is returned from the model's predictive
@@ -123,7 +142,34 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         ``"quantiles"`` / ``"full"`` are only available for the pinball
         (quantile-head) checkpoint shipped by default; a ``bar_distribution``
         checkpoint raises ``NotImplementedError``.
+
+        ``categorical_target=True`` declares a discrete target and returns
+        labels on its level lattice (from ``categorical_levels=`` if given,
+        else the distinct values of the fitted ``y``). ``discretize`` picks
+        the strategy: ``"map-cell"`` (default; accuracy-optimal),
+        ``"median-cell"`` (MAE-optimal), ``"snap-mean"`` (QWK),
+        ``"snap-median"`` — full guidance in ``synthefy_nori.discretize`` and
+        docs/inference.md. Discretization is strictly opt-in; for R²-scored
+        tasks keep the default continuous mean.
         """
+        if not categorical_target and (
+            discretize is not None or categorical_levels is not None
+        ):
+            raise ValueError(
+                "discretize=/categorical_levels= require categorical_target=True."
+            )
+        if categorical_target:
+            if output_type != "mean" or quantiles is not None:
+                raise ValueError(
+                    "categorical_target=True returns discrete labels; combine it "
+                    "only with the default output_type='mean' (the discretize= "
+                    "strategy chooses the summary), not output_type/quantiles."
+                )
+            return self._predict_categorical(
+                X,
+                method="map-cell" if discretize is None else discretize,
+                levels=categorical_levels,
+            )
         if output_type in ("quantiles", "full"):
             return self._predict_distribution(X, output_type=output_type, quantiles=quantiles)
         if output_type == "main":
@@ -141,6 +187,23 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 "quantiles= is only valid with output_type='quantiles'."
             )
 
+        # Drive the predictor's distribution-collapse from output_type. "mean"
+        # uses the regressor's configured collapse so the default path is
+        # byte-for-byte the prior behavior; "median"/"mode" override it for this
+        # call. A quantile head has no native mode, so "mode" falls back to the
+        # median there, while bar-distribution heads decode a true mode.
+        if output_type == "mean":
+            return self._predict_point(
+                X,
+                quantile_collapse=self.quantile_collapse,
+                bar_point_estimator=self.bar_point_estimator,
+            )
+        return self._predict_point(
+            X, quantile_collapse="median", bar_point_estimator=output_type)
+
+    def _predict_point(self, X, *, quantile_collapse: str, bar_point_estimator: str):
+        """One point-prediction pass with an explicit collapse, predictor state
+        restored afterwards (so no call leaks its collapse into the next)."""
         if not hasattr(self, "X_train_"):
             raise ValueError("Call fit(X, y) before predict(X).")
 
@@ -148,19 +211,13 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         y_norm = ((self.y_train_ - self.y_mean_) / self.y_std_).astype(np.float32)
 
         predictor = self._get_predictor()
-        # Drive the predictor's distribution-collapse from output_type. "mean"
-        # restores the regressor's configured collapse so the default path is
-        # byte-for-byte the prior behavior; "median"/"mode" override it for this
-        # call. A quantile head has no native mode, so "mode" falls back to the
-        # median there, while bar-distribution heads decode a true mode.
-        if output_type == "mean":
-            predictor.quantile_collapse = self.quantile_collapse
-            predictor.bar_point_estimator = self.bar_point_estimator
-        else:
-            predictor.quantile_collapse = "median"
-            predictor.bar_point_estimator = output_type
-
-        pred = predictor.predict(self.X_train_, y_norm, X_test)
+        saved = (predictor.quantile_collapse, predictor.bar_point_estimator)
+        try:
+            predictor.quantile_collapse = quantile_collapse
+            predictor.bar_point_estimator = bar_point_estimator
+            pred = predictor.predict(self.X_train_, y_norm, X_test)
+        finally:
+            predictor.quantile_collapse, predictor.bar_point_estimator = saved
         if isinstance(pred, torch.Tensor):
             pred = pred.detach().cpu().numpy()
         pred = np.asarray(pred, dtype=np.float64).squeeze()
@@ -260,6 +317,42 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
             out[i] = (1.0 - w) * Q[:, lo] + w * Q[:, hi]
         return out
 
+    def _predict_categorical(self, X, *, method: str, levels=None):
+        """Predict onto a discrete target's level lattice (``categorical_target=True``).
+
+        ``snap-*`` methods discretize a point prediction with the collapse the
+        method names (mean/median), regardless of the configured
+        ``quantile_collapse`` — so ``snap-mean`` always snaps the mean. They
+        work for every checkpoint. ``map-cell``/``median-cell`` need the
+        quantile bank and share ``_predict_distribution``'s pinball-checkpoint
+        requirement.
+        """
+        # validate before the (expensive) forward pass; discretize_predictions
+        # re-checks as the canonical gate for direct module users
+        if method not in DISCRETIZE_METHODS:
+            raise ValueError(
+                f"Unknown discretize method {method!r}; expected one of "
+                f"{DISCRETIZE_METHODS}."
+            )
+        if not hasattr(self, "X_train_"):
+            raise ValueError("Call fit(X, y) before predict(X).")
+        lattice = target_levels(self.y_train_ if levels is None else levels)
+        if method in SNAP_METHODS:
+            collapse = "mean" if method == "snap-mean" else "median"
+            point = self._predict_point(
+                X, quantile_collapse=collapse, bar_point_estimator=collapse)
+            return discretize_predictions(method, lattice, point=point)
+        try:
+            dist = self._predict_distribution(X, output_type="full", quantiles=None)
+        except NotImplementedError as err:
+            raise NotImplementedError(
+                f"discretize={method!r} needs the quantile bank, which this "
+                "bar_distribution checkpoint does not expose. Use "
+                "discretize='snap-mean' or 'snap-median' instead."
+            ) from err
+        return discretize_predictions(
+            method, lattice, Q=dist["quantiles"], taus=dist["taus"])
+
 
 def infer(
     X_train,
@@ -270,18 +363,29 @@ def infer(
     model_path: str | None = None,
     model: str | None = None,
     token: str | bool | None = None,
+    categorical_target: bool = False,
+    discretize: str | None = None,
+    categorical_levels=None,
     **kwargs,
 ):
     """Fit on context rows and infer labels for query rows.
 
     ``model`` selects a variant (e.g. ``"nori-30m"``); ``model_path`` still takes an explicit
     local checkpoint and wins over ``model`` when both are given.
+
+    ``categorical_target`` / ``discretize`` / ``categorical_levels`` map
+    predictions onto a discrete target's levels — see ``NoriRegressor.predict``.
     """
     if task in ("regression", "reg"):
         estimator = NoriRegressor(
             model_path=model_path, model=model, token=token, **kwargs
         ).fit(X_train, y_train)
-        return estimator.predict(X_test)
+        return estimator.predict(
+            X_test,
+            categorical_target=categorical_target,
+            discretize=discretize,
+            categorical_levels=categorical_levels,
+        )
     raise ValueError(f"Unsupported task: {task!r}")
 
 

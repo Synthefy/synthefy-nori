@@ -43,9 +43,14 @@ uv build
   for higher rate limits or for pointing at a private/custom repo.
 - Public API (`src/synthefy_nori/api.py`): `NoriRegressor`
   (sklearn-style `fit` / `predict`; `predict` takes
-  `output_type="mean"/"median"/"mode"` per the `TabPFNRegressor` contract),
-  plus the one-shot `infer` / `predict` helpers and `config_path`. The public
-  API is **regression-only** as of 0.2.0 (classification was removed in #10).
+  `output_type="mean"/"median"/"mode"` per the `TabPFNRegressor` contract,
+  plus opt-in `categorical_target=True` with `discretize=`/`categorical_levels=`
+  to return labels on a discrete target's lattice — strategies in
+  `synthefy_nori/discretize.py`), plus the one-shot `infer` / `predict`
+  helpers and `config_path`. The public API is **regression-only** as of
+  0.2.0 (classification was removed in #10). The predictor's legacy low-K
+  auto-snap (`discrete_y_snap_max_unique`) is **off by default** — lattice
+  snapping is opt-in only.
 - `fit()` only stores the context rows; all compute happens in `predict()`.
   Uses GPU when available, else CPU.
 - Pass `model_path="…/checkpoint.pt"` to run a local checkpoint and skip the
@@ -56,6 +61,7 @@ uv build
 ```
 src/synthefy_nori/
   api.py          Public API (sklearn-style NoriRegressor + one-shot helpers).
+  discretize.py   Categorical-target lattice math (cell masses, snap, strategies).
   hf.py           HF download/upload + console-script entry points
   model/          FeaturesTransformer architecture
   inference/      NoriPredictor + preprocessing
