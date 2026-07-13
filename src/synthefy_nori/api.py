@@ -28,12 +28,13 @@ def _as_device(device):
     return torch.device(device)
 
 
-def _resolve_model_path(model_path: str | None, token: str | bool | None = None) -> str:
+def _resolve_model_path(model_path: str | None, token: str | bool | None = None,
+                        model: str | None = None) -> str:
     if model_path is not None:
         return model_path
     from synthefy_nori.hf import download_checkpoint
 
-    return download_checkpoint(token=token)
+    return download_checkpoint(model=model, token=token)
 
 
 class NoriRegressor(RegressorMixin, BaseEstimator):
@@ -51,6 +52,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         self,
         model_path: str | None = None,
         *,
+        model: str | None = None,
         device=None,
         inference_config: str | None = None,
         token: str | bool | None = None,
@@ -61,6 +63,9 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         bar_point_estimator: str = "mean",
     ) -> None:
         self.model_path = model_path
+        # Variant selector: "nori" (default, ~6M base) / "nori-6m" / "nori-30m", resolved to a
+        # Hugging Face repo via synthefy_nori.hf.NORI_MODELS. Ignored when model_path is given.
+        self.model = model
         self.device = device
         self.token = token
         self.inference_config = inference_config or config_path(
@@ -88,7 +93,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
 
             self._predictor = NoriPredictor(
                 device=_as_device(self.device),
-                model_path=_resolve_model_path(self.model_path, self.token),
+                model_path=_resolve_model_path(self.model_path, self.token, self.model),
                 inference_config=self.inference_config,
                 augmentations=self.augmentations,
                 yj_skew_threshold=self.yj_skew_threshold,
@@ -263,13 +268,20 @@ def infer(
     *,
     task: Task = "regression",
     model_path: str | None = None,
+    model: str | None = None,
     token: str | bool | None = None,
     **kwargs,
 ):
-    """Fit on context rows and infer labels for query rows."""
+    """Fit on context rows and infer labels for query rows.
+
+    ``model`` selects a variant (e.g. ``"nori-30m"``); ``model_path`` still takes an explicit
+    local checkpoint and wins over ``model`` when both are given.
+    """
     if task in ("regression", "reg"):
-        model = NoriRegressor(model_path=model_path, token=token, **kwargs).fit(X_train, y_train)
-        return model.predict(X_test)
+        estimator = NoriRegressor(
+            model_path=model_path, model=model, token=token, **kwargs
+        ).fit(X_train, y_train)
+        return estimator.predict(X_test)
     raise ValueError(f"Unsupported task: {task!r}")
 
 
@@ -280,8 +292,11 @@ def predict(
     *,
     task: Task = "regression",
     model_path: str | None = None,
+    model: str | None = None,
     token: str | bool | None = None,
     **kwargs,
 ):
     """Alias for infer()."""
-    return infer(X_train, y_train, X_test, task=task, model_path=model_path, token=token, **kwargs)
+    return infer(
+        X_train, y_train, X_test, task=task, model_path=model_path, model=model, token=token, **kwargs
+    )

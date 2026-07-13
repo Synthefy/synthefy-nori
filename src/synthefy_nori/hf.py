@@ -16,6 +16,27 @@ DEFAULT_CHECKPOINT_FILENAME = os.environ.get(
     "nori.pt",
 )
 
+# Model-variant registry: friendly name -> Hugging Face repo id. Selecting a Nori size is just
+# ``model="nori-30m"`` on NoriRegressor / infer / predict (or ``download_checkpoint(model=...)``).
+# ``"nori"`` is the default (the ~6M base) and honors the SYNTHEFY_NORI_HF_REPO override; add one
+# line per new variant. An unknown name is treated as a raw repo id, so an explicit ``"org/repo"``
+# still works.
+DEFAULT_MODEL = "nori"
+NORI_MODELS = {
+    "nori": DEFAULT_MODEL_REPO_ID,     # base ~6M (default)
+    "nori-6m": DEFAULT_MODEL_REPO_ID,  # explicit alias for the base
+    "nori-30m": "Synthefy/Nori-30M",   # ~29.2M scaling-law variant
+}
+
+
+def resolve_model_repo(model: str | None) -> str:
+    """Map a variant name to its HF repo id: ``None`` -> the default (~6M) base, a known name
+    -> its repo, anything else returned unchanged (so a raw ``"org/repo"`` id also works)."""
+    if model is None:
+        model = DEFAULT_MODEL
+    return NORI_MODELS.get(model, model)
+
+
 LIMIX_REPO_ID = "stableai-org/LimiX-2M"
 LIMIX_FILENAME = "LimiX-2M.ckpt"
 
@@ -40,12 +61,19 @@ def download_checkpoint(
     repo_id: str = DEFAULT_MODEL_REPO_ID,
     filename: str = DEFAULT_CHECKPOINT_FILENAME,
     *,
+    model: str | None = None,
     revision: str | None = None,
     cache_dir: str | None = None,
     token: str | bool | None = None,
     force_download: bool = False,
 ) -> str:
-    """Download a checkpoint from the Hugging Face Hub and return its local path."""
+    """Download a checkpoint from the Hugging Face Hub and return its local path.
+
+    ``model`` selects a registry variant (e.g. ``"nori-30m"``) and, when given, overrides
+    ``repo_id``; leave it ``None`` to use ``repo_id`` (the ~6M base by default).
+    """
+    if model is not None:
+        repo_id = resolve_model_repo(model)
     try:
         from huggingface_hub import hf_hub_download
         from huggingface_hub.errors import (
@@ -73,10 +101,11 @@ def download_checkpoint(
             raise CheckpointAccessError(_access_error_message(repo_id)) from exc
         raise
 
-    if repo_id == DEFAULT_MODEL_REPO_ID and filename != "config.json":
+    if repo_id in NORI_MODELS.values() and filename != "config.json":
         # The Hub counts model downloads only via its query file (config.json),
         # never via .pt requests, so fetch the small config alongside the
-        # checkpoint to make downloads show up in the repo's stats.
+        # checkpoint to make downloads show up in the repo's stats (for every
+        # Synthefy Nori variant, not just the base).
         try:
             hf_hub_download(
                 repo_id=repo_id,
