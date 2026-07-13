@@ -17,7 +17,8 @@ The model is trained entirely on synthetic data.
 This repository contains the public training, inference, evaluation, and Hugging
 Face checkpoint tooling.
 
-Across 96 public regression tasks it averages **0.75 mean / 0.87 median R²** — see
+Across 96 public regression tasks the base (~6M) averages **0.75 mean / 0.87 median R²**, and the
+larger **Nori-30M** variant (`model="nori-30m"`) is stronger on every suite — see
 [Benchmarks](#benchmarks) for the full breakdown and how to reproduce it.
 
 ## Table of contents
@@ -258,17 +259,19 @@ Reproduce (prints the results table and writes `benchmarks/plots/shap_speed.png`
 
 ## Benchmarks
 
-Mean and median R² of the base model across 96 regression tasks from three
-public benchmark suites (~5.9M-parameter model):
+Mean and median R² across 96 regression tasks from three public benchmark suites, for both
+Nori sizes — select with `model="nori"` (~6M, default) or `model="nori-30m"` (~29M):
 
-| Suite | Datasets | Mean R² | Median R² |
-|-------|---------:|--------:|----------:|
-| TabArena | 13 | 0.8117 | 0.8757 |
-| TALENT | 72 | 0.7569 | 0.8802 |
-| OpenML | 11 | 0.6373 | 0.5856 |
-| **Overall** | **96** | **0.7506** | **0.8702** |
+| Suite | Datasets | Nori · mean / median | Nori-30M · mean / median |
+|-------|---------:|:--------------------:|:------------------------:|
+| TabArena | 13 | 0.8117 / 0.8757 | 0.8148 / 0.8834 |
+| TALENT | 72 | 0.7569 / 0.8802 | 0.7575 / 0.8844 |
+| OpenML | 11 | 0.6373 / 0.5856 | 0.6459 / 0.6212 |
+| **Overall** | **96** | **0.7506 / 0.8702** | **0.7525 / 0.8745** |
 
-Per-dataset numbers behind this table are in
+Nori-30M is stronger on every suite. Both models are evaluated under the identical protocol
+below; in this run the 6M numbers reproduced the published table to within 0.0004, so the
+cross-model comparison is like-for-like. Per-dataset numbers behind the base-model column are in
 [`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv).
 
 Large-N / long-context tables (common in TabArena) are the current focus of the
