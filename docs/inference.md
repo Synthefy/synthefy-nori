@@ -88,9 +88,14 @@ Notes:
   configured `quantile_collapse`).
 - The one-shot helpers accept the same arguments:
   `infer(X_train, y_train, X_test, categorical_target=True)`.
-- Not routed through sklearn metadata: `cross_val_score`/`GridSearchCV` call
-  `predict(X)` with defaults, so wrap the estimator if you need CV over
-  discretization strategies.
+- All three are also **estimator parameters**, so the sklearn ecosystem can
+  reach them — `predict` kwargs override per call:
+
+  ```python
+  gs = GridSearchCV(NoriRegressor(categorical_target=True),
+                    {"discretize": ["map-cell", "median-cell", "snap-mean"]},
+                    scoring="accuracy", cv=5)
+  ```
 
 The underlying lattice math is importable from `synthefy_nori.discretize`
 (`cell_masses`, `discretize_predictions`, `snap_to_levels`).

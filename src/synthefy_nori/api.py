@@ -69,6 +69,9 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         bar_temperature: float = 1.0,
         bar_point_estimator: str = "mean",
         discrete_y_snap_max_unique: int = 0,
+        categorical_target: bool = False,
+        discretize: str | None = None,
+        categorical_levels=None,
     ) -> None:
         self.model_path = model_path
         # Variant selector: "nori" (default, ~6M base) / "nori-6m" / "nori-30m", resolved to a
@@ -85,6 +88,12 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         self.bar_temperature = float(bar_temperature)
         self.bar_point_estimator = bar_point_estimator
         self.discrete_y_snap_max_unique = int(discrete_y_snap_max_unique)
+        # estimator-level defaults for the categorical-target path, so the
+        # feature is reachable through the sklearn ecosystem (clone/get_params/
+        # GridSearchCV/cross_val_score); predict() kwargs override per call.
+        self.categorical_target = categorical_target
+        self.discretize = discretize
+        self.categorical_levels = categorical_levels
         self._predictor = None
 
     def fit(self, X, y):
@@ -119,7 +128,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         *,
         output_type: str = "mean",
         quantiles: list[float] | None = None,
-        categorical_target: bool = False,
+        categorical_target: bool | None = None,
         discretize: str | None = None,
         categorical_levels=None,
     ):
@@ -151,10 +160,23 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         ``"snap-median"`` — full guidance in ``synthefy_nori.discretize`` and
         docs/inference.md. Discretization is strictly opt-in; for R²-scored
         tasks keep the default continuous mean.
+
+        All three can also be set on the constructor (estimator params, so
+        ``clone``/``GridSearchCV``/``cross_val_score`` see them); the
+        ``predict`` kwargs override the estimator values per call.
         """
-        if not categorical_target and (
-            discretize is not None or categorical_levels is not None
-        ):
+        explicit_extras = discretize is not None or categorical_levels is not None
+        if categorical_target is None:
+            categorical_target = self.categorical_target
+        if discretize is None:
+            discretize = self.discretize
+        if categorical_levels is None:
+            categorical_levels = self.categorical_levels
+        # A per-call discretize/levels without an effective categorical_target
+        # is a mistake and raises; estimator-level discretize/levels with the
+        # switch off are simply inert (grid searches legitimately combine
+        # categorical_target=[False, True] with a discretize grid).
+        if not categorical_target and explicit_extras:
             raise ValueError(
                 "discretize=/categorical_levels= require categorical_target=True."
             )
@@ -363,7 +385,7 @@ def infer(
     model_path: str | None = None,
     model: str | None = None,
     token: str | bool | None = None,
-    categorical_target: bool = False,
+    categorical_target: bool | None = None,
     discretize: str | None = None,
     categorical_levels=None,
     **kwargs,

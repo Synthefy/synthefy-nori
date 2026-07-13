@@ -235,3 +235,60 @@ class TestPredictCategoricalAPI:
         out = model.predict(np.zeros((3, 2), dtype=np.float32),
                             categorical_target=True, discretize=method)
         assert set(out.tolist()) <= {3.0, 5.0, 7.0}
+
+
+class TestSklearnEcosystem:
+    """Estimator-level categorical params: clone/get_params/CV reachability."""
+
+    def _patch_distribution(self, monkeypatch):
+        def fake_dist(self, X, *, output_type, quantiles):
+            n = np.asarray(X).shape[0]
+            taus = (np.arange(99) + 1.0) / 100.0
+            Q = 5.0 + 0.1 * norm.ppf(taus)[None, :] * np.ones((n, 1))
+            return {"quantiles": Q, "taus": taus, "mean": Q.mean(axis=1)}
+
+        monkeypatch.setattr(NoriRegressor, "_predict_distribution", fake_dist)
+
+    def test_constructor_params_drive_predict(self, monkeypatch):
+        self._patch_distribution(monkeypatch)
+        model = NoriRegressor(categorical_target=True, discretize="map-cell")
+        model.fit(np.zeros((6, 2), dtype=np.float32),
+                  np.array([3.0, 3.0, 5.0, 5.0, 7.0, 7.0]))
+        out = model.predict(np.zeros((4, 2), dtype=np.float32))
+        assert out.tolist() == [5.0, 5.0, 5.0, 5.0]
+
+    def test_per_call_override_wins(self, monkeypatch):
+        self._patch_distribution(monkeypatch)
+        model = NoriRegressor(categorical_target=True)
+        model.fit(np.zeros((6, 2), dtype=np.float32),
+                  np.array([3.0, 3.0, 5.0, 5.0, 7.0, 7.0]))
+        monkeypatch.setattr(
+            NoriRegressor, "_predict_point",
+            lambda self, X, *, quantile_collapse, bar_point_estimator:
+                np.array([5.37] * np.asarray(X).shape[0]))
+        out = model.predict(np.zeros((2, 2), dtype=np.float32),
+                            categorical_target=False)
+        assert out.tolist() == [5.37, 5.37]
+
+    def test_clone_roundtrip(self):
+        from sklearn.base import clone
+
+        model = NoriRegressor(categorical_target=True, discretize="median-cell",
+                              categorical_levels=[1.0, 2.0, 3.0])
+        params = clone(model).get_params()
+        assert params["categorical_target"] is True
+        assert params["discretize"] == "median-cell"
+        assert params["categorical_levels"] == [1.0, 2.0, 3.0]
+
+    def test_gridsearch_over_discretize(self, monkeypatch):
+        from sklearn.model_selection import GridSearchCV
+
+        self._patch_distribution(monkeypatch)
+        X = np.zeros((12, 2), dtype=np.float32)
+        y = np.tile([3.0, 5.0, 7.0], 4)
+        gs = GridSearchCV(
+            NoriRegressor(categorical_target=True),
+            {"discretize": ["map-cell", "median-cell"]},
+            scoring="accuracy", cv=2, error_score="raise")
+        gs.fit(X, y)
+        assert gs.best_params_["discretize"] in ("map-cell", "median-cell")
