@@ -12,7 +12,7 @@ from synthefy_nori.api import (
 from synthefy_nori.embedding import NoriEmbedding
 from synthefy_nori.pricing import billable_price
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 __all__ = [
     "NoriRegressor",
