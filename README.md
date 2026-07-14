@@ -128,6 +128,21 @@ Quantiles are returned in original-`y` units and sorted to a valid (monotone)
 quantile function per row. `quantiles`/`full` require the default pinball
 checkpoint; a `bar_distribution` checkpoint raises `NotImplementedError`.
 
+### Categorical / ordinal targets
+
+If the target only takes a few discrete values (ratings, counts, quality
+scores), pass `discretize=` and predictions are mapped onto the levels seen in
+`fit`'s `y` — `"map-cell"` (the mode of the induced discrete posterior) is
+best for accuracy, `"median-cell"` is the MAE-optimal alternative,
+`"snap-mean"`/`"snap-median"` snap the point estimate. Snapping is strictly
+opt-in — the default `predict()` always returns the continuous point estimate —
+and for R²-scored tasks that default is what you want. See
+[docs/inference.md](docs/inference.md#categorical--ordinal-targets-discretize--categorical_levels).
+
+```python
+labels = model.predict(X_test, discretize="map-cell")  # values from y_train's lattice
+```
+
 Runnable example: [`examples/inference_regression.py`](examples/inference_regression.py).
 More detail in [docs/inference.md](docs/inference.md).
 
