@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from synthefy_nori import discretize
 from synthefy_nori.api import (
     NoriRegressor,
     config_path,
@@ -11,10 +12,11 @@ from synthefy_nori.api import (
 from synthefy_nori.embedding import NoriEmbedding
 from synthefy_nori.pricing import billable_price
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 __all__ = [
     "NoriRegressor",
+    "discretize",
     "NoriEmbedding",
     "billable_price",
     "config_path",

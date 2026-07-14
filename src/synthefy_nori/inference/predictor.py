@@ -48,7 +48,7 @@ class NoriPredictor:
                  quantile_collapse: str = 'mean',
                  bar_temperature: float = 1.0,
                  bar_point_estimator: str = 'mean',
-                 discrete_y_snap_max_unique: int = 30):
+                 discrete_y_snap_max_unique: int = 0):
         """
         init NoriPredictor
 
@@ -484,13 +484,13 @@ class NoriPredictor:
         if return_distribution:
             return self._predict_reg(x_train, y_train, x_test, return_distribution=True)
         preds = self._predict_reg(x_train, y_train, x_test)
-        # V12r3: discrete-y snap. If training y has very low unique
-        # count (≤ discrete_y_snap_max_unique, default 30), snap each
-        # prediction to the nearest training-y value. Helps datasets
-        # like wine_quality (6 unique y), sensory (11), ERA (9),
-        # CookbookReviews (6), chscase_foot (3) at inference WITHOUT
-        # retraining. Disabled when threshold is 0 or training y is
-        # genuinely continuous.
+        # V12r3: discrete-y snap. If enabled (discrete_y_snap_max_unique > 0)
+        # and training y has a low unique count (≤ the threshold), snap each
+        # prediction to the nearest training-y value. OFF by default since
+        # v0.3: snapping is opt-in (via NoriRegressor's discretize= or by
+        # setting this threshold explicitly) — the raw conditional mean
+        # is the R²-optimal point output, and benchmarking showed lattice
+        # snapping costs ~0.05 R² on K≤10 targets.
         if getattr(self, 'discrete_y_snap_max_unique', 0) > 0:
             preds = self._maybe_snap_discrete_y(y_train, preds)
         return preds
@@ -529,7 +529,7 @@ class NoriPredictor:
             if y_finite.size == 0:
                 return preds
             unique_y = np.unique(y_finite)
-            threshold = int(getattr(self, 'discrete_y_snap_max_unique', 30))
+            threshold = int(getattr(self, "discrete_y_snap_max_unique", 0))
             if len(unique_y) > threshold or len(unique_y) < 2:
                 return preds
             # Sort uniques and snap each prediction to nearest by absolute

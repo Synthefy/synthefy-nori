@@ -574,9 +574,20 @@ class DatasetRegistry:
                 if X_test is not None:
                     X_test = X_test.drop(columns=[col])
 
-        X = X.apply(pd.to_numeric, errors="coerce").fillna(0).astype(np.float32)
+        # Impute numeric NaNs with the per-column TRAIN median, then 0 for
+        # all-missing columns — matching the production evaluator's
+        # X.fillna(medians).fillna(0.0). Test rows are filled with TRAIN
+        # medians so no test statistics leak into preprocessing.
+        X = X.apply(pd.to_numeric, errors="coerce")
+        train_medians = X.median()
+        X = X.fillna(train_medians).fillna(0.0).astype(np.float32)
         if X_test is not None:
-            X_test = X_test.apply(pd.to_numeric, errors="coerce").fillna(0).astype(np.float32)
+            X_test = (
+                X_test.apply(pd.to_numeric, errors="coerce")
+                .fillna(train_medians)
+                .fillna(0.0)
+                .astype(np.float32)
+            )
 
         numeric_y = pd.to_numeric(y, errors="coerce")
         n_coerced = int(numeric_y.isna().sum() - y.isna().sum())
