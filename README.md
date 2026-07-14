@@ -270,8 +270,7 @@ Nori sizes — select with `model="nori"` (~6M, default) or `model="nori-30m"` (
 | **Overall** | **96** | **0.7506 / 0.8702** | **0.7525 / 0.8745** |
 
 Nori-30M is stronger on every suite. Both models are evaluated under the identical protocol
-below; in this run the 6M numbers reproduced the published table to within 0.0004, so the
-cross-model comparison is like-for-like. Per-dataset numbers behind the base-model column are in
+below. Per-dataset numbers behind the base-model column are in
 [`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv).
 
 Large-N / long-context tables (common in TabArena) are the current focus of the
