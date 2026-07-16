@@ -29,11 +29,34 @@ NORI_MODELS = {
 }
 
 
+def _is_thinking_model(model: str) -> bool:
+    """Return ``True`` if ``model`` names a Nori Thinking (test-time-compute) variant.
+
+    Thinking variants (e.g. ``"nori-30m-thinking-medium"`` / the ``"synthefy/..."`` gateway
+    slug) run only on the hosted Synthefy API; ``synthefy-nori`` does single-pass local
+    inference and ships no Thinking checkpoint. Matching on the ``"thinking"`` token covers
+    every budget tier and both the friendly and slug spellings.
+    """
+    return "thinking" in model.lower()
+
+
 def resolve_model_repo(model: str | None) -> str:
     """Map a variant name to its HF repo id: ``None`` -> the default (~6M) base, a known name
-    -> its repo, anything else returned unchanged (so a raw ``"org/repo"`` id also works)."""
+    -> its repo, anything else returned unchanged (so a raw ``"org/repo"`` id also works).
+
+    A Nori Thinking selector raises :class:`ValueError`: it has no downloadable checkpoint here,
+    so without this guard it would fall through to a raw-repo lookup and fail with an opaque
+    "repo not found" error instead of telling the caller it is a hosted-API-only variant."""
     if model is None:
         model = DEFAULT_MODEL
+    if _is_thinking_model(model):
+        raise ValueError(
+            f"model={model!r} selects a Nori Thinking (test-time-compute) variant, which runs "
+            "only on the hosted Synthefy API. The synthefy-nori package does single-pass local "
+            "inference and has no Thinking checkpoint. Use the hosted API (e.g. the `synthefy` "
+            "client with mode='remote') for Thinking, or select 'nori' / 'nori-6m' / 'nori-30m' "
+            "for local inference."
+        )
     return NORI_MODELS.get(model, model)
 
 
