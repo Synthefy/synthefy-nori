@@ -16,6 +16,7 @@ from synthefy_nori.discretize import (
     discretize_predictions,
     target_levels,
 )
+from synthefy_nori.text_features import MultimodalPreprocessor
 
 
 Task = Literal["regression", "reg"]
@@ -72,6 +73,11 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         discrete_y_snap_max_unique: int = 0,
         discretize: str | None = None,
         categorical_levels=None,
+        text_columns=None,
+        svd_dim: int | None = 128,
+        embedder="minilm",
+        text_max_cardinality: int = 128,
+        text_normalize: bool | None = None,
     ) -> None:
         """Configure the estimator (arguments are stored verbatim; see class docs).
 
@@ -112,9 +118,29 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 declares a categorical target with the default strategy
                 (``DEFAULT_DISCRETIZE_METHOD``); ``None`` (default) uses the
                 distinct values of the fitted ``y`` when a strategy is set.
+            text_columns: enables the zero-shot text path when set (requires ``X``
+                to be a :class:`pandas.DataFrame`). A list of column names embeds
+                those columns; ``[]`` is a valid numeric+categorical-only fit (no
+                embedder loaded). ``None`` (default) treats ``X`` as a plain numeric
+                array. Columns must be named explicitly; the estimator does not
+                infer which columns are text.
+            svd_dim: width of the TruncatedSVD text block appended to the numeric
+                features (fit on train only). Default 128; ``None`` appends the full
+                raw embedding.
+            embedder: sentence encoder for ``text_columns`` — a short name / HF id
+                string (e.g. ``"minilm"``; needs the optional
+                ``sentence-transformers`` extra), a preloaded encoder object, or a
+                callable ``texts -> ndarray``.
+            text_max_cardinality: a non-numeric column with more than this many
+                distinct values is embedded rather than label-encoded; categorical
+                encoding also caps at this many values (rarer/unseen -> "other").
+            text_normalize: cosine-normalize the text embeddings. ``None`` (default)
+                auto-enables for known LLM encoders; set True/False to override
+                (needed for a preloaded encoder object).
 
-        The last two are estimator-level defaults; the same-named ``predict``
-        kwargs override them per call.
+        The discretize/categorical_levels pair are estimator-level defaults; the
+        same-named ``predict`` kwargs override them per call. The text_* params
+        take effect at ``fit``.
         """
         self.model_path = model_path
         # Variant selector: "nori" (default, ~6M base) / "nori-6m" / "nori-30m", resolved to a
@@ -136,16 +162,61 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # GridSearchCV/cross_val_score); predict() kwargs override per call.
         self.discretize = discretize
         self.categorical_levels = categorical_levels
+        # Zero-shot text config — constructor params (not fit kwargs) so the
+        # feature round-trips through clone/get_params/GridSearchCV/cross_val_score
+        # and pickle, like discretize/categorical_levels above.
+        #   text_columns: None -> numeric-array path; [] -> DataFrame numeric+
+        #     categorical only; list of names -> embed those columns.
+        #   svd_dim: SVD width of the appended text block (None = raw embedding).
+        #   embedder: short name / preloaded encoder / callable.
+        self.text_columns = text_columns
+        self.svd_dim = svd_dim
+        self.embedder = embedder
+        self.text_max_cardinality = int(text_max_cardinality)
+        self.text_normalize = text_normalize
         self._predictor = None
+        # Fitted text preprocessor (embed -> SVD -> extra columns), built by fit()
+        # when text_columns is not None; None = numeric-only.
+        self._text_preprocessor = None
 
     def fit(self, X, y):
-        self.X_train_ = np.asarray(X, dtype=np.float32)
-        self.n_features_in_ = self.X_train_.shape[1]
+        """Fit the in-context regressor on ``(X, y)``.
+
+        Numeric-only (default, ``text_columns=None``): ``X`` is any array-like
+        coerced to a float32 matrix. Zero-shot text: set ``text_columns`` in the
+        constructor and pass ``X`` as a DataFrame — the named columns are embedded
+        by a frozen sentence encoder, reduced to ``svd_dim`` columns (SVD fit on
+        train), and appended; the encoder and Nori stay frozen. ``predict`` replays
+        the transform, so its ``X`` must be a DataFrame with these columns.
+        """
+        if self.text_columns is not None:
+            self._text_preprocessor = MultimodalPreprocessor(
+                self.text_columns, svd_dim=self.svd_dim, embedder=self.embedder,
+                device=self.device, max_cardinality=self.text_max_cardinality,
+                normalize=self.text_normalize)
+            X_mat = self._text_preprocessor.fit_transform(X)
+            # sklearn contract: n_features_in_ counts INPUT features, not the
+            # widened SVD block; record column names when we have them.
+            self.n_features_in_ = X.shape[1]
+            if hasattr(X, "columns"):
+                self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+        else:
+            self._text_preprocessor = None
+            X_mat = np.asarray(X, dtype=np.float32)
+            self.n_features_in_ = X_mat.shape[1]
+        self.X_train_ = X_mat.astype(np.float32)
         self.y_train_ = np.asarray(y, dtype=np.float64)
         self.y_mean_ = float(self.y_train_.mean())
         y_std = float(self.y_train_.std())
         self.y_std_ = y_std if y_std >= 1e-12 else 1.0
         return self
+
+    def _prepare_query_features(self, X) -> np.ndarray:
+        """Coerce query rows to the model's float32 matrix, applying the fitted
+        text transform (embed -> SVD -> append) when fit configured one."""
+        if getattr(self, "_text_preprocessor", None) is not None:
+            return self._text_preprocessor.transform(X).astype(np.float32)
+        return np.asarray(X, dtype=np.float32)
 
     def _get_predictor(self):
         if self._predictor is None:
@@ -273,7 +344,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         if not hasattr(self, "X_train_"):
             raise ValueError("Call fit(X, y) before predict(X).")
 
-        X_test = np.asarray(X, dtype=np.float32)
+        X_test = self._prepare_query_features(X)
         y_norm = ((self.y_train_ - self.y_mean_) / self.y_std_).astype(np.float32)
 
         predictor = self._get_predictor()
@@ -319,7 +390,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         if X is None:
             raise ValueError(
                 "get_embeddings requires X for data_source='test'.")
-        X_test = np.asarray(X, dtype=np.float32)
+        X_test = self._prepare_query_features(X)
         return predictor.get_embeddings(
             self.X_train_, y_norm, X_test, data_source=data_source)
 
@@ -351,7 +422,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 "(quantile-head) checkpoint is required."
             )
 
-        X_test = np.asarray(X, dtype=np.float32)
+        X_test = self._prepare_query_features(X)
         y_norm = ((self.y_train_ - self.y_mean_) / self.y_std_).astype(np.float32)
 
         bank = predictor.predict(self.X_train_, y_norm, X_test, return_distribution=True)

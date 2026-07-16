@@ -56,6 +56,10 @@ Changelog = "https://github.com/Synthefy/synthefy-nori/releases"
 train = ["wandb>=0.15.0", "xgboost"]
 eval = ["matplotlib", "openml"]
 interpretability = ["shapiq>=1.0", "matplotlib"]
+# Zero-shot text features: embed free-text columns and append them as numeric
+# columns (NoriRegressor(text_columns=...)). sentence-transformers is imported
+# lazily, so numeric-only use never needs it.
+text = ["sentence-transformers"]
 dev = ["build", "pytest", "ruff"]
 
 [project.scripts]
