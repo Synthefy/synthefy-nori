@@ -23,6 +23,7 @@ larger **Nori-30M** variant (`model="nori-30m"`) is stronger on every suite — 
 
 ## Table of contents
 
+- [Use it from your AI coding assistant](#use-it-from-your-ai-coding-assistant)
 - [Install](#install)
 - [Quickstart](#quickstart)
 - [Authentication](#authentication-optional)
@@ -35,6 +36,46 @@ larger **Nori-30M** variant (`model="nori-30m"`) is stronger on every suite — 
 - [Repository layout](#repository-layout)
 - [Citation](#citation)
 - [License](#license)
+
+## Use it from your AI coding assistant
+
+Paste this into Claude Code, Cursor, or any AI coding assistant and it will wire
+Nori into your own project:
+
+````text
+Look at my code/task/report here and figure out where Nori would best fit — it's
+Synthefy's tabular foundation model, a drop-in scikit-learn estimator that predicts
+a continuous target by in-context learning: no training loop, no hyperparameters,
+and it uses the GPU automatically when one's available (CPU otherwise).
+
+1. Install it with this project's package manager
+   (e.g. `uv add synthefy-nori`, or `pip install -U synthefy-nori`).
+
+2. Use it wherever a tabular regression / prediction step fits:
+
+   ```python
+   from synthefy_nori import NoriRegressor
+
+   reg = NoriRegressor(model="nori")      # "nori-30m" for the larger, stronger variant
+   reg.fit(X_train, y_train)              # stores your rows as context — no training happens
+   y_pred = reg.predict(X_test)           # point predictions (predictive-distribution mean)
+
+   # Prediction intervals come free — no conformal/quantile add-ons:
+   lo, mid, hi = reg.predict(X_test, output_type="quantiles", quantiles=[0.1, 0.5, 0.9])
+   ```
+
+X is a numeric feature matrix (encode categoricals as ordinals/one-hot, leave
+missing values as NaN, no scaling needed); y is a finite continuous target. If I
+already have a model, wire Nori up alongside it on the same train/test split and
+metric so I can compare them. If the best place to plug Nori in isn't obvious,
+show me where you'd put it and confirm with me before making changes.
+
+Going deeper: synthefy-nori ships a ready-made nori-regression skill for AI coding
+assistants with vetted recipes — calibrated prediction intervals, honest baseline
+comparison under fixed CV, SHAP/PDP interpretability, and leak-safe one-step
+time-series forecasting. Read and follow it if relevant:
+https://github.com/Synthefy/synthefy-nori/tree/main/.claude/skills/nori-regression
+````
 
 ## Install
 
