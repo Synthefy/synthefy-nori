@@ -555,20 +555,30 @@ def main():
         # Disable FX graph cache to avoid pickle errors with DDP + pybind11 objects
         os.environ['TORCHINDUCTOR_FX_GRAPH_CACHE'] = '0'
         import torch._inductor.config as _inductor_cfg
-        _inductor_cfg.fx_graph_cache = False
-        _inductor_cfg.fx_graph_remote_cache = False
         import torch._dynamo.config as _dynamo_cfg
-        _dynamo_cfg.optimize_ddp = False
+
+        # These live under torch's private `_inductor`/`_dynamo` config namespaces,
+        # whose attributes can be renamed or removed between torch releases. Guard
+        # each set so a newer torch degrades gracefully instead of AttributeError-ing.
+        def _set_cfg(cfg, name, value):
+            if hasattr(cfg, name):
+                setattr(cfg, name, value)
+            elif local_rank == 0:
+                print(f"torch.compile: skipping unavailable config '{name}' (torch {torch.__version__})")
+
+        _set_cfg(_inductor_cfg, "fx_graph_cache", False)
+        _set_cfg(_inductor_cfg, "fx_graph_remote_cache", False)
+        _set_cfg(_dynamo_cfg, "optimize_ddp", False)
         # Allow many more cached graphs — with shape bucketing we visit
         # 50-200 unique combos. Default 8 forces eviction + recompilation.
-        _dynamo_cfg.cache_size_limit = 512
-        _dynamo_cfg.accumulated_cache_size_limit = 512
+        _set_cfg(_dynamo_cfg, "cache_size_limit", 512)
+        _set_cfg(_dynamo_cfg, "accumulated_cache_size_limit", 512)
         # Static shapes per bucket: skips symbolic shape analysis (the
         # pow_by_natural warning), compiles each bucket independently as a
         # static graph. Faster compile per bucket, no DDP rank desync from
         # symbolic-trace divergence.
-        _dynamo_cfg.assume_static_by_default = True
-        _dynamo_cfg.automatic_dynamic_shapes = False
+        _set_cfg(_dynamo_cfg, "assume_static_by_default", True)
+        _set_cfg(_dynamo_cfg, "automatic_dynamic_shapes", False)
 
         if local_rank == 0:
             print("Compiling model with torch.compile (FX cache disabled, DDP optimize off, "

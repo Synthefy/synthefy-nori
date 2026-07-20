@@ -57,10 +57,14 @@ cd synthefy-nori
 uv sync --extra dev
 ```
 
-`uv sync` installs a **CUDA 12.8** PyTorch 2.8 build from PyTorch's wheel index.
-The lock targets CUDA-capable platforms (Linux/Windows) only. If cu128 does not
-match your driver, override the index in `[tool.uv.sources]` (e.g. swap
-`pytorch-cu128` for `pytorch-cu126`) or install a matching PyTorch wheel yourself.
+`uv sync` installs a **CUDA 12.8** PyTorch build from PyTorch's wheel index —
+the repo's default for reproducing the benchmarks, not a hard requirement (the
+package itself only needs `torch>=2.8`). The lock targets CUDA-capable platforms
+(Linux/Windows) only. If cu128 does not match your driver, override the index in
+`[tool.uv.sources]`: e.g. swap `pytorch-cu128` for `pytorch-cu126`, or for
+CUDA 13.x use `pytorch-cu130` (needs torch >= 2.9) or `pytorch-cu132` (needs
+torch >= 2.12) — both require Python >= 3.10, since torch dropped 3.9 in 2.9.
+Alternatively, install a matching PyTorch wheel yourself.
 The Muon optimizer used in training prefers `torch.optim.Muon`; if your PyTorch
 lacks it, the package automatically falls back to a built-in implementation.
 
@@ -336,8 +340,8 @@ An alternative harness drives the public `NoriRegressor` API directly at
 It reads the same CSV caches under `./cache/`; populate them once with
 `synthefy-nori-eval --download-benchmarks` (TabArena from the official
 TabArena uploads on OpenML pinned by dataset ID, TALENT by name), then run
-from the repo root (`uv sync` installs a CUDA 12.8 torch build on Linux, so
-`uv run` works as-is):
+from the repo root (`uv sync` installs a CUDA 12.8 torch build on Linux by
+default, so `uv run` works as-is):
 
 ```bash
 # OpenML only — works out of the box, no cached CSVs needed

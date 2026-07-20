@@ -3469,7 +3469,7 @@ requires-dist = [
     { name = "scikit-learn", specifier = ">=1.4" },
     { name = "scipy", specifier = ">=1.13" },
     { name = "shapiq", marker = "extra == 'interpretability'", specifier = ">=1.0" },
-    { name = "torch", specifier = ">=2.8,<2.9", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "torch", specifier = ">=2.8", index = "https://download.pytorch.org/whl/cu128" },
     { name = "tqdm", specifier = ">=4.65" },
     { name = "typing-extensions", specifier = ">=4.10" },
     { name = "wandb", marker = "extra == 'train'", specifier = ">=0.15.0" },

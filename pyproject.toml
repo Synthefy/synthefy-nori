@@ -41,7 +41,7 @@ dependencies = [
     "pandas>=2.0",
     "scikit-learn>=1.4",
     "scipy>=1.13",
-    "torch>=2.8,<2.9",
+    "torch>=2.8",
     "tqdm>=4.65",
     "typing-extensions>=4.10",
 ]
@@ -73,8 +73,12 @@ synthefy-nori-upload = "synthefy_nori.hf:upload_cli"
 environments = ["sys_platform == 'linux'", "sys_platform == 'win32'"]
 
 # Install torch from PyTorch's CUDA 12.8 wheel index so `uv sync` reproduces the
-# GPU build the benchmarks were run on, without a manual install step.
-# Note: this only affects uv workflows; `pip install synthefy-nori` is unaffected.
+# GPU build the benchmarks were run on, without a manual install step. This is
+# only the repo's *default* dev/lock build — it is not a hard requirement.
+# Note: this only affects uv workflows; `pip install synthefy-nori` is unaffected
+# and resolves any `torch>=2.8`. Consumers wanting a different build override the
+# index in their own project. CUDA 13.x needs torch>=2.9 (cu130) or >=2.12
+# (cu132), which in turn need Python>=3.10 (torch dropped 3.9 in 2.9).
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"

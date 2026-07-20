@@ -66,3 +66,30 @@ jobs:
       - uses: astral-sh/setup-uv@v8.2.0
       - run: uv sync --extra dev --extra eval
       - run: uv run pytest -m slow tests/embedding/
+
+  # torch/CUDA-range guard: the pin is `torch>=2.8` (uncapped), so verify the
+  # package imports and inference works across the torch versions consumers can
+  # resolve. Deliberately does NOT use uv.lock — it pins each torch from the CPU
+  # wheel index (GitHub runners have no GPU), then installs the rest from PyPI.
+  # `--torch-backend cpu` and `-e` keep the matrix torch; the venv binaries are
+  # invoked directly to avoid `uv run` re-syncing back to the locked cu128 build.
+  # 2.9.x is the cu130 floor; 2.12.x is the cu132 floor.
+  compat:
+    name: torch compat (${{ matrix.torch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        torch: ["2.8.0", "2.9.1", "2.10.0", "2.11.0", "2.12.0"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v8.2.0
+      - run: uv venv --python 3.11
+      - run: uv pip install "torch==${{ matrix.torch }}" --torch-backend cpu
+      - run: uv pip install -e ".[dev]"
+      - run: .venv/bin/python -c "import torch, synthefy_nori; print(torch.__version__)"
+      - run: .venv/bin/pytest tests
+      - run: .venv/bin/pytest -m slow tests/test_inference_e2e.py
