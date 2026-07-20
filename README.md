@@ -57,14 +57,17 @@ cd synthefy-nori
 uv sync --extra dev
 ```
 
-`uv sync` installs a **CUDA 12.8** PyTorch build from PyTorch's wheel index —
-the repo's default for reproducing the benchmarks, not a hard requirement (the
-package itself only needs `torch>=2.8`). The lock targets CUDA-capable platforms
-(Linux/Windows) only. If cu128 does not match your driver, override the index in
-`[tool.uv.sources]`: e.g. swap `pytorch-cu128` for `pytorch-cu126`, or for
-CUDA 13.x use `pytorch-cu130` (needs torch >= 2.9) or `pytorch-cu132` (needs
-torch >= 2.12) — both require Python >= 3.10, since torch dropped 3.9 in 2.9.
-Alternatively, install a matching PyTorch wheel yourself.
+`uv sync` installs `torch` from PyPI, whose default wheel is a **CUDA 12.8**
+build on Linux (CPU on Windows) — enough to reproduce the benchmarks without a
+manual step. The package pins **no** torch index (only `torch>=2.8`), so it
+composes cleanly as a git/path dependency: a consumer picks its own torch build
+with no index conflict. To use a different CUDA build, add your own
+`[[tool.uv.index]]` + `[tool.uv.sources]` in *your* project — e.g. `pytorch-cu130`
+(needs torch >= 2.9) or `pytorch-cu132` (needs torch >= 2.12), both requiring
+Python >= 3.10 since torch dropped 3.9 in 2.9 — or run `uv pip install torch
+--torch-backend=cu130` after syncing. (This repo pins its own dev lock to the
+CUDA-12.8 build via a repo-local `constraint-dependencies`, which is not read by
+consumers.)
 The Muon optimizer used in training prefers `torch.optim.Muon`; if your PyTorch
 lacks it, the package automatically falls back to a built-in implementation.
 

@@ -69,23 +69,24 @@ synthefy-nori-download = "synthefy_nori.hf:download_cli"
 synthefy-nori-upload = "synthefy_nori.hf:upload_cli"
 
 # Resolve/lock only for CUDA-capable platforms; macOS/CPU are not supported here.
+#
+# torch is intentionally NOT pinned to a PyTorch wheel index here. It resolves
+# from PyPI, whose default wheel is a CUDA 12.8 build on Linux (CPU on Windows),
+# so `uv sync` still reproduces a CUDA build for dev/CI without a manual step.
+# Pinning an index (`[tool.uv.sources] torch = { index = ... }`) would leak into
+# any project that depends on this repo via git/path and collide with *their*
+# torch index (uv reads a git/path dependency's sources; see astral-sh/uv#9942).
+# Leaving it unpinned lets consumers — and the repo's own dev env — choose the
+# torch build. To force a specific CUDA locally: `uv pip install torch
+# --torch-backend=cu130` after `uv sync` (--torch-backend is uv-pip-only).
 [tool.uv]
 environments = ["sys_platform == 'linux'", "sys_platform == 'win32'"]
-
-# Install torch from PyTorch's CUDA 12.8 wheel index so `uv sync` reproduces the
-# GPU build the benchmarks were run on, without a manual install step. This is
-# only the repo's *default* dev/lock build — it is not a hard requirement.
-# Note: this only affects uv workflows; `pip install synthefy-nori` is unaffected
-# and resolves any `torch>=2.8`. Consumers wanting a different build override the
-# index in their own project. CUDA 13.x needs torch>=2.9 (cu130) or >=2.12
-# (cu132), which in turn need Python>=3.10 (torch dropped 3.9 in 2.9).
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
-[tool.uv.sources]
-torch = { index = "pytorch-cu128" }
+# Dev/CI lock pin (this repo only — constraints are NOT read from a git/path
+# dependency, unlike sources, so this does not constrain consumers): hold the
+# locked torch at the CUDA-12.8 build the benchmarks were run on. Without it,
+# `uv lock` would jump to the newest PyPI torch (a CUDA-13.x build), silently
+# moving the GPU CI. Bump this deliberately, not as a side effect of re-locking.
+constraint-dependencies = ["torch<2.9"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
