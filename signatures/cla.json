@@ -1,3 +1,12 @@
 {
-   "signedContributors": []
+  "signedContributors": [
+    {
+      "name": "tvatter",
+      "id": 5273142,
+      "comment_id": 5025113560,
+      "created_at": "2026-07-20T17:23:59Z",
+      "repoId": 1237927221,
+      "pullRequestNo": 79
+    }
+  ]
 }
