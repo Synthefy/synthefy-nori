@@ -436,10 +436,19 @@ def main():
     distributed = world_size > 1
 
     if distributed:
-        # Per-layer compile can take >10min per new shape on 14 layers.
-        # Default 600s NCCL timeout causes rank desync during compilation.
+        # NCCL collective timeout. Must exceed the longest interval any rank can
+        # spend OUTSIDE a collective while the others wait in one, else the
+        # waiters abort (SIGABRT: "Watchdog caught collective operation
+        # timeout ... BROADCAST"). Two known long gaps:
+        #   * per-layer compile: >10min per new shape (the original reason this
+        #     was raised from the 600s default);
+        #   * periodic validation: rank 0 runs the full eval suite while the
+        #     other ranks block on the post-eval broadcast (see Trainer's
+        #     _run_validation). A large eval set / big eval context easily
+        #     exceeds 60min, so the previous 3600s default crashed multi-GPU
+        #     training mid-eval. Default to 3h; override with NCCL_TIMEOUT.
         import datetime as _dt
-        nccl_timeout = int(os.environ.get('NCCL_TIMEOUT', '3600'))
+        nccl_timeout = int(os.environ.get('NCCL_TIMEOUT', '10800'))
         torch.distributed.init_process_group(
             backend='nccl',
             timeout=_dt.timedelta(seconds=nccl_timeout))
