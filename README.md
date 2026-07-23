@@ -8,6 +8,7 @@
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-Synthefy%2FNori-blue?logo=huggingface&logoColor=FFD21E)](https://huggingface.co/Synthefy/Nori)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20710462.svg)](https://doi.org/10.5281/zenodo.20710462)
 [![Discord](https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/jpsXMXGza)
+[![Colab Demo](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Synthefy/synthefy-nori/blob/main/examples/notebooks/Nori_Demo_Local.ipynb)
 
 Nori is a tabular foundation model for **regression**
 via in-context learning (ICL). Given a few labeled rows as context, it predicts on
