@@ -9,6 +9,8 @@ ephemeral Modal container:
 It mounts the locally-checked-out source (whatever the GitHub job checked out),
 ``uv sync``s it, and runs the same pytest selection the CPU gate uses. A failing
 test makes ``modal run`` exit non-zero, which fails the GitHub job -> merge gate.
+The ``--torch-version`` entrypoint option accepts ``locked`` for the repository's
+benchmarked build or an explicit version installed from the CUDA 13.0 index.
 
 Run locally / in CI::
 
@@ -25,6 +27,8 @@ installed client -- this targets modal 1.x (``App`` / ``add_local_dir`` /
 """
 from __future__ import annotations
 
+import tempfile
+
 import modal
 
 app = modal.App("nori-gpu-ci")
@@ -36,7 +40,8 @@ app = modal.App("nori-gpu-ci")
 # (uv writes .venv into the project dir).
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .pip_install("uv")
+    # cu130 support was added after the uv version cached by the old image.
+    .pip_install("uv==0.11.27")
     .env({"UV_LINK_MODE": "copy", "UV_CACHE_DIR": "/uvcache"})
     .add_local_file("pyproject.toml", "/build/pyproject.toml", copy=True)
     .add_local_file("uv.lock", "/build/uv.lock", copy=True)
@@ -60,16 +65,16 @@ image = (
     # Cap simultaneous GPU containers (e.g. many PRs at once); extra runs queue.
     max_containers=10,
 )
-def gpu_smoke() -> None:
+def gpu_smoke(torch_version: str = "locked") -> None:
     import os
     import shutil
     import subprocess
 
-    # torch lives in the uv-managed venv (after `uv sync`), not the base Python,
-    # so all torch usage goes through `uv run` below.
+    # torch lives in a uv-managed venv, not the base Python, so each subprocess
+    # uses that environment's interpreter/test runner explicitly.
 
     # Writable copy of the mounted (read-only) source so `uv sync` can write .venv.
-    repo = "/root/repo"
+    repo = f"{tempfile.mkdtemp(prefix='nori-gpu-')}/repo"
     shutil.copytree("/src", repo)
 
     env = {
@@ -82,11 +87,46 @@ def gpu_smoke() -> None:
     }
 
     subprocess.run(["uv", "sync", "--extra", "dev"], cwd=repo, env=env, check=True)
+
+    if torch_version == "locked":
+        python = f"{repo}/.venv/bin/python"
+        pytest = f"{repo}/.venv/bin/pytest"
+    else:
+        compat_venv = f"{repo}/.venv-cu130"
+        python = f"{compat_venv}/bin/python"
+        pytest = f"{compat_venv}/bin/pytest"
+        subprocess.run(
+            ["uv", "venv", "--python", "3.11", compat_venv],
+            cwd=repo,
+            env=env,
+            check=True,
+        )
+        subprocess.run(
+            [
+                "uv", "pip", "install", "--no-config", "--python", python,
+                f"torch=={torch_version}", "--torch-backend=cu130",
+            ],
+            cwd=repo,
+            env=env,
+            check=True,
+        )
+        subprocess.run(
+            [
+                "uv", "pip", "install", "--no-config", "--python", python,
+                "-e", ".[dev]",
+            ],
+            cwd=repo,
+            env=env,
+            check=True,
+        )
+
     # Fail fast with a clear message if the GPU / driver isn't usable.
     subprocess.run(
-        ["uv", "run", "python", "-c",
+        [python, "-c",
          "import torch; assert torch.cuda.is_available(), 'no CUDA device on the Modal runner';"
-         " print('GPU:', torch.cuda.get_device_name(0))"],
+         " print('GPU:', torch.cuda.get_device_name(0));"
+         " print('torch:', torch.__version__, 'CUDA:', torch.version.cuda,"
+         " 'cuDNN:', torch.backends.cudnn.version())"],
         cwd=repo, env=env, check=True,
     )
     # OPTIONAL flash-attn coverage (A100 is sm80, so FA2 is supported). Left off
@@ -96,7 +136,7 @@ def gpu_smoke() -> None:
     #                cwd=repo, env=env, check=True)
     subprocess.run(
         [
-            "uv", "run", "pytest", "-m", "slow",
+            pytest, "-m", "slow",
             "tests/test_inference_e2e.py", "tests/test_training_smoke.py", "-q",
         ],
         cwd=repo, env=env, check=True,
@@ -104,5 +144,5 @@ def gpu_smoke() -> None:
 
 
 @app.local_entrypoint()
-def main() -> None:
-    gpu_smoke.remote()
+def main(torch_version: str = "locked") -> None:
+    gpu_smoke.remote(torch_version)

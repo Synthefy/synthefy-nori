@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Callable, Literal, Optional
 import functools
 import math
+import os
 
 import torch
 import torch.nn as nn
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.utils.checkpoint import checkpoint
 from functools import partial
 from torch.amp import autocast
@@ -13,6 +16,13 @@ from torch.amp import autocast
 from typing_extensions import override
 
 Activation = Literal['gelu']
+
+_ALLOW_CUDNN_SDP = os.environ.get("SYNTHEFY_NORI_ALLOW_CUDNN_SDP", "0") == "1"
+_SDPA_BACKENDS_WITHOUT_CUDNN = [
+    SDPBackend.FLASH_ATTENTION,
+    SDPBackend.EFFICIENT_ATTENTION,
+    SDPBackend.MATH,
+]
 
 ACTIVATION_FN: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     'gelu': nn.GELU(),
@@ -348,7 +358,17 @@ class MultiheadAttention(torch.nn.Module):
         n_keys = k.size(1)  # k shape: [B, n_keys, num_heads, head_dim]
         q = self._apply_extra_attn_scale(q, n_keys)
 
-        attention_outputs = torch.nn.functional.scaled_dot_product_attention(
+        # Newer torch releases can prefer cuDNN SDPA for these shapes. That
+        # backend has been slow/intermittently broken for Nori's dynamic table
+        # sizes and small head_dim=16. Exclude it only for this call rather than
+        # mutating process-wide torch backend state at import time.
+        backend_context = (
+            nullcontext()
+            if _ALLOW_CUDNN_SDP
+            else sdpa_kernel(_SDPA_BACKENDS_WITHOUT_CUDNN)
+        )
+        with backend_context:
+            attention_outputs = torch.nn.functional.scaled_dot_product_attention(
                 q.transpose(1, 2),
                 k.transpose(1, 2),
                 v.transpose(1, 2),

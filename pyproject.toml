@@ -42,7 +42,7 @@ dependencies = [
     "pandas>=2.0",
     "scikit-learn>=1.4",
     "scipy>=1.13",
-    "torch>=2.8,<2.9",
+    "torch>=2.8,<2.14",
     "tqdm>=4.65",
     "typing-extensions>=4.10",
 ]
@@ -70,19 +70,24 @@ synthefy-nori-download = "synthefy_nori.hf:download_cli"
 synthefy-nori-upload = "synthefy_nori.hf:upload_cli"
 
 # Resolve/lock only for CUDA-capable platforms; macOS/CPU are not supported here.
+#
+# torch is intentionally NOT pinned to a PyTorch wheel index here. It resolves
+# from PyPI, whose default wheel is a CUDA 12.8 build on Linux (CPU on Windows),
+# so `uv sync` still reproduces a CUDA build for dev/CI without a manual step.
+# Pinning an index (`[tool.uv.sources] torch = { index = ... }`) would leak into
+# any project that depends on this repo via git/path and collide with *their*
+# torch index (uv reads a git/path dependency's sources; see astral-sh/uv#9942).
+# Leaving the index unpinned lets consumers — and the repo's own dev env —
+# choose the torch build. See the README for an isolated CUDA 13 environment;
+# its `uv pip --no-config` commands bypass the development-only constraint below.
 [tool.uv]
 environments = ["sys_platform == 'linux'", "sys_platform == 'win32'"]
-
-# Install torch from PyTorch's CUDA 12.8 wheel index so `uv sync` reproduces the
-# GPU build the benchmarks were run on, without a manual install step.
-# Note: this only affects uv workflows; `pip install synthefy-nori` is unaffected.
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
-[tool.uv.sources]
-torch = { index = "pytorch-cu128" }
+# Dev/CI lock pin (this repo only — constraints are NOT read from a git/path
+# dependency, unlike sources, so this does not constrain consumers): hold the
+# locked torch at the CUDA-12.8 build the benchmarks were run on. The published
+# dependency remains bounded to the explicitly tested 2.8-2.13 range. Bump both
+# ranges deliberately, not as a side effect of re-locking.
+constraint-dependencies = ["torch<2.9"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

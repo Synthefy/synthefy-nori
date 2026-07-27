@@ -99,10 +99,36 @@ cd synthefy-nori
 uv sync --extra dev
 ```
 
-`uv sync` installs a **CUDA 12.8** PyTorch 2.8 build from PyTorch's wheel index.
-The lock targets CUDA-capable platforms (Linux/Windows) only. If cu128 does not
-match your driver, override the index in `[tool.uv.sources]` (e.g. swap
-`pytorch-cu128` for `pytorch-cu126`) or install a matching PyTorch wheel yourself.
+`uv sync` installs `torch` from PyPI, whose default wheel is a **CUDA 12.8**
+build on Linux (CPU on Windows) — enough to reproduce the benchmarks without a
+manual step. The package pins **no** torch index and supports the tested
+`torch>=2.8,<2.14` range, so it composes cleanly as a git/path dependency: a
+consumer picks its own torch build with no index conflict. To use a different
+CUDA build, add your own `[[tool.uv.index]]` + `[tool.uv.sources]` in *your*
+project — e.g. `pytorch-cu130` (needs torch >= 2.9) or `pytorch-cu132` (needs
+torch >= 2.12), both requiring Python >= 3.10 since torch dropped 3.9 in 2.9.
+
+For a one-off CUDA 13.0 environment in this checkout:
+
+```bash
+nori_cuda_venv="$(mktemp -d)"
+uv venv --python 3.11 "$nori_cuda_venv"
+uv pip install --python "$nori_cuda_venv/bin/python" --no-config \
+  "torch>=2.9,<2.14" --torch-backend=cu130
+uv pip install --python "$nori_cuda_venv/bin/python" --no-config -e ".[dev]"
+"$nori_cuda_venv/bin/python" -c "import torch; print(torch.__version__, torch.version.cuda)"
+```
+
+The separate environment avoids mixing CUDA 12 and CUDA 13 NVIDIA packages in
+the benchmark `.venv`; `--no-config` bypasses this checkout's deliberate
+`torch<2.9` development constraint for those commands. The repo-local
+`constraint-dependencies` that holds the normal lock is not read by consumers.
+
+Nori excludes cuDNN from PyTorch SDPA dispatch by default because cuDNN attention
+has been unreliable on the model's dynamic tabular shapes and small attention
+heads. The restriction is scoped to Nori's attention call and leaves global
+PyTorch backend settings untouched. Set `SYNTHEFY_NORI_ALLOW_CUDNN_SDP=1` before
+importing Nori to opt back into PyTorch's default backend selection.
 The Muon optimizer used in training prefers `torch.optim.Muon`; if your PyTorch
 lacks it, the package automatically falls back to a built-in implementation.
 
@@ -378,8 +404,8 @@ An alternative harness drives the public `NoriRegressor` API directly at
 It reads the same CSV caches under `./cache/`; populate them once with
 `synthefy-nori-eval --download-benchmarks` (TabArena from the official
 TabArena uploads on OpenML pinned by dataset ID, TALENT by name), then run
-from the repo root (`uv sync` installs a CUDA 12.8 torch build on Linux, so
-`uv run` works as-is):
+from the repo root (`uv sync` installs a CUDA 12.8 torch build on Linux by
+default, so `uv run` works as-is):
 
 ```bash
 # OpenML only — works out of the box, no cached CSVs needed

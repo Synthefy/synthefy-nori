@@ -15,15 +15,16 @@ name: gpu-ci
 # fork-PR workflows, so this job is also skipped for forks (a maintainer reruns
 # after review). Do not mark it a required check until the secrets are set.
 #
-# COST: the Modal GPU only spins up when a change actually touches code the gate
-# exercises (src / tests / deps / the CI driver) -- see the "Detect relevant
-# changes" step. A docs-, license-, or config-only PR runs the job as a fast
-# green no-op that never reaches Modal. The filtering is done INSIDE the job (not
-# via a `paths:`/`paths-ignore:` trigger) on purpose: a trigger-level filter makes
-# the check "expected, never reported" on a docs-only PR, which would deadlock the
-# merge button if this job is ever a required check. Filtering in-job keeps the
-# check always-reported, so it stays safe to require. To cut spend further, drop
-# `pull_request:` and rely on push/dispatch.
+# COST: each relevant change runs two Modal containers: the benchmarked lock and
+# the newest supported CUDA 13 build. A GPU only spins up when a change actually
+# touches code the gate exercises (src / tests / deps / the CI driver) -- see the
+# "Detect relevant changes" step. A docs-, license-, or config-only PR runs the
+# jobs as fast green no-ops that never reach Modal. The filtering is done INSIDE
+# the job (not via a `paths:`/`paths-ignore:` trigger) on purpose: a trigger-level
+# filter makes the check "expected, never reported" on a docs-only PR, which
+# would deadlock the merge button if this job is ever a required check. Filtering
+# in-job keeps the check always-reported, so it stays safe to require. To cut
+# spend further, drop `pull_request:` and rely on push/dispatch.
 
 on:
   pull_request:
@@ -33,8 +34,14 @@ on:
 
 jobs:
   gpu-modal:
-    name: GPU test inference + train step (Modal)
+    name: GPU test (${{ matrix.torch_version }}, Modal)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep the benchmarked lock as the baseline and exercise the newest
+        # supported torch against a real CUDA 13.0 wheel.
+        torch_version: ["locked", "2.13.0"]
     # Skip for fork PRs (they have no access to the Modal secrets).
     if: >-
       github.event_name != 'pull_request' ||
@@ -116,4 +123,4 @@ jobs:
             echo "Set MODAL_TOKEN_ID / MODAL_TOKEN_SECRET to enable it."
             exit 0
           fi
-          modal run ci/modal_gpu_smoke.py
+          modal run ci/modal_gpu_smoke.py --torch-version "${{ matrix.torch_version }}"

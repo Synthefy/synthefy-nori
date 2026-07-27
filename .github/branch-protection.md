@@ -40,15 +40,17 @@ default branch:
    merges as well.)*
 
    **Optional GPU gate** — [`workflows/gpu-ci.yml`](workflows/gpu-ci.yml) adds a
-   **`GPU test inference + train step (Modal)`** job that runs the same two
-   checks on an (Ampere+) GPU via [Modal](https://modal.com), catching
-   CUDA-only / dtype / autocast regressions the CPU gate cannot. A free
-   `ubuntu-latest` runner drives `modal run`; the GPU work happens in an
-   ephemeral Modal container. Prerequisite: repo secrets `MODAL_TOKEN_ID` and
+   two-job matrix: **`GPU test (locked, Modal)`** exercises the benchmarked
+   Torch lock, while **`GPU test (2.13.0, Modal)`** exercises the newest
+   supported Torch with CUDA 13.0. Both run inference and training smoke checks
+   on an (Ampere+) GPU via [Modal](https://modal.com), catching CUDA-only /
+   dtype / autocast / SDPA-backend regressions the CPU gate cannot. A free
+   `ubuntu-latest` runner drives `modal run`; the GPU work happens in ephemeral
+   Modal containers. Prerequisite: repo secrets `MODAL_TOKEN_ID` and
    `MODAL_TOKEN_SECRET` (the `token_id` / `token_secret` from `~/.modal.toml`).
-   Until those are set the job is a green no-op; fork PRs are skipped (no secret
-   access). **Do not mark this job required until the secrets are set** —
-   otherwise it would pass without actually testing.
+   Until those are set the jobs are green no-ops; fork PRs are skipped (no
+   secret access). **Do not mark either job required until the secrets are
+   set** — otherwise it would pass without actually testing.
 
 > A workflow only *reports* status — only a required status check *blocks* the
 > merge. The check name GitHub matches is the job's display name (`CI test
