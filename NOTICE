@@ -47,3 +47,38 @@ TabICL
   modified by Synthefy from TabICL's prior system (MLP/Tree SCM, Reg2Cls,
   meta-distribution sampling, activation library). Only TabICL's BSD-3-Clause
   prior code is used; the Apache-2.0 `forecast` component of TabICL is not used.
+
+------------------------------------------------------------------------------
+tabpfn-time-series (PriorLabs)
+------------------------------------------------------------------------------
+  Source:   https://github.com/PriorLabs/tabpfn-time-series
+  License:  Apache License, Version 2.0 (see licenses/Apache-2.0.txt)
+
+  Copyright 2025 Prior Labs GmbH
+
+  The time-series feature engineering under src/synthefy_nori/nori_ts/tsfeatures/
+  is derived from tabpfn-time-series (import paths rewritten; minor changes). NO
+  TabPFN model code or weights are included; the TabPFN model carries a separate,
+  non-Apache license and is not used or redistributed here.
+
+------------------------------------------------------------------------------
+AutoGluon
+------------------------------------------------------------------------------
+  Source:   https://github.com/autogluon/autogluon
+  License:  Apache License, Version 2.0 (see licenses/Apache-2.0.txt)
+
+  Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+  tsfeatures/ts_dataframe.py (TimeSeriesDataFrame) is adapted from AutoGluon's
+  timeseries dataset module.
+
+------------------------------------------------------------------------------
+Chronos (amazon-science)
+------------------------------------------------------------------------------
+  Source:   https://github.com/amazon-science/chronos-forecasting
+  License:  Apache License, Version 2.0 (see licenses/Apache-2.0.txt)
+
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+  to_gluonts_univariate() in tsfeatures/data_preparation.py is adapted from
+  chronos-forecasting's evaluation script.
