@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from importlib.resources import files
+from .configs import DEFAULT_CONFIG_NAME
+from .configs import config_path as _config_path
 from typing import Literal
 
 import numpy as np
@@ -24,7 +25,7 @@ Task = Literal["regression", "reg"]
 
 def config_path(filename: str) -> str:
     """Return an absolute path for a bundled inference config."""
-    return str(files("synthefy_nori.configs").joinpath(filename))
+    return _config_path(filename)
 
 
 def _default_device():
@@ -148,9 +149,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         self.model = model
         self.device = device
         self.token = token
-        self.inference_config = inference_config or config_path(
-            "reg_allordinal_poly10_adaptive_svd256.json"
-        )
+        self.inference_config = inference_config or config_path(DEFAULT_CONFIG_NAME)
         self.augmentations = tuple(augmentations) if augmentations else ()
         self.yj_skew_threshold = float(yj_skew_threshold)
         self.quantile_collapse = quantile_collapse

@@ -4,6 +4,7 @@ an end-to-end shapiq/PDP/feature-selection smoke test behind a stub predictor.""
 import numpy as np
 import pytest
 
+from synthefy_nori.configs import DEFAULT_CONFIG_NAME
 from synthefy_nori import NoriRegressor
 
 
@@ -16,7 +17,7 @@ def test_regressor_is_sklearn_estimator_and_clones():
     assert params["model_path"] == "local.pt"
     c = clone(m)                                 # required by SequentialFeatureSelector/cross_val
     assert c.get_params()["model_path"] == "local.pt"
-    assert c.inference_config.endswith("reg_allordinal_poly10_adaptive_svd256.json")
+    assert c.inference_config.endswith(DEFAULT_CONFIG_NAME)
 
 
 def test_imputation_explainer_requires_shapiq_or_runs():

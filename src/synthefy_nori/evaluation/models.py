@@ -11,7 +11,7 @@ import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from importlib.resources import files
+from ..configs import DEFAULT_CONFIG_NAME, config_path
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -20,7 +20,7 @@ import torch
 
 
 def package_config_path(filename: str) -> str:
-    return str(files("synthefy_nori.configs").joinpath(filename))
+    return config_path(filename)
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ class NoriWrapper(BaseModelWrapper):
         self.model_path = model_path
         self.device = torch.device(device)
         self.reg_config_path = reg_config_path or package_config_path(
-            "reg_allordinal_poly10_adaptive_svd256.json"
+            DEFAULT_CONFIG_NAME
         )
         self.base_config_path = base_config_path
         self.augmentations = tuple(augmentations) if augmentations else ()

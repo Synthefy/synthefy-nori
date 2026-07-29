@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from importlib.resources import files
+from ..configs import config_path
 
 
 def package_config_path(filename: str) -> str:
-    return str(files("synthefy_nori.configs").joinpath(filename))
+    return config_path(filename)
 
 
 @dataclass

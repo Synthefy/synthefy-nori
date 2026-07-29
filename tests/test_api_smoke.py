@@ -3,10 +3,11 @@ from pathlib import Path
 import pytest
 
 from synthefy_nori import NoriRegressor, config_path
+from synthefy_nori.configs import DEFAULT_CONFIG_NAME, LEGACY_SVD256_CONFIG_NAME
 
 
 def test_config_path_points_to_bundled_file():
-    path = Path(config_path("reg_allordinal_poly10_adaptive_svd256.json"))
+    path = Path(config_path(LEGACY_SVD256_CONFIG_NAME))
     assert path.name == "reg_allordinal_poly10_adaptive_svd256.json"
     assert path.exists()
 
@@ -14,7 +15,9 @@ def test_config_path_points_to_bundled_file():
 def test_regressor_uses_default_regression_config():
     model = NoriRegressor(model_path="local.pt")
     assert model.model_path == "local.pt"
-    assert model.inference_config.endswith("reg_allordinal_poly10_adaptive_svd256.json")
+    assert model.inference_config.endswith(DEFAULT_CONFIG_NAME)
+    # the default is rank 48; svd256 stays bundled for reproducing older numbers
+    assert DEFAULT_CONFIG_NAME == "reg_allordinal_poly10_adaptive_svd48.json"
 
 
 def test_regressor_stores_model_variant_verbatim():

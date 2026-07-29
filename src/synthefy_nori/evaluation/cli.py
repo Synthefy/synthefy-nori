@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from synthefy_nori.api import config_path
+from ..configs import DEFAULT_CONFIG_NAME, config_path
 
 
 def _parse_checkpoint(raw: str) -> tuple[str, str]:
@@ -28,7 +28,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--download-benchmarks", action="store_true",
                         help="Download the TabArena and TALENT regression CSV caches from OpenML first")
     parser.add_argument("--custom-reg-dir", default=None)
-    parser.add_argument("--reg-config", default=config_path("reg_allordinal_poly10_adaptive_svd256.json"))
+    parser.add_argument("--reg-config", default=config_path(DEFAULT_CONFIG_NAME))
     parser.add_argument("--sources", nargs="+", default=None)
     parser.add_argument("--max-train-samples", type=int, default=50000)
     parser.add_argument("--max-predict-samples", type=int, default=50000)
