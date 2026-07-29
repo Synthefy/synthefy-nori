@@ -17,6 +17,11 @@ from synthefy_nori.discretize import (
     discretize_predictions,
     target_levels,
 )
+from synthefy_nori.featurize import (
+    DEFAULT_CATEGORICAL_ENCODING,
+    DEFAULT_MAX_CARDINALITY,
+    align_and_featurize,
+)
 from synthefy_nori.text_features import MultimodalPreprocessor
 
 
@@ -104,11 +109,11 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         """Configure the estimator (arguments are stored verbatim; see class docs).
 
         Args:
-            model_path: path to a local ``.pt`` checkpoint. ``None`` (default)
-                downloads/caches the public Hugging Face checkpoint.
-            model: variant selector (``"nori"`` default / ``"nori-6m"`` /
-                ``"nori-30m"``), resolved to a Hugging Face repo. Ignored when
-                ``model_path`` is given.
+            model_path: path to a local ``.pt`` checkpoint. When ``None``, ``model``
+                is required and its checkpoint is downloaded/cached from Hugging Face.
+            model: variant selector -- REQUIRED when ``model_path`` is None. Choose
+                ``"nori-6m"`` (~6M base) or ``"nori-30m"`` (~29.2M); there is no
+                default and omitting both raises. Ignored when ``model_path`` is given.
             device: torch device for inference (``"cuda:0"``, ``"cpu"``, ...).
                 ``None`` picks CUDA when available, else CPU.
             inference_config: path to an inference-config JSON. ``None`` uses
@@ -144,29 +149,32 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 to be a :class:`pandas.DataFrame`). A list of column names embeds
                 those columns; ``[]`` is a valid numeric+categorical-only fit (no
                 embedder loaded). ``None`` (default) treats ``X`` as a plain numeric
-                array. Columns must be named explicitly; the estimator does not
-                infer which columns are text.
+                array — behavior unchanged from before. Columns must be named
+                explicitly; the estimator does not infer which columns are text.
             svd_dim: width of the TruncatedSVD text block appended to the numeric
                 features (fit on train only). Default 128; ``None`` appends the full
-                raw embedding.
-            embedder: sentence encoder for ``text_columns`` — a short name / HF id
-                string (e.g. ``"minilm"``; needs the optional
+                raw embedding without reduction. Ignored when ``text_columns`` names
+                no text columns.
+            embedder: the sentence encoder for ``text_columns`` — a short name / HF
+                id string (e.g. ``"minilm"``; needs the optional
                 ``sentence-transformers`` extra), a preloaded encoder object, or a
                 callable ``texts -> ndarray``.
-            text_max_cardinality: a non-numeric column with more than this many
-                distinct values is embedded rather than label-encoded; categorical
-                encoding also caps at this many values (rarer/unseen -> "other").
+            text_max_cardinality: a non-numeric text-eligible column with more than
+                this many distinct values is embedded rather than label-encoded;
+                categorical encoding also keeps at most this many values (rarer /
+                unseen map to a single "other" code). Default 128.
             text_normalize: cosine-normalize the text embeddings. ``None`` (default)
-                auto-enables for known LLM encoders; set True/False to override
-                (needed for a preloaded encoder object).
+                auto-enables it for known LLM encoders and disables it otherwise;
+                set ``True``/``False`` to override (needed for a preloaded encoder
+                object, whose model id can't be inspected).
 
         The discretize/categorical_levels pair are estimator-level defaults; the
-        same-named ``predict`` kwargs override them per call. The text_* params
-        take effect at ``fit``.
+        same-named ``predict`` kwargs override them per call. The text_* params take
+        effect at ``fit``.
         """
         self.model_path = model_path
-        # Variant selector: "nori" (default, ~6M base) / "nori-6m" / "nori-30m", resolved to a
-        # Hugging Face repo via synthefy_nori.hf.NORI_MODELS. Ignored when model_path is given.
+        # Variant selector (required when model_path is None): "nori-6m" / "nori-30m",
+        # resolved to a Hugging Face repo via synthefy_nori.hf. Ignored when model_path is given.
         self.model = model
         self.device = device
         self.token = token
@@ -186,7 +194,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         self.categorical_levels = categorical_levels
         # Zero-shot text config — constructor params (not fit kwargs) so the
         # feature round-trips through clone/get_params/GridSearchCV/cross_val_score
-        # and pickle, like discretize/categorical_levels above.
+        # and pickle, exactly like discretize/categorical_levels above.
         #   text_columns: None -> numeric-array path; [] -> DataFrame numeric+
         #     categorical only; list of names -> embed those columns.
         #   svd_dim: SVD width of the appended text block (None = raw embedding).
@@ -227,11 +235,17 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         """Fit the in-context regressor on ``(X, y)``.
 
         Numeric-only (default, ``text_columns=None``): ``X`` is any array-like
-        coerced to a float32 matrix. Zero-shot text: set ``text_columns`` in the
-        constructor and pass ``X`` as a DataFrame — the named columns are embedded
-        by a frozen sentence encoder, reduced to ``svd_dim`` columns (SVD fit on
-        train), and appended; the encoder and Nori stay frozen. ``predict`` replays
-        the transform, so its ``X`` must be a DataFrame with these columns.
+        coerced to a float32 matrix — behavior unchanged from before.
+
+        Zero-shot text features: set ``text_columns`` in the constructor and give
+        ``X`` as a :class:`pandas.DataFrame`. The named columns are embedded by a
+        frozen sentence encoder, reduced to ``svd_dim`` columns via TruncatedSVD
+        (fit on this training split only), and appended to the numeric/categorical
+        block; Nori then consumes the widened matrix like any other features. No
+        gradient training happens — the encoder and Nori stay frozen. ``predict``
+        replays the same transform, so its ``X`` must be a DataFrame with these
+        columns. The text config lives in ``__init__`` so it round-trips through
+        ``clone``/``get_params``/``GridSearchCV``/``cross_val_score`` and pickle.
         """
         # Validate memory_policy= HERE rather than in __init__ (sklearn requires __init__ to
         # store params verbatim, and clone() depends on it) and rather than lazily at
@@ -239,13 +253,17 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # job. The coerced policy is discarded: this call exists for its errors.
         MemoryPolicy.coerce(self.memory_policy)
         if self.text_columns is not None:
+            # DataFrame path: MultimodalPreprocessor handles numeric passthrough,
+            # categorical label-encoding, and (if any text_columns) text -> SVD.
+            # text_columns=[] is a valid numeric+categorical-only DataFrame fit
+            # (no embedder loaded); only text_columns=None uses the raw-array path.
             self._text_preprocessor = MultimodalPreprocessor(
                 self.text_columns, svd_dim=self.svd_dim, embedder=self.embedder,
                 device=self.device, max_cardinality=self.text_max_cardinality,
                 normalize=self.text_normalize)
             X_mat = self._text_preprocessor.fit_transform(X)
             # sklearn contract: n_features_in_ counts INPUT features, not the
-            # widened SVD block; record column names when we have them.
+            # widened SVD block; record the column names when we have them.
             self.n_features_in_ = X.shape[1]
             if hasattr(X, "columns"):
                 self.feature_names_in_ = np.asarray(X.columns, dtype=object)
@@ -261,8 +279,11 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         return self
 
     def _prepare_query_features(self, X) -> np.ndarray:
-        """Coerce query rows to the model's float32 matrix, applying the fitted
-        text transform (embed -> SVD -> append) when fit configured one."""
+        """Coerce query rows to the model's float32 matrix.
+
+        Applies the fitted text transform (embed -> SVD -> append columns) when
+        ``fit`` configured one; otherwise a plain numeric coercion (unchanged).
+        """
         if getattr(self, "_text_preprocessor", None) is not None:
             return self._text_preprocessor.transform(X).astype(np.float32)
         return np.asarray(X, dtype=np.float32)
@@ -570,18 +591,40 @@ def infer(
     model_path: str | None = None,
     model: str | None = None,
     token: str | bool | None = None,
+    max_categorical_cardinality: int = DEFAULT_MAX_CARDINALITY,
+    categorical_encoding: str = DEFAULT_CATEGORICAL_ENCODING,
     discretize: str | None = None,
     categorical_levels=None,
     **kwargs,
 ):
     """Fit on context rows and infer labels for query rows.
 
-    ``model`` selects a variant (e.g. ``"nori-30m"``); ``model_path`` still takes an explicit
-    local checkpoint and wins over ``model`` when both are given.
+    Accepts Python lists, numpy arrays, or pandas DataFrames. When both
+    ``X_train`` and ``X_test`` are DataFrames, ``X_test`` is aligned to
+    ``X_train``'s columns *by name* (column order is irrelevant) and any
+    non-numeric columns are **encoded** for you — fit on ``X_train`` and applied
+    to ``X_test`` — into a fully numeric matrix. By default each categorical
+    column becomes a single column of ordinal codes (categories from ``X_train``
+    in sorted order; a value seen only in ``X_test`` maps to ``-1``, missing to
+    ``NaN`` — the model's own server-side convention); pass
+    ``categorical_encoding="onehot"`` for indicator columns instead. Datetime
+    columns and categorical columns with more than ``max_categorical_cardinality``
+    (default 100) distinct training values are dropped with a ``UserWarning``;
+    ``timedelta`` columns are unsupported and raise (convert them to a number or
+    string first). Numeric columns (including ``bool``) pass through unchanged.
+    Non-DataFrame inputs must already be numeric — alignment needs column names
+    on both sides.
+
+    ``model`` selects a variant (e.g. ``"nori-30m"``); ``model_path`` still takes
+    an explicit local checkpoint and wins over ``model`` when both are given.
     ``discretize`` / ``categorical_levels`` map predictions onto a discrete
     target's levels — see ``NoriRegressor.predict``.
     """
     if task in ("regression", "reg"):
+        X_train, X_test = align_and_featurize(
+            X_train, X_test, max_categorical_cardinality,
+            categorical_encoding=categorical_encoding,
+        )
         estimator = NoriRegressor(
             model_path=model_path, model=model, token=token, **kwargs
         ).fit(X_train, y_train)
@@ -602,9 +645,20 @@ def predict(
     model_path: str | None = None,
     model: str | None = None,
     token: str | bool | None = None,
+    max_categorical_cardinality: int = DEFAULT_MAX_CARDINALITY,
+    categorical_encoding: str = DEFAULT_CATEGORICAL_ENCODING,
     **kwargs,
 ):
     """Alias for infer()."""
     return infer(
-        X_train, y_train, X_test, task=task, model_path=model_path, model=model, token=token, **kwargs
+        X_train,
+        y_train,
+        X_test,
+        task=task,
+        model_path=model_path,
+        model=model,
+        token=token,
+        max_categorical_cardinality=max_categorical_cardinality,
+        categorical_encoding=categorical_encoding,
+        **kwargs,
     )
