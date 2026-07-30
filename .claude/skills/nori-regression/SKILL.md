@@ -16,7 +16,7 @@ description: >-
 
 ## What this is and when to use it
 
-A playbook for regression with **Nori** (`synthefy-nori` on PyPI), a ~5.5M-param
+A playbook for regression with **Nori** (`synthefy-nori` on PyPI), a ~6M-param
 tabular foundation model that predicts by **in-context learning**: `fit()` just
 stores your training rows as context, and `predict()` conditions the frozen
 model on them. No training loop, no hyperparameters to tune, and the full

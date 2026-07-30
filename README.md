@@ -247,7 +247,7 @@ needed at all.
 
 ### Architecture
 
-Nori is a **FeaturesTransformer (~5.9M parameters)** that alternates
+Nori is a **FeaturesTransformer (~6M parameters)** that alternates
 two kinds of attention:
 
 - **Feature attention** learns relationships between columns.
