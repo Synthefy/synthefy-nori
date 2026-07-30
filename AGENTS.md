@@ -5,7 +5,7 @@ repo. Keep it accurate — update it when commands, layout, or conventions chang
 
 ## What this is
 
-`synthefy-nori` is a small (~5.5M-parameter) tabular foundation model
+`synthefy-nori` is a small (~6M-parameter) tabular foundation model
 (`FeaturesTransformer`) for **regression** via in-context
 learning. Given a few labeled context rows, it predicts on query rows in a
 single forward pass — no task-specific training. It is trained entirely on

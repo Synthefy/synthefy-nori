@@ -4,7 +4,7 @@ set -euo pipefail
 # Training: tier 1 (from scratch).
 #
 # Architecture: 16 layers, E=128, H=384, nhead=2, model_v2_lite,
-# column_specific_y_aware, ~5.5M params. Regression via a 999-quantile pinball
+# column_specific_y_aware, ~6M params. Regression via a 999-quantile pinball
 # loss with a monotonicity penalty.
 #
 # Trains to completion on synthetic data: no real-data validation, no early
