@@ -438,8 +438,10 @@ for details, including the current RelBench submission status.
 
 The speedups below are **on by default** and **deterministic** — identical results
 run-to-run with the same settings — and the published [Results](#results) were
-produced with them on. The **KV cache** is exactly result-identical to the
-un-cached path (`cache==chunked`). The **preprocessing speedups** are **R²-neutral**:
+produced with them on. The **KV cache** is **R²-equivalent** to the un-cached path,
+not bit-identical: the two paths reduce in a different order, so predictions differ by
+mixed-precision noise (max abs diff ~3e-3, measured below) at identical R². The
+**preprocessing speedups** are **R²-neutral**:
 toggling them shifts individual predictions by a tiny, R²-equivalent amount (below
 cross-environment noise), not bit-for-bit. For the exact un-accelerated path, set
 each to its off value (see below).
@@ -450,9 +452,115 @@ each to its off value (see below).
 | `SYNTHEFY_CAP_QUANTILES` | `1` (on) | Cap quantile-transform resolution + subsample its fit. Acts on large context (>2000 rows); set `0` to disable. |
 | `SYNTHEFY_QUANTILE_MAX` / `SYNTHEFY_QUANTILE_SUBSAMPLE` | — | Tune the cap above (max quantiles / fit-subsample size). |
 | `SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE` | `2000` | Fit preprocessing on at most this many rows, apply to all rows. Acts on large context; set `0` to fit on all rows. |
-| `SYNTHEFY_ENABLE_CACHED_INFERENCE` | `1` (on) | Reuse the train-side attention K/V across test chunks (KV cache); ~2-3x faster on large test sets that chunk. Set `0` to disable. |
-| `SYNTHEFY_CACHE_MAX_GB` | `6.0` | Skip the KV cache if its estimated footprint would exceed this. |
-| `SYNTHEFY_MAX_ELEMENTS_BUDGET` | `2000000` | Inference element budget; raise on large GPUs for full-context inference. |
+| `SYNTHEFY_ENABLE_CACHED_INFERENCE` | `1` (on) | Reuse the train-side attention K/V across test chunks (KV cache); ~2-3x faster on large test sets that chunk. Set `0` to disable (or `SYNTHEFY_DISABLE_CACHED_INFERENCE=1`). |
+| `SYNTHEFY_MAX_ELEMENTS_BUDGET` | VRAM-aware | Inference element budget; raise on large GPUs for full-context inference. Prefer `memory_policy={"elements_budget": N}`. |
+
+> ⚠️ **`SYNTHEFY_CACHE_MAX_GB` has been removed** and now raises if set. It used to
+> *skip* the KV cache above a fixed 6 GB; the cache is now **offloaded to host RAM**
+> instead of skipped, so the old value does not translate. Use
+> `memory_policy={"gpu_budget_frac": 0.4}` for a share of VRAM (portable across GPUs) or
+> `memory_policy={"gpu_budget_absolute_gb": N}` for a hard cap on a shared GPU — see
+> [Serving memory on large tables](#serving-memory-on-large-tables). Memory is
+> configured through `memory_policy=` now, not environment variables; the only env vars left
+> on this path are the kill switches above.
+
+### Serving memory on large tables
+
+Nori does in-context regression: your table is *input*, not weights. So one `predict`
+call keeps a per-layer key/value cache over every context row, and that cache — not the
+model — is what runs you out of GPU memory on a big table.
+
+`memory_policy=` decides what to do about it. Omit it and you get the defaults, which handle
+the common cases:
+
+```python
+from synthefy_nori import NoriRegressor, MemoryPolicy
+
+NoriRegressor(model="nori-6m")                                   # the defaults
+NoriRegressor(model="nori-6m", memory_policy="exact")                   # never quantize
+NoriRegressor(model="nori-6m", memory_policy="max_context")             # fit the biggest table
+NoriRegressor(model="nori-6m", memory_policy="off")                     # no cache at all
+NoriRegressor(model="nori-6m", memory_policy={"gpu_budget_frac": 0.25}) # e.g. from a config file
+```
+
+Under the hood it walks a ladder, using the cheapest rung that can serve the request:
+
+| rung | what it does | exact? |
+|---|---|---|
+| `resident_bf16` | cache fits VRAM at full precision | **yes** |
+| `resident_int8` | quantize to stay on the GPU instead of streaming | ~6e-6 R² |
+| `offload_int8` | cache lives in host RAM, streamed per layer | quantized |
+| `context_row_chunk` | after an OOM: also cap rows per build step | **yes** |
+| `plain_loop` | no cache; several times slower, may drop context rows | **yes** |
+
+**Only the int8 rungs cost accuracy, and `resident_int8` is only reached when full
+precision would not fit.** A table that serves correctly today keeps bit-exact
+predictions — accuracy is spent only to avoid a fallback that is slower or fatal. Use
+`memory_policy="exact"` to forbid quantizing outright (it offloads instead).
+
+Budgets are **fractions of your hardware**, so one setting travels from a laptop GPU to
+an H200:
+
+| field | default | meaning |
+|---|---|---|
+| `gpu_budget_frac` | `0.4` | share of total VRAM the resident cache may use |
+| `host_budget_frac` | `0.25` | share of total RAM an offloaded cache may use |
+| `gpu_budget_absolute_gb` / `host_budget_absolute_gb` | — | hard caps, for a shared GPU |
+| `cache_dtype` | `"bf16"` | precision the cache **starts** at |
+| `allow_quantization` | `True` | may bf16 drop to int8 to stay resident? |
+| `offload_to_host` | `True` | may the cache move to host RAM? |
+| `context_row_chunk` | `None` | cap context rows per build step (auto after an OOM) |
+| `elements_budget` | auto | per-forward element cap; drives chunking + subsampling |
+| `allow_subsample` | `True` | may context rows be dropped to fit? `False` = raise |
+
+> **Host offload needs RAM > 1.6 × VRAM at these defaults.** Offload only engages once
+> the cache exceeds the GPU budget, and it can only succeed within the host budget — so
+> `0.25 × RAM` has to exceed `0.4 × VRAM`. Below that ratio the offload rung is
+> unreachable and a spilling request goes straight to `plain_loop`. Concretely, a 143 GB
+> H200 needs more than ~229 GB of RAM; an 80 GB card needs more than ~128 GB. If your
+> box is under the ratio, raise `host_budget_frac` (Nori warns, naming this, the first
+> time a request actually needs the fallback and cannot get it).
+>
+> The default is deliberately conservative rather than higher: the fraction is of
+> *total* RAM, your own input table is already resident in it, and overshooting host RAM
+> gets the process OOM-killed by the kernel — unlike overshooting VRAM, which raises a
+> catchable error and degrades to the next rung.
+
+**Which rung ran** is on the estimator after `predict`:
+
+```python
+model.predict(X_test)
+model.memory_report_
+# {'rung': 'resident_bf16', 'cache_dtype': 'bf16', 'est_cache_gb': 30.5,
+#  'gpu_budget_absolute_gb': 57.2, 'dropped_context_rows': 0, ...}
+MemoryPolicy(**model.memory_report_).is_bit_exact      # -> True
+```
+
+Fallbacks are logged (`logging.getLogger("synthefy_nori.inference.predictor")`), and
+dropping to `plain_loop` also emits a `RuntimeWarning` — it is the one rung that may
+subsample your context, which otherwise looks like an unexplained accuracy loss.
+
+**Incoherent settings fail instead of being ignored.** Asking for something that cannot
+take effect raises rather than silently doing nothing:
+
+```python
+model = NoriRegressor(memory_policy={"cache": False, "context_row_chunk": 2048})
+model.fit(X, y)
+# ValidationError: ... 'row chunking without KV caching' is not a reachable
+# configuration.  (the chunk caps the K/V *build*; with no cache there is no build)
+```
+
+The check runs in `fit`, not `__init__` — scikit-learn requires `__init__` to store
+parameters verbatim so `clone` works — but it does run before any inference, so a bad
+config fails in seconds rather than minutes into a job.
+
+Settings that are merely redundant warn instead — e.g. setting both a fraction and an
+absolute budget tells you the fraction is ignored, rather than refusing a layered
+config. Unknown keys always raise.
+
+**Known limit:** at large row counts × many columns, the first thing to run out of
+memory is the transductive preprocessing (RBF + polynomial expansion over the whole
+table), *upstream* of the transformer. None of the above helps with that.
 
 ### Preprocessing speedups (on by default)
 
@@ -473,13 +581,13 @@ layers reusing that cache, instead of recomputing the train K/V for every test
 chunk — measured **~2-3x faster** on multi-chunk inference (the win scales with
 the number of chunks). It only activates when the test set is large enough that
 inference is already chunking (`n_test > chunk_size`), so it does not change the
-chunking and therefore does not change the result. We verified `cache == chunked`
-directly: identical R² and a max prediction difference of ~1e-5 on CPU and exactly
-0 R² difference on GPU (floating-point reduction-order noise). The cache is skipped
-automatically if its estimated footprint exceeds `SYNTHEFY_CACHE_MAX_GB` (falling
-back to the identical chunked path). Disable it with
+chunking and therefore does not change R². We verified `cache == chunked` directly:
+identical R², with per-prediction differences at mixed-precision scale (the two paths
+reduce in a different order). When the cache will not fit VRAM it is **offloaded to
+host RAM or quantized rather than skipped** — see
+[Serving memory on large tables](#serving-memory-on-large-tables). Disable it with
 `SYNTHEFY_ENABLE_CACHED_INFERENCE=0` or the `SYNTHEFY_DISABLE_CACHED_INFERENCE=1`
-kill switch.
+kill switch, or `memory_policy={"cache": False}`.
 
 On the 1024-feature QSAR-TID-11 set (single H200), `predict` wall-clock vs.
 test-set size with the cache OFF vs. ON shows the OFF time grows linearly

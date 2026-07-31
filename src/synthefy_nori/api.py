@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from sklearn.base import BaseEstimator, RegressorMixin
 
+from synthefy_nori.inference.memory_policy import MemoryPolicy
 from synthefy_nori.discretize import (
     DEFAULT_DISCRETIZE_METHOD,
     DISCRETIZE_METHODS,
@@ -55,6 +56,26 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
     ``synthefy_nori.interpretability``. The ``__init__`` arguments are stored
     verbatim (the only normalizations applied are idempotent), so ``clone`` round
     trips correctly.
+
+    Memory on large tables (``memory_policy=``)
+        Nori does in-context regression, so your table is *input*: one ``predict``
+        keeps a per-layer key/value cache over every context row, and that cache --
+        not the model -- is what exhausts GPU memory on a big table. ``memory_policy=``
+        decides what to do about it. Omit it for defaults that handle the common
+        cases, or pass:
+
+        * a preset name -- ``"exact"`` (never quantize; offload instead),
+          ``"max_context"`` (fit the largest table you can), ``"off"`` (no cache)
+        * a dict of individual fields, e.g. ``{"gpu_budget_frac": 0.25}``, which is
+          the shape a YAML/JSON config lands in
+        * a :class:`~synthefy_nori.inference.memory_policy.MemoryPolicy`
+
+        Budgets are fractions of your hardware, so one setting travels from a laptop
+        GPU to an H200. Settings that cannot take effect raise rather than being
+        ignored, and redundant ones warn. Validated in :meth:`fit`; afterwards
+        :attr:`memory_report_` says which fallback rung ran, at what precision, and
+        whether any context rows had to be dropped. Full field table and the rung
+        ladder: README, "Serving memory on large tables".
     """
 
     def __init__(
@@ -74,6 +95,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         discretize: str | None = None,
         categorical_levels=None,
         text_columns=None,
+        memory_policy: "MemoryPolicy | dict | str | None" = None,
         svd_dim: int | None = 128,
         embedder="minilm",
         text_max_cardinality: int = 128,
@@ -174,10 +196,32 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         self.embedder = embedder
         self.text_max_cardinality = int(text_max_cardinality)
         self.text_normalize = text_normalize
+        # Serving-memory policy: a preset name ("exact", "max_context", "off"), a
+        # dict, or a MemoryPolicy. Stored VERBATIM and coerced lazily in
+        # _get_predictor(); transforming it here would break sklearn clone(), whose
+        # identity check requires the stored attribute to be the object handed in.
+        self.memory_policy = memory_policy
         self._predictor = None
         # Fitted text preprocessor (embed -> SVD -> extra columns), built by fit()
         # when text_columns is not None; None = numeric-only.
         self._text_preprocessor = None
+
+    @property
+    def memory_report_(self) -> dict | None:
+        """What the last ``predict`` call did about memory, or None before one.
+
+        A ``MemoryPolicy.model_dump()``: the ladder rung taken, the cache precision
+        and placement chosen, the budgets used, and how many context rows (if any)
+        had to be dropped to fit. Reconstruct the object with
+        ``MemoryPolicy(**estimator.memory_report_)`` for derived facts such as
+        ``is_bit_exact``.
+
+        Forwards to the underlying predictor so callers never have to reach through
+        ``._predictor``, which is private.
+        """
+        if self._predictor is None:
+            return None
+        return self._predictor.memory_report_
 
     def fit(self, X, y):
         """Fit the in-context regressor on ``(X, y)``.
@@ -189,6 +233,11 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         train), and appended; the encoder and Nori stay frozen. ``predict`` replays
         the transform, so its ``X`` must be a DataFrame with these columns.
         """
+        # Validate memory_policy= HERE rather than in __init__ (sklearn requires __init__ to
+        # store params verbatim, and clone() depends on it) and rather than lazily at
+        # predict time, where an incoherent config would only surface minutes into a
+        # job. The coerced policy is discarded: this call exists for its errors.
+        MemoryPolicy.coerce(self.memory_policy)
         if self.text_columns is not None:
             self._text_preprocessor = MultimodalPreprocessor(
                 self.text_columns, svd_dim=self.svd_dim, embedder=self.embedder,
@@ -219,6 +268,22 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         return np.asarray(X, dtype=np.float32)
 
     def _get_predictor(self):
+        """The cached predictor, with ``memory_policy=`` re-read from this estimator.
+
+        The predictor is built once -- it owns the loaded checkpoint -- and reused, so
+        every *other* constructor argument here is effectively frozen at first use.
+        That is right for those: they choose the weights and the inference config,
+        neither of which can change without a reload. It is wrong for ``memory_policy``,
+        which is a per-call resource decision that says nothing about the model.
+
+        So re-declare it on every call. ``NoriPredictor.__init__`` stores ``memory_policy``
+        verbatim and ``_memory_policy()`` coerces it afresh inside each ``predict``,
+        which is what makes this single assignment sufficient -- nothing downstream
+        caches the resolved policy. Without it the FIRST predict's policy would stick
+        for the estimator's lifetime, so ``est.memory_policy = "off"; est.predict(X)`` would
+        be silently ignored, and a long-lived server that re-declares the policy per
+        request would serve every caller the first caller's setting.
+        """
         if self._predictor is None:
             from synthefy_nori.inference.predictor import NoriPredictor
 
@@ -232,7 +297,10 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 bar_temperature=self.bar_temperature,
                 bar_point_estimator=self.bar_point_estimator,
                 discrete_y_snap_max_unique=self.discrete_y_snap_max_unique,
+                memory_policy=self.memory_policy,
             )
+        else:
+            self._predictor.memory_policy = self.memory_policy
         return self._predictor
 
     def predict(
