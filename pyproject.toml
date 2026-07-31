@@ -40,6 +40,7 @@ dependencies = [
     "numba>=0.60",
     "numpy>=2.0",
     "pandas>=2.0",
+    "pydantic>=2.0",
     "scikit-learn>=1.4",
     "scipy>=1.13",
     "torch>=2.8,<2.14",
