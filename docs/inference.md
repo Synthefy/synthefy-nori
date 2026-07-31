@@ -38,6 +38,54 @@ The default checkpoint exposes a 999-quantile pinball head; quantiles come back
 in original-`y` units, sorted per row. `"quantiles"`/`"full"` require the
 pinball checkpoint — a `bar_distribution` checkpoint raises `NotImplementedError`.
 
+## Large tables and memory (`memory_policy=`)
+
+Nori predicts in context, so the table is *input*: every call reads all of
+`X_train` and keeps a per-layer key/value cache over those rows. That cache — not
+the ~6M parameters — is what fills a GPU on a big table.
+
+Omit `memory_policy` and nothing changes. The defaults cache at full precision,
+drop to int8 only if that is what keeps it on the GPU, spend at most 40% of VRAM
+on it, offload to host RAM rather than give up, and shrink the context only as a
+last resort.
+
+```python
+from synthefy_nori import MemoryPolicy, NoriRegressor
+
+reg = NoriRegressor(model="nori-6m", memory_policy="exact")        # never trade accuracy
+reg = NoriRegressor(model="nori-6m", memory_policy="max_context")  # fit the largest table
+reg = NoriRegressor(model="nori-6m", memory_policy="off")          # no cache at all
+reg = NoriRegressor(model="nori-6m", memory_policy=MemoryPolicy(cache_dtype="int8"))
+
+reg.fit(X_train, y_train)
+y_pred = reg.predict(X_test)
+print(reg.memory_report_["rung"])          # which fallback actually ran
+```
+
+When the cache does not fit, inference takes the cheapest step that works:
+
+| Rung | What happens | Accuracy |
+| --- | --- | --- |
+| `resident_bf16` | full-precision cache in GPU memory | exact |
+| `resident_int8` | quantized so it stays resident | ~1.9x smaller, \|ΔR²\| ≈ 6e-6 |
+| `offload_bf16` | full precision in host RAM, streamed per layer | exact, slower |
+| `offload_int8` | quantized *and* in host RAM | as int8 |
+| `context_row_chunk` | cache built in row chunks after an OOM retry | not bit-identical |
+| `plain_loop` | no cache; context re-read per batch | exact, much slower |
+| `no_cache` | the cached path did not apply | exact |
+
+Only the int8 rungs trade accuracy, and they are reached only when full precision
+will not fit; offloading moves bytes rather than approximating. The cache is built
+only when the query set spans more than one batch, so a small `X_test` reports
+`no_cache` — that is normal, not a degradation.
+
+`memory_report_` also carries `dropped_context_rows`, the one number here that is
+a real accuracy loss rather than a rounding-level effect. Set
+`allow_subsample=False` to make that case an error instead.
+
+Field-by-field reference, the budget knobs, and the measured savings per lever:
+[README, "Serving memory on large tables"](../README.md#serving-memory-on-large-tables).
+
 ## Categorical / ordinal targets (`discretize=` / `categorical_levels=`)
 
 When the target only takes a small set of discrete values (ratings, counts,
