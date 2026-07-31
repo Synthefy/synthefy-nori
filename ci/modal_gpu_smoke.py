@@ -134,10 +134,19 @@ def gpu_smoke(torch_version: str = "locked") -> None:
     # code returns (it is a long source build):
     # subprocess.run(["uv", "pip", "install", "flash-attn", "--no-build-isolation"],
     #                cwd=repo, env=env, check=True)
+    # test_memory_policy_e2e.py is the ONLY end-to-end exercise of the real fallback
+    # ladder -- memory_policy -> NoriPredictor -> resolve() -> memory_report_, on actual
+    # VRAM. It is slow-marked (so `pytest tests` deselects it) and CUDA-gated (so it
+    # cannot run on the CPU jobs), which between them meant it ran in no CI job at all.
+    # This job has an A100; it was simply never listed here.
     subprocess.run(
         [
+            # test_memory_policy_e2e.py is the only end-to-end exercise of the fallback
+            # ladder on real VRAM. It is slow-marked and CUDA-gated, so without being
+            # named here it runs in no job at all.
             pytest, "-m", "slow",
-            "tests/test_inference_e2e.py", "tests/test_training_smoke.py", "-q",
+            "tests/test_inference_e2e.py", "tests/test_training_smoke.py",
+            "tests/test_memory_policy_e2e.py", "-q",
         ],
         cwd=repo, env=env, check=True,
     )

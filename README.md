@@ -453,15 +453,15 @@ each to its off value (see below).
 | `SYNTHEFY_QUANTILE_MAX` / `SYNTHEFY_QUANTILE_SUBSAMPLE` | — | Tune the cap above (max quantiles / fit-subsample size). |
 | `SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE` | `2000` | Fit preprocessing on at most this many rows, apply to all rows. Acts on large context; set `0` to fit on all rows. |
 | `SYNTHEFY_ENABLE_CACHED_INFERENCE` | `1` (on) | Reuse the train-side attention K/V across test chunks (KV cache); ~2-3x faster on large test sets that chunk. Set `0` to disable (or `SYNTHEFY_DISABLE_CACHED_INFERENCE=1`). |
-| `SYNTHEFY_MAX_ELEMENTS_BUDGET` | VRAM-aware | Inference element budget; raise on large GPUs for full-context inference. Prefer `memory={"elements_budget": N}`. |
+| `SYNTHEFY_MAX_ELEMENTS_BUDGET` | VRAM-aware | Inference element budget; raise on large GPUs for full-context inference. Prefer `memory_policy={"elements_budget": N}`. |
 
 > ⚠️ **`SYNTHEFY_CACHE_MAX_GB` has been removed** and now raises if set. It used to
 > *skip* the KV cache above a fixed 6 GB; the cache is now **offloaded to host RAM**
 > instead of skipped, so the old value does not translate. Use
-> `memory={"gpu_budget_frac": 0.4}` for a share of VRAM (portable across GPUs) or
-> `memory={"gpu_budget_absolute_gb": N}` for a hard cap on a shared GPU — see
+> `memory_policy={"gpu_budget_frac": 0.4}` for a share of VRAM (portable across GPUs) or
+> `memory_policy={"gpu_budget_absolute_gb": N}` for a hard cap on a shared GPU — see
 > [Serving memory on large tables](#serving-memory-on-large-tables). Memory is
-> configured through `memory=` now, not environment variables; the only env vars left
+> configured through `memory_policy=` now, not environment variables; the only env vars left
 > on this path are the kill switches above.
 
 ### Serving memory on large tables
@@ -470,17 +470,17 @@ Nori does in-context regression: your table is *input*, not weights. So one `pre
 call keeps a per-layer key/value cache over every context row, and that cache — not the
 model — is what runs you out of GPU memory on a big table.
 
-`memory=` decides what to do about it. Omit it and you get the defaults, which handle
+`memory_policy=` decides what to do about it. Omit it and you get the defaults, which handle
 the common cases:
 
 ```python
 from synthefy_nori import NoriRegressor, MemoryPolicy
 
 NoriRegressor(model="nori-6m")                                   # the defaults
-NoriRegressor(model="nori-6m", memory="exact")                   # never quantize
-NoriRegressor(model="nori-6m", memory="max_context")             # fit the biggest table
-NoriRegressor(model="nori-6m", memory="off")                     # no cache at all
-NoriRegressor(model="nori-6m", memory={"gpu_budget_frac": 0.25}) # e.g. from a config file
+NoriRegressor(model="nori-6m", memory_policy="exact")                   # never quantize
+NoriRegressor(model="nori-6m", memory_policy="max_context")             # fit the biggest table
+NoriRegressor(model="nori-6m", memory_policy="off")                     # no cache at all
+NoriRegressor(model="nori-6m", memory_policy={"gpu_budget_frac": 0.25}) # e.g. from a config file
 ```
 
 Under the hood it walks a ladder, using the cheapest rung that can serve the request:
@@ -496,7 +496,7 @@ Under the hood it walks a ladder, using the cheapest rung that can serve the req
 **Only the int8 rungs cost accuracy, and `resident_int8` is only reached when full
 precision would not fit.** A table that serves correctly today keeps bit-exact
 predictions — accuracy is spent only to avoid a fallback that is slower or fatal. Use
-`memory="exact"` to forbid quantizing outright (it offloads instead).
+`memory_policy="exact"` to forbid quantizing outright (it offloads instead).
 
 Budgets are **fractions of your hardware**, so one setting travels from a laptop GPU to
 an H200:
@@ -544,7 +544,7 @@ subsample your context, which otherwise looks like an unexplained accuracy loss.
 take effect raises rather than silently doing nothing:
 
 ```python
-model = NoriRegressor(memory={"cache": False, "context_row_chunk": 2048})
+model = NoriRegressor(memory_policy={"cache": False, "context_row_chunk": 2048})
 model.fit(X, y)
 # ValidationError: ... 'row chunking without KV caching' is not a reachable
 # configuration.  (the chunk caps the K/V *build*; with no cache there is no build)
@@ -587,7 +587,7 @@ reduce in a different order). When the cache will not fit VRAM it is **offloaded
 host RAM or quantized rather than skipped** — see
 [Serving memory on large tables](#serving-memory-on-large-tables). Disable it with
 `SYNTHEFY_ENABLE_CACHED_INFERENCE=0` or the `SYNTHEFY_DISABLE_CACHED_INFERENCE=1`
-kill switch, or `memory={"cache": False}`.
+kill switch, or `memory_policy={"cache": False}`.
 
 On the 1024-feature QSAR-TID-11 set (single H200), `predict` wall-clock vs.
 test-set size with the cache OFF vs. ON shows the OFF time grows linearly

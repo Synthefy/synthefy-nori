@@ -14,6 +14,7 @@ from synthefy_nori.inference.preprocess import (
     SubSampleData)
 from synthefy_nori.inference.memory_policy import (
     FIT_ROW_CHUNK_ON_OOM,
+    ContextTooLargeError,
     MemoryPolicy,
     estimate_cache_gb,
     total_host_ram_gb,
@@ -59,7 +60,7 @@ class NoriPredictor:
                  bar_temperature: float = 1.0,
                  bar_point_estimator: str = 'mean',
                  discrete_y_snap_max_unique: int = 0,
-                 memory: "MemoryPolicy | dict | str | None" = None):
+                 memory_policy: "MemoryPolicy | dict | str | None" = None):
         """
         init NoriPredictor
 
@@ -119,7 +120,7 @@ class NoriPredictor:
         # lazily in _memory_policy(). Transforming it here would break sklearn's
         # clone(), whose identity check requires the stored attribute to be the
         # object it was handed.
-        self.memory = memory
+        self.memory_policy = memory_policy
         self.inference_with_DDP=inference_with_DDP
         # Optional inference-time augmentations. Currently supports:
         #   'yj': Yeo-Johnson target transform ensemble — fit PowerTransformer
@@ -879,19 +880,19 @@ class NoriPredictor:
         Single source of truth shared by the predict (``_predict_reg_single``) and
         embedding (``get_embeddings``) paths, which had duplicated — and drifted on
         — this resolution. Routed through :class:`MemoryPolicy` so
-        ``memory={"elements_budget": N}`` and the legacy
+        ``memory_policy={"elements_budget": N}`` and the legacy
         ``SYNTHEFY_MAX_ELEMENTS_BUDGET`` land in the same place; this budget is
         upstream of the cache knobs, since the cached path engages only when the
         query set exceeds the chunk size it implies.
         """
-        budget = self._memory_policy().elements_budget
+        budget = self._coerced_memory_policy().elements_budget
         if budget is not None:
             return int(budget)
         # Legacy, still supported: SYNTHEFY_MAX_ELEMENTS_BUDGET shipped on main long
         # before this policy existed, is documented in public/README.md, and is how
         # the eval CLI's --max-elements-budget reaches inference
         # (evaluation/cli.py sets it, evaluation/harness.py records it). It is NOT
-        # part of the MemoryPolicy surface; prefer memory={"elements_budget": N}.
+        # part of the MemoryPolicy surface; prefer memory_policy={"elements_budget": N}.
         env_budget = os.environ.get("SYNTHEFY_MAX_ELEMENTS_BUDGET")
         return int(env_budget) if env_budget else self._default_max_elements_budget()
 
@@ -904,11 +905,11 @@ class NoriPredictor:
     #: is indistinguishable from a fast one except by its numbers.
     memory_report_: dict | None = None
 
-    def _memory_policy(self) -> MemoryPolicy:
+    def _coerced_memory_policy(self) -> MemoryPolicy:
         """This predictor's :class:`MemoryPolicy`.
 
         No environment variables feed the policy: it is configured through
-        ``NoriPredictor(memory=...)`` alone. The two env vars still honoured are
+        ``NoriPredictor(memory_policy=...)`` alone. The two env vars still honoured are
         pre-existing, shipped, and documented in ``public/README.md`` — the
         ``SYNTHEFY_DISABLE_CACHED_INFERENCE`` / ``SYNTHEFY_ENABLE_CACHED_INFERENCE``
         kill switches, applied here because an operator must be able to turn the
@@ -929,12 +930,12 @@ class NoriPredictor:
                 "SYNTHEFY_CACHE_MAX_GB is no longer supported. It used to SKIP the "
                 "KV cache when the full-precision footprint exceeded it; the cache "
                 "is now OFFLOADED to host RAM instead of skipped, so the old value "
-                "does not translate. Use memory={'gpu_budget_frac': 0.4} for a share "
+                "does not translate. Use memory_policy={'gpu_budget_frac': 0.4} for a share "
                 "of VRAM (portable across GPUs) or "
-                "memory={'gpu_budget_absolute_gb': N} for a hard cap on a "
+                "memory_policy={'gpu_budget_absolute_gb': N} for a hard cap on a "
                 "co-tenanted GPU. Unset the variable to continue."
             )
-        policy = MemoryPolicy.coerce(self.memory)
+        policy = MemoryPolicy.coerce(self.memory_policy)
         disabled = (
             os.environ.get("SYNTHEFY_DISABLE_CACHED_INFERENCE", "0") == "1"
             or os.environ.get("SYNTHEFY_ENABLE_CACHED_INFERENCE", "1") != "1"
@@ -1329,15 +1330,15 @@ class NoriPredictor:
             # instead of silently shrinking the training set. Use for full-context
             # evaluation where any subsampling must be visible, never silent.
             _forbid_env = os.environ.get("SYNTHEFY_FORBID_SUBSAMPLE") == "1"
-            if not self._memory_policy().allow_subsample or _forbid_env:
+            if not self._coerced_memory_policy().allow_subsample or _forbid_env:
                 # Name whichever setting actually forbade it. Reporting the env var to
-                # someone who set memory={"allow_subsample": False} sends them hunting
+                # someone who set memory_policy={"allow_subsample": False} sends them hunting
                 # a variable they never set.
                 _source = ("SYNTHEFY_FORBID_SUBSAMPLE=1" if _forbid_env
-                           else "memory={'allow_subsample': False}")
-                _remedy = ("Raise memory={'elements_budget': N} for full context, or "
+                           else "memory_policy={'allow_subsample': False}")
+                _remedy = ("Raise memory_policy={'elements_budget': N} for full context, or "
                            "allow subsampling.")
-                raise RuntimeError(
+                raise ContextTooLargeError(
                     f"{_source}: context subsampling required but forbidden "
                     f"(n_train={n_samples_train}, eff_features={budget_n_features}, "
                     f"base_elements={base_elements} > budget={MAX_ELEMENTS_BUDGET}). "
@@ -1358,8 +1359,8 @@ class NoriPredictor:
                 f"({dropped_context_rows} dropped) to fit an element budget of "
                 f"{MAX_ELEMENTS_BUDGET} (base_elements={base_elements}, "
                 f"eff_features={budget_n_features}). Raise "
-                f"memory={{'elements_budget': N}} for full context, or set "
-                f"memory={{'allow_subsample': False}} to make this an error."
+                f"memory_policy={{'elements_budget': N}} for full context, or set "
+                f"memory_policy={{'allow_subsample': False}} to make this an error."
             )
             self._log_once_per_call("subsample", logging.WARNING, _subsample_msg)
             self._warn_once_per_call("subsample", _subsample_msg, UserWarning)
@@ -1490,11 +1491,11 @@ class NoriPredictor:
                 # spent only to avoid a fallback that would otherwise be slower or
                 # fatal.
                 #
-                # Configure via NoriPredictor(memory=...) — omit it for the
+                # Configure via NoriPredictor(memory_policy=...) — omit it for the
                 # defaults, or pass a preset name ("exact", "max_context", "off"), a
                 # dict, or a MemoryPolicy. No env var configures this; only the
                 # SYNTHEFY_DISABLE_CACHED_INFERENCE kill switch is honoured.
-                policy = self._memory_policy()
+                policy = self._coerced_memory_policy()
                 use_cached = (
                     hasattr(bare_model, "forward_cached_regression")
                     and not self.mask_prediction
@@ -1622,7 +1623,7 @@ class NoriPredictor:
                             f"the context K/V, several times slower"
                             + (f"; {dropped_context_rows} context rows were DROPPED "
                                f"to fit" if dropped_context_rows else "")
-                            + ". Raise memory={'gpu_budget_frac': ...} / "
+                            + ". Raise memory_policy={'gpu_budget_frac': ...} / "
                             "'host_budget_frac' / 'elements_budget', or read "
                             "predictor.memory_report_ for what was chosen."
                         )

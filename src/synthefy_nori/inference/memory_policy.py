@@ -61,7 +61,7 @@ exist for the one case a fraction cannot express: a co-tenanted GPU, where what
 matters is a hard ceiling rather than a share.
 
 **This module reads no environment variables.** Configuration comes from
-``NoriPredictor(memory=...)`` / ``NoriRegressor(memory=...)``; the only env var in
+``NoriPredictor(memory_policy=...)`` / ``NoriRegressor(memory_policy=...)``; the only env var in
 the whole path is the ``SYNTHEFY_DISABLE_CACHED_INFERENCE`` kill switch, handled by
 the predictor. Resolution is pure arithmetic — no torch allocations, no device calls
 — so every rung boundary is unit-testable on CPU rather than only exercised by
@@ -69,7 +69,9 @@ whoever happens to run a 500k-row table on a big card.
 """
 from __future__ import annotations
 
+import contextlib
 import os
+import threading
 import warnings
 from typing import Literal
 
@@ -77,7 +79,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 #: Named starting points, for callers who do not want to set fields individually.
 #: Each one CHANGES something. There is deliberately no "auto"/"default" preset:
-#: omitting ``memory=`` already means the defaults, so naming that would just be a
+#: omitting ``memory_policy=`` already means the defaults, so naming that would just be a
 #: second spelling of nothing.
 MemoryPreset = Literal["exact", "max_context", "off"]
 MEMORY_PRESETS: tuple[str, ...] = ("exact", "max_context", "off")
@@ -163,6 +165,134 @@ def warn_once(message: str) -> None:
     warnings.warn(f"Nori memory policy: {message}", UserWarning, stacklevel=3)
 
 
+class ContextTooLargeError(RuntimeError):
+    """The context does not fit the element budget and may not be subsampled.
+
+    A **caller** condition, not a server fault: the context size, ``elements_budget`` and
+    ``allow_subsample`` are all things the caller chose, and changing any one of them
+    makes the same request work. The message names which setting forbade the shrink and
+    what to raise.
+
+    Typed so that a server can tell it apart from the other ``RuntimeError`` that reaches
+    the same place -- a CUDA OOM, which really is a server condition. Without the
+    distinction a server has to choose between turning its own faults into 4xx or
+    reporting a caller's own configuration back to them as a 500 with the remedy buried
+    in it.
+
+    Subclasses ``RuntimeError`` because that is what this used to raise, so code already
+    catching ``RuntimeError`` keeps working.
+    """
+
+
+#: The one field family a shared server must bound rather than honour verbatim, named
+#: here beside the fields themselves so a serving target cannot go stale: adding a
+#: budget field means editing this tuple, not every server.
+HOST_BUDGET_FIELDS: tuple[str, ...] = ("host_budget_frac", "host_budget_absolute_gb")
+
+#: Field a shared server must FLOOR rather than honour verbatim. Unlike the budgets above,
+#: whose cost is memory, this one's cost is TIME: it is the step size of the prefill loop
+#: that builds the K/V cache, so ``context_row_chunk=1`` turns one request into O(N) kernel
+#: launches per layer over the caller's own context rows. That runs while holding the
+#: inference lock, so it delays every other caller rather than only its own -- which is
+#: exactly the "hurts nobody else" premise the other fields rely on, and the reason this
+#: one cannot ride along with them.
+CONTEXT_ROW_CHUNK_FIELD = "context_row_chunk"
+
+#: Guards the warning capture in :func:`capture_policy_notes`.
+#: ``warnings.catch_warnings`` swaps process-global filter state, so two callers
+#: capturing at once would otherwise cross-attribute each other's notes.
+#:
+#: Reentrant because a caller legitimately nests: a server holds one capture across a
+#: whole request and :meth:`MemoryPolicy.coerce_for_service` opens its own inside that.
+#: A plain Lock deadlocks on that nesting -- and it deadlocks while holding the
+#: inference lock, so the replica stops answering rather than failing one request.
+_WARNING_CAPTURE_LOCK = threading.RLock()
+
+
+@contextlib.contextmanager
+def capture_policy_notes():
+    """Collect the policy warnings emitted in this block, instead of logging them.
+
+    A memory-policy warning is *advice to whoever set the policy*. In a script that is
+    the person reading stderr, so :func:`warn_once` is right. In a server the person
+    who set it is on the other end of an HTTP request and never sees stderr, so the
+    warnings have to be captured and returned -- as ``memory_report.notes``.
+
+    Yields the list the notes accumulate into, so a caller reads it after the block:
+
+        with capture_policy_notes() as notes:
+            ...
+        return tuple(notes)
+
+    Two things this handles that an inline ``catch_warnings`` does not:
+
+    - **Per-request de-duplication.** :func:`warn_once` suppresses repeats for the
+      life of the process, which is right for a script and wrong for a server: the
+      first caller to misconfigure something absorbs the only warning and everyone
+      after them is told nothing about their own policy. So the registry is cleared
+      on entry.
+    - **Serialisation.** The filter state this swaps is process-global, so overlapping
+      captures cross-attribute. Note the lock alone is NOT sufficient for a server:
+      it serialises captures against each other, but not a capture against a
+      concurrent forward pass, which also emits warnings. A server must therefore
+      hold this INSIDE its inference lock -- see ``serving/nori_serving/engine.py``.
+
+    Yields:
+        The list of warning messages, filled as the block runs.
+    """
+    with _WARNING_CAPTURE_LOCK:
+        forget_emitted_warnings()
+        notes: list = []
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            try:
+                yield notes
+            finally:
+                # In the finally so a raising block still reports the warnings that
+                # preceded it: an incoherent policy is exactly the case where the
+                # notes explain the error.
+                notes.extend(str(entry.message) for entry in caught)
+
+
+def _as_pydantic_would_coerce(value) -> "float | None":
+    """The float pydantic's lax mode will produce for ``value``, or None if it will not.
+
+    Exists because clamping has to reason about the value that ENDS UP in the model, and
+    an ``isinstance(value, (int, float))`` test does not: pydantic v2 without
+    ``strict=True`` accepts ``"0.95"`` and ``True`` and turns them into ``0.95`` and
+    ``1.0``. Bools are deliberately included rather than skipped -- ``True`` became 100%
+    of host RAM, unclamped and reported as honoured.
+    """
+    if value is None or isinstance(value, (list, tuple, dict, set)):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def forget_emitted_warnings() -> None:
+    """Clear the once-per-process registry behind :func:`warn_once`.
+
+    Process-lifetime de-duplication is right for a script or a notebook: one copy of
+    "this budget cannot bite", not one per inference chunk. It is wrong for a
+    **long-lived server**, where each request carries a different caller's config —
+    the first caller to make a mistake absorbs the only warning, and every caller
+    after them is told nothing about their own. Worse, the warning goes to the
+    server's log, not to the caller who could act on it.
+
+    So a server calls this once per request, captures the warnings that follow, and
+    returns them to that request. ``serving/nori_serving/engine.py`` does exactly
+    that, surfacing them as ``memory_report.notes``. Tests use it for the same reason
+    in miniature: without it, a ``pytest.warns`` assertion passes or fails depending
+    on what an earlier test in the session already emitted.
+
+    Safe to call at any time; it only forgets what has been *said*, never any
+    configuration.
+    """
+    _WARNED_ONCE.clear()
+
+
 def estimate_cache_gb(
     *,
     n_context_rows: int,
@@ -203,13 +333,20 @@ def int8_footprint_gb(est_cache_gb: float, *, bytes_per_element: int, head_dim: 
     return payload_gb * (1.0 + scale_ratio)
 
 
-def total_host_ram_gb() -> float:
-    """Total physical RAM in GiB, or 0.0 when the platform cannot report it.
+#: cgroup v2 then v1. A container's memory ceiling lives here and NOWHERE that
+#: ``sysconf`` can see.
+_CGROUP_LIMIT_PATHS = (
+    "/sys/fs/cgroup/memory.max",                     # v2
+    "/sys/fs/cgroup/memory/memory.limit_in_bytes",   # v1
+)
 
-    Returns 0.0 rather than raising so an unknown platform degrades to "no host
-    budget" — never offload — instead of inventing a number and getting the process
-    OOM-killed.
-    """
+#: v1 spells "unlimited" as a huge sentinel rather than a word. Anything at or above
+#: this is "no limit set", not a 8-exabyte container.
+_CGROUP_UNLIMITED_SENTINEL = 1 << 62
+
+
+def _physical_ram_gb() -> float:
+    """What the KERNEL reports, which inside a container is the whole node's RAM."""
     if not hasattr(os, "sysconf"):
         return 0.0
     try:
@@ -220,6 +357,49 @@ def total_host_ram_gb() -> float:
     if not page_size or not page_count or page_size < 0 or page_count < 0:
         return 0.0
     return (page_size * page_count) / BYTES_PER_GIB
+
+
+def _cgroup_memory_limit_gb() -> float:
+    """The container's own memory ceiling in GiB, or 0.0 if there is not one.
+
+    Read because ``sysconf("SC_PHYS_PAGES")`` derives from the host's ``MemTotal`` and
+    is **not** namespaced by any container runtime — so a process in a 234 GiB cgroup on
+    a 2 TiB node sees 2 TiB. Budgeting against that number is how you get SIGKILLed: the
+    cgroup limit is the one the kernel actually enforces, and exceeding it is not a
+    catchable error.
+    """
+    for path in _CGROUP_LIMIT_PATHS:
+        try:
+            raw = open(path).read().strip()
+        except (OSError, ValueError):
+            continue
+        if raw == "max":            # v2's "no limit"
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        if value <= 0 or value >= _CGROUP_UNLIMITED_SENTINEL:
+            continue
+        return value / BYTES_PER_GIB
+    return 0.0
+
+
+def total_host_ram_gb() -> float:
+    """Host RAM this process may actually use, in GiB, or 0.0 if unknowable.
+
+    The **smaller** of what the kernel reports and what the container's cgroup allows.
+    Both are needed: `sysconf` alone over-reports inside a container (it is not
+    namespaced), and the cgroup limit alone is absent when there is no limit set.
+
+    Returns 0.0 rather than raising, so an unknown platform degrades to "no host
+    budget" — never offload — instead of inventing a number and getting OOM-killed.
+    """
+    physical = _physical_ram_gb()
+    limit = _cgroup_memory_limit_gb()
+    if physical and limit:
+        return min(physical, limit)
+    return limit or physical
 
 
 class MemoryPolicy(BaseModel):
@@ -242,8 +422,10 @@ class MemoryPolicy(BaseModel):
 
     cache: bool = Field(
         True,
-        description="Use the cached fast path at all. False forces the plain chunked "
-                    "loop, which is several times slower and may subsample context.",
+        description="Build a key/value cache over the context rows at all. False re-reads "
+                    "the whole context for every batch of query rows instead: correct, but "
+                    "several times slower on a large query set, and it may have to drop "
+                    "context rows to fit.",
     )
     cache_dtype: CacheDtype = Field(
         "bf16",
@@ -274,9 +456,9 @@ class MemoryPolicy(BaseModel):
         description="Hard VRAM ceiling in GiB, overriding gpu_budget_frac. For a "
                     "co-tenanted GPU, where a fixed cap is the requirement and a "
                     "share of the card is the wrong unit. None = use the fraction; "
-                    "0 = never keep the cache resident. Also the field resolve() "
-                    "writes the decided budget into, which is why 0 is allowed: it "
-                    "is a real state, not a typo.",
+                    "0 = never keep the cache in GPU memory. 0 is deliberately "
+                    "legal, not a typo guard: it is a real request, and it is also "
+                    "the value the resolved budget can take.",
     )
     offload_to_host: bool = Field(
         True,
@@ -296,10 +478,10 @@ class MemoryPolicy(BaseModel):
     host_budget_absolute_gb: float | None = Field(
         None, ge=0,
         description="Hard host-RAM ceiling in GiB, overriding host_budget_frac. "
-                    "None = use the fraction; 0 = never offload. 0 must be legal "
-                    "because it is exactly what total_host_ram_gb() yields on a "
-                    "platform that will not report its RAM, and that case has to "
-                    "degrade to 'no offload' rather than crash.",
+                    "None = use the fraction; 0 = never offload. 0 is deliberately "
+                    "legal: it is also what a platform that will not report its RAM "
+                    "resolves to, and that case has to degrade to 'no offload' rather "
+                    "than fail.",
     )
     context_row_chunk: int | None = Field(
         None,
@@ -335,18 +517,24 @@ class MemoryPolicy(BaseModel):
 
     # --- populated by resolve(); None on an unresolved policy ----------------
     rung: str | None = Field(
-        None, description="Which ladder rung was selected. Set by resolve().")
+        None,
+        description="Which fallback the server used, in decreasing memory cost: "
+                    "resident_bf16 (cache in GPU memory, exact), resident_int8 (quantized), "
+                    "offload_bf16 / offload_int8 (cache in host RAM, streamed back per layer, "
+                    "exact transport), context_row_chunk (cache built in row chunks), "
+                    "plain_loop (no cache; the context re-read per query batch), no_cache "
+                    "(the cached path did not apply). Decided per request, not requestable.")
     est_cache_gb: float | None = Field(
         None, ge=0,
-        description="Measured full-precision cache footprint (GiB). Set by resolve().")
+        description="Full-precision cache footprint for this request's context, in GiB. Reported, not set.")
     resident_gb: float | None = Field(
         None, ge=0,
         description="Footprint at the chosen precision (GiB) — the figure actually "
-                    "compared against the budget. Set by resolve().")
+                    "compared against the budget. Reported, not set.")
     query_chunk: int | None = Field(
         None, gt=0,
         description="Query rows per decode forward, as the cached path was entered "
-                    "with. Set by the predictor. NOTE: a decode OOM may halve this "
+                    "with. Reported, not set. NOTE: a decode OOM may halve this "
                     "further inside the model, and that further reduction is not "
                     "currently reported here.")
     dropped_context_rows: int = Field(
@@ -394,7 +582,7 @@ class MemoryPolicy(BaseModel):
                 f"context_row_chunk caps the K/V build, which only runs when "
                 f"the cache is on — 'row chunking without KV caching' is not a "
                 f"reachable configuration. Either drop {requested}, or set cache=True "
-                f"and use memory={{'context_row_chunk': N}} to cap the build."
+                f"and use memory_policy={{'context_row_chunk': N}} to cap the build."
             )
         return self
 
@@ -511,7 +699,7 @@ class MemoryPolicy(BaseModel):
         if isinstance(value, MemoryPolicy):
             if value.rung is not None:
                 raise ValueError(
-                    f"memory= was given an already-RESOLVED policy (rung="
+                    f"memory_policy= was given an already-RESOLVED policy (rung="
                     f"{value.rung!r}). Its decided outputs would be re-used as inputs, "
                     f"and a policy carrying a rung skips every coherence check. Pass a "
                     f"fresh MemoryPolicy with only the fields you want to set; "
@@ -523,7 +711,7 @@ class MemoryPolicy(BaseModel):
         if isinstance(value, dict):
             if value.get("rung") is not None:
                 raise ValueError(
-                    f"memory= was given a resolved report (rung={value['rung']!r}), "
+                    f"memory_policy= was given a resolved report (rung={value['rung']!r}), "
                     f"probably a memory_report_ dict. Those are outputs; feeding them "
                     f"back in re-uses decided values as configuration and skips every "
                     f"coherence check. Pass only the fields you want to set."
@@ -546,6 +734,110 @@ class MemoryPolicy(BaseModel):
             f"memory must be a preset name, dict, MemoryPolicy or None, "
             f"got {type(value).__name__}"
         )
+
+    @classmethod
+    def coerce_for_service(
+        cls,
+        value: "MemoryPreset | dict | MemoryPolicy | None",
+        *,
+        max_host_budget_frac: float,
+        min_context_row_chunk: int | None = None,
+        total_ram_gb: float | None = None,
+    ) -> "tuple[MemoryPolicy | None, tuple[str, ...], tuple[str, ...]]":
+        """Coerce a policy that arrived from a caller who does not own this process.
+
+        :meth:`coerce` is enough when the policy was written by whoever runs the
+        process: a bad value is their own problem, and a warning goes to a terminal
+        they are looking at. A **server** taking policies from requests needs three
+        more things, and all three depend on this module's own fields — which is why
+        they live here rather than in each serving target:
+
+        1. **Bound the host-RAM budgets** (:data:`HOST_BUDGET_FIELDS`). Every other
+           field spends only the requesting caller's GPU memory, so overspending is
+           self-inflicted and passed through. Host RAM is different in kind:
+           exceeding the container's cgroup limit is a SIGKILL, not a catchable
+           error, so it takes down the replica and charges the *next* caller a cold
+           start. Clamped values are returned by name so the server can report them
+           instead of applying them silently.
+        2. **Clamp before validating**, so the coherence rules below run against the
+           numbers that will actually be used — a warning about a budget that cannot
+           bite is only true of the clamped figure.
+        3. **Capture the warnings for this caller.** :func:`warn_once` de-duplicates
+           for the life of the process, so on a long-lived server the first caller to
+           make a given mistake absorbs the only copy and everyone after them is told
+           nothing — and it goes to the server's log either way, never to the person
+           who could act on it. The registry is cleared and the warnings collected
+           per call, for the server to return in its response.
+
+        Args:
+            value: what the request carried, unchanged. ``None`` means the request
+                said nothing, and is returned as ``None`` rather than as the default
+                policy, so a server can tell "not asked for" from "asked for the
+                defaults" and keep its response unchanged in the first case.
+            max_host_budget_frac: the largest share of host RAM this deployment will
+                grant. A deployment-shaped decision (it depends on what else lives in
+                the container), so it has no default here.
+            min_context_row_chunk: the smallest prefill step this deployment will run.
+                ``None`` leaves it unbounded, which is right in-process and wrong on a
+                shared server: a tiny value costs TIME rather than memory, and it spends
+                that time holding the inference lock. Also deployment-shaped, hence no
+                default.
+            total_ram_gb: host RAM to size an absolute budget against.
+                ``None`` measures it with :func:`total_host_ram_gb`, which is
+                cgroup-aware — a container sees its limit, not the machine's.
+
+        Returns:
+            ``(policy, clamped_field_names, notes)``. ``policy`` is None only when
+            ``value`` was. ``notes`` are the coherence warnings, already formatted.
+
+        Raises:
+            ValueError, TypeError: exactly as :meth:`coerce` — the caller maps them
+                onto its own status code, keeping the message, which already names
+                the offending field.
+        """
+        if value is None:
+            return None, (), ()
+
+        clamped: list[str] = []
+        ceilings = {
+            "host_budget_frac": max_host_budget_frac,
+            "host_budget_absolute_gb": max_host_budget_frac * (
+                total_host_ram_gb() if total_ram_gb is None else total_ram_gb
+            ),
+        }
+        if isinstance(value, dict):
+            value = dict(value)  # never mutate the caller's parsed request body
+            for field in HOST_BUDGET_FIELDS:
+                numeric = _as_pydantic_would_coerce(value.get(field))
+                # Compare what VALIDATION will produce, not what the JSON happens to look
+                # like. An isinstance check here let `"0.95"` and `true` straight through:
+                # pydantic runs in lax mode, so it coerces both to floats AFTER the clamp
+                # has already skipped them -- and `clamped` then came back empty, which the
+                # response documents as "honoured verbatim". A quote mark defeated the rail.
+                if numeric is None:
+                    continue                    # not numeric at all -> pydantic's error
+                if numeric > ceilings[field]:
+                    value[field] = ceilings[field]
+                    clamped.append(field)
+
+            if min_context_row_chunk is not None:
+                # A FLOOR, not a ceiling: small is the dangerous direction here, because
+                # the cost is one prefill step per `context_row_chunk` rows and the loop
+                # holds the lock. Same reporting as the budgets -- capped, never silent.
+                given = _as_pydantic_would_coerce(value.get(CONTEXT_ROW_CHUNK_FIELD))
+                if given is not None and given < min_context_row_chunk:
+                    value[CONTEXT_ROW_CHUNK_FIELD] = min_context_row_chunk
+                    clamped.append(CONTEXT_ROW_CHUNK_FIELD)
+        # A preset needs no clamping: none of them sets a host budget (they set
+        # allow_quantization / cache_dtype / cache), so the safe default fraction
+        # applies. Asserted by a test, so a new preset cannot quietly break it.
+
+        # Construction-time warnings only -- coherence checks that pydantic runs during
+        # validation. The ones resolve() emits fire later, during predict, and a server
+        # that wants those too holds its own capture across the whole request.
+        with capture_policy_notes() as notes:
+            policy = cls.coerce(value)
+        return policy, tuple(clamped), tuple(notes)
 
     # --------------------------------------------------------------- resolve
 
@@ -658,7 +950,7 @@ class MemoryPolicy(BaseModel):
             # quantizing here buys only PCIe bandwidth -- and spending accuracy for
             # speed is exactly what this ladder exists not to do. int8 is used only
             # when bf16 will not fit host either. Callers who would rather have the
-            # faster stream ask for it: cache_dtype="int8" or memory="max_context".
+            # faster stream ask for it: cache_dtype="int8" or memory_policy="max_context".
             for dtype, footprint in candidates:
                 if footprint <= host_budget_gb:
                     return decided(f"offload_{dtype}", dtype, True, footprint, cache=True)

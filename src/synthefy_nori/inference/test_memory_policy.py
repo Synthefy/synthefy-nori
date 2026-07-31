@@ -233,7 +233,7 @@ class TestConfigSurface:
             assert isinstance(MemoryPolicy.coerce(name), MemoryPolicy)
 
     def test_none_means_the_defaults(self):
-        # There is deliberately no "auto" preset: omitting memory= already means
+        # There is deliberately no "auto" preset: omitting memory_policy= already means
         # the defaults, so a name for it would be a second spelling of nothing.
         assert MemoryPolicy.coerce(None) == MemoryPolicy()
         with pytest.raises(ValueError, match="unknown memory preset"):
@@ -361,13 +361,13 @@ class TestPermissionsInsteadOfSentinels:
 class TestPredictorEnvSurface:
     """The policy itself reads no env vars; only the kill switch survives."""
 
-    def _policy_of(self, memory=None):
-        # _memory_policy() touches only self.memory and the environment, so a bare
+    def _policy_of(self, memory_policy=None):
+        # _coerced_memory_policy() touches only self.memory_policy and the environment, so a bare
         # instance is enough — no checkpoint load required.
         from synthefy_nori.inference.predictor import NoriPredictor
         predictor = NoriPredictor.__new__(NoriPredictor)
-        predictor.memory = memory
-        return predictor._memory_policy()
+        predictor.memory_policy = memory_policy
+        return predictor._coerced_memory_policy()
 
     def test_no_env_var_configures_the_policy(self, monkeypatch):
         for name in ("SYNTHEFY_KV_CACHE_DTYPE", "SYNTHEFY_KV_INT8",
@@ -617,3 +617,161 @@ class TestOffloadReachabilityAtConstruction:
         with _w.catch_warnings():
             _w.simplefilter("error")
             MemoryPolicy(gpu_budget_frac=0.9, host_budget_frac=0.05)
+
+
+class TestEstimatorRedeclaresMemory:
+    """``memory_policy=`` must not be frozen by the first predict.
+
+    ``NoriRegressor`` caches its predictor because the predictor owns the loaded
+    checkpoint. Every other constructor argument is therefore fixed at first use,
+    which is correct for them and wrong for ``memory_policy``: it is a per-call resource
+    decision, and a long-lived server (``serving/nori_serving/engine.py``) sets it
+    per request on one reused estimator. If the cached predictor kept the first
+    value, request 2 would silently run request 1's policy.
+
+    No checkpoint is loaded here: the re-declaration path is the branch taken when
+    ``_predictor`` already exists, so a stand-in is enough and the test stays fast.
+    """
+
+    class _PredictorStub:
+        """Just enough of NoriPredictor: it only has to hold the attribute."""
+
+        def __init__(self):
+            self.memory_policy = "the-first-call's-policy"
+
+    def _regressor_with_stub(self, memory_policy):
+        from synthefy_nori import NoriRegressor
+
+        estimator = NoriRegressor(model="nori-6m", memory_policy=memory_policy)
+        estimator._predictor = self._PredictorStub()
+        return estimator
+
+    def test_a_later_memory_change_reaches_the_cached_predictor(self):
+        estimator = self._regressor_with_stub(None)
+        estimator.memory_policy = "off"
+        assert estimator._get_predictor().memory_policy == "off"
+
+    def test_it_tracks_every_change_not_just_the_first(self):
+        estimator = self._regressor_with_stub(None)
+        for value in ("off", "exact", {"cache_dtype": "int8"}, None):
+            estimator.memory_policy = value
+            assert estimator._get_predictor().memory_policy == value
+
+    def test_the_value_is_passed_through_verbatim_not_coerced(self):
+        # sklearn's contract: params round-trip unchanged. Coercion happens inside
+        # predict, so clone()/get_params() keep seeing what the caller passed.
+        estimator = self._regressor_with_stub(None)
+        estimator.memory_policy = {"gpu_budget_frac": 0.3}
+        assert estimator._get_predictor().memory_policy == {"gpu_budget_frac": 0.3}
+
+
+class TestCoerceForService:
+    """``coerce_for_service`` — the entry point a server uses instead of ``coerce``.
+
+    It lives here, not in a serving target, because everything it does depends on this
+    module's own fields: which budgets to bound, and which warnings belong to the caller.
+    A serving-side copy would go stale the moment the policy gains a field, with every
+    test on both sides still passing.
+    """
+
+    CEILING = 0.5
+
+    def _coerce(self, value, **kwargs):
+        kwargs.setdefault("max_host_budget_frac", self.CEILING)
+        kwargs.setdefault("total_ram_gb", 200.0)
+        return MemoryPolicy.coerce_for_service(value, **kwargs)
+
+    def test_none_stays_none_so_a_server_can_tell_it_was_not_asked_for(self):
+        # Distinct from coerce(None), which returns the default policy: a server needs
+        # "the request said nothing" to leave its response untouched.
+        assert self._coerce(None) == (None, (), ())
+
+    def test_host_budget_frac_over_the_ceiling_is_clamped_and_named(self):
+        policy, clamped, _ = self._coerce({"host_budget_frac": 0.95})
+        assert policy.host_budget_frac == self.CEILING
+        assert clamped == ("host_budget_frac",)
+
+    def test_host_budget_absolute_gb_is_clamped_against_the_ram_it_is_given(self):
+        policy, clamped, _ = self._coerce({"host_budget_absolute_gb": 10_000.0})
+        assert policy.host_budget_absolute_gb == self.CEILING * 200.0
+        assert clamped == ("host_budget_absolute_gb",)
+
+    def test_a_budget_under_the_ceiling_is_honoured_verbatim(self):
+        policy, clamped, _ = self._coerce({"host_budget_absolute_gb": 40.0})
+        assert (policy.host_budget_absolute_gb, clamped) == (40.0, ())
+
+    def test_only_the_host_budgets_are_bounded(self):
+        # The point of the asymmetry: everything else spends the caller's own GPU
+        # memory, so overspending is self-inflicted and passed through.
+        policy, clamped, _ = self._coerce({"gpu_budget_frac": 0.99})
+        assert (policy.gpu_budget_frac, clamped) == (0.99, ())
+
+    def test_the_callers_dict_is_never_mutated(self):
+        sent = {"host_budget_frac": 0.95}
+        self._coerce(sent)
+        assert sent == {"host_budget_frac": 0.95}
+
+    def test_a_non_numeric_budget_is_left_for_pydantic_to_reject(self):
+        # Not compared against the ceiling (that would raise TypeError from the
+        # comparison); pydantic's message names the field, which is more useful.
+        with pytest.raises(ValidationError):
+            self._coerce({"host_budget_frac": "lots"})
+
+    def test_notes_are_returned_to_every_caller_not_just_the_first(self):
+        # warn_once de-duplicates for the life of the process, which on a server means
+        # the first caller to make a mistake absorbs the only copy. The registry is
+        # cleared per call so each caller hears about their own config.
+        both = {"gpu_budget_frac": 0.6, "gpu_budget_absolute_gb": 10.0}
+        first = self._coerce(dict(both))[2]
+        second = self._coerce(dict(both))[2]
+        assert first and first == second
+        assert any("gpu_budget_frac" in note for note in first)
+
+    def test_an_unambiguous_policy_produces_no_notes(self):
+        assert self._coerce({"cache_dtype": "int8"})[2] == ()
+
+    @pytest.mark.parametrize("preset", MEMORY_PRESETS)
+    def test_no_preset_sets_a_host_budget_so_none_needs_clamping(self, preset):
+        """Backs the claim that presets skip clamping.
+
+        ``coerce_for_service`` only bounds dicts. That is safe exactly while no preset
+        sets a host budget itself — so if a future preset does, this fails rather than
+        letting an unbounded budget through under a friendly name.
+        """
+        policy, clamped, _ = self._coerce(preset)
+        assert clamped == ()
+        assert policy.host_budget_frac == _mp.DEFAULT_HOST_BUDGET_FRAC
+        assert policy.host_budget_absolute_gb is None
+
+    def test_measures_host_ram_when_none_is_given(self):
+        # The default path a server actually takes; cgroup-aware, so a container sees
+        # its own limit rather than the machine's.
+        policy, clamped, _ = MemoryPolicy.coerce_for_service(
+            {"host_budget_absolute_gb": 10_000_000.0}, max_host_budget_frac=self.CEILING
+        )
+        assert clamped == ("host_budget_absolute_gb",)
+        assert 0 < policy.host_budget_absolute_gb < 10_000_000.0
+
+    def test_rejections_pass_through_unchanged_for_the_caller_to_map(self):
+        with pytest.raises(ValueError, match="unknown memory preset"):
+            self._coerce("aggressive")
+        with pytest.raises(TypeError, match="preset name"):
+            self._coerce(["exact"])
+        with pytest.raises(ValidationError):
+            self._coerce({"int8": True})
+
+
+class TestContextTooLargeError:
+    """The typed error that lets a server tell a caller's budget from its own OOM."""
+
+    def test_it_is_a_runtime_error_so_existing_handlers_keep_working(self):
+        # It replaced a bare RuntimeError; anything already catching that must still catch.
+        assert issubclass(_mp.ContextTooLargeError, RuntimeError)
+
+    def test_it_is_importable_from_the_package_root(self):
+        # A caller who can trigger it must be able to catch it by name without reaching
+        # into a private module path.
+        import synthefy_nori
+
+        assert synthefy_nori.ContextTooLargeError is _mp.ContextTooLargeError
+        assert "ContextTooLargeError" in synthefy_nori.__all__

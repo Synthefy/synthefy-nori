@@ -580,7 +580,7 @@ class FeaturesTransformer(nn.Module):
                 f"'bf16' or 'int8', got {cache_dtype!r}. Deciding which one is "
                 "worth it needs the device budget, so it belongs to "
                 "MemoryPolicy.resolve() (synthefy_nori.inference.memory_policy) — "
-                "go through NoriPredictor(memory=...) rather than guessing here."
+                "go through NoriPredictor(memory_policy=...) rather than guessing here."
             )
         if self.mask_prediction:
             raise NotImplementedError("forward_cached_regression requires mask_prediction=False")
@@ -633,7 +633,7 @@ class FeaturesTransformer(nn.Module):
         # O(L*N) regardless of any post-hoc offload.
         #
         # Arguments only: this path reads no environment variables. Callers configure
-        # it through NoriPredictor(memory=MemoryPolicy(...)), which resolves the rung
+        # it through NoriPredictor(memory_policy=MemoryPolicy(...)), which resolves the rung
         # and passes the concrete decision down.
         quantize_kv_cache = cache_dtype == "int8"
         _, caches = self.transformer_encoder.build_train_cache(

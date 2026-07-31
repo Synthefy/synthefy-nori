@@ -40,6 +40,11 @@ dependencies = [
     "numba>=0.60",
     "numpy>=2.0",
     "pandas>=2.0",
+    # A direct runtime dependency, not just something another package pulls in:
+    # synthefy_nori.inference.memory_policy validates MemoryPolicy with it, on the
+    # normal predict path. Already declared in the internal tier; this tier had no
+    # pydantic at all, so the promotion breaks the build without it.
+    "pydantic>=2.0",
     "scikit-learn>=1.4",
     "scipy>=1.13",
     "torch>=2.8,<2.14",
@@ -97,7 +102,11 @@ where = ["src"]
 "synthefy_nori.evaluation.benchmark_lists" = ["*.csv"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# Both trees: this repo co-locates unit tests next to the code they cover
+# (src/synthefy_nori/inference/test_memory_policy.py and friends), and with only
+# "tests" here CI collected none of them -- so guards written to protect a behaviour
+# silently protected nothing. Verified they pass when collected.
+testpaths = ["tests", "src"]
 addopts = "-m 'not slow'"
 markers = [
     "slow: opt-in end-to-end tests — download checkpoints + run real inference, or run a real training step (run with `pytest -m slow`)",

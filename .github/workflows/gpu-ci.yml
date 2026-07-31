@@ -119,8 +119,9 @@ jobs:
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
         run: |
           if [ -z "$MODAL_TOKEN_ID" ] || [ -z "$MODAL_TOKEN_SECRET" ]; then
-            echo "Modal secrets not configured; skipping GPU gate (no-op)."
-            echo "Set MODAL_TOKEN_ID / MODAL_TOKEN_SECRET to enable it."
-            exit 0
+            echo "::error::MODAL_TOKEN_ID / MODAL_TOKEN_SECRET are not set, so the GPU gate"
+            echo "::error::cannot run. This used to exit 0 and report green, which is worse"
+            echo "::error::than red: the only job that touches a GPU silently checked nothing."
+            exit 1
           fi
           modal run ci/modal_gpu_smoke.py --torch-version "${{ matrix.torch_version }}"

@@ -16,7 +16,11 @@ jobs:
       - uses: astral-sh/setup-uv@v8.2.0
       - run: uv sync --extra dev
       - run: uv run python -c "import synthefy_nori"
-      - run: uv run pytest tests
+      # No path argument: `testpaths` in pyproject.toml owns which trees are collected,
+      # so it is one place to change rather than two. This used to say `pytest tests`,
+      # which silently skipped every unit test co-located under src/ -- including the
+      # memory-policy guards arriving with this change. Both trees now run.
+      - run: uv run pytest
       - run: uv run ruff check src scripts tests
       - run: uv build
 

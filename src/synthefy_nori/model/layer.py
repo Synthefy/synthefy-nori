@@ -8,6 +8,7 @@ import os
 
 import torch
 import torch.nn as nn
+from torch.cuda import OutOfMemoryError
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.utils.checkpoint import checkpoint
 from functools import partial
@@ -965,7 +966,7 @@ class EncoderBaseLayer(nn.Module):
                 "context_row_chunk is not supported for serial sequence attention: "
                 "the serial variant's test cache reads the self-attention output, so "
                 "the chunked build would have to materialise all rows anyway. Use "
-                "memory={'context_row_chunk': None} on this checkpoint."
+                "memory_policy={'context_row_chunk': None} on this checkpoint."
             )
         if fit_row_chunk:
             return self._forward_train_cache_memsaving(
