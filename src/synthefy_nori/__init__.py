@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from synthefy_nori import discretize
+from synthefy_nori.inference.memory_policy import MemoryPolicy
 from synthefy_nori.api import (
     NoriRegressor,
     config_path,
@@ -15,6 +16,7 @@ from synthefy_nori.pricing import billable_price
 __version__ = "0.12.1"
 
 __all__ = [
+    "MemoryPolicy",
     "NoriRegressor",
     "discretize",
     "NoriEmbedding",

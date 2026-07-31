@@ -388,6 +388,52 @@ class MultiheadAttention(torch.nn.Module):
         del logits
         return ps
 
+    def chunked_caculate_attention_score(self, q: torch.Tensor | None, k: torch.Tensor | None) -> torch.Tensor:
+        if len(q.shape) == 4:
+            B, S, H, D = q.shape
+        else:
+            S, H, D = q.shape
+        try:
+            if len(q.shape) == 3:
+                chunk_size = max(10000000 // 2 // 192 // q.shape[0], 1)
+                ps = torch.zeros(1, q.shape[0], k.shape[0], device=q.device, dtype=torch.float16)
+                for i in range(0, S, chunk_size):
+                    chunk_end = min(i + chunk_size, q.shape[0])
+                    q_chunk = q[i:chunk_end]
+                    k_chunk = k
+                    ps_chunk = self.caculate_attention_score(q_chunk.to(q.device), k_chunk.to(k.device))
+                    ps[:, i:chunk_end] = ps_chunk.to(q.device)
+            else:
+                chunk_size = max(2000000000 // 2 // 192 // q.shape[1] // k.shape[1], 1)
+                ps = torch.zeros(B, q.shape[1], k.shape[1], device=q.device, dtype=torch.float16)
+                for i in range(0, B, chunk_size):
+                    chunk_end = min(i + chunk_size, B)
+                    q_chunk = q[i:chunk_end]
+                    k_chunk = k[i:chunk_end]
+                    ps_chunk = self.caculate_attention_score(q_chunk.to(q.device), k_chunk.to(k.device))
+                    ps[i:chunk_end] = ps_chunk.to(q.device)
+        except OutOfMemoryError:
+            attention_device = torch.device("cpu")
+            if len(q.shape) == 3:
+                chunk_size = max(10000000 // 2 // 192 // q.shape[0], 1)
+                ps = torch.zeros(1, q.shape[0], k.shape[0], device=q.device, dtype=torch.float16)
+                for i in range(0, S, chunk_size):
+                    chunk_end = min(i + chunk_size, q.shape[0])
+                    q_chunk = q[i:chunk_end]
+                    k_chunk = k
+                    ps_chunk = self.caculate_attention_score(q_chunk.to(q.device), k_chunk.to(k.device))
+                    ps[:, i:chunk_end] = ps_chunk.to(attention_device)
+            else:
+                chunk_size = max(2000000000 // 2 // 192 // q.shape[1] // k.shape[1], 1)
+                ps = torch.zeros(B, q.shape[1], k.shape[1], device=attention_device, dtype=torch.float16)
+                for i in range(0, B, chunk_size):
+                    chunk_end = min(i + chunk_size, B)
+                    q_chunk = q[i:chunk_end]
+                    k_chunk = k[i:chunk_end]
+                    ps_chunk = self.caculate_attention_score(q_chunk.to(q.device), k_chunk.to(k.device))
+                    ps[i:chunk_end] = ps_chunk.to(attention_device)
+        return ps.to(torch.float16)
+
     @override
     def forward(self,
                 x: torch.Tensor, 
@@ -739,17 +785,155 @@ class EncoderBaseLayer(nn.Module):
                 out = out[0]
         return layer_norm(out + residual)
 
+    def _project_kv_cache_rowchunked(self, attn_mod, x_kv_src, copy_kv, row_chunk,
+                                     *, norm=None, offload=False, quantize=False,
+                                     device=None):
+        """Build attn_mod's K/V cache over the row axis in chunks.
+
+        Mirrors ``project_kv_cache(full)`` bit-for-bit (K/V are per-row
+        independent), but never materialises the full-N projection transient
+        (the fp32 einsum spike that OOMs at large N*groups) -- it projects
+        ``row_chunk`` rows at a time.
+
+        Each slice is quantized and/or moved to host **as it is produced**
+        (``ScalableSeqKV.from_row_slices``), so the full-precision cache is
+        never resident in whole -- neither as a slice list nor as a
+        concatenated copy. That matters because this path is entered precisely
+        when memory is already tight: assembling at full precision and
+        quantizing afterwards would peak at two full copies of the cache.
+
+        Args:
+            attn_mod: the attention module whose K/V projection to run.
+            x_kv_src: source activations, ``[B, N, groups, E]``.
+            copy_kv: forwarded to ``project_kv_cache`` as ``copy_first_head_kv``.
+            row_chunk: context rows to project per step.
+            norm: optional layer norm applied per-slice before projecting (the
+                ``pre_norm`` path); applied inside the loop so normalising does
+                not itself materialise all N rows.
+            offload: store the finished cache on host RAM.
+            quantize: store the finished cache int8.
+            device: compute device reads are staged back to.
+
+        Returns:
+            A ``ScalableSeqKV`` when quantizing/offloading, else the plain
+            ``{"kv", "batch", "groups"}`` dict.
+        """
+        from synthefy_nori.model.kv_cache_scaling import ScalableSeqKV
+
+        N = x_kv_src.shape[1]
+        B, groups = x_kv_src.shape[0], x_kv_src.shape[2]
+
+        def _row_slices():
+            """Yield each row-slice's projected K/V, one at a time.
+
+            A generator so the consumer folds each slice in and drops it before the
+            next is projected -- the whole point of this path.
+            """
+            for r0 in range(0, N, row_chunk):
+                sl = slice(r0, min(r0 + row_chunk, N))
+                rows = x_kv_src[:, sl]
+                if norm is not None:
+                    rows = norm(rows)
+                yield attn_mod.project_kv_cache(
+                    rows.transpose(1, 2), copy_first_head_kv=copy_kv)["kv"]
+
+        if not (quantize or offload):
+            # Nothing to fold in; the plain dict is what the uninstrumented path uses.
+            return {"kv": torch.cat(list(_row_slices()), dim=1),
+                    "batch": B, "groups": groups}
+        return ScalableSeqKV.from_row_slices(
+            _row_slices(), B, groups, quantize=quantize, offload=offload,
+            device=device or x_kv_src.device, dtype=x_kv_src.dtype,
+        )
+
+    def _forward_train_cache_memsaving(
+            self, x_train, feature_atten_mask, pre_seq_steps, seq_step,
+            post_seq_steps, index1, index2, row_chunk, quantize, offload, device):
+        """Memory-bounded fit-time cache build (TabPFN-3-style, non-serial only).
+
+        Keeps only ONE full-N K/V tensor resident: the self-attention cache.
+        Everything else -- queries, attention output, MLP hidden, and the
+        stored test cache -- is processed / built in row-chunks and written
+        back into ``x_train`` in place, so the peak is ~ K/V + input instead of
+        the ~4-5x working set the monolithic path materialises. Bit-exact: the
+        self-attention becomes project-once + chunked cached-query reads (each
+        query row attends to the full K/V), and the per-row MLP/feature-attn
+        steps are unchanged."""
+        seq_attn_train = self.sequence_attentions[index1]
+        seq_attn_test = self.sequence_attentions[index2]
+        seq_norm = self.layer_norms[seq_step]
+        N = x_train.shape[1]
+
+        def _rows_inplace(steps):
+            for r0 in range(0, N, row_chunk):
+                sl = slice(r0, min(r0 + row_chunk, N))
+                xc = x_train[:, sl]
+                for st in steps:
+                    xc = self._run_non_sequence_step(
+                        xc, step_idx=st, feature_atten_mask=feature_atten_mask,
+                        eval_pos=xc.shape[1])
+                x_train[:, sl] = xc
+
+        # pre-seq per-row steps (fmfmsm) -- must finish for all rows before we
+        # project K/V from the post-pre-step activations.
+        _rows_inplace(pre_seq_steps)
+
+        # Build the self-attention cache (resident) and the stored test cache
+        # (quantized/offloaded during build). Non-serial => both read the same
+        # source. The norm, when this layer is pre_norm, is applied per-slice
+        # inside the projector so it does not materialise all N rows either.
+        norm = seq_norm if self.pre_norm else None
+
+        def _proj(mod, copy_kv, **scale):
+            return self._project_kv_cache_rowchunked(
+                mod, x_train, copy_kv, row_chunk, norm=norm, device=device, **scale)
+
+        train_cache = _proj(seq_attn_train, self.self_share_all_kv_heads)
+        test_cache = _proj(seq_attn_test, self.cross_share_all_kv_heads,
+                           quantize=quantize, offload=offload)
+
+        # Self-attention as chunked cached-query reads + post steps, in place.
+        for r0 in range(0, N, row_chunk):
+            sl = slice(r0, min(r0 + row_chunk, N))
+            xr = x_train[:, sl]
+            if self.pre_norm:
+                attn_r = seq_attn_train.forward_with_kv_cache(
+                    seq_norm(xr).transpose(1, 2), train_cache)[0].transpose(1, 2)
+                xr = self._residual_add(xr, attn_r)
+            else:
+                attn_r = seq_attn_train.forward_with_kv_cache(
+                    xr.transpose(1, 2), train_cache)[0].transpose(1, 2)
+                xr = seq_norm(attn_r + xr)
+            for st in post_seq_steps:
+                xr = self._run_non_sequence_step(
+                    xr, step_idx=st, feature_atten_mask=feature_atten_mask,
+                    eval_pos=xr.shape[1])
+            x_train[:, sl] = xr
+        del train_cache
+        return x_train, {"seq_kv": test_cache}
+
     def forward_train_cache(
             self,
             x_train: torch.Tensor,
             feature_atten_mask: torch.Tensor | None = None,
+            fit_row_chunk: int | None = None,
+            quantize_kv_cache: bool = False,
+            offload_kv_cache: bool = False,
+            device=None,
     ) -> tuple[torch.Tensor, dict[str, dict[str, torch.Tensor | int]]]:
         """Run the train rows through one layer and cache train K/V for tests.
 
         This mirrors forward(..., eval_pos=n_train) for the train side, but it
         also stores projected K/V for the subsequent test cross-attention. It
         is intentionally inference-only; training still uses the standard path.
+
+        fit_row_chunk switches to a
+        memory-bounded build (TabPFN-3-style: chunked queries + in-place
+        residual + chunked/offloaded cache projection) that keeps only the
+        resident K/V tensor full-size. Supported for non-serial seq attention;
+        serial falls back to the standard monolithic path.
         """
+
         if self.layer_arch == 'fmfmsm':
             pre_seq_steps = (0, 1, 2, 3)
             seq_step = 4
@@ -765,13 +949,35 @@ class EncoderBaseLayer(nn.Module):
                 "Cached inference currently supports layer_arch='fmfmsm' and 'smf'"
             )
 
+        index1 = seq_index * 2 if self.seq_attn_isolated else seq_index
+        index2 = index1 + 1 if self.seq_attn_isolated else index1
+
+        # Memory-bounded fit build (TabPFN-3-style). Non-serial only: the serial
+        # variant's test cache reads the self-attention OUTPUT, which the chunked
+        # path would have to fully materialise -- defeating the purpose.
+        #
+        # Raise rather than fall through to the monolithic path. Silently ignoring a
+        # requested memory lever is how a caller ends up believing the cap applied
+        # while the build still peaks at O(N); the predictor catches this to decide
+        # whether to escalate elsewhere.
+        if fit_row_chunk and self.seq_attn_serial:
+            raise NotImplementedError(
+                "context_row_chunk is not supported for serial sequence attention: "
+                "the serial variant's test cache reads the self-attention output, so "
+                "the chunked build would have to materialise all rows anyway. Use "
+                "memory={'context_row_chunk': None} on this checkpoint."
+            )
+        if fit_row_chunk:
+            return self._forward_train_cache_memsaving(
+                x_train, feature_atten_mask, pre_seq_steps, seq_step,
+                post_seq_steps, index1, index2, fit_row_chunk,
+                quantize_kv_cache, offload_kv_cache, device)
+
         eval_pos = x_train.shape[1]
         for step_idx in pre_seq_steps:
             x_train = self._run_non_sequence_step(
                 x_train, step_idx=step_idx, feature_atten_mask=feature_atten_mask, eval_pos=eval_pos)
 
-        index1 = seq_index * 2 if self.seq_attn_isolated else seq_index
-        index2 = index1 + 1 if self.seq_attn_isolated else index1
         seq_attn_train = self.sequence_attentions[index1]
         seq_attn_test = self.sequence_attentions[index2]
         seq_norm = self.layer_norms[seq_step]
@@ -935,13 +1141,40 @@ class LayerStack(nn.Module):
         return x,feature_attention,sample_attention
 
     def build_train_cache(self, x_train, **kwargs):
+        """Build the per-layer train K/V caches for chunked inference.
+
+        WS1 Stage 2 memory lever: with quantize/offload set, each layer's O(N)
+        seq-K/V cache is int8-quantized and/or moved to host RAM *immediately*
+        after that layer produces it — before the next layer runs. This is what
+        actually bounds the GPU high-water-mark: otherwise all len(layers) caches
+        accumulate full-precision on the GPU and the prefill peak is O(L*N), so a
+        post-hoc offload (after the whole build) can't lower it. Doing it in the
+        loop keeps at most ~one layer's cache resident during the build.
+        """
         caches = []
         feature_atten_mask = kwargs.get("feature_atten_mask", None)
+        quantize = kwargs.get("quantize_kv_cache", False)
+        offload = kwargs.get("offload_kv_cache", False)
+        device = kwargs.get("device", None)
+        fit_row_chunk = kwargs.get("fit_row_chunk", None)
+        if quantize or offload:
+            from synthefy_nori.model.kv_cache_scaling import scale_caches
         for layer in self.layers:
             x_train, layer_cache = layer.forward_train_cache(
                 x_train,
                 feature_atten_mask=feature_atten_mask,
+                fit_row_chunk=fit_row_chunk,
+                quantize_kv_cache=quantize,
+                offload_kv_cache=offload,
+                device=device,
             )
+            if quantize or offload:
+                # Scale in place, per layer: the full-precision GPU tensor is
+                # dropped as soon as the CPU/int8 copy is stored, so the next
+                # layer builds against a freed allocator slot. (No-op if the
+                # fit_row_chunk path already offloaded it -- scale_caches skips
+                # an already-wrapped ScalableSeqKV.)
+                scale_caches([layer_cache], quantize=quantize, offload=offload, device=device)
             caches.append(layer_cache)
         return x_train, caches
 

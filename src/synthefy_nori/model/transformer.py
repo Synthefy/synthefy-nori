@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import torch
 import torch.nn as nn
 from synthefy_nori.model.layer import EncoderBaseLayer, MLP, LayerStack, RMSNorm
@@ -526,6 +527,12 @@ class FeaturesTransformer(nn.Module):
             eval_pos: int,
             *,
             row_chunk_size: int | None = None,
+            cache_dtype: str = "bf16",
+            offload_kv_cache: bool = False,
+            fit_row_chunk: int | None = None,
+            adaptive_query_chunk: bool = True,
+            quantize_kv_cache: bool | None = None,
+            adaptive_oom_chunk: bool | None = None,
     ) -> torch.Tensor:
         """Regression-only cached prediction path for chunked inference.
 
@@ -533,7 +540,48 @@ class FeaturesTransformer(nn.Module):
         are computed once. Test rows are then streamed through the same layers
         using those train caches. Preprocessing still sees the full transductive
         X table once, preserving the existing inference semantics.
+
+        Args:
+            x: inputs, ``[batch, seq, feature]``.
+            y: targets, ``[batch, label]``.
+            eval_pos: index separating context rows from query rows.
+            row_chunk_size: query rows per decode forward.
+            cache_dtype: precision the stored K/V cache is kept at — ``"bf16"``
+                (bit-exact, the default) or ``"int8"``. This method takes a
+                CONCRETE precision: it does not know the device budget, so it
+                cannot decide when quantizing is worth it. That decision belongs
+                to :class:`~synthefy_nori.inference.memory_policy.MemoryPolicy`,
+                which ``NoriPredictor.predict`` resolves before calling here.
+            offload_kv_cache: keep the cache in host RAM, streaming slices back.
+            fit_row_chunk: bound the fit-time build working set to this many
+                context rows (bit-exact). ``None`` = off.
+            adaptive_query_chunk: on a decode OOM, halve the query chunk and
+                retry rather than raising.
+            quantize_kv_cache: alias for ``cache_dtype``, accepted so the WS1
+                benchmark harnesses (``internal/delta_isab/*``) run unmodified
+                against both this branch and #257 — which is what makes the
+                before/after memory comparison apples-to-apples. Prefer
+                ``cache_dtype`` in new code.
+            adaptive_oom_chunk: alias for ``adaptive_query_chunk``, same reason.
+
+        Returns:
+            Predictions for the query rows.
         """
+        # Aliases: honour them, but let the new names win when both are given, so a
+        # caller migrating one call site cannot end up with the old value silently
+        # applied.
+        if quantize_kv_cache is not None and cache_dtype == "bf16":
+            cache_dtype = "int8" if quantize_kv_cache else "bf16"
+        if adaptive_oom_chunk is not None:
+            adaptive_query_chunk = bool(adaptive_oom_chunk)
+        if cache_dtype not in ("bf16", "int8"):
+            raise ValueError(
+                "forward_cached_regression takes a concrete cache_dtype of "
+                f"'bf16' or 'int8', got {cache_dtype!r}. Deciding which one is "
+                "worth it needs the device budget, so it belongs to "
+                "MemoryPolicy.resolve() (synthefy_nori.inference.memory_policy) — "
+                "go through NoriPredictor(memory=...) rather than guessing here."
+            )
         if self.mask_prediction:
             raise NotImplementedError("forward_cached_regression requires mask_prediction=False")
         if x is None or y is None:
@@ -578,31 +626,62 @@ class FeaturesTransformer(nn.Module):
             eval_pos=eval_pos,
         )
         train_tokens = torch.cat((x_train, embedded_y[:, :eval_pos].unsqueeze(2)), dim=2)
+        # WS1 Stage 2 memory lever: int8-quantize and/or host-offload the
+        # O(N_train) seq K/V cache. Threaded INTO build_train_cache so each layer's
+        # cache is scaled the moment it's produced -- otherwise all L layers'
+        # full-precision caches accumulate on the GPU and the prefill peak is
+        # O(L*N) regardless of any post-hoc offload.
+        #
+        # Arguments only: this path reads no environment variables. Callers configure
+        # it through NoriPredictor(memory=MemoryPolicy(...)), which resolves the rung
+        # and passes the concrete decision down.
+        quantize_kv_cache = cache_dtype == "int8"
         _, caches = self.transformer_encoder.build_train_cache(
             train_tokens,
             feature_atten_mask=None,
+            quantize_kv_cache=quantize_kv_cache,
+            offload_kv_cache=offload_kv_cache,
+            fit_row_chunk=fit_row_chunk,
+            device=data_tensor.device,
         )
 
         n_test = total_rows - eval_pos
         if row_chunk_size is None or row_chunk_size <= 0:
             row_chunk_size = n_test
-        outputs = []
-        for start in range(eval_pos, total_rows, row_chunk_size):
-            end = min(start + row_chunk_size, total_rows)
+
+        def _run_chunk(start: int, end: int) -> torch.Tensor:
             x_test = self._encode_x_rows(
-                preprocessed_x,
-                slice(start, end),
-                total_rows=total_rows,
-                feature_pos_emb=feature_pos_emb,
+                preprocessed_x, slice(start, end),
+                total_rows=total_rows, feature_pos_emb=feature_pos_emb,
             )
             test_tokens = torch.cat((x_test, embedded_y[:, start:end].unsqueeze(2)), dim=2)
             test_out = self.transformer_encoder.forward_test_with_cache(
-                test_tokens,
-                caches,
-                feature_atten_mask=None,
+                test_tokens, caches, feature_atten_mask=None,
             )
             test_out = self.encoder_out_norm(test_out)
-            outputs.append(self.reg_y_decoder(test_out[:, :, -1]))
+            return self.reg_y_decoder(test_out[:, :, -1])
+
+        outputs = []
+        start = eval_pos
+        chunk = row_chunk_size
+        while start < total_rows:
+            end = min(start + chunk, total_rows)
+            try:
+                outputs.append(_run_chunk(start, end))
+                start = end
+            except torch.cuda.OutOfMemoryError:
+                # Adaptive halving: degrade the query chunk instead of dying.
+                # The reduced chunk is deliberately NOT restored for later
+                # chunks: whatever made this one not fit is a property of the
+                # request, so restoring would re-OOM on the next chunk and
+                # thrash. Cost is throughput for the rest of the table.
+                # memory_report_["query_chunk"] records the chunk this path was
+                # ENTERED with; the further halving below is internal to this loop and
+                # is not currently surfaced.
+                if not adaptive_query_chunk or chunk <= 1:
+                    raise
+                torch.cuda.empty_cache()
+                chunk = max(1, chunk // 2)
         return torch.cat(outputs, dim=1)
 
     def apply_target_aware_embedding(

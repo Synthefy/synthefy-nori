@@ -12,6 +12,12 @@ from synthefy_nori.inference.preprocess import (
     MADWinsorizer,
     PolynomialInteractionGenerator,
     SubSampleData)
+from synthefy_nori.inference.memory_policy import (
+    FIT_ROW_CHUNK_ON_OOM,
+    MemoryPolicy,
+    estimate_cache_gb,
+    total_host_ram_gb,
+)
 from synthefy_nori.utils.loading import load_model
 import torch
 from typing import List, Literal
@@ -25,7 +31,11 @@ import pandas as pd
 import einops
 import json
 import os
+import logging
+import warnings
 
+
+logger = logging.getLogger(__name__)
 
 NA_PLACEHOLDER = "__MISSING__"
 
@@ -48,7 +58,8 @@ class NoriPredictor:
                  quantile_collapse: str = 'mean',
                  bar_temperature: float = 1.0,
                  bar_point_estimator: str = 'mean',
-                 discrete_y_snap_max_unique: int = 0):
+                 discrete_y_snap_max_unique: int = 0,
+                 memory: "MemoryPolicy | dict | str | None" = None):
         """
         init NoriPredictor
 
@@ -104,6 +115,11 @@ class NoriPredictor:
         # Set to 0 to disable. Default 30 covers all standard discrete-y
         # benchmarks while leaving continuous y untouched.
         self.discrete_y_snap_max_unique = int(discrete_y_snap_max_unique)
+        # Stored verbatim (a preset name, dict, MemoryPolicy or None) and coerced
+        # lazily in _memory_policy(). Transforming it here would break sklearn's
+        # clone(), whose identity check requires the stored attribute to be the
+        # object it was handed.
+        self.memory = memory
         self.inference_with_DDP=inference_with_DDP
         # Optional inference-time augmentations. Currently supports:
         #   'yj': Yeo-Johnson target transform ensemble — fit PowerTransformer
@@ -462,8 +478,52 @@ class NoriPredictor:
             if len(np.unique(col)) < self.min_unique_num_for_numerical_infer:
                 categorical_idx.append(idx)
         return categorical_idx
-        
-    
+
+    def _warn_once_per_call(self, key: str, message: str, category) -> None:
+        """Emit ``message`` at most once per public ``predict`` call.
+
+        The runtime warnings (plain-loop fallback, context subsampling) describe the
+        REQUEST, so once per request is right -- but they are raised inside
+        ``_predict_reg_single``, which runs once per inference pipeline (16 on the
+        default config). Emitting there directly produced 16 identical copies per
+        predict, and Python's per-location de-duplication does not help because
+        ``stacklevel`` attributes them to a varying frame.
+
+        Args:
+            key: stable identifier for this warning kind.
+            message: the full warning text.
+            category: warning class to raise.
+        """
+        seen = getattr(self, "_warned_this_call", None)
+        if seen is None:
+            seen = self._warned_this_call = set()
+        if key in seen:
+            return
+        seen.add(key)
+        warnings.warn(message, category, stacklevel=4)
+
+    def _log_once_per_call(self, key: str, level: int, message: str) -> None:
+        """Log ``message`` at most once per public ``predict`` call.
+
+        Same reason as :meth:`_warn_once_per_call`, for the logger: these sites run once
+        per inference pipeline, and Python's logging has no de-duplication at all. With
+        no handler configured, logging's handler-of-last-resort writes WARNING to
+        stderr, so a user saw 16 identical lines per predict (measured 32 across two
+        calls) before this.
+
+        Args:
+            key: stable identifier for this log kind.
+            level: logging level.
+            message: the full text.
+        """
+        seen = getattr(self, "_logged_this_call", None)
+        if seen is None:
+            seen = self._logged_this_call = set()
+        if key in seen:
+            return
+        seen.add(key)
+        logger.log(level, "%s", message)
+
     def predict(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray,
                 return_distribution: bool = False) -> np.ndarray:
         """
@@ -481,6 +541,11 @@ class NoriPredictor:
             and the Yeo-Johnson point ensemble are skipped — the raw decoder
             output is the predictive distribution callers want for scoring.
         """
+        # Reset the per-call de-duplication sets. The runtime warnings and logs
+        # below are raised once per inference pipeline (16 on the default
+        # config); these make them once per user-visible predict instead.
+        self._warned_this_call = set()
+        self._logged_this_call = set()
         if return_distribution:
             return self._predict_reg(x_train, y_train, x_test, return_distribution=True)
         preds = self._predict_reg(x_train, y_train, x_test)
@@ -809,13 +874,97 @@ class NoriPredictor:
         return base
 
     def _resolve_max_elements_budget(self) -> int:
-        """Per-forward element budget: ``SYNTHEFY_MAX_ELEMENTS_BUDGET`` when set,
-        else the VRAM-aware default. Single source of truth shared by the predict
-        (``_predict_reg_single``) and embedding (``get_embeddings``) paths, which
-        had duplicated — and drifted on — this resolution.
+        """Per-forward element budget: the policy's value, else the VRAM-aware default.
+
+        Single source of truth shared by the predict (``_predict_reg_single``) and
+        embedding (``get_embeddings``) paths, which had duplicated — and drifted on
+        — this resolution. Routed through :class:`MemoryPolicy` so
+        ``memory={"elements_budget": N}`` and the legacy
+        ``SYNTHEFY_MAX_ELEMENTS_BUDGET`` land in the same place; this budget is
+        upstream of the cache knobs, since the cached path engages only when the
+        query set exceeds the chunk size it implies.
         """
+        budget = self._memory_policy().elements_budget
+        if budget is not None:
+            return int(budget)
+        # Legacy, still supported: SYNTHEFY_MAX_ELEMENTS_BUDGET shipped on main long
+        # before this policy existed, is documented in public/README.md, and is how
+        # the eval CLI's --max-elements-budget reaches inference
+        # (evaluation/cli.py sets it, evaluation/harness.py records it). It is NOT
+        # part of the MemoryPolicy surface; prefer memory={"elements_budget": N}.
         env_budget = os.environ.get("SYNTHEFY_MAX_ELEMENTS_BUDGET")
         return int(env_budget) if env_budget else self._default_max_elements_budget()
+
+    #: Set by ``predict`` to the resolved :class:`MemoryPolicy` for the last call (as
+    #: ``model_dump()``): which ladder rung ran, the precision chosen, the budgets
+    #: used, and any context rows dropped. None until a prediction has run.
+    #:
+    #: Exists because the fallback ladder is otherwise invisible — a request that
+    #: quietly dropped to ``plain_loop``, the one rung that may subsample the context,
+    #: is indistinguishable from a fast one except by its numbers.
+    memory_report_: dict | None = None
+
+    def _memory_policy(self) -> MemoryPolicy:
+        """This predictor's :class:`MemoryPolicy`.
+
+        No environment variables feed the policy: it is configured through
+        ``NoriPredictor(memory=...)`` alone. The two env vars still honoured are
+        pre-existing, shipped, and documented in ``public/README.md`` — the
+        ``SYNTHEFY_DISABLE_CACHED_INFERENCE`` / ``SYNTHEFY_ENABLE_CACHED_INFERENCE``
+        kill switches, applied here because an operator must be able to turn the
+        cached path off in production without a redeploy.
+
+        Returns:
+            The still-unresolved policy for this predictor.
+
+        Raises:
+            RuntimeError: if ``SYNTHEFY_CACHE_MAX_GB`` is set. That variable shipped
+                on main with a *different* meaning (skip the cache above this size,
+                measured against the full-precision footprint) and no longer has an
+                equivalent. Silently ignoring a memory-safety knob could turn a
+                working job into an OOM, so this fails loudly instead.
+        """
+        if os.environ.get("SYNTHEFY_CACHE_MAX_GB") is not None:
+            raise RuntimeError(
+                "SYNTHEFY_CACHE_MAX_GB is no longer supported. It used to SKIP the "
+                "KV cache when the full-precision footprint exceeded it; the cache "
+                "is now OFFLOADED to host RAM instead of skipped, so the old value "
+                "does not translate. Use memory={'gpu_budget_frac': 0.4} for a share "
+                "of VRAM (portable across GPUs) or "
+                "memory={'gpu_budget_absolute_gb': N} for a hard cap on a "
+                "co-tenanted GPU. Unset the variable to continue."
+            )
+        policy = MemoryPolicy.coerce(self.memory)
+        disabled = (
+            os.environ.get("SYNTHEFY_DISABLE_CACHED_INFERENCE", "0") == "1"
+            or os.environ.get("SYNTHEFY_ENABLE_CACHED_INFERENCE", "1") != "1"
+        )
+        if disabled and policy.cache:
+            logger.info("Nori KV cache disabled by environment kill switch")
+            # Rebuild rather than model_copy(cache=False): flipping cache off while the
+            # caller's cache-only levers are still set is precisely the state rule 1
+            # rejects, and model_copy would smuggle it past validation -- the
+            # inconsistency this branch removed everywhere else. Carry over only the
+            # settings that still mean something without a cache.
+            policy = MemoryPolicy(
+                cache=False,
+                elements_budget=policy.elements_budget,
+                allow_subsample=policy.allow_subsample,
+            )
+        return policy
+
+    def _total_vram_gb(self) -> float | None:
+        """Total VRAM in GiB for this predictor's device, or None if unknowable.
+
+        None rather than a guess, so :meth:`MemoryPolicy.resolve` applies its own
+        documented fallback instead of this method inventing a number.
+        """
+        try:
+            props = torch.cuda.get_device_properties(self.device)
+        except Exception:
+            # CPU inference, or a device string torch will not describe.
+            return None
+        return props.total_memory / (1024 ** 3)
 
     @staticmethod
     def _chunk_size(max_elements: int, budget_n_features: int, n_train: int) -> int:
@@ -1174,9 +1323,46 @@ class NoriPredictor:
         # model never sees the raw count when the config reduces dimensionality.
         budget_n_features = self._effective_budget_n_features(n_features, x_train)
         base_elements = (n_samples_train + 1) * budget_n_features
+        dropped_context_rows = 0
         if base_elements > MAX_ELEMENTS_BUDGET:
+            # Guard: SYNTHEFY_FORBID_SUBSAMPLE=1 makes context subsampling FAIL LOUDLY
+            # instead of silently shrinking the training set. Use for full-context
+            # evaluation where any subsampling must be visible, never silent.
+            _forbid_env = os.environ.get("SYNTHEFY_FORBID_SUBSAMPLE") == "1"
+            if not self._memory_policy().allow_subsample or _forbid_env:
+                # Name whichever setting actually forbade it. Reporting the env var to
+                # someone who set memory={"allow_subsample": False} sends them hunting
+                # a variable they never set.
+                _source = ("SYNTHEFY_FORBID_SUBSAMPLE=1" if _forbid_env
+                           else "memory={'allow_subsample': False}")
+                _remedy = ("Raise memory={'elements_budget': N} for full context, or "
+                           "allow subsampling.")
+                raise RuntimeError(
+                    f"{_source}: context subsampling required but forbidden "
+                    f"(n_train={n_samples_train}, eff_features={budget_n_features}, "
+                    f"base_elements={base_elements} > budget={MAX_ELEMENTS_BUDGET}). "
+                    f"{_remedy}"
+                )
             # If even the train set + 1 row is too big, we must subsample the training set
             max_train_samples = max(10, MAX_ELEMENTS_BUDGET // (2 * budget_n_features))
+            # Not forbidden, so we proceed — but never SILENTLY: warn so a trimmed
+            # context is always visible. Raise SYNTHEFY_MAX_ELEMENTS_BUDGET to keep
+            # full context, or set SYNTHEFY_FORBID_SUBSAMPLE=1 to make this an error.
+            # Never SILENTLY: both warn and log, with the exact row counts, so a
+            # trimmed context is visible whichever channel the caller watches. The
+            # count is also carried into memory_report_["dropped_context_rows"]
+            # below, so it survives past the warning.
+            dropped_context_rows = n_samples_train - max_train_samples
+            _subsample_msg = (
+                f"Nori: context subsampled {n_samples_train} -> {max_train_samples} rows "
+                f"({dropped_context_rows} dropped) to fit an element budget of "
+                f"{MAX_ELEMENTS_BUDGET} (base_elements={base_elements}, "
+                f"eff_features={budget_n_features}). Raise "
+                f"memory={{'elements_budget': N}} for full context, or set "
+                f"memory={{'allow_subsample': False}} to make this an error."
+            )
+            self._log_once_per_call("subsample", logging.WARNING, _subsample_msg)
+            self._warn_once_per_call("subsample", _subsample_msg, UserWarning)
             # Randomly subsample the training data
             rng = np.random.default_rng(self.seed)
             idx = rng.choice(n_samples_train, max_train_samples, replace=False)
@@ -1281,47 +1467,173 @@ class NoriPredictor:
                 # multi-chunk (large test) inference, scaling with the chunk count.
                 # Disable with SYNTHEFY_ENABLE_CACHED_INFERENCE=0 or the
                 # SYNTHEFY_DISABLE_CACHED_INFERENCE=1 kill switch.
-                bare_model = self.model.module if hasattr(self.model, "module") else self.model
+                # Unwrap the DDP wrapper so the cached-KV fast path (an
+                # attribute on the backbone) is reachable.
+                bare_model = self._bare_model()
+                # Gate on the MODEL's mask_prediction, not the predictor's flag.
+                # forward_cached_regression hard-requires mask_prediction=False;
+                # NoriPredictor.mask_prediction defaults to False but a training-
+                # style checkpoint builds the model with mask_prediction=True, so
+                # keying off self.mask_prediction wrongly enters the cached path
+                # and the model raises NotImplementedError under chunking. Use the
+                # model's real flag so such ckpts fall to the plain chunked loop.
+                model_mask_pred = bool(getattr(bare_model, "mask_prediction",
+                                               self.mask_prediction))
+                # Serving-memory policy. The ladder and the reasoning behind its
+                # ORDER live in ``synthefy_nori.inference.memory_policy``; here we
+                # only supply the measurements it needs and record what it picked.
+                #
+                # By default the cache stays bit-exact while it fits VRAM,
+                # quantizes to int8 only to keep it resident, and offloads to host
+                # only when it cannot be resident at any precision. So a table that
+                # serves correctly today keeps bit-exact predictions: accuracy is
+                # spent only to avoid a fallback that would otherwise be slower or
+                # fatal.
+                #
+                # Configure via NoriPredictor(memory=...) — omit it for the
+                # defaults, or pass a preset name ("exact", "max_context", "off"), a
+                # dict, or a MemoryPolicy. No env var configures this; only the
+                # SYNTHEFY_DISABLE_CACHED_INFERENCE kill switch is honoured.
+                policy = self._memory_policy()
                 use_cached = (
                     hasattr(bare_model, "forward_cached_regression")
                     and not self.mask_prediction
                     and n_samples_test > chunk_size
-                    and os.environ.get("SYNTHEFY_ENABLE_CACHED_INFERENCE", "1") == "1"
-                    and os.environ.get("SYNTHEFY_DISABLE_CACHED_INFERENCE", "0") != "1"
+                    and policy.cache
                 )
                 if use_cached:
-                    # Skip the cache if its train K/V footprint would be too large.
                     fpg = max(int(getattr(bare_model, "features_per_group", 2)), 1)
                     n_groups = (budget_n_features + fpg - 1) // fpg
                     embed_dim = int(getattr(bare_model, "embed_dim", 128))
                     nlayers = int(getattr(bare_model, "nlayers", 16))
+                    nhead = max(int(getattr(bare_model, "nhead", 2)), 1)
                     bytes_per = 2 if self.mix_precision else 4
-                    est_cache_gb = (
-                        nlayers * n_groups * n_samples_train * 2 * embed_dim * bytes_per
-                    ) / (1024 ** 3)
-                    max_cache_gb = float(os.environ.get("SYNTHEFY_CACHE_MAX_GB", "6.0"))
-                    use_cached = est_cache_gb <= max_cache_gb
+                    policy = policy.resolve(
+                        est_cache_gb=estimate_cache_gb(
+                            n_context_rows=n_samples_train,
+                            n_groups=n_groups,
+                            nlayers=nlayers,
+                            embed_dim=embed_dim,
+                            bytes_per_element=bytes_per,
+                        ),
+                        bytes_per_element=bytes_per,
+                        head_dim=max(embed_dim // nhead, 1),
+                        total_vram_gb=self._total_vram_gb(),
+                        total_ram_gb=total_host_ram_gb(),
+                    )
+                    use_cached = policy.cache
+                else:
+                    policy = policy.resolve(
+                        est_cache_gb=0.0, bytes_per_element=1, head_dim=1,
+                        cache_eligible=False,
+                    )
+                # Announce the opening rung. WARNING when it is already a fallback
+                # (offload / plain loop), because that is a real slowdown the caller
+                # should see by default; INFO on the fast rungs so a normal run stays
+                # quiet but is still explainable after the fact.
+                self._log_once_per_call(
+                    "rung", logging.WARNING if policy.is_degraded else logging.INFO,
+                    f"Nori serving-memory rung: {policy.describe()}")
 
                 cached_done = False
                 if use_cached:
                     self.model.to(self.device)
-                    try:
-                        with torch.autocast(device_type=self.device.type if isinstance(self.device, torch.device) else self.device, enabled=self.mix_precision), torch.inference_mode():
-                            output = bare_model.forward_cached_regression(
-                                x=x_.unsqueeze(0),
-                                y=y_.unsqueeze(0),
-                                eval_pos=len(y_train),
-                                row_chunk_size=chunk_size,
+                    # Sequential fallback. Attempt 1 uses the resolved rung; on an
+                    # OOM, escalate to fit-time row chunking (bit-exact — it bounds
+                    # the O(N*groups) build working set, which offload alone cannot)
+                    # before dropping to the plain loop.
+                    #
+                    # A policy that PINS context_row_chunk uses it from attempt 1, which
+                    # also means there is nothing left to escalate to. That is the
+                    # documented cost of pinning it.
+                    pinned = policy.context_row_chunk
+                    fit_chunk_attempts = [pinned]
+                    if pinned is None:
+                        fit_chunk_attempts.append(FIT_ROW_CHUNK_ON_OOM)
+                    for attempt_fit_chunk in fit_chunk_attempts:
+                        try:
+                            with torch.autocast(device_type=self.device.type if isinstance(self.device, torch.device) else self.device, enabled=self.mix_precision), torch.inference_mode():
+                                output = bare_model.forward_cached_regression(
+                                    x=x_.unsqueeze(0),
+                                    y=y_.unsqueeze(0),
+                                    eval_pos=len(y_train),
+                                    row_chunk_size=chunk_size,
+                                    offload_kv_cache=policy.offload_to_host,
+                                    cache_dtype=policy.cache_dtype,
+                                    fit_row_chunk=attempt_fit_chunk,
+                                    adaptive_query_chunk=policy.adaptive_query_chunk,
+                                )
+                            output = self._unwrap_model_output(output, task_type="reg").squeeze(0)
+                            if not torch.isfinite(output).all():
+                                output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
+                            outputs.append(output)
+                            cached_done = True
+                            if attempt_fit_chunk is not None and pinned is None:
+                                policy = policy.escalated(
+                                    "context_row_chunk",
+                                    context_row_chunk=attempt_fit_chunk)
+                                logger.warning(
+                                    "Nori recovered on rung %s", policy.describe())
+                            policy = policy.escalated(
+                                policy.rung, dropped_context_rows=dropped_context_rows,
+                                query_chunk=chunk_size)
+                            self.memory_report_ = policy.model_dump()
+                            break
+                        except NotImplementedError as exc:
+                            # This checkpoint cannot do context-row chunking (serial
+                            # sequence attention). If the CALLER pinned it, that is
+                            # their error and it propagates. If we chose it ourselves
+                            # as an OOM escalation, degrade quietly to the next rung.
+                            if pinned is not None:
+                                raise
+                            logger.warning(
+                                "Nori cannot escalate to context_row_chunk on this "
+                                "checkpoint (%s); falling back to the plain loop",
+                                exc,
                             )
-                        output = self._unwrap_model_output(output, task_type="reg").squeeze(0)
-                        if not torch.isfinite(output).all():
-                            output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
-                        outputs.append(output)
-                        cached_done = True
-                    except torch.cuda.OutOfMemoryError:
-                        torch.cuda.empty_cache()
-                        cached_done = False
-                
+                            cached_done = False
+                            break
+                        except torch.cuda.OutOfMemoryError:
+                            torch.cuda.empty_cache()
+                            cached_done = False
+                            # Name the OOM and what happens next, or the escalation is
+                            # invisible in the logs and a slow run looks inexplicable.
+                            next_step = (
+                                f"retrying with fit_row_chunk={FIT_ROW_CHUNK_ON_OOM}"
+                                if attempt_fit_chunk is None and pinned is None
+                                else "falling back to the plain chunked loop"
+                            )
+                            logger.warning(
+                                "Nori OOM on rung %s (fit_row_chunk=%s); %s",
+                                policy.rung, attempt_fit_chunk, next_step,
+                            )
+                if not cached_done:
+                    # Every cached rung failed, or the policy never chose one. This
+                    # is the plain chunked loop: much slower, and the only rung that
+                    # may have to subsample the context. Say so — a silent drop here
+                    # reads as an unexplained accuracy regression to whoever is
+                    # looking at the numbers later.
+                    if policy.rung != "no_cache":
+                        policy = policy.escalated(
+                            "plain_loop", dropped_context_rows=dropped_context_rows)
+                        msg = (
+                            f"Nori fell back to the plain chunked loop: "
+                            f"{policy.describe()}. Every query chunk now recomputes "
+                            f"the context K/V, several times slower"
+                            + (f"; {dropped_context_rows} context rows were DROPPED "
+                               f"to fit" if dropped_context_rows else "")
+                            + ". Raise memory={'gpu_budget_frac': ...} / "
+                            "'host_budget_frac' / 'elements_budget', or read "
+                            "predictor.memory_report_ for what was chosen."
+                        )
+                        self._log_once_per_call("plain_loop", logging.WARNING, msg)
+                        self._warn_once_per_call("plain_loop", msg, RuntimeWarning)
+                    else:
+                        policy = policy.escalated(
+                            policy.rung, dropped_context_rows=dropped_context_rows)
+                    self.memory_report_ = policy.model_dump()
+
+
                 # Chunk the test data (skipped entirely if the cached path ran)
                 all_outputs = []
                 for i in ([] if cached_done else range(0, n_samples_test, chunk_size)):
