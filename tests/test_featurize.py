@@ -1,0 +1,240 @@
+"""Featurization of non-numeric DataFrame inputs (fit on X_train).
+
+These exercise :func:`synthefy_nori.featurize.align_and_featurize`, the pure
+DataFrame-in / DataFrame-out transform that the public ``infer`` / ``predict``
+helpers apply before handing a fully numeric matrix to the model — so they run
+without loading any checkpoint. The default encoding is ordinal; the one-hot
+path is exercised with ``categorical_encoding="onehot"``.
+"""
+
+import warnings
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from synthefy_nori.featurize import align_and_featurize
+
+
+def _rows(frame):
+    return frame.to_numpy(dtype=float).tolist()
+
+
+def test_non_numeric_columns_are_ordinal_encoded_by_default():
+    Xtr, Xte = align_and_featurize(
+        pd.DataFrame({"a": [0.0, 1.0, 2.0], "cat": ["y", "x", "y"]}),
+        # 'z' is unseen in training -> code -1 (the server's unknown_value).
+        pd.DataFrame({"a": [3.0, 4.0], "cat": ["x", "z"]}),
+    )
+    # one column per categorical, codes in sorted-category order: x=0, y=1
+    assert list(Xtr.columns) == ["a", "cat"]
+    assert _rows(Xtr) == [[0.0, 1.0], [1.0, 0.0], [2.0, 1.0]]
+    assert _rows(Xte) == [[3.0, 0.0], [4.0, -1.0]]
+
+
+def test_ordinal_missing_categorical_is_nan():
+    Xtr, _ = align_and_featurize(
+        pd.DataFrame({"a": [0.0, 1.0, 2.0], "cat": ["x", None, "y"]}),
+        pd.DataFrame({"a": [5.0], "cat": ["x"]}),
+    )
+    # x=0, y=1; the missing row stays NaN for server-side imputation.
+    assert Xtr["cat"].tolist()[0] == 0.0 and Xtr["cat"].tolist()[2] == 1.0
+    assert np.isnan(Xtr["cat"].tolist()[1])
+
+
+def test_ordinal_column_order_preserved():
+    # categorical stays in place (not moved after numerics like one-hot does)
+    Xtr, _ = align_and_featurize(
+        pd.DataFrame({"cat": ["b", "a"], "n": [1.0, 2.0]}),
+        pd.DataFrame({"cat": ["a"], "n": [3.0]}),
+    )
+    assert list(Xtr.columns) == ["cat", "n"]
+
+
+def test_invalid_categorical_encoding_raises():
+    with pytest.raises(ValueError, match="categorical_encoding"):
+        align_and_featurize(
+            pd.DataFrame({"cat": ["x", "y"]}),
+            pd.DataFrame({"cat": ["x"]}),
+            categorical_encoding="hashing",
+        )
+
+
+def test_non_numeric_columns_are_one_hot_encoded():
+    Xtr, Xte = align_and_featurize(
+        pd.DataFrame({"a": [0.0, 1.0], "cat": ["x", "y"]}),
+        # 'z' is unseen in training -> its indicator group is all zeros.
+        pd.DataFrame({"a": [2.0], "cat": ["z"]}),
+        categorical_encoding="onehot",
+    )
+    # columns: a, cat_x, cat_y  (numerics first, then sorted one-hot groups)
+    assert list(Xtr.columns) == ["a", "cat_x", "cat_y"]
+    assert _rows(Xtr) == [[0.0, 1.0, 0.0], [1.0, 0.0, 1.0]]
+    assert _rows(Xte) == [[2.0, 0.0, 0.0]]
+
+
+def test_one_hot_train_category_absent_in_test_is_kept_as_zero_column():
+    _, Xte = align_and_featurize(
+        pd.DataFrame({"a": [0.0, 1.0, 2.0], "cat": ["x", "y", "z"]}),
+        pd.DataFrame({"a": [5.0], "cat": ["x"]}),
+        categorical_encoding="onehot",
+    )
+    # train has 3 categories -> cat_x, cat_y, cat_z; test row 'x' -> [1,0,0]
+    assert _rows(Xte) == [[5.0, 1.0, 0.0, 0.0]]
+
+
+def test_column_order_in_test_need_not_match_train():
+    Xtr, Xte = align_and_featurize(
+        pd.DataFrame({"a": [0.0, 1.0], "b": [1.0, 0.0]}),
+        pd.DataFrame({"b": [2.0], "a": [3.0]}),  # reversed order
+    )
+    assert list(Xtr.columns) == list(Xte.columns) == ["a", "b"]
+    assert _rows(Xte) == [[3.0, 2.0]]
+
+
+def test_high_cardinality_column_is_dropped_with_warning():
+    with pytest.warns(UserWarning, match="unique values"):
+        Xtr, Xte = align_and_featurize(
+            pd.DataFrame({"a": [0.0, 1.0, 2.0], "hc": ["p", "q", "r"]}),
+            pd.DataFrame({"a": [3.0], "hc": ["p"]}),
+            max_categorical_cardinality=2,  # 'hc' has 3 uniques -> dropped
+        )
+    assert _rows(Xtr) == [[0.0], [1.0], [2.0]]
+    assert _rows(Xte) == [[3.0]]
+
+
+def test_datetime_column_is_dropped_with_warning():
+    with pytest.warns(UserWarning, match="datetime"):
+        Xtr, _ = align_and_featurize(
+            pd.DataFrame(
+                {"a": [0.0, 1.0], "d": pd.to_datetime(["2024-01-01", "2024-01-02"])}
+            ),
+            pd.DataFrame({"a": [2.0], "d": pd.to_datetime(["2024-01-03"])}),
+        )
+    assert _rows(Xtr) == [[0.0], [1.0]]
+
+
+def test_bool_columns_pass_through_as_numeric():
+    # bool is numeric (is_numeric_dtype) -> not one-hot; True/False -> 1.0/0.0
+    Xtr, Xte = align_and_featurize(
+        pd.DataFrame({"a": [0.0, 1.0], "flag": [True, False]}),
+        pd.DataFrame({"a": [2.0], "flag": [True]}),
+    )
+    assert _rows(Xtr) == [[0.0, 1.0], [1.0, 0.0]]
+    assert _rows(Xte) == [[2.0, 1.0]]
+
+
+def test_all_numeric_dataframe_is_not_featurized():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any featurization warning would fail
+        Xtr, Xte = align_and_featurize(
+            pd.DataFrame({"a": [0.0, 1.0], "b": [1.0, 0.0]}),
+            pd.DataFrame({"a": [2.0], "b": [2.0]}),
+        )
+    assert _rows(Xtr) == [[0.0, 1.0], [1.0, 0.0]]
+
+
+def test_non_dataframe_test_with_categorical_train_raises():
+    # A list/numpy X_test has no column names, so a non-numeric X_train column
+    # can't be aligned and one-hot encoded — we raise and point at DataFrames.
+    with pytest.raises(ValueError, match="not a DataFrame"):
+        align_and_featurize(
+            pd.DataFrame({"a": [1.0, 2.0], "cat": ["x", "y"]}),
+            [[3.0, 9.0]],
+        )
+
+
+def test_both_non_dataframe_numeric_pass_through_unchanged():
+    Xtr = [[1.0, 2.0]]
+    Xte = [[3.0, 4.0]]
+    out_tr, out_te = align_and_featurize(Xtr, Xte)
+    assert out_tr is Xtr and out_te is Xte
+
+
+def test_column_numeric_in_train_but_not_test_raises_clearly():
+    # A column numeric in X_train but object-dtype in X_test is caught with a
+    # clear type-mismatch error (not a later cryptic float-cast failure).
+    with pytest.raises(ValueError, match="matching column types"):
+        align_and_featurize(
+            pd.DataFrame({"b": [1.0, 2.0]}),
+            pd.DataFrame({"b": ["x"]}),  # object dtype, not numeric
+        )
+
+
+def test_numeric_category_dtype_is_treated_as_numeric_not_one_hot():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # must NOT warn / drop / explode
+        Xtr, Xte = align_and_featurize(
+            pd.DataFrame(
+                {"a": [0.0, 1.0, 2.0], "r": pd.Categorical([1, 2, 3], categories=[1, 2, 3])}
+            ),
+            pd.DataFrame({"a": [5.0], "r": pd.Categorical([2], categories=[1, 2, 3])}),
+        )
+    # 'r' kept as a single numeric column (its values), not exploded to r_1/r_2/r_3
+    assert _rows(Xtr) == [[0.0, 1.0], [1.0, 2.0], [2.0, 3.0]]
+    assert _rows(Xte) == [[5.0, 2.0]]
+
+
+def test_all_missing_categorical_column_dropped_with_warning():
+    with pytest.warns(UserWarning, match="no non-missing"):
+        Xtr, _ = align_and_featurize(
+            pd.DataFrame({"a": [0.0, 1.0], "cat": [None, None]}),
+            pd.DataFrame({"a": [2.0], "cat": [None]}),
+        )
+    assert _rows(Xtr) == [[0.0], [1.0]]
+
+
+def test_timedelta_column_raises_unsupported():
+    with pytest.raises(ValueError, match="timedelta"):
+        align_and_featurize(
+            pd.DataFrame({"a": [0.0, 1.0], "d": pd.to_timedelta(["1 days", "2 days"])}),
+            pd.DataFrame({"a": [2.0], "d": pd.to_timedelta(["3 days"])}),
+        )
+
+
+def test_nan_in_categorical_gets_its_own_indicator_column():
+    Xtr, Xte = align_and_featurize(
+        pd.DataFrame({"a": [0.0, 1.0, 2.0], "cat": ["x", None, "y"]}),
+        pd.DataFrame({"a": [5.0], "cat": ["x"]}),
+        categorical_encoding="onehot",
+    )
+    # columns: a, cat_x, cat_y, cat_nan (the missing row -> its own indicator)
+    assert list(Xtr.columns) == ["a", "cat_x", "cat_y", "cat_nan"]
+    assert _rows(Xtr) == [
+        [0.0, 1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [2.0, 0.0, 1.0, 0.0],
+    ]
+    assert _rows(Xte) == [[5.0, 1.0, 0.0, 0.0]]
+
+
+def test_column_set_mismatch_raises():
+    with pytest.raises(ValueError, match="same feature columns"):
+        align_and_featurize(
+            pd.DataFrame({"a": [0.0, 1.0], "b": [1.0, 0.0]}),
+            pd.DataFrame({"a": [2.0], "c": [3.0]}),
+        )
+
+
+def test_duplicate_column_names_raise():
+    dup = pd.DataFrame(np.zeros((2, 2)))
+    dup.columns = ["a", "a"]
+    with pytest.raises(ValueError, match="duplicate column name"):
+        align_and_featurize(dup, dup.iloc[:1].copy())
+
+
+def test_non_positive_cardinality_cap_raises():
+    with pytest.raises(ValueError, match="positive integer"):
+        align_and_featurize(
+            pd.DataFrame({"a": [0.0], "cat": ["x"]}),
+            pd.DataFrame({"a": [1.0], "cat": ["x"]}),
+            max_categorical_cardinality=0,
+        )
+
+
+def test_only_droppable_columns_leaves_no_features_raises():
+    with pytest.warns(UserWarning), pytest.raises(ValueError, match="No usable feature"):
+        align_and_featurize(
+            pd.DataFrame({"d": pd.to_datetime(["2024-01-01", "2024-01-02"])}),
+            pd.DataFrame({"d": pd.to_datetime(["2024-01-03"])}),
+        )
