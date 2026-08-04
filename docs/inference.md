@@ -159,3 +159,28 @@ Notes:
 
 The underlying lattice math is importable from `synthefy_nori.discretize`
 (`cell_masses`, `discretize_predictions`, `snap_to_levels`).
+
+## Silent degradation (`strict_pipeline`)
+
+Some fallbacks trade fidelity for staying alive and still return a prediction. None of
+them are silent — each warns under its own category, and escalating the category forbids
+it:
+
+| warning | raised when | also prevented by |
+|---|---|---|
+| `DegradedPipelineWarning` | base class, i.e. any of the below | — |
+| `SvdFallbackWarning` | the high-dimensional SVD failed: raw unprojected columns (`fit`) or one all-zero column (`transform`) | — |
+| `ContextSubsampledWarning` | context rows dropped to fit the element budget | `memory_policy={"allow_subsample": False}` |
+
+```python
+from synthefy_nori import strict_pipeline
+
+with strict_pipeline():          # evals / benchmarks: refuse to report a degraded run
+    y_pred = reg.predict(X_test)
+```
+
+Filters are restored on exit, so this is safe in a loop. Equivalent to
+`warnings.simplefilter("error", DegradedPipelineWarning)`, so `-W`, `PYTHONWARNINGS` and
+pytest's `filterwarnings` work as well. `synthefy_nori.evaluation`'s runner already
+wraps every scored predict call in `strict_pipeline(SvdFallbackWarning)`. Full rationale:
+README, "Silent degradation".

@@ -12,6 +12,7 @@ from synthefy_nori.inference.preprocess import (
     MADWinsorizer,
     PolynomialInteractionGenerator,
     SubSampleData)
+from synthefy_nori.inference.degradation import ContextSubsampledWarning, DegradedPipelineWarning
 from synthefy_nori.inference.memory_policy import (
     FIT_ROW_CHUNK_ON_OOM,
     ContextTooLargeError,
@@ -1299,6 +1300,12 @@ class NoriPredictor:
             if torch.is_tensor(base_pred):
                 return torch.as_tensor(ensembled, dtype=base_pred.dtype, device=base_pred.device)
             return ensembled
+        except DegradedPipelineWarning:
+            # A warning escalated to an exception is a caller DEMANDING to hear
+            # about degradation -- it is not a YJ failure to swallow. Warnings are
+            # Exceptions, so without this the blanket handler below would catch it
+            # and turn strict_pipeline() back into a silent degradation on this path.
+            raise
         except Exception as _e:
             print(f"  [YJ] augmentation failed ({type(_e).__name__}: {_e}), "
                   f"falling back to identity-only prediction")
@@ -1363,7 +1370,9 @@ class NoriPredictor:
                 f"memory_policy={{'allow_subsample': False}} to make this an error."
             )
             self._log_once_per_call("subsample", logging.WARNING, _subsample_msg)
-            self._warn_once_per_call("subsample", _subsample_msg, UserWarning)
+            # Same category tree as the SVD fallback: one escalation forbids every
+            # fallback that hands the model less than the config promised.
+            self._warn_once_per_call("subsample", _subsample_msg, ContextSubsampledWarning)
             # Randomly subsample the training data
             rng = np.random.default_rng(self.seed)
             idx = rng.choice(n_samples_train, max_train_samples, replace=False)

@@ -21,6 +21,7 @@ from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.decomposition import TruncatedSVD
 from sklearn.utils.validation import check_is_fitted
+from synthefy_nori.inference.degradation import SvdFallbackWarning
 from synthefy_nori.utils.data_utils import NoriInferenceDataset
 from torch.cuda import OutOfMemoryError
 
@@ -1330,6 +1331,12 @@ class HighDimFeatureSelector(BasePreprocess):
     subsample_rows : int
         Cap rows when fitting MI / ExtraTrees (default 5000) to bound runtime
         on large train splits.
+
+    When the SVD itself throws, this step works around it rather than failing —
+    and always warns, under :class:`~synthefy_nori.SvdFallbackWarning`. Callers
+    who must not be handed a degraded prediction escalate that category to an
+    exception (``with strict_pipeline(): ...``); see
+    ``synthefy_nori.inference.degradation``.
     """
 
     def __init__(
@@ -1427,6 +1434,30 @@ class HighDimFeatureSelector(BasePreprocess):
         self.categorical_features_ = list(categorical_features)
         return list(categorical_features)
 
+    def _svd_degraded(self, stage: str, exc: Exception, fallback: str) -> None:
+        """Report an SVD failure that silently degrades the configured pipeline.
+
+        Both SVD fallbacks change what the model sees without changing the config:
+        a **fit** failure turns the projection into a passthrough of the RAW
+        (e.g. 1024) columns, and a **transform** failure feeds ``svd_all`` a single
+        zero column — every feature gone. Either one still returns predictions, so
+        the run completes with a plausible-looking bad R2 that reads as "this
+        config is weak" rather than "the SVD broke".
+
+        So it is never silent. Emitting :class:`SvdFallbackWarning` is also the
+        whole opt-out mechanism: escalating that category to an exception (see
+        ``synthefy_nori.inference.degradation``) makes the fallback fatal, with no
+        per-step argument to plumb through the predictor and the public API.
+        """
+        warnings.warn(
+            f"Nori: HighDimFeatureSelector(strategy={self.strategy!r}): SVD {stage} failed "
+            f"({type(exc).__name__}: {str(exc)[:120]}) -> {fallback}. Predictions are "
+            f"degraded, NOT the configured pipeline. Use "
+            f"synthefy_nori.strict_pipeline() to make this an error instead.",
+            SvdFallbackWarning,
+            stacklevel=3,
+        )
+
     @override
     def fit(self, x: np.ndarray, categorical_features: list[int], seed: int, *, y=None, **kwargs) -> list[int]:
         x = np.asarray(x, dtype=np.float64)
@@ -1457,7 +1488,11 @@ class HighDimFeatureSelector(BasePreprocess):
             try:
                 self.svd_model_ = _TorchTruncatedSVD(n_components=n_components, random_state=seed_int)
                 self.svd_model_.fit(x_binary)
-            except Exception:
+            except Exception as exc:
+                self._svd_degraded(
+                    "fit", exc,
+                    f"passthrough of all {n_features} raw columns "
+                    f"({int(binary_mask.sum())} binary columns left unprojected)")
                 return self._activate_passthrough(categorical_features)
             self.svd_binary_mask_ = binary_mask
             self.svd_keep_idx_ = np.where(~binary_mask)[0]
@@ -1470,7 +1505,11 @@ class HighDimFeatureSelector(BasePreprocess):
             try:
                 self.svd_model_ = _TorchTruncatedSVD(n_components=n_components, random_state=seed_int)
                 self.svd_model_.fit(x_imp)
-            except Exception:
+            except Exception as exc:
+                self._svd_degraded(
+                    "fit", exc,
+                    f"passthrough of all {n_features} raw columns "
+                    f"(no reduction to {n_components} components)")
                 return self._activate_passthrough(categorical_features)
             self.svd_binary_mask_ = np.ones(n_features, dtype=bool)
             self.svd_keep_idx_ = np.array([], dtype=int)
@@ -1543,10 +1582,19 @@ class HighDimFeatureSelector(BasePreprocess):
             x_in = np.where(np.isnan(x_in), 0.0, x_in)
             try:
                 x_svd = self.svd_model_.transform(x_in)
-            except Exception:
-                # SVD test-time failure: fall back to keep cols (or zeros if svd_all)
+            except Exception as exc:
+                # SVD test-time failure: fall back to keep cols (or zeros if svd_all).
+                # Never silently — a zero column makes the model predict from nothing.
                 if self.strategy == 'svd_all':
+                    self._svd_degraded(
+                        "transform", exc,
+                        f"a single all-zero column for {x_arr.shape[0]} rows "
+                        f"(all {x_in.shape[1]} features dropped)")
                     return np.zeros((x_arr.shape[0], 1), dtype=np.float32), []
+                self._svd_degraded(
+                    "transform", exc,
+                    f"dropping the {x_in.shape[1]} SVD-projected columns, keeping the "
+                    f"{len(self.svd_keep_idx_)} non-binary ones")
                 return x_arr[:, self.svd_keep_idx_].astype(np.float32), self.categorical_features_
             if self.strategy == 'svd_all':
                 return x_svd.astype(np.float32), []
