@@ -32,6 +32,7 @@ except ImportError:
 
 from synthefy_nori.evaluation.datasets import DatasetEntry, DatasetRegistry
 from synthefy_nori.evaluation.models import ModelEntry, ModelRegistry
+from synthefy_nori.inference.degradation import SvdFallbackWarning, strict_pipeline
 
 
 # ---------------------------------------------------------------------------
@@ -442,11 +443,12 @@ class EvalRunner:
 
             # Warmup (for GPU timing stability)
             for _ in range(self.warmup_runs):
-                wrapper.predict_regression(
-                    X_train[:min(100, len(X_train))],
-                    y_train[:min(100, len(y_train))],
-                    ds.X_test[:min(10, ds.n_test)],
-                )
+                with strict_pipeline(SvdFallbackWarning):
+                    wrapper.predict_regression(
+                        X_train[:min(100, len(X_train))],
+                        y_train[:min(100, len(y_train))],
+                        ds.X_test[:min(10, ds.n_test)],
+                    )
 
             # Timed run — synchronize on the model's device, not the default device
             model_device = getattr(wrapper, 'device', None) or getattr(wrapper, '_device', None)
@@ -454,9 +456,10 @@ class EvalRunner:
                 torch.cuda.synchronize(model_device)
             t_start = time.perf_counter()
 
-            y_pred = wrapper.predict_regression(
-                X_train, y_train, ds.X_test
-            )
+            with strict_pipeline(SvdFallbackWarning):
+                y_pred = wrapper.predict_regression(
+                    X_train, y_train, ds.X_test
+                )
             if torch.cuda.is_available() and model_device is not None:
                 torch.cuda.synchronize(model_device)
             t_end = time.perf_counter()
@@ -472,6 +475,12 @@ class EvalRunner:
             # Aggressive cleanup on OOM so subsequent datasets can run
             gc.collect()
             torch.cuda.empty_cache()
+            if not self.skip_on_error:
+                raise
+            traceback.print_exc()
+
+        except SvdFallbackWarning as e:
+            result.error = f"{type(e).__name__}: {e}"
             if not self.skip_on_error:
                 raise
             traceback.print_exc()

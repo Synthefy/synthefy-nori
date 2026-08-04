@@ -562,6 +562,53 @@ config. Unknown keys always raise.
 memory is the transductive preprocessing (RBF + polynomial expansion over the whole
 table), *upstream* of the transformer. None of the above helps with that.
 
+### Silent degradation
+
+Some fallbacks keep inference alive by handing the model **less than the configured
+pipeline promised**, then returning predictions anyway. In serving that is the right
+trade — a slightly worse answer beats an exception. In anything *scored* it is the wrong
+one: the run produces a plausible number that reads as "this config is weak" rather than
+"the pipeline broke", and nothing downstream can tell the two apart.
+
+So none of them are silent. Each warns under its own category, and escalating the
+category is how you forbid it:
+
+| warning | raised when | prevented outright by |
+|---|---|---|
+| `DegradedPipelineWarning` | base class — catch it to mean "any fidelity I did not ask for" | — |
+| ↳ `SvdFallbackWarning` | the high-dimensional feature SVD failed, so the model got the **raw** unprojected columns (a `fit` failure) or a **single all-zero column** (a `transform` failure) | — |
+| ↳ `ContextSubsampledWarning` | context rows were **dropped** to fit the element budget | `memory_policy={"allow_subsample": False}` |
+
+```python
+from synthefy_nori import NoriRegressor, SvdFallbackWarning, strict_pipeline
+
+model = NoriRegressor(model="nori-6m")
+model.fit(X_train, y_train)
+
+model.predict(X_test)                     # serving: keep answering, warn if degraded
+
+with strict_pipeline():                   # scored runs: a degraded pipeline raises
+    model.predict(X_test)                 # instead of reporting a number
+
+with strict_pipeline(SvdFallbackWarning):  # or just one fallback
+    model.predict(X_test)
+```
+
+`strict_pipeline()` restores the previous filters on exit, so one strict prediction does
+not harden the next one — safe inside a loop over datasets. It is a thin wrapper over
+`warnings.simplefilter("error", DegradedPipelineWarning)`, so `-W error::...`,
+`PYTHONWARNINGS`, and a `filterwarnings` line in `pytest.ini` work too.
+
+Because the categories form a tree, escalation is inherited: a new fallback adds one
+subclass and every caller who already asked for a strict pipeline gets it. **The eval
+runner (`synthefy_nori.evaluation`) already wraps every scored predict call in
+`strict_pipeline(SvdFallbackWarning)`** — a broken SVD is recorded as a failed row
+rather than scored. It deliberately does not escalate `ContextSubsampledWarning`, since
+trimming context to a budget is expected on large tables.
+
+Only an SVD inference config can raise `SvdFallbackWarning` at all — the bundled default
+and its lower-rank eval variant do; elsewhere the step is a no-op.
+
 ### Preprocessing speedups (on by default)
 
 `SYNTHEFY_GPU_SVD`, `SYNTHEFY_CAP_QUANTILES`, and `SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE`
