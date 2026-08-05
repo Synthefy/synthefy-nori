@@ -1,11 +1,21 @@
-# Adapted from AutoGluon: https://github.com/autogluon/autogluon
+# Originally from AutoGluon: https://github.com/autogluon/autogluon
 #   path: timeseries/src/autogluon/timeseries/dataset/ts_dataframe.py
 #
 # Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Modifications: removed the AutoGluon dependency and the features that allow
-# loading directly from a local file.
+# Modifications (by Prior Labs, not Synthefy): removed the AutoGluon dependency
+# and the features that allow loading directly from a local file.
+#
+# Provenance chain — this file reached synthefy_nori via an intermediate fork:
+#
+#   AutoGluon (Copyright 2019 Amazon.com, Inc., Apache-2.0)
+#     -> PriorLabs/tabpfn-time-series (Copyright 2025 Prior Labs GmbH,
+#        Apache-2.0), which made the modifications noted above
+#     -> vendored here from tabpfn-time-series @ d4b456d (2026-06-17)
+#
+# NOT modified by Synthefy: byte-identical to tabpfn-time-series's copy,
+# including this header. Both upstreams are recorded separately in NOTICE.
 
 from __future__ import annotations
 

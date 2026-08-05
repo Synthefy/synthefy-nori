@@ -82,6 +82,31 @@ def test_running_index_contiguous_across_boundary():
     assert (np.diff(ri) == 1).all()  # continues, doesn't restart at the horizon
 
 
+def test_predict_rejects_horizon_series_without_history():
+    # A series present in the horizon but absent from history used to KeyError deep
+    # in the groupby lookup; it must fail with a clear message instead.
+    train = _tsdf(n=30, freq="h", item_id=0)
+    test = generate_test_X(train, prediction_length=5, freq="h")
+    orphan = generate_test_X(_tsdf(n=30, freq="h", item_id=1), prediction_length=5, freq="h")
+    combined = TimeSeriesDataFrame(pd.concat([pd.DataFrame(test), pd.DataFrame(orphan)]))
+    with pytest.raises(ValueError, match="no history rows"):
+        NoriTSForecaster().predict(train, combined)
+
+
+def test_feature_transformer_static_features_merge():
+    # _merge_static_features must cover every item_id in train OR horizon; a missing
+    # row would drop static columns for that series.
+    train = _tsdf(n=30, freq="h")
+    test = generate_test_X(train, prediction_length=6, freq="h")
+    train.static_features = pd.DataFrame({"cat": [7]}, index=pd.Index([0], name="item_id"))
+    tr, te = FeatureTransformer(_default_features()).transform(
+        train, test, target_column=_TARGET
+    )
+    assert tr.static_features is not None
+    assert set(tr.static_features.index) == {0}
+    assert te.static_features.loc[0, "cat"] == 7
+
+
 @pytest.mark.slow
 def test_predict_df_end_to_end():
     # Real checkpoint + the groupby predict path, on a synthetic daily-cycle series.

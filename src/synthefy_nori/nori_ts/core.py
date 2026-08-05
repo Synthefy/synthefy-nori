@@ -12,6 +12,33 @@ Pipeline (mirrors TabPFN-TS):
 
 The horizon ("test") rows carry NaN targets and known future time features, so
 this is target-history + known-future-calendar regression — no leakage.
+
+Why this needs no change to Nori's attention
+--------------------------------------------
+Nori's row axis is a pure exchangeable set: `call_sequence_attention`
+(`model/layer.py`) applies no positional encoding, no causal mask and no ordering
+signal, and the shipped checkpoint runs `feature_positional_embedding_type=none`.
+Rows are unordered as far as the model is concerned.
+
+Forecasting still works, because time enters as *feature values* — running index,
+calendar sin/cos, FFT-detected periods — rather than as attention geometry. The
+model never needs to know that row t precedes row t+1; it reads position off the
+columns. That is the TabPFN-TS thesis, and it reproduces on Nori: competitive
+GIFT-eval numbers from an exchangeable set transformer with no temporal inductive
+bias in the architecture at all.
+
+The practical consequence: the exchangeable set transformer is *not* the
+bottleneck for time series, so do not add row-positional encoding (RoPE or
+otherwise) to chase forecasting quality. If these numbers need to improve, the
+headroom is in the data, not the attention — the synthetic training prior has no
+temporal structure (nothing makes row t depend on row t-1), so this checkpoint
+has never seen a time series during pretraining.
+
+Note this is a *local* fit: one fit/predict per `item_id`, no cross-series
+pooling, faithful to TabPFN-TS. Synthefy's `nori-demand-forecasting` skill takes
+the opposite bet (pool the whole panel into one table, lag features) and finds
+that pooling is the bigger win on short-history and cold-start series. Neither has
+been run against the other; see the pooled-vs-local follow-up issue.
 """
 
 from __future__ import annotations
@@ -106,6 +133,16 @@ class NoriTSForecaster:
         column (median point forecast) and one column per quantile level named
         by its string level (e.g. "0.1", ..., "0.9").
         """
+        # Check this before feature engineering: an orphan horizon series has an
+        # all-NaN target, which blows up inside AutoSeasonalFeature's detrend with a
+        # far less legible error than the one below.
+        history_ids = set(train_tsdf.item_ids)
+        missing_history = [i for i in test_tsdf.item_ids if i not in history_ids]
+        if missing_history:
+            raise ValueError(
+                f"{len(missing_history)} series appear in the horizon but have no "
+                f"history rows (ids {missing_history[:5]}…); cannot forecast them"
+            )
         # Apply the documented history cap here too, so direct predict() callers
         # get it (predict_df and the eval wrapper also cap; this is idempotent).
         if self.context_length and self.context_length > 0:

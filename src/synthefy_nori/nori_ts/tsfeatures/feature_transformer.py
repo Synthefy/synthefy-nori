@@ -1,12 +1,15 @@
-# Adapted from PriorLabs/tabpfn-time-series:
+# Vendored from PriorLabs/tabpfn-time-series @ d4b456d (2026-06-17):
 #   https://github.com/PriorLabs/tabpfn-time-series
 #
 # Copyright 2025 Prior Labs GmbH
 # SPDX-License-Identifier: Apache-2.0
 #
-# Modifications by Synthefy: import paths rewritten for synthefy_nori. No TabPFN
-# model code or weights are included — only the dependency-light time-feature
-# engineering.
+# Modifications by Synthefy: intra-package import paths rewritten for
+# synthefy_nori. Otherwise byte-identical to that revision — no behavioral
+# change. (Upstream `main` has since moved; see tsfeatures/__init__.py.)
+#
+# No TabPFN model code or weights are included — only the dependency-light
+# time-feature engineering.
 
 from typing import List, Tuple
 

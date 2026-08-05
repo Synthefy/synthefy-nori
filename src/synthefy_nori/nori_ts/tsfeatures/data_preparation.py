@@ -1,12 +1,20 @@
-# Adapted from PriorLabs/tabpfn-time-series:
+# Adapted from PriorLabs/tabpfn-time-series @ d4b456d (2026-06-17):
 #   https://github.com/PriorLabs/tabpfn-time-series
 #
 # Copyright 2025 Prior Labs GmbH
 # SPDX-License-Identifier: Apache-2.0
 #
-# Modifications by Synthefy: import paths rewritten for synthefy_nori. No TabPFN
-# model code or weights are included — only the dependency-light time-feature
-# engineering.
+# Modifications by Synthefy:
+#   - import paths rewritten for synthefy_nori;
+#   - `generate_test_X` takes an explicit `freq` argument. Upstream always reads
+#     `train_tsdf.freq`, which re-infers the frequency from the data; when a
+#     caller has dropped NaN rows the index is gappy, inference returns None and
+#     horizon construction raises TypeError (this is what breaks GIFT-eval's
+#     *_with_missing datasets). Callers holding the authoritative frequency now
+#     pass it through. Worth upstreaming — the same failure exists upstream.
+#
+# No TabPFN model code or weights are included — only the dependency-light
+# time-feature engineering.
 
 import pandas as pd
 import numpy as np
