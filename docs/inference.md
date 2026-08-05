@@ -13,6 +13,21 @@ y_pred = reg.predict(X_test)
 If `model_path` is omitted, the default checkpoint is resolved from Hugging
 Face through `synthefy_nori.hf.download_checkpoint()`.
 
+## Execution defaults and exact reproducibility
+
+Standard inference loads checkpoints with PyTorch's native RMSNorm kernel and
+skips the feature decoder when its output cannot be observed. Decoder skipping
+is output-identical. Native RMSNorm follows the same equation but can move a
+mixed-precision result by one bf16 unit in the last place; controlled checks
+measured an R² shift no larger than `2e-5` and about a 1.3% end-to-end inference
+improvement, with preprocessing dominating total time.
+
+`NoriRegressor` uses these defaults automatically and does not add a new public
+switch. Advanced callers that need the exact historical execution path can pass
+`native_rms_norm=False` to lower-level `load_model()` or `NoriPredictor`, and
+`skip_unused_feature_decoder=False` to `NoriPredictor`. These controls change
+execution only; they do not select different weights.
+
 ## Output types
 
 `predict` selects what it returns via `output_type`:

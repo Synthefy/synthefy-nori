@@ -52,12 +52,19 @@ class RMSNorm(nn.Module):
         self.normalized_shape = tuple(normalized_shape)
         self.eps = eps
         self.elementwise_affine = elementwise_affine
+        # Training can opt into PyTorch's fused native implementation without
+        # changing the checkpoint schema or default numerical path.
+        self.use_native = False
         if elementwise_affine:
             self.weight = nn.Parameter(torch.ones(self.normalized_shape, device=device, dtype=dtype))
         else:
             self.register_parameter('weight', None)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.use_native:
+            return nn.functional.rms_norm(
+                x, self.normalized_shape, weight=self.weight, eps=self.eps
+            )
         rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
         x = x * rms
         if self.weight is not None:

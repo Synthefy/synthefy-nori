@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import types
 from datetime import datetime
 
 import torch
 
 from synthefy_nori.utils.loading import build_model
+from synthefy_nori.model.layer import RMSNorm
 from synthefy_nori.training.config import TrainingConfig, package_config_path
 from synthefy_nori.training.trainer import NoriTrainer
 
@@ -56,6 +59,63 @@ def parse_tags(raw: str | None) -> tuple[str, ...]:
     if raw is None:
         return ()
     return tuple(part.strip() for part in raw.split(',') if part.strip())
+
+
+def parse_shape_palette(raw: str | None) -> tuple[tuple[int, int, float], ...]:
+    # Parse and normalize ROWSxFEATURES:WEIGHT entries.
+    if not raw:
+        return ()
+    entries = []
+    seen = set()
+    for item in raw.split(','):
+        item = item.strip()
+        try:
+            dims, weight_raw = item.split(':', maxsplit=1)
+            rows_raw, features_raw = dims.lower().split('x', maxsplit=1)
+            rows = int(rows_raw)
+            features = int(features_raw)
+            weight = float(weight_raw)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                "Shape palette entries must be ROWSxFEATURES:WEIGHT"
+            ) from exc
+        if rows <= 1 or features <= 0 or weight <= 0 or not math.isfinite(weight):
+            raise argparse.ArgumentTypeError(
+                f"Shape palette values must be finite and positive "
+                f"(with rows > 1), got {item!r}"
+            )
+        shape = (rows, features)
+        if shape in seen:
+            raise argparse.ArgumentTypeError(
+                f"Duplicate shape palette entry: {dims}"
+            )
+        seen.add(shape)
+        entries.append((rows, features, weight))
+    total = sum(weight for _, _, weight in entries)
+    return tuple(
+        (rows, features, weight / total)
+        for rows, features, weight in entries
+    )
+
+
+def parse_context_ratio_palette(raw: str | None) -> tuple[float, ...]:
+    # Parse a finite list of context fractions in the open unit interval.
+    if not raw:
+        return ()
+    try:
+        ratios = tuple(float(part.strip()) for part in raw.split(',') if part.strip())
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "Context ratios must be comma-separated numbers"
+        ) from exc
+    if not ratios or any(
+        not math.isfinite(ratio) or ratio <= 0 or ratio >= 1
+        for ratio in ratios
+    ):
+        raise argparse.ArgumentTypeError("Context ratios must satisfy 0 < ratio < 1")
+    if len(set(ratios)) != len(ratios):
+        raise argparse.ArgumentTypeError("Context ratio palette contains duplicates")
+    return ratios
 
 
 def main():
@@ -104,6 +164,9 @@ def main():
                         help='Checkpoint directory (default: ./checkpoints/<timestamp>)')
     parser.add_argument('--ema-decay', type=float, default=0.0,
                         help='EMA decay for validation/checkpoint averaging (0 disables EMA)')
+    parser.add_argument('--ema-foreach', action='store_true',
+                        help='Update EMA tensors with grouped foreach kernels. '
+                             'Experimental and off by default.')
     parser.add_argument('--gradient-accumulation', type=int, default=1)
     parser.add_argument('--log-interval', type=int, default=100)
     parser.add_argument('--save-interval', type=int, default=5000)
@@ -131,6 +194,10 @@ def main():
                         help='Max n_features per synthetic table (default: 250)')
     parser.add_argument('--fixed-size', type=str, default=None,
                         help='Fixed NxF size (e.g. "1024x64"). Overrides random sampling.')
+    parser.add_argument('--context-ratio-min', type=float, default=0.3,
+                        help='Minimum labeled-context fraction (default: 0.3).')
+    parser.add_argument('--context-ratio-max', type=float, default=0.8,
+                        help='Maximum labeled-context fraction (default: 0.8).')
     parser.add_argument('--no-synth-v2', action='store_true',
                         help='Disable synth_v2 data augmentations (revert to Run 8 behavior)')
     parser.add_argument('--no-synth-v3', action='store_true',
@@ -362,6 +429,61 @@ def main():
                              'cudnn.deterministic).')
     parser.add_argument('--debug-dump-steps', type=int, default=5,
                         help='Number of optimizer steps to dump (default: 5)')
+    parser.add_argument(
+        '--shape-palette',
+        type=parse_shape_palette,
+        default=(),
+        metavar='ROWSxFEATURES:WEIGHT,...',
+        help='Explicit weighted physical-shape palette. Experimental and off '
+             'by default; mutually exclusive with --fixed-size.',
+    )
+    parser.add_argument(
+        '--context-ratio-palette',
+        type=parse_context_ratio_palette,
+        default=(),
+        metavar='RATIO,...',
+        help='Optional discrete context/query ratios. This bounds eval_pos '
+             'compiler signatures but changes the training curriculum.',
+    )
+    parser.add_argument(
+        '--compile-encoder-layers',
+        choices=['none', 'static', 'dynamic'],
+        default='none',
+        help='Regionally compile one shared encoder-layer forward. "static" '
+             'compiles exact signatures and requires a bounded shape/ratio '
+             'contract. "dynamic" compiles shape-generic kernels and needs no '
+             'palette, so it leaves the data curriculum untouched. '
+             'Experimental and off by default.',
+    )
+    parser.add_argument(
+        '--compile-mode',
+        choices=['default', 'reduce-overhead', 'max-autotune-no-cudagraphs'],
+        default='default',
+        help='torch.compile mode used by --compile-encoder-layers.',
+    )
+    parser.add_argument(
+        '--compile-cache-limit',
+        type=int,
+        default=1024,
+        help='Maximum live Dynamo variants for static encoder compilation.',
+    )
+    parser.add_argument(
+        '--compile-disable-ddp-optimizer',
+        action='store_true',
+        help='Disable Dynamo DDPOptimizer graph splitting. This is faster and '
+             'disk-cacheable for regional layer compilation on the tested model.',
+    )
+    parser.add_argument('--freeze-unused-heads', action='store_true', default=True,
+                        help='Freeze the feature decoder when feature loss remains zero.')
+    parser.add_argument('--no-freeze-unused-heads', dest='freeze_unused_heads',
+                        action='store_false',
+                        help='Keep the feature decoder trainable.')
+    parser.add_argument('--skip-zero-feature-decoder', action='store_true',
+                        help='Skip feature-decoder execution when feature loss stays '
+                             'zero. Requires unused-head freezing; off by default.')
+    parser.add_argument('--native-rms-norm', action='store_true',
+                        help='Use PyTorch native RMSNorm kernels during this run. '
+                             'Experimental and off by default.')
     args = parser.parse_args()
 
     # Seed Python/NumPy/torch from --seed so same-seed runs are reproducible.
@@ -398,6 +520,44 @@ def main():
         parser.error("--target-aware-warmup-steps must be >= 0")
     if not 0.0 <= args.target_aware_init_scale <= 1.0:
         parser.error("--target-aware-init-scale must be in [0, 1]")
+    if not 0 < args.context_ratio_min <= args.context_ratio_max < 1:
+        parser.error(
+            "--context-ratio-min/--context-ratio-max must satisfy "
+            "0 < min <= max < 1"
+        )
+    if args.shape_palette and args.fixed_size:
+        parser.error("--shape-palette and --fixed-size are mutually exclusive")
+    if args.compile_cache_limit <= 0:
+        parser.error("--compile-cache-limit must be positive")
+    if args.compile_encoder_layers == 'static':
+        if not args.shape_palette and not args.fixed_size:
+            parser.error(
+                "--compile-encoder-layers static requires --shape-palette "
+                "or --fixed-size"
+            )
+        if not args.context_ratio_palette:
+            parser.error(
+                "--compile-encoder-layers static requires "
+                "--context-ratio-palette"
+            )
+    if (args.compile_disable_ddp_optimizer
+            and args.compile_encoder_layers == 'none'):
+        parser.error(
+            "--compile-disable-ddp-optimizer requires --compile-encoder-layers"
+        )
+    feature_loss_stays_zero = (
+        args.feature_loss_weight == 0.0
+        and (args.feature_loss_weight_end is None
+             or args.feature_loss_weight_end == 0.0)
+    )
+    if args.skip_zero_feature_decoder and not feature_loss_stays_zero:
+        parser.error(
+            "--skip-zero-feature-decoder requires feature loss to remain zero"
+        )
+    if args.skip_zero_feature_decoder and not args.freeze_unused_heads:
+        parser.error(
+            "--skip-zero-feature-decoder requires --freeze-unused-heads"
+        )
     # Load model architecture config
     config_source = args.checkpoint or "bundled model_base.json"
     print(f"Loading model config from {config_source}")
@@ -526,6 +686,25 @@ def main():
         print("Building model from scratch (random initialization)")
     model = build_model(model_config)
 
+    if args.native_rms_norm:
+        native_norm_count = 0
+        for module in model.modules():
+            if isinstance(module, RMSNorm):
+                module.use_native = True
+                native_norm_count += 1
+        if local_rank == 0:
+            print(f"Native RMSNorm enabled ({native_norm_count} modules)")
+
+    if (args.freeze_unused_heads and feature_loss_stays_zero
+            and getattr(model, 'feature_decoder', None) is not None):
+        for parameter in model.feature_decoder.parameters():
+            parameter.requires_grad_(False)
+        if args.skip_zero_feature_decoder:
+            model._skip_feature_decoder = True
+        if local_rank == 0:
+            action = "skipped" if args.skip_zero_feature_decoder else "grad disabled"
+            print(f"  [freeze] feature_decoder {action} (feature loss is 0)")
+
     # Freeze column_y_aware_alpha if requested (V10c control experiment).
     if args.freeze_column_y_alpha and getattr(model, 'column_y_aware_alpha', None) is not None:
         model.column_y_aware_alpha.requires_grad_(False)
@@ -539,6 +718,34 @@ def main():
         print(f"Model parameters: {n_params:,} total, {n_trainable:,} trainable")
 
     model.to(device)
+
+    if args.compile_encoder_layers != 'none':
+        cache_limit = max(8, int(args.compile_cache_limit))
+        torch._dynamo.config.cache_size_limit = cache_limit
+        torch._dynamo.config.recompile_limit = cache_limit
+        torch._dynamo.config.accumulated_cache_size_limit = cache_limit
+        torch._dynamo.config.accumulated_recompile_limit = cache_limit
+        if args.compile_disable_ddp_optimizer:
+            torch._dynamo.config.optimize_ddp = False
+        compile_mode = None if args.compile_mode == 'default' else args.compile_mode
+        layers = model.transformer_encoder.layers
+        use_dynamic = args.compile_encoder_layers == 'dynamic'
+        compiled_forward = torch.compile(
+            type(layers[0]).forward,
+            dynamic=use_dynamic,
+            fullgraph=False,
+            mode=compile_mode,
+        )
+        for layer in layers:
+            layer.forward = types.MethodType(compiled_forward, layer)
+        if local_rank == 0:
+            print(
+                f'{args.compile_encoder_layers.capitalize()} regional '
+                'compilation enabled: '
+                f'{len(layers)} encoder layers, mode={args.compile_mode}, '
+                f'cache_limit={cache_limit}, '
+                f'ddp_optimizer={not args.compile_disable_ddp_optimizer}'
+            )
 
     if args.gradient_checkpointing:
         model.transformer_encoder.gradient_checkpointing = True
@@ -615,6 +822,33 @@ def main():
         if local_rank == 0:
             print(f"Fixed size: {fixed_n_samples} samples x {fixed_n_features} features")
 
+    feature_multiple = int(model_config.get('features_per_group', 2))
+    for rows, features, _weight in args.shape_palette:
+        if features % feature_multiple:
+            parser.error(
+                f"Explicit palette feature count {features} is not divisible by "
+                f"model features_per_group={feature_multiple}"
+            )
+        if rows * features > max_budget:
+            parser.error(
+                f"Explicit palette shape {rows}x{features} exceeds "
+                f"--max-budget={max_budget}"
+            )
+    if local_rank == 0 and (args.shape_palette or args.context_ratio_palette):
+        physical_shapes = len(args.shape_palette) if args.shape_palette else 'sampled'
+        context_shapes = (
+            len(args.context_ratio_palette)
+            if args.context_ratio_palette
+            else sum(
+                args.context_ratio_min <= ratio <= args.context_ratio_max
+                for ratio in NoriTrainer.CONTEXT_RATIO_BUCKETS
+            )
+        )
+        print(
+            f"Static sampling contract: {physical_shapes} physical shapes x "
+            f"{context_shapes} context ratios"
+        )
+
     # Training config
     train_config = TrainingConfig(
         device=device,
@@ -636,6 +870,7 @@ def main():
         wandb_tags=args.wandb_tags,
         checkpoint_dir=args.checkpoint_dir,
         ema_decay=args.ema_decay,
+        ema_foreach=args.ema_foreach,
         gradient_accumulation=args.gradient_accumulation,
         log_interval=args.log_interval,
         save_interval=args.save_interval,
@@ -659,6 +894,17 @@ def main():
         **({"max_features": args.max_features} if args.max_features is not None else {}),
         fixed_n_samples=fixed_n_samples,
         fixed_n_features=fixed_n_features,
+        context_ratio_min=args.context_ratio_min,
+        context_ratio_max=args.context_ratio_max,
+        shape_palette=args.shape_palette,
+        context_ratio_palette=args.context_ratio_palette,
+        freeze_unused_heads=args.freeze_unused_heads,
+        skip_zero_feature_decoder=args.skip_zero_feature_decoder,
+        native_rms_norm=args.native_rms_norm,
+        compile_encoder_layers=args.compile_encoder_layers,
+        compile_mode=args.compile_mode,
+        compile_cache_limit=args.compile_cache_limit,
+        compile_disable_ddp_optimizer=args.compile_disable_ddp_optimizer,
         synth_v2=not args.no_synth_v2,
         synth_v3=not args.no_synth_v3,
         rich_reg_targets=not args.no_rich_reg_targets,

@@ -709,7 +709,20 @@ It auto-detects the most recent tier-1 run, or point it at one with
 
 Training uses the **Muon** optimizer (EMA 0.999), a **pinball** loss with 999
 quantiles + a monotonicity penalty, and bf16 mixed precision with DDP. Pass
-`--seed` for reproducible runs. Full options: [docs/training.md](docs/training.md).
+`--seed` for reproducible runs.
+
+### Training acceleration
+
+The bundled launchers enable native RMSNorm, foreach EMA updates, and regional
+dynamic `torch.compile` by default. These preserve the natural shape curriculum;
+disable them per run with `NATIVE_RMS_NORM=0`, `EMA_FOREACH=0`, or
+`COMPILE_ENCODER_LAYERS=none`. Exact static-shape compilation is also available,
+but requires an explicit shape palette that changes the curriculum and must be
+validated separately.
+
+See [docs/training.md](docs/training.md) for the full training options and
+[the acceleration guide](docs/training_static_compile.md) for compiler modes,
+cache setup, measurements, and reproducibility controls.
 
 ## Evaluation
 
@@ -741,7 +754,8 @@ src/synthefy_nori/
   inference/        Sklearn-compatible predictor + preprocessing
   evaluation/       Benchmark runner over public benchmark suites
   hf.py             Hugging Face download / upload
-scripts/            train.sh, continue_training.sh, evaluate.sh
+scripts/            Training, precompile, and evaluation launchers
+benchmarks/         Reproducible performance and compiler harnesses
 docs/               training, inference, evaluation, huggingface guides
 examples/           Runnable inference / upload scripts
 ```

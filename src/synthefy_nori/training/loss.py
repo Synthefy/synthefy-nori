@@ -193,8 +193,6 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
 
     batch_size = y_true.shape[0]
     n_query = y_true.shape[1]
-    feature_pred = model_output['feature_pred']  # [B, seq_len, n_groups, fpg]
-
     # ------------------------------------------------------------------
     # 1. Y prediction loss (target column, always masked for query rows)
     # ------------------------------------------------------------------
@@ -356,6 +354,12 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
             'n_feat_cells': 0,
         }
         return y_loss_avg, loss_dict
+
+    feature_pred = model_output.get('feature_pred')
+    if feature_pred is None:
+        raise ValueError(
+            "feature_pred is required when feature_loss_weight is positive"
+        )
 
     # ------------------------------------------------------------------
     # 2. Feature reconstruction loss (masked cells only)

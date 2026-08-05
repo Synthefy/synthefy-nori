@@ -91,6 +91,8 @@ class TrainingConfig:
     wandb_job_type: str | None = None
     wandb_tags: tuple[str, ...] = field(default_factory=tuple)
     ema_decay: float = 0.0
+    # Group EMA updates into device/dtype-specific foreach kernels.
+    ema_foreach: bool = False
 
     # Compilation
     compile: bool = False
@@ -364,6 +366,22 @@ class TrainingConfig:
     # Context/query split
     context_ratio_min: float = 0.3
     context_ratio_max: float = 0.8
+    # Explicit weighted physical-shape palette. Each entry is
+    # (n_samples, n_features, weight).
+    shape_palette: tuple[tuple[int, int, float], ...] = field(default_factory=tuple)
+    # Optional discrete context/query ratios.
+    context_ratio_palette: tuple[float, ...] = field(default_factory=tuple)
+
+    # Execution-only head and kernel controls.
+    freeze_unused_heads: bool = True
+    skip_zero_feature_decoder: bool = False
+    native_rms_norm: bool = False
+
+    # Regional compiler execution.
+    compile_encoder_layers: str = "none"
+    compile_mode: str = "default"
+    compile_cache_limit: int = 1024
+    compile_disable_ddp_optimizer: bool = False
 
     # Async data prefetching
     prefetch_workers: int = 4  # number of background data generation processes (0 = disabled)

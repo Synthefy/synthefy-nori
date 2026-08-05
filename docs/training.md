@@ -40,3 +40,23 @@ see the script header.
 Tiers 4 and 5 reach N = 56K rows, where dense O(N²) sample attention forces
 `batch=1` with large gradient accumulation. They can OOM or hang on smaller GPUs;
 smoke-probe them first (the script header shows a short-run probe).
+
+## Execution acceleration
+
+The bundled launchers enable three curriculum-neutral execution options by
+default: native RMSNorm, grouped foreach EMA updates, and regional dynamic
+`torch.compile`. The corresponding CLI flags remain opt-in when invoking
+`synthefy-nori-train` directly. Restore the previous eager launcher behavior
+per run with:
+
+```bash
+env NATIVE_RMS_NORM=0 EMA_FOREACH=0 COMPILE_ENCODER_LAYERS=none \
+  bash scripts/train.sh
+```
+
+Dynamic regional compilation keeps the natural shape sampler. Static regional
+compilation requires explicit shape and context-ratio palettes, so it changes
+the curriculum and should be treated as a data/quality decision rather than a
+drop-in compiler switch. See
+[Training acceleration and optional static-shape compilation](training_static_compile.md)
+for the controls, cache contract, benchmark caveats, and rollout procedure.
