@@ -93,6 +93,55 @@ def test_predict_rejects_horizon_series_without_history():
         NoriTSForecaster().predict(train, combined)
 
 
+def test_generators_group_per_series_on_a_multi_series_frame():
+    # Post-#144 the generator contract is whole-frame: generate() receives every
+    # series at once and must group on item_id itself. A generator that indexed the
+    # frame globally would give series 1 a running_index continuing from series 0,
+    # and seasonal phase computed off the wrong offset — silently, with no error.
+    frames = []
+    for item in (0, 1, 2):
+        ts = pd.date_range("2021-01-01", periods=48, freq="h")
+        t = np.arange(48)
+        frames.append(pd.DataFrame({
+            "item_id": item, "timestamp": ts,
+            "target": 10.0 + item + np.sin(2 * np.pi * t / 24),
+        }))
+    train = TimeSeriesDataFrame.from_data_frame(pd.concat(frames, ignore_index=True))
+    test = generate_test_X(train, prediction_length=6, freq="h")
+    tr, te = FeatureTransformer(_default_features()).transform(
+        train, test, target_column=_TARGET
+    )
+    for item in (0, 1, 2):
+        ri = tr.xs(item, level="item_id")["running_index"].to_numpy()
+        assert ri[0] == 0, f"series {item} running_index must restart at 0, got {ri[0]}"
+        assert (np.diff(ri) == 1).all()
+        # horizon continues that series' own counter, not the frame's
+        ri_te = te.xs(item, level="item_id")["running_index"].to_numpy()
+        assert ri_te[0] == ri[-1] + 1
+
+
+def test_generated_feature_columns_are_float32():
+    # #144 downcasts generated columns to float32 to halve the featurized frame that
+    # is held in host RAM. core.py casts to float32 anyway, so this is lossless for
+    # inference — but the target must keep its own dtype.
+    train = _tsdf(n=48, freq="h")
+    test = generate_test_X(train, prediction_length=6, freq="h")
+    tr, _ = FeatureTransformer(_default_features()).transform(
+        train, test, target_column=_TARGET
+    )
+    generated = [c for c in tr.columns if c != _TARGET]
+    assert generated, "expected generated feature columns"
+    # Only float64 columns are downcast; integer features (running_index, year) keep
+    # their own dtype, and nothing generated should still be float64.
+    floats = [c for c in generated if tr[c].dtype.kind == "f"]
+    assert floats, "expected float feature columns (calendar/seasonal sin-cos)"
+    assert all(tr[c].dtype == np.float32 for c in floats), {
+        c: str(tr[c].dtype) for c in floats if tr[c].dtype != np.float32
+    }
+    assert all(tr[c].dtype.kind in "iuf" for c in generated)
+    assert tr[_TARGET].dtype == np.float64
+
+
 def test_feature_transformer_static_features_merge():
     # _merge_static_features must cover every item_id in train OR horizon; a missing
     # row would drop static columns for that series.

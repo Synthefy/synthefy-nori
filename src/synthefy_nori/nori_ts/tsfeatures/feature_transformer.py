@@ -1,4 +1,4 @@
-# Vendored from PriorLabs/tabpfn-time-series @ d4b456d (2026-06-17):
+# Vendored from PriorLabs/tabpfn-time-series @ a756ae3 (2026-07-13):
 #   https://github.com/PriorLabs/tabpfn-time-series
 #
 # Copyright 2025 Prior Labs GmbH
@@ -6,13 +6,13 @@
 #
 # Modifications by Synthefy: intra-package import paths rewritten for
 # synthefy_nori. Otherwise byte-identical to that revision — no behavioral
-# change. (Upstream `main` has since moved; see tsfeatures/__init__.py.)
+# change. (See tsfeatures/__init__.py for the pin and how to re-verify it.)
 #
 # No TabPFN model code or weights are included — only the dependency-light
 # time-feature engineering.
-
 from typing import List, Tuple
 
+import numpy as np
 import pandas as pd
 
 from synthefy_nori.nori_ts.tsfeatures.ts_dataframe import TimeSeriesDataFrame
@@ -37,6 +37,11 @@ class FeatureTransformer:
             train_tsdf.static_features, test_tsdf.static_features
         )
 
+        # Input columns (target + covariates) keep their dtype; only generated columns
+        # are downcast to float32 below. The whole featurized frame lives in host RAM
+        # before inference, so halving the generated columns matters for many series.
+        input_columns = set(train_tsdf.columns)
+
         train_plain = pd.DataFrame(train_tsdf).assign(_is_train=True)
         test_plain = pd.DataFrame(test_tsdf).assign(_is_train=False)
         # Convert the train and test to the same data type
@@ -46,20 +51,29 @@ class FeatureTransformer:
             target_dtype = "float64"
         test_plain[target_column] = test_plain[target_column].astype(target_dtype)
         tsdf = pd.concat([train_plain, test_plain])
+        del train_plain, test_plain
 
-        item_ids = tsdf.index.get_level_values("item_id").unique()
+        # Each generator sees the whole multi-series frame and groups by item_id
+        # internally for any per-series work.
+        for generator in self.feature_generators:
+            tsdf = generator(tsdf)
 
-        processed_series = []
-        for item_id in item_ids:
-            series_df = tsdf.xs(item_id, level="item_id")
-            for generator in self.feature_generators:
-                series_df = generator(series_df)
-            processed_series.append(series_df)
-        tsdf = pd.concat(processed_series, keys=item_ids, names=["item_id"])
+        # The generated features (calendar, seasonal, running index) are bounded and
+        # exactly representable in float32, so the downcast is lossless.
+        generated_float_cols = [
+            c
+            for c in tsdf.columns
+            if c not in input_columns
+            and c != "_is_train"
+            and tsdf[c].dtype == np.float64
+        ]
+        if generated_float_cols:
+            tsdf = tsdf.astype({c: np.float32 for c in generated_float_cols})
 
-        # Split by tag (not iloc) since per-series concat reorders rows by item_id.
+        # Split back into train/test by the tag column added above.
         train_slice = tsdf[tsdf["_is_train"]].drop(columns=["_is_train"])
         test_slice = tsdf[~tsdf["_is_train"]].drop(columns=["_is_train"])
+        del tsdf
 
         train_tsdf = TimeSeriesDataFrame(
             pd.DataFrame(train_slice), static_features=static_features

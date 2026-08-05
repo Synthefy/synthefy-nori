@@ -12,7 +12,7 @@
 #   AutoGluon (Copyright 2019 Amazon.com, Inc., Apache-2.0)
 #     -> PriorLabs/tabpfn-time-series (Copyright 2025 Prior Labs GmbH,
 #        Apache-2.0), which made the modifications noted above
-#     -> vendored here from tabpfn-time-series @ d4b456d (2026-06-17)
+#     -> vendored here from tabpfn-time-series @ a756ae3 (2026-07-13)
 #
 # NOT modified by Synthefy: byte-identical to tabpfn-time-series's copy,
 # including this header. Both upstreams are recorded separately in NOTICE.

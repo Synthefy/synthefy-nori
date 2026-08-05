@@ -1,4 +1,4 @@
-# Vendored from PriorLabs/tabpfn-time-series @ d4b456d (2026-06-17):
+# Vendored from PriorLabs/tabpfn-time-series @ a756ae3 (2026-07-13):
 #   https://github.com/PriorLabs/tabpfn-time-series
 #
 # Copyright 2025 Prior Labs GmbH
@@ -6,11 +6,10 @@
 #
 # Modifications by Synthefy: intra-package import paths rewritten for
 # synthefy_nori. Otherwise byte-identical to that revision — no behavioral
-# change. (Upstream `main` has since moved; see tsfeatures/__init__.py.)
+# change. (See tsfeatures/__init__.py for the pin and how to re-verify it.)
 #
 # No TabPFN model code or weights are included — only the dependency-light
 # time-feature engineering.
-
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Optional
@@ -25,7 +24,7 @@ from synthefy_nori.nori_ts.tsfeatures.feature_generator_base import (
 class RunningIndexFeature(FeatureGenerator):
     def generate(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        df["running_index"] = range(len(df))
+        df["running_index"] = df.groupby(level="item_id", sort=False).cumcount()
         return df
 
 
@@ -92,10 +91,16 @@ class PeriodicSinCosineFeature(FeatureGenerator):
         self.name_suffix = name_suffix
 
     def generate(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
+        # One concat, not per-column assignment: each single-column insert would
+        # reallocate the whole block manager.
+        idx = np.arange(len(df))
+        columns = {}
         for i, period in enumerate(self.periods):
             name_suffix = f"{self.name_suffix}_{i}" if self.name_suffix else f"{period}"
-            df[f"sin_{name_suffix}"] = np.sin(2 * np.pi * np.arange(len(df)) / period)
-            df[f"cos_{name_suffix}"] = np.cos(2 * np.pi * np.arange(len(df)) / period)
+            angle = 2 * np.pi * idx / period
+            columns[f"sin_{name_suffix}"] = np.sin(angle)
+            columns[f"cos_{name_suffix}"] = np.cos(angle)
 
-        return df
+        if not columns:
+            return df.copy()
+        return pd.concat([df, pd.DataFrame(columns, index=df.index)], axis=1)

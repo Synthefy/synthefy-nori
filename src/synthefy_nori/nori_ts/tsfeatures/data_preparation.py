@@ -1,4 +1,4 @@
-# Adapted from PriorLabs/tabpfn-time-series @ d4b456d (2026-06-17):
+# Adapted from PriorLabs/tabpfn-time-series @ a756ae3 (2026-07-13):
 #   https://github.com/PriorLabs/tabpfn-time-series
 #
 # Copyright 2025 Prior Labs GmbH

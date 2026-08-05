@@ -1,4 +1,4 @@
-# Vendored from PriorLabs/tabpfn-time-series @ d4b456d (2026-06-17):
+# Vendored from PriorLabs/tabpfn-time-series @ a756ae3 (2026-07-13):
 #   https://github.com/PriorLabs/tabpfn-time-series
 #
 # Copyright 2025 Prior Labs GmbH
@@ -6,18 +6,21 @@
 #
 # Modifications by Synthefy: intra-package import paths rewritten for
 # synthefy_nori. Otherwise byte-identical to that revision — no behavioral
-# change. (Upstream `main` has since moved; see tsfeatures/__init__.py.)
+# change. (See tsfeatures/__init__.py for the pin and how to re-verify it.)
 #
 # No TabPFN model code or weights are included — only the dependency-light
 # time-feature engineering.
-
 from abc import ABC, abstractmethod
 
 import pandas as pd
 
 
 class FeatureGenerator(ABC):
-    """Abstract base class for feature generators"""
+    """Abstract base class for feature generators.
+
+    generate receives the whole (item_id, timestamp)-indexed frame with every series
+    at once, and must group on the item_id level for any per-series computation.
+    """
 
     @abstractmethod
     def generate(self, df: pd.DataFrame) -> pd.DataFrame:
