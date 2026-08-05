@@ -69,7 +69,20 @@ def build_model(config:dict):
     )
     return model
 
-def load_model(model_path, mask_prediction:bool=False, base_config_path:str=None):
+def load_model(model_path, mask_prediction:bool=False, base_config_path:str=None,
+               native_rms_norm:bool=True):
+    """Load a Nori checkpoint for inference.
+
+    ``native_rms_norm`` selects PyTorch's fused ``F.rms_norm`` over the
+    decomposed pow/mean/rsqrt/mul chain. It defaults to True because every
+    inference and evaluation path reaches the model through this function, so
+    this is the one place that turns the kernel on everywhere. Measured on
+    1k/4k/8k-row tables: R2 shift <= 2e-5, largest per-row difference one bf16
+    ulp under autocast. Pass False to reproduce the historical path bit-for-bit.
+
+    Training does NOT come through here (the trainer builds via build_model),
+    so this default cannot silently change a training run.
+    """
     state_dict = _safe_torch_load(model_path)
 
     # Support both pretrained (.ckpt) and training checkpoint (.pt) formats
@@ -102,6 +115,12 @@ def load_model(model_path, mask_prediction:bool=False, base_config_path:str=None
 
     model = build_model(config)
     model.load_state_dict(weights)
+
+    if native_rms_norm:
+        from synthefy_nori.model.layer import RMSNorm
+        for module in model.modules():
+            if isinstance(module, RMSNorm):
+                module.use_native = True
 
     model.eval()
     return model

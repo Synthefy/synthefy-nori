@@ -354,7 +354,11 @@ class FeaturesTransformer(nn.Module):
                     test_encoder_out.shape[0], test_encoder_out.shape[1],
                     self.cls_y_decoder[-1].out_features)
                 reg_output = self.reg_y_decoder(test_encoder_out)
-            feature_pred = self.feature_decoder(encoder_out_4_feature)
+            feature_pred = (
+                None
+                if getattr(self, "_skip_feature_decoder", False)
+                else self.feature_decoder(encoder_out_4_feature)
+            )
             output_decoded = {
                 "cls_output": cls_output,
                 "reg_output": reg_output,

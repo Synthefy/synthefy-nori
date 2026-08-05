@@ -1,6 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# --- Execution speedups -------------------------------------------------
+# Kernel/compiler options only. These do NOT change the sampler, the shape
+# curriculum, or any hyperparameter. Native RMSNorm can change bf16 rounding
+# because it reduces the same equation in a different order.
+# Dynamic regional compile measured +28.6% on forward/backward compute and
+# +15.6% end-to-end wall-clock in one controlled 4xH200 run. The static arm
+# (which needs a palette, so it is NOT enabled here) reached +28.4% wall-clock.
+# See docs/training_static_compile.md for the benchmark caveats.
+# Override any of them:
+#   NATIVE_RMS_NORM=0             restore the decomposed RMSNorm path
+#   EMA_FOREACH=0                 restore scalar EMA updates
+#   COMPILE_ENCODER_LAYERS=none   disable regional compilation
+#                         =static exact-shape kernels; ALSO requires
+#                                 --shape-palette + --context-ratio-palette,
+#                                 which DO change the curriculum, so it is
+#                                 never enabled by default here.
+# --skip-zero-feature-decoder is intentionally absent: the CLI rejects it
+# unless feature loss stays zero, and feature_loss_weight defaults to 0.5,
+# so enabling it blanket-wise would break these launchers. Opt in per run.
+SPEEDUP_ARGS=()
+if [[ "${NATIVE_RMS_NORM:-1}" != "0" ]]; then
+  SPEEDUP_ARGS+=(--native-rms-norm)
+fi
+if [[ "${EMA_FOREACH:-1}" != "0" ]]; then
+  SPEEDUP_ARGS+=(--ema-foreach)
+fi
+SPEEDUP_COMPILE="${COMPILE_ENCODER_LAYERS:-dynamic}"
+if [[ "${SPEEDUP_COMPILE}" != "none" ]]; then
+  SPEEDUP_ARGS+=(--compile-encoder-layers "${SPEEDUP_COMPILE}")
+  SPEEDUP_ARGS+=(--compile-cache-limit "${COMPILE_CACHE_LIMIT:-1024}")
+  SPEEDUP_ARGS+=(--compile-disable-ddp-optimizer)
+fi
+# ------------------------------------------------------------------------
+
 # Curriculum continuation: tiers 2 to 5, seeded from the tier-1 checkpoint
 # produced by train.sh.
 #
@@ -163,6 +197,7 @@ run_tier() {
 
   torchrun --nproc_per_node="${NPROC}" --master_port="${MASTER_PORT}" \
     -m synthefy_nori.training.cli \
+    "${SPEEDUP_ARGS[@]}" \
     "${SHARED_ARGS[@]}" \
     --resume "${seed}" --resume-model-only \
     --checkpoint-dir "${outdir}" \

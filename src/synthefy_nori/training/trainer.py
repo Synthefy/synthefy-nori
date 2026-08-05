@@ -7,6 +7,7 @@ import os
 import time
 import math
 import warnings
+from collections import defaultdict
 from contextlib import nullcontext
 
 import numpy as np
@@ -19,6 +20,36 @@ from synthefy_nori.training.masking import create_masks, random_mask_type, rando
 from synthefy_nori.training.loss import compute_ccmm_loss
 from synthefy_nori.training.optim import build_optimizer
 from synthefy_nori.training.prefetch import DataPrefetcher
+
+
+def _foreach_ema_update(
+        ema_state: dict[str, torch.Tensor],
+        current_state: dict[str, torch.Tensor],
+        decay: float,
+) -> None:
+    # Update EMA tensors in device/dtype groups instead of scalar kernels.
+    floating_groups: dict[
+        tuple[torch.device, torch.dtype],
+        tuple[list[torch.Tensor], list[torch.Tensor]],
+    ] = defaultdict(lambda: ([], []))
+    nonfloating_pairs: list[tuple[torch.Tensor, torch.Tensor]] = []
+
+    for name, tensor in current_state.items():
+        ema_tensor = ema_state[name]
+        if torch.is_floating_point(tensor):
+            ema_tensors, current_tensors = floating_groups[
+                (tensor.device, tensor.dtype)
+            ]
+            ema_tensors.append(ema_tensor)
+            current_tensors.append(tensor.detach())
+        else:
+            nonfloating_pairs.append((ema_tensor, tensor))
+
+    for ema_tensors, current_tensors in floating_groups.values():
+        torch._foreach_mul_(ema_tensors, decay)
+        torch._foreach_add_(ema_tensors, current_tensors, alpha=1.0 - decay)
+    for ema_tensor, tensor in nonfloating_pairs:
+        ema_tensor.copy_(tensor)
 
 
 def get_wcd_schedule(optimizer, warmup_steps, decay_start_step, total_steps, lr_min):
@@ -186,7 +217,15 @@ class NoriTrainer:
         cfg = self.config
         rng = self.shared_rng  # Same across all ranks
 
-        if cfg.fixed_n_samples is not None and cfg.fixed_n_features is not None:
+        explicit_shape = bool(cfg.shape_palette)
+        if explicit_shape:
+            weights = np.asarray(
+                [entry[2] for entry in cfg.shape_palette], dtype=np.float64
+            )
+            weights /= weights.sum()
+            shape_index = int(rng.choice(len(cfg.shape_palette), p=weights))
+            n_samples, n_features, _weight = cfg.shape_palette[shape_index]
+        elif cfg.fixed_n_samples is not None and cfg.fixed_n_features is not None:
             # Fixed size mode: skip random sampling but still consume rng
             # to keep shared_rng in sync with code that expects these draws.
             rng.uniform(0, 1)  # consume log_n_samples draw
@@ -204,16 +243,16 @@ class NoriTrainer:
             log_min_f, log_max_f = np.log(cfg.min_features), np.log(cfg.max_features)
             u_f = rng.uniform(0, 1) ** (1.0 / cfg.dim_bias_features)
             n_features = int(np.exp(log_min_f + u_f * (log_max_f - log_min_f)))
-            # Must be even (features_per_group=2)
             if n_features % cfg.features_per_group != 0:
                 n_features += cfg.features_per_group - (n_features % cfg.features_per_group)
             n_features = max(cfg.features_per_group, n_features)
 
-        # OOM protection: cap dimensions to stay within budget.
-        # Always respect min_samples — shrink features first.
         budget = cfg.max_sample_feature_budget
-        if n_samples * n_features > budget:
-            # Shrink features to fit n_samples within budget
+        if explicit_shape and n_samples * n_features > budget:
+            raise ValueError(
+                f"Explicit shape {n_samples}x{n_features} exceeds budget {budget}"
+            )
+        if not explicit_shape and n_samples * n_features > budget:
             max_feat = budget // n_samples
             max_feat -= max_feat % cfg.features_per_group
             max_feat = max(cfg.features_per_group, max_feat)
@@ -221,44 +260,36 @@ class NoriTrainer:
             if max_feat >= cfg.features_per_group:
                 n_features = min(n_features, max_feat)
             else:
-                # Even min features won't fit — shrink samples too
                 n_features = cfg.features_per_group
                 n_samples = max(cfg.min_samples, budget // n_features)
 
-        # Shape bucketing AFTER budget cap: round down to largest bucket
-        # that fits within the budget-capped dimensions. Always bucket —
-        # the model was trained on bucketed shapes and the offline pool
-        # stores data in these exact buckets.
-        valid_s = [b for b in self.SAMPLE_BUCKETS
-                   if b <= n_samples and b >= cfg.min_samples]
-        valid_f = [b for b in self.FEATURE_BUCKETS if b <= n_features]
-        n_samples = max(valid_s) if valid_s else max(
-            cfg.min_samples, self.SAMPLE_BUCKETS[0])
-        n_features = max(valid_f) if valid_f else self.FEATURE_BUCKETS[0]
+        if not explicit_shape:
+            valid_s = [b for b in self.SAMPLE_BUCKETS
+                       if b <= n_samples and b >= cfg.min_samples]
+            valid_f = [b for b in self.FEATURE_BUCKETS if b <= n_features]
+            n_samples = max(valid_s) if valid_s else max(
+                cfg.min_samples, self.SAMPLE_BUCKETS[0])
+            n_features = max(valid_f) if valid_f else self.FEATURE_BUCKETS[0]
 
-        # Task type selection
         if cfg.task_type == 'both':
             task_type = 'reg' if rng.random() < cfg.regression_ratio else 'cls'
         else:
-            # Still consume the rng value to keep shared_rng in sync for DDP
             rng.random()
             task_type = cfg.task_type
 
-        # Number of classes
         n_classes = None
         if task_type == 'cls':
             n_classes = int(rng.integers(cfg.min_classes, cfg.max_classes + 1))
 
-        # Context/query split ratio — sampled here (shared_rng) so eval_pos
-        # is identical across all ranks and shared_rng stays in sync.
-        context_ratio = rng.uniform(cfg.context_ratio_min, cfg.context_ratio_max)
-
-        # Quantize context_ratio to nearest bucket — keeps eval_pos bounded
-        # and matches the distribution the model was trained on.
-        valid_cr = [cr for cr in self.CONTEXT_RATIO_BUCKETS
-                    if cr >= cfg.context_ratio_min and cr <= cfg.context_ratio_max]
-        if valid_cr:
-            context_ratio = min(valid_cr, key=lambda cr: abs(cr - context_ratio))
+        if cfg.context_ratio_palette:
+            ratio_index = int(rng.integers(len(cfg.context_ratio_palette)))
+            context_ratio = cfg.context_ratio_palette[ratio_index]
+        else:
+            context_ratio = rng.uniform(cfg.context_ratio_min, cfg.context_ratio_max)
+            valid_cr = [cr for cr in self.CONTEXT_RATIO_BUCKETS
+                        if cr >= cfg.context_ratio_min and cr <= cfg.context_ratio_max]
+            if valid_cr:
+                context_ratio = min(valid_cr, key=lambda cr: abs(cr - context_ratio))
 
         return n_samples, n_features, task_type, n_classes, context_ratio
 
@@ -915,8 +946,10 @@ class NoriTrainer:
             ro = output['reg_output'].detach().float()
             print(f"  [DIAG] reg: mean={ro.mean():.4f} std={ro.std():.4f}")
 
-        fp = output['feature_pred'].detach().float()
-        print(f"  [DIAG] feat_pred: mean={fp.mean():.4f} std={fp.std():.4f}")
+        feature_pred = output.get('feature_pred')
+        if torch.is_tensor(feature_pred) and feature_pred.numel() > 0:
+            fp = feature_pred.detach().float()
+            print(f"  [DIAG] feat_pred: mean={fp.mean():.4f} std={fp.std():.4f}")
 
         # --- Process config sanity ---
         pc = output['process_config']
@@ -1311,6 +1344,13 @@ class NoriTrainer:
 
         with torch.no_grad():
             current_state = self._get_bare_model().state_dict()
+            if self.config.ema_foreach:
+                _foreach_ema_update(
+                    self.ema_state_dict,
+                    current_state,
+                    self.ema_decay,
+                )
+                return
             for name, tensor in current_state.items():
                 ema_tensor = self.ema_state_dict[name]
                 if torch.is_floating_point(tensor):

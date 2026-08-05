@@ -20,7 +20,9 @@ from synthefy_nori.inference.memory_policy import (
     estimate_cache_gb,
     total_host_ram_gb,
 )
+from synthefy_nori.model.layer import RMSNorm
 from synthefy_nori.utils.loading import load_model
+import contextlib
 import torch
 from typing import List, Literal
 import random
@@ -61,7 +63,9 @@ class NoriPredictor:
                  bar_temperature: float = 1.0,
                  bar_point_estimator: str = 'mean',
                  discrete_y_snap_max_unique: int = 0,
-                 memory_policy: "MemoryPolicy | dict | str | None" = None):
+                 memory_policy: "MemoryPolicy | dict | str | None" = None,
+                 skip_unused_feature_decoder: bool = True,
+                 native_rms_norm: bool | None = None):
         """
         init NoriPredictor
 
@@ -77,6 +81,20 @@ class NoriPredictor:
             inference_with_DDP: If using DDP to inference,
             seed: Random seed
             model: Pre-loaded model instance (skips load_model when provided)
+            skip_unused_feature_decoder: Skip the feature decoder when
+                mask_prediction is off, where its output is computed and then
+                discarded. Output-preserving, so it defaults to True. Only
+                reaches models built with mask_prediction=True — that is, the
+                model= path; load_model() already builds with it off.
+            native_rms_norm: Tri-state. None (default) inherits whatever the
+                model already has, which is the right thing in both directions:
+                load_model() turns the fused kernel on, and a training-built
+                model carries whatever the training run chose. True forces the
+                fused kernel on, False forces the decomposed path on for a
+                bit-for-bit match with history. Measured: R2 shift <= 2e-5,
+                largest per-row difference one bf16 ulp, ~+1.3% end-to-end
+                (preprocessing dominates inference, so the ~+10% kernel win
+                does not survive).
         """
         if isinstance(inference_config, str):
             if os.path.isfile(inference_config):
@@ -122,6 +140,29 @@ class NoriPredictor:
         # clone(), whose identity check requires the stored attribute to be the
         # object it was handed.
         self.memory_policy = memory_policy
+        # --- Execution-only options: same weights, same algorithm, different
+        # --- kernels. Applied per call and undone afterwards. (native_rms_norm
+        # --- does shift output by ~1 bf16 ulp; see below.)
+        # Skip the feature decoder when its output cannot be read. It is read
+        # only by the mask_prediction (imputation) branch of
+        # _predict_reg_single, so with mask_prediction=False the decoder runs
+        # and its result is dropped. Default ON: predictions are bit-identical
+        # either way, so this is pure removed work, not a trade-off.
+        self.skip_unused_feature_decoder = bool(skip_unused_feature_decoder)
+        # Use torch.nn.functional.rms_norm instead of the decomposed
+        # pow/mean/rsqrt/mul chain. None means "inherit the model's setting" so
+        # an explicit load_model(native_rms_norm=False) is not silently undone
+        # here. Controlled measurements show:
+        #   accuracy - R2 shift <= 2e-5 across 1k/4k/8k-row tables; the largest
+        #              per-row difference is 0.0078125, exactly one bf16 ulp,
+        #              i.e. the two formulations land on adjacent representable
+        #              values under autocast(bfloat16). Not an approximation.
+        #   speed    - only about +1.3% end-to-end on predict(). The kernel win
+        #              is ~+10% on forward+backward, but inference is dominated
+        #              by the 16 CPU preprocessing pipelines, so little of it
+        #              survives. Do NOT cite a large inference speedup here.
+        self.native_rms_norm = (
+            None if native_rms_norm is None else bool(native_rms_norm))
         self.inference_with_DDP=inference_with_DDP
         # Optional inference-time augmentations. Currently supports:
         #   'yj': Yeo-Johnson target transform ensemble — fit PowerTransformer
@@ -548,9 +589,10 @@ class NoriPredictor:
         # config); these make them once per user-visible predict instead.
         self._warned_this_call = set()
         self._logged_this_call = set()
-        if return_distribution:
-            return self._predict_reg(x_train, y_train, x_test, return_distribution=True)
-        preds = self._predict_reg(x_train, y_train, x_test)
+        with self._execution_overrides():
+            if return_distribution:
+                return self._predict_reg(x_train, y_train, x_test, return_distribution=True)
+            preds = self._predict_reg(x_train, y_train, x_test)
         # V12r3: discrete-y snap. If enabled (discrete_y_snap_max_unique > 0)
         # and training y has a low unique count (≤ the threshold), snap each
         # prediction to the nearest training-y value. OFF by default since
@@ -625,9 +667,48 @@ class NoriPredictor:
         model_ref = self.model
         if hasattr(model_ref, "module"):
             model_ref = model_ref.module
-        if hasattr(model_ref, "_orig_mod"):
-            model_ref = model_ref._orig_mod
+        # torch.compile wraps in an OptimizedModule; attributes set on the
+        # wrapper never reach the module whose forward actually reads them, so
+        # _skip_feature_decoder would silently do nothing.
+        model_ref = getattr(model_ref, "_orig_mod", model_ref)
         return model_ref
+
+    @contextlib.contextmanager
+    def _execution_overrides(self):
+        """Apply the execution-only speedups for the duration of one call.
+
+        Both settings live on the model object, and ``model=`` may hand us a
+        module the caller also trains with or uses for imputation elsewhere.
+        Mutating it permanently would be a silent action at a distance — a
+        leaked ``_skip_feature_decoder`` would zero the feature-reconstruction
+        loss of a subsequent training step. So every change is undone on exit,
+        including on exception.
+        """
+        model = self._bare_model()
+        undo = []
+
+        # Gate on mask_prediction at call time, not construction time: callers
+        # do flip the attribute on an existing predictor.
+        if self.skip_unused_feature_decoder and not self.mask_prediction:
+            previous = getattr(model, "_skip_feature_decoder", False)
+            if not previous:
+                model._skip_feature_decoder = True
+                undo.append(lambda: setattr(model, "_skip_feature_decoder", previous))
+
+        # None = inherit the model's current setting and touch nothing.
+        if self.native_rms_norm is not None:
+            want = self.native_rms_norm
+            for module in model.modules():
+                if isinstance(module, RMSNorm) and module.use_native != want:
+                    had = module.use_native
+                    module.use_native = want
+                    undo.append(lambda m=module, v=had: setattr(m, "use_native", v))
+
+        try:
+            yield
+        finally:
+            for revert in reversed(undo):
+                revert()
 
     @property
     def regression_head(self) -> str:
@@ -1063,6 +1144,19 @@ class NoriPredictor:
     def get_embeddings(self, x_train: np.ndarray, y_train: np.ndarray,
                        x_test: np.ndarray | None = None,
                        data_source: Literal["test", "train"] = "test") -> np.ndarray:
+        """Thin wrapper applying the execution overrides once for the call.
+
+        Entering the context manager per query chunk would walk model.modules()
+        on every chunk. Note the feature-decoder skip is inert here: the
+        embedding forwards pass return_embeddings=True and return before the
+        decode branch, so only native_rms_norm has any effect.
+        """
+        with self._execution_overrides():
+            return self._get_embeddings_impl(x_train, y_train, x_test, data_source)
+
+    def _get_embeddings_impl(self, x_train: np.ndarray, y_train: np.ndarray,
+                             x_test: np.ndarray | None = None,
+                             data_source: Literal["test", "train"] = "test") -> np.ndarray:
         """Extract per-row Nori embeddings for a context/query split.
 
         Runs each preprocessing pipeline (the inference ensemble) through the
