@@ -12,6 +12,8 @@ because "int8 is basically free" is true per-request and wrong as a policy.
 """
 from __future__ import annotations
 
+import io
+
 import pytest
 from pydantic import ValidationError
 
@@ -85,6 +87,25 @@ class TestFootprintArithmetic:
         # 0.0 means "cannot tell" and must disable offload rather than invent a
         # number -- guessing gets the process OOM-killed instead of degrading.
         assert total_host_ram_gb() >= 0.0
+
+    def test_cgroup_limit_file_is_closed(self, monkeypatch):
+        limit_file = io.StringIO(str(2 * _mp.BYTES_PER_GIB))
+        monkeypatch.setattr(_mp, "_CGROUP_LIMIT_PATHS", ("/fake/memory.max",))
+        monkeypatch.setattr("builtins.open", lambda _path: limit_file)
+
+        assert _mp._cgroup_memory_limit_gb() == 2.0
+        assert limit_file.closed
+
+    def test_cgroup_limit_does_not_leak_resource_warning_into_notes(
+        self, monkeypatch, tmp_path
+    ):
+        limit_path = tmp_path / "memory.max"
+        limit_path.write_text(str(2 * _mp.BYTES_PER_GIB), encoding="utf-8")
+        monkeypatch.setattr(_mp, "_CGROUP_LIMIT_PATHS", (str(limit_path),))
+
+        with _mp.capture_policy_notes() as notes:
+            assert _mp._cgroup_memory_limit_gb() == 2.0
+        assert notes == []
 
 
 class TestBudgets:

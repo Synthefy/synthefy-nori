@@ -92,4 +92,45 @@ jobs:
       - run: uv pip install --no-config -e ".[dev]"
       - run: .venv/bin/python -c "import torch, synthefy_nori; print(torch.__version__)"
       - run: .venv/bin/pytest tests
-      - run: .venv/bin/pytest -m slow tests/test_inference_e2e.py
+      - name: Run slow inference compatibility tests with transient-download retries
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          nori_max_attempts=3
+          nori_backoff_seconds=30
+          nori_attempt=1
+          nori_transient_pattern='429 Too Many Requests|HTTP Error 429|HTTP Error 5[0-9]{2}'
+          nori_transient_pattern+='|ReadTimeout|ConnectTimeout|ConnectionError|RemoteDisconnected'
+
+          while (( nori_attempt <= nori_max_attempts )); do
+            nori_log="$(mktemp)"
+            .venv/bin/pytest -m slow tests/test_inference_e2e.py 2>&1 | tee "$nori_log"
+            nori_status="${PIPESTATUS[0]}"
+
+            if (( nori_status == 0 )); then
+              rm -f "$nori_log"
+              exit 0
+            fi
+
+            # Retry only failures that look like a transient checkpoint download.
+            # Assertion failures and other deterministic regressions fail immediately.
+            if ! grep -Eq "$nori_transient_pattern" "$nori_log"; then
+              echo "Compatibility test failure was not transient; refusing to retry." >&2
+              rm -f "$nori_log"
+              exit "$nori_status"
+            fi
+
+            rm -f "$nori_log"
+            if (( nori_attempt == nori_max_attempts )); then
+              echo "Transient compatibility failure persisted for $nori_max_attempts attempts." >&2
+              exit "$nori_status"
+            fi
+
+            nori_jitter_seconds=$((RANDOM % 16))
+            nori_wait_seconds=$((nori_backoff_seconds + nori_jitter_seconds))
+            echo "::warning::Transient checkpoint download failure on attempt $nori_attempt/$nori_max_attempts; retrying in ${nori_wait_seconds}s."
+            sleep "$nori_wait_seconds"
+            nori_backoff_seconds=$((nori_backoff_seconds * 2))
+            nori_attempt=$((nori_attempt + 1))
+          done
