@@ -370,7 +370,8 @@ def _cgroup_memory_limit_gb() -> float:
     """
     for path in _CGROUP_LIMIT_PATHS:
         try:
-            raw = open(path).read().strip()
+            with open(path) as limit_file:
+                raw = limit_file.read().strip()
         except (OSError, ValueError):
             continue
         if raw == "max":            # v2's "no limit"
