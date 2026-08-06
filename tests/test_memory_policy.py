@@ -264,6 +264,15 @@ class TestConfigSurface:
         # The config-file path: parsed YAML/JSON lands here.
         assert MemoryPolicy.coerce({"gpu_budget_frac": 0.25}).gpu_budget_frac == 0.25
 
+    def test_context_reuse_is_typed_and_defaults_on_locally(self):
+        assert MemoryPolicy().reuse_context_cache is True
+        policy = MemoryPolicy.coerce({"reuse_context_cache": False})
+        assert policy.reuse_context_cache is False
+        assert MemoryPolicy(**policy.model_dump(exclude_unset=True)) == policy
+
+    def test_off_preset_reports_that_no_context_can_be_reused(self):
+        assert MemoryPolicy.coerce("off").reuse_context_cache is False
+
     def test_a_policy_passes_through_unchanged(self):
         policy = MemoryPolicy(cache_dtype="bf16")
         assert MemoryPolicy.coerce(policy) is policy
@@ -441,6 +450,14 @@ class TestIncoherentConfigsAreRejected:
     def test_every_cache_only_lever_is_rejected_with_cache_off(self, lever):
         with pytest.raises(ValidationError, match="cache=False cannot be combined"):
             MemoryPolicy(cache=False, **lever)
+
+    def test_reuse_true_without_a_cache_is_rejected(self):
+        with pytest.raises(ValidationError, match="reuse_context_cache=True"):
+            MemoryPolicy(cache=False, reuse_context_cache=True)
+
+    def test_reuse_false_with_cache_off_is_a_coherent_explicit_request(self):
+        policy = MemoryPolicy(cache=False, reuse_context_cache=False)
+        assert policy.cache is False and policy.reuse_context_cache is False
 
     def test_the_error_names_every_unhonourable_field(self):
         with pytest.raises(ValidationError) as exc:

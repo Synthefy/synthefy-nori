@@ -69,6 +69,7 @@ class NoriWrapper(BaseModelWrapper):
         quantile_collapse: str = 'mean',
         bar_temperature: float = 1.0,
         bar_point_estimator: str = 'mean',
+        memory_policy=None,
     ):
         self._name = model_name
         self.model_path = model_path
@@ -82,6 +83,7 @@ class NoriWrapper(BaseModelWrapper):
         self.quantile_collapse = quantile_collapse
         self.bar_temperature = float(bar_temperature)
         self.bar_point_estimator = bar_point_estimator
+        self.memory_policy = memory_policy
         self._reg_predictor = None
 
     @property
@@ -111,6 +113,7 @@ class NoriWrapper(BaseModelWrapper):
                 quantile_collapse=self.quantile_collapse,
                 bar_temperature=self.bar_temperature,
                 bar_point_estimator=self.bar_point_estimator,
+                memory_policy=self.memory_policy,
             )
         return self._reg_predictor
 

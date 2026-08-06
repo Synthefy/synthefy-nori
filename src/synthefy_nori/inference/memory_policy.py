@@ -428,6 +428,14 @@ class MemoryPolicy(BaseModel):
                     "several times slower on a large query set, and it may have to drop "
                     "context rows to fit.",
     )
+    reuse_context_cache: bool = Field(
+        True,
+        description="Retain and reuse the encoded context across separate predict() calls "
+                    "on this estimator when the context and cache parameters are exactly "
+                    "unchanged. False still uses the K/V cache within each prediction, but "
+                    "does not retain context-derived state afterwards. Shared serving "
+                    "processes force this off; local fit-once/predict-many use keeps it on.",
+    )
     cache_dtype: CacheDtype = Field(
         "bf16",
         description="Precision the K/V cache STARTS at. bf16 is bit-exact and is the "
@@ -575,6 +583,13 @@ class MemoryPolicy(BaseModel):
         """
         if self.rung is not None or self.cache:
             return self
+        if ("reuse_context_cache" in self.model_fields_set
+                and self.reuse_context_cache):
+            raise ValueError(
+                "cache=False cannot be combined with reuse_context_cache=True: "
+                "there is no K/V cache to retain across calls. Set "
+                "reuse_context_cache=False or remove the field."
+            )
         requested = sorted(f for f in CACHE_ONLY_FIELDS if f in self.model_fields_set)
         if requested:
             raise ValueError(
@@ -730,7 +745,7 @@ class MemoryPolicy(BaseModel):
             if value == "max_context":
                 # Fit the largest table possible; start quantized to free VRAM at once.
                 return cls(cache_dtype="int8")
-            return cls(cache=False)     # "off"
+            return cls(cache=False, reuse_context_cache=False)     # "off"
         raise TypeError(
             f"memory must be a preset name, dict, MemoryPolicy or None, "
             f"got {type(value).__name__}"
@@ -918,6 +933,7 @@ class MemoryPolicy(BaseModel):
                     cache: bool, budgets: bool = True) -> "MemoryPolicy":
             return self._revalidated_copy(
                 cache=cache, cache_dtype=dtype, offload_to_host=offload,
+                reuse_context_cache=bool(cache and self.reuse_context_cache),
                 gpu_budget_absolute_gb=gpu_budget_gb if budgets else None,
                 host_budget_absolute_gb=host_budget_gb if budgets else None,
                 rung=rung, est_cache_gb=est_cache_gb, resident_gb=resident,

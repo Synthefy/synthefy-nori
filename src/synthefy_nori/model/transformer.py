@@ -3,8 +3,50 @@ from __future__ import annotations
 import os
 import torch
 import torch.nn as nn
+from dataclasses import dataclass
 from synthefy_nori.model.layer import EncoderBaseLayer, MLP, LayerStack, RMSNorm
 from typing import Any, Literal
+
+
+@dataclass
+class ContextCache:
+    """A reusable encoding of a fixed context (train) table for cached regression.
+
+    Produced once by :meth:`FeaturesTransformer.build_context_cache` and consumed
+    by :meth:`FeaturesTransformer.apply_context_cache` for any number of query
+    batches, so the O(N_train) context forward (the per-layer row-attention K/V
+    build) is paid ONCE and amortized across queries instead of recomputed per
+    call. Everything here is train-derived and query-independent:
+
+    - ``caches``: per-layer sequence-attention K/V from ``build_train_cache``
+      (already int8/host-offload-scaled per the ``cache_dtype``/``offload`` used).
+    - ``feature_pos_emb``: the (randomly drawn) feature positional embedding, kept
+      so train and every query batch share the SAME one (required for correctness
+      since ``subortho``/``learned`` embeddings are redrawn per forward).
+    - ``norm_stats``: the ``NormalizationEncoder`` train stats (lower/upper/mean/
+      std) to re-apply to query rows via the frozen path.
+    - ``nan_mean``: the ``NanEncoder`` per-column context mean it imputes NaN/Inf
+      with, likewise re-applied to query rows via its frozen path.
+    - ``y_train``: context targets, to reconstruct the query y-placeholder embedding
+      exactly as the transductive path does (query rows are NaN-masked anyway).
+    - ``eval_pos``: number of context rows (``n_train``).
+
+    ``norm_stats`` and ``nan_mean`` together cover every ``eval_pos``-dependent stage
+    of ``x_preprocess`` (``NanEncoder`` -> ``ValidFeatureEncoder`` ->
+    ``NormalizationEncoder`` -> ``ValidFeatureEncoder``; the two
+    ``ValidFeatureEncoder``s and ``process_4_x`` are row-independent). Both must be
+    carried, or query rows get stats derived from THEMSELVES instead of the context:
+    a silent, data-dependent divergence rather than an error. With both, the cached
+    path stays within float-reassociation distance of the transductive forward (~3e-05
+    on nori-6m) for finite, NaN- and Inf-bearing tables alike; it is bit-identical to
+    ``forward_cached_regression``, which is literally this build/apply pair.
+    """
+    caches: list
+    feature_pos_emb: torch.Tensor | None
+    norm_stats: dict | None
+    y_train: torch.Tensor
+    eval_pos: int
+    nan_mean: torch.Tensor | None = None
 from synthefy_nori.model.encoders import get_x_encoder, get_cls_y_encoder, get_reg_y_encoder, preprocesss_4_x
 from torch.amp import autocast
 
@@ -599,9 +641,79 @@ class FeaturesTransformer(nn.Module):
         if eval_pos >= x.shape[1] or eval_pos > y.shape[1]:
             raise AssertionError("Invalid eval_pos for cached regression")
 
-        total_rows = x.shape[1]
-        x_dict, _feature_to_add = self._build_x_preprocess_inputs(x, eval_pos)
+        # Thin wrapper over the reusable context-cache split: encode the context
+        # (train) rows once, then apply that bundle to the query rows. Behaviour is
+        # bit-identical to the previous inline implementation; the split exists so a
+        # caller serving many query batches against a FIXED context can build the
+        # bundle once (build_context_cache) and reuse it across calls
+        # (apply_context_cache) instead of rebuilding the O(N_train) cache each time.
+        bundle = self.build_context_cache(
+            x[:, :eval_pos], y[:, :eval_pos],
+            cache_dtype=cache_dtype,
+            offload_kv_cache=offload_kv_cache,
+            fit_row_chunk=fit_row_chunk,
+        )
+        return self.apply_context_cache(
+            x[:, eval_pos:], bundle,
+            row_chunk_size=row_chunk_size,
+            adaptive_query_chunk=adaptive_query_chunk,
+        )
+
+    def build_context_cache(
+            self,
+            x_train: torch.Tensor,
+            y_train: torch.Tensor,
+            *,
+            cache_dtype: str = "bf16",
+            offload_kv_cache: bool = False,
+            fit_row_chunk: int | None = None,
+            quantize_kv_cache: bool | None = None,
+    ) -> ContextCache:
+        """Encode a fixed context (train) table once into a reusable ``ContextCache``.
+
+        The expensive O(N_train) work -- preprocessing, feature/target encoding, and
+        the per-layer row-attention K/V build -- happens HERE, once. The returned
+        bundle carries everything :meth:`apply_context_cache` needs to score query
+        rows without touching the context again, so serving many query batches
+        against the same context pays this cost a single time.
+
+        ``cache_dtype`` / ``offload_kv_cache`` / ``fit_row_chunk`` behave exactly as
+        in :meth:`forward_cached_regression` (which is now a wrapper over this pair).
+        """
+        if quantize_kv_cache is not None and cache_dtype == "bf16":
+            cache_dtype = "int8" if quantize_kv_cache else "bf16"
+        if cache_dtype not in ("bf16", "int8"):
+            raise ValueError(
+                "build_context_cache takes a concrete cache_dtype of 'bf16' or "
+                f"'int8', got {cache_dtype!r}."
+            )
+        if self.mask_prediction:
+            raise NotImplementedError("build_context_cache requires mask_prediction=False")
+        if x_train is None or y_train is None:
+            raise AssertionError("x_train and y_train must not be None")
+        if len(x_train.shape) != 3:
+            raise AssertionError("x_train must be [Batch, seq, Feature]")
+        if len(y_train.shape) != 2:
+            raise AssertionError("y_train must be [Batch, label]")
+        eval_pos = x_train.shape[1]
+        if eval_pos <= 0:
+            raise AssertionError("x_train must have at least one context row")
+        if y_train.shape[1] < eval_pos:
+            raise AssertionError("y_train must cover all context rows")
+
+        x_dict, _feature_to_add = self._build_x_preprocess_inputs(x_train, eval_pos)
         preprocessed_x = self.x_preprocess(x_dict)
+        # Capture the train-derived normalization stats BEFORE process_4_x so they
+        # can be re-applied (frozen) to query rows in apply_context_cache. Empty ->
+        # None (no normalization is active, so query rows need no train stats).
+        captured = preprocessed_x.get('_norm_stats') or {}
+        norm_stats = {k: v.detach() for k, v in captured.items()} if captured else None
+        # Same for NanEncoder's imputation fill (the train column mean). Captured
+        # unconditionally -- it always runs, and a table with no NaN/Inf simply never
+        # consults it.
+        captured_nan_mean = preprocessed_x.get('_nan_mean')
+        nan_mean = (captured_nan_mean.detach()
+                    if isinstance(captured_nan_mean, torch.Tensor) else None)
         preprocessed_x = self.process_4_x(preprocessed_x)
         data_tensor = preprocessed_x['data']
         assert isinstance(data_tensor, torch.Tensor)
@@ -611,25 +723,24 @@ class FeaturesTransformer(nn.Module):
             dtype=data_tensor.dtype,
         )
         target_aware_y, embedded_y = self._encode_y_full(
-            y,
-            total_rows=total_rows,
+            y_train[:, :eval_pos],
+            total_rows=eval_pos,
             eval_pos=eval_pos,
             task_type='reg',
         )
-
-        x_train = self._encode_x_rows(
+        x_train_enc = self._encode_x_rows(
             preprocessed_x,
             slice(0, eval_pos),
-            total_rows=total_rows,
+            total_rows=eval_pos,
             feature_pos_emb=feature_pos_emb,
         )
-        x_train = self.apply_target_aware_embedding(
-            x_train,
+        x_train_enc = self.apply_target_aware_embedding(
+            x_train_enc,
             target_aware_y[:, :eval_pos],
             task_type='reg',
             eval_pos=eval_pos,
         )
-        train_tokens = torch.cat((x_train, embedded_y[:, :eval_pos].unsqueeze(2)), dim=2)
+        train_tokens = torch.cat((x_train_enc, embedded_y[:, :eval_pos].unsqueeze(2)), dim=2)
         # WS1 Stage 2 memory lever: int8-quantize and/or host-offload the
         # O(N_train) seq K/V cache. Threaded INTO build_train_cache so each layer's
         # cache is scaled the moment it's produced -- otherwise all L layers'
@@ -648,40 +759,90 @@ class FeaturesTransformer(nn.Module):
             fit_row_chunk=fit_row_chunk,
             device=data_tensor.device,
         )
+        return ContextCache(
+            caches=caches,
+            feature_pos_emb=feature_pos_emb,
+            norm_stats=norm_stats,
+            y_train=y_train[:, :eval_pos].detach(),
+            eval_pos=eval_pos,
+            nan_mean=nan_mean,
+        )
 
-        n_test = total_rows - eval_pos
+    def apply_context_cache(
+            self,
+            x_test: torch.Tensor,
+            context: ContextCache,
+            *,
+            row_chunk_size: int | None = None,
+            adaptive_query_chunk: bool = True,
+    ) -> torch.Tensor:
+        """Score query rows against a prebuilt :class:`ContextCache`.
+
+        Bit-identical to :meth:`forward_cached_regression` on the same (context,
+        query) pair, but the context forward is skipped: only the query rows stream
+        through the cached per-layer K/V. Safe to call repeatedly with different
+        query batches for the same context -- it mutates nothing on ``context``.
+        """
+        if self.mask_prediction:
+            raise NotImplementedError("apply_context_cache requires mask_prediction=False")
+        if len(x_test.shape) != 3:
+            raise AssertionError("x_test must be [Batch, seq, Feature]")
+        eval_pos = context.eval_pos
+        n_test = x_test.shape[1]
+        if n_test <= 0:
+            raise AssertionError("x_test must have at least one query row")
+
+        # Preprocess query rows with the FROZEN train stats -- bit-identical to the
+        # transductive path, which normalizes test rows with train (context) stats.
+        # eval_pos here only feeds the (overridden) NormalizationEncoder split point.
+        x_dict, _feature_to_add = self._build_x_preprocess_inputs(x_test, n_test)
+        if context.norm_stats is not None:
+            x_dict['_frozen_norm_stats'] = context.norm_stats
+        if context.nan_mean is not None:
+            x_dict['_frozen_nan_mean'] = context.nan_mean
+        preprocessed_x = self.x_preprocess(x_dict)
+        preprocessed_x = self.process_4_x(preprocessed_x)
+
+        # Query-row y is NaN-masked in the transductive path regardless of its value;
+        # reconstruct the SAME query embedding by encoding [context y ; NaN query]
+        # and slicing the query tail, so the y-encoder's context normalization matches.
+        _, embedded_y_full = self._encode_y_full(
+            context.y_train,
+            total_rows=eval_pos + n_test,
+            eval_pos=eval_pos,
+            task_type='reg',
+        )
+        embedded_y_query = embedded_y_full[:, eval_pos:]
+
         if row_chunk_size is None or row_chunk_size <= 0:
             row_chunk_size = n_test
 
         def _run_chunk(start: int, end: int) -> torch.Tensor:
-            x_test = self._encode_x_rows(
+            x_q = self._encode_x_rows(
                 preprocessed_x, slice(start, end),
-                total_rows=total_rows, feature_pos_emb=feature_pos_emb,
+                total_rows=n_test, feature_pos_emb=context.feature_pos_emb,
             )
-            test_tokens = torch.cat((x_test, embedded_y[:, start:end].unsqueeze(2)), dim=2)
+            test_tokens = torch.cat(
+                (x_q, embedded_y_query[:, start:end].unsqueeze(2)), dim=2)
             test_out = self.transformer_encoder.forward_test_with_cache(
-                test_tokens, caches, feature_atten_mask=None,
+                test_tokens, context.caches, feature_atten_mask=None,
             )
             test_out = self.encoder_out_norm(test_out)
             return self.reg_y_decoder(test_out[:, :, -1])
 
         outputs = []
-        start = eval_pos
+        start = 0
         chunk = row_chunk_size
-        while start < total_rows:
-            end = min(start + chunk, total_rows)
+        while start < n_test:
+            end = min(start + chunk, n_test)
             try:
                 outputs.append(_run_chunk(start, end))
                 start = end
             except torch.cuda.OutOfMemoryError:
-                # Adaptive halving: degrade the query chunk instead of dying.
-                # The reduced chunk is deliberately NOT restored for later
-                # chunks: whatever made this one not fit is a property of the
-                # request, so restoring would re-OOM on the next chunk and
-                # thrash. Cost is throughput for the rest of the table.
-                # memory_report_["query_chunk"] records the chunk this path was
-                # ENTERED with; the further halving below is internal to this loop and
-                # is not currently surfaced.
+                # Adaptive halving: degrade the query chunk instead of dying. The
+                # reduced chunk is deliberately NOT restored for later chunks --
+                # whatever made this one not fit is a property of the request, so
+                # restoring would re-OOM on the next chunk and thrash.
                 if not adaptive_query_chunk or chunk <= 1:
                     raise
                 torch.cuda.empty_cache()
