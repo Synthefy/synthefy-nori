@@ -1405,6 +1405,125 @@ class NoriPredictor:
                   f"falling back to identity-only prediction")
             return base_pred
 
+    def _get_or_build_context(self, bare_model, id_pipe, *, x_train_t, y_train_t,
+                              cache_dtype, offload_kv_cache, fit_row_chunk,
+                              reuse_context_cache):
+        """Build the per-pipe context (train) K/V cache, reusing it across predict()
+        calls whose context and cache params are unchanged.
+
+        ``forward_cached_regression`` already reuses the context K/V across test
+        CHUNKS within a single call; this reuses it across separate predict() calls
+        too (fit-once / serve-many), so the O(N_train) context forward runs once per
+        context instead of once per query batch. It is bit-identical to rebuilding:
+        the (random) feature positional embedding is drawn under the per-pipe seed
+        the predictor sets before every forward, so a fresh build would draw the
+        same one -- the cache only skips recomputing an identical result.
+
+        Reuse is decided by EXACT content verification (``_same_context``), not by a
+        digest: a long-lived server re-``fit``s this same predictor for every request
+        (``serving/core/nori_inference/engine.py`` holds one estimator forever), so a false
+        cache hit would answer one caller's rows against another caller's context.
+        That is a wrong-answer bug, not a slow one, so the check may not be
+        probabilistic -- see ``_same_context`` for why bytes and not a hash.
+
+        ``MemoryPolicy(reuse_context_cache=False)`` rebuilds on every call and clears
+        any retained bundle. This is a typed policy rather than an environment knob,
+        so sklearn cloning, serialized configuration, local inference and serving all
+        share one explicit contract.
+        """
+        def _build():
+            return bare_model.build_context_cache(
+                x_train_t, y_train_t, cache_dtype=cache_dtype,
+                offload_kv_cache=offload_kv_cache, fit_row_chunk=fit_row_chunk)
+
+        if not reuse_context_cache:
+            # A policy can change between calls (the shared engine re-declares one
+            # per request). Drop a bundle retained under an earlier policy as soon as
+            # reuse turns off, both to prevent a later resurrection and to release
+            # another caller's context-derived state from this process.
+            cache = getattr(self, "_context_cache", None)
+            if cache is not None:
+                cache.clear()
+            return _build()
+        key = self._context_cache_key(cache_dtype, offload_kv_cache, fit_row_chunk)
+        cache = getattr(self, "_context_cache", None)
+        if cache is None:
+            cache = self._context_cache = {}
+        hit = cache.get(id_pipe)
+        if hit is not None:
+            hit_key, hit_x, hit_y, hit_bundle = hit
+            # Cheap scalar key first, then the O(N_train*F) byte compare -- a param
+            # change short-circuits without touching the tensors.
+            if (hit_key == key
+                    and self._same_context(hit_x, x_train_t)
+                    and self._same_context(hit_y, y_train_t)):
+                return hit_bundle
+        bundle = _build()                       # cache only on a successful build
+        # Keep our OWN contiguous copies to verify future calls against. Clones, not
+        # the caller's tensors: x_train_t is a slice of the concatenated train+test
+        # table, so retaining the view would pin the (unbounded) query rows alive
+        # too. One N_train x F copy is negligible against the per-layer K/V cache it
+        # guards, which is ~nlayers x n_groups times larger.
+        cache[id_pipe] = (
+            key,
+            x_train_t.detach().clone(memory_format=torch.contiguous_format),
+            y_train_t.detach().clone(memory_format=torch.contiguous_format),
+            bundle,
+        )
+        return bundle
+
+    def _context_cache_key(self, cache_dtype, offload_kv_cache, fit_row_chunk) -> tuple:
+        """The non-tensor half of the cache key: everything OUTSIDE the context table
+        that changes what ``build_context_cache`` produces.
+
+        ``cache_dtype``/``offload_kv_cache``/``fit_row_chunk`` come from the resolved
+        :class:`MemoryPolicy`, so changing ``memory_policy=`` between calls (which a
+        server does per request) invalidates the bundle. ``self.seed`` is in here
+        because the bit-identity argument for reusing a bundle rests on the rebuild
+        drawing the SAME random feature positional embedding, which only holds while
+        the seed the predictor reseeds with is unchanged.
+        """
+        return (str(cache_dtype), bool(offload_kv_cache), fit_row_chunk, self.seed)
+
+    @staticmethod
+    def _same_context(cached: torch.Tensor, candidate: torch.Tensor) -> bool:
+        """Exact sameness test between a cached context tensor and a candidate.
+
+        Compares raw BIT PATTERNS rather than values or a digest, because both
+        alternatives are wrong here:
+
+        - ``torch.equal`` uses float equality, and NaN != NaN. Missing values are
+          ordinary in a Nori context, so a value compare would miss on every
+          NaN-bearing table and rebuild forever -- silently deleting the speedup.
+        - a summary digest (shape/NaN-count/sum/sum-of-squares/endpoints) collides on
+          trivially constructed inputs: any permutation of the interior preserves all
+          of them, so two genuinely different contexts hash alike. On a false hit the
+          cached bundle answers the new query rows, i.e. predictions computed against
+          the WRONG context, returned as if correct. A cryptographic digest would fix
+          the collision odds but still costs a full device->host copy per call, which
+          a byte compare on-device does not.
+
+        Bitwise identity has neither failure mode: NaN payloads match themselves, and
+        there are no false positives at all. Its false NEGATIVES (+0.0 vs -0.0, or two
+        distinct NaN payloads) merely rebuild something we could have reused, which
+        costs time and never correctness.
+
+        The ``uint8`` view works for every dtype -- 1-byte elements always divide the
+        last dimension evenly -- so one path covers float32/float64/float16/bfloat16
+        and the integer dtypes alike. Shape, dtype and device are checked separately
+        so that two tables of equal byte length but different layout cannot match.
+        """
+        if (cached.shape != candidate.shape
+                or cached.dtype != candidate.dtype
+                or cached.device != candidate.device):
+            return False
+        if cached.numel() == 0:
+            return True
+        return bool(torch.equal(
+            cached.contiguous().view(torch.uint8),
+            candidate.detach().contiguous().view(torch.uint8),
+        ))
+
     def _predict_reg_single(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray,
                             return_distribution: bool = False) -> np.ndarray:
         # Check size constraints to avoid OOM
@@ -1657,14 +1776,27 @@ class NoriPredictor:
                     for attempt_fit_chunk in fit_chunk_attempts:
                         try:
                             with torch.autocast(device_type=self.device.type if isinstance(self.device, torch.device) else self.device, enabled=self.mix_precision), torch.inference_mode():
-                                output = bare_model.forward_cached_regression(
-                                    x=x_.unsqueeze(0),
-                                    y=y_.unsqueeze(0),
-                                    eval_pos=len(y_train),
-                                    row_chunk_size=chunk_size,
-                                    offload_kv_cache=policy.offload_to_host,
+                                # Cross-call context amortization: build the O(N_train)
+                                # per-layer K/V cache once and reuse it across predict()
+                                # calls whose context (x_train/y_train) is unchanged --
+                                # the fit-once / serve-many pattern -- instead of
+                                # rebuilding it per query batch. This splits the former
+                                # forward_cached_regression(full) into its build+apply
+                                # halves (bit-identical: that method is now exactly this
+                                # pair) and memoizes the build. See _get_or_build_context.
+                                n_ctx = len(y_train)
+                                ctx_bundle = self._get_or_build_context(
+                                    bare_model, id_pipe,
+                                    x_train_t=x_[:n_ctx].unsqueeze(0),
+                                    y_train_t=y_[:n_ctx].unsqueeze(0),
                                     cache_dtype=policy.cache_dtype,
+                                    offload_kv_cache=policy.offload_to_host,
                                     fit_row_chunk=attempt_fit_chunk,
+                                    reuse_context_cache=policy.reuse_context_cache,
+                                )
+                                output = bare_model.apply_context_cache(
+                                    x_[n_ctx:].unsqueeze(0), ctx_bundle,
+                                    row_chunk_size=chunk_size,
                                     adaptive_query_chunk=policy.adaptive_query_chunk,
                                 )
                             output = self._unwrap_model_output(output, task_type="reg").squeeze(0)

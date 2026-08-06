@@ -391,7 +391,28 @@ class NanEncoder(nn.Module):
         x:torch.Tensor = input[self.in_keys[0]] # type: ignore
         eval_pos = input['eval_pos']
 
-        mean_value, _ = calc_mean(x[:,:eval_pos,:], dim=1)
+        # Context-cache "frozen stats" path, same contract as NormalizationEncoder's:
+        # the imputation fill is the CONTEXT column mean, so query rows arriving
+        # without a train prefix must be given the train mean rather than recomputing
+        # one from themselves. Without this, apply_context_cache fills from the QUERY
+        # column mean while the transductive path fills from the train mean.
+        #
+        # This bites on +/-Inf, not NaN. `_build_x_preprocess_inputs` builds its mask
+        # as `isnan(x)` alone, so `process_4_x` writes NaN back over every NaN cell
+        # afterwards and the fill there is discarded -- but an Inf cell is unmasked, so
+        # its fill survives into the model. And `calc_mean` is nansum/non-NaN-count: it
+        # excludes NaN but NOT Inf, so one Inf in the split drives the whole column
+        # mean to Inf. A query batch computing its own mean therefore imputes Inf where
+        # the transductive path imputes a finite train mean. Measured on nori-6m: max
+        # |delta| vs the transductive path went 2.9e-05 (float reassociation) -> 3.2e+01
+        # in the predictions. Silent, and only for tables carrying infinities.
+        frozen_mean = input.get('_frozen_nan_mean')
+        if frozen_mean is not None:
+            mean_value = frozen_mean
+        else:
+            mean_value, _ = calc_mean(x[:,:eval_pos,:], dim=1)
+        # Expose the fill actually used so build_context_cache can capture it.
+        input['_nan_mean'] = mean_value
 
         # Functional indicator: NaN/Inf → learned values, else 0
         is_nan = torch.isnan(x)
@@ -585,18 +606,39 @@ class NormalizationEncoder(nn.Module):
         x = input[self.in_keys[0]]
         eval_pos = input['eval_pos']
         pos = eval_pos if self.train_only else -1
+        # Context-cache "frozen stats" path: when a caller supplies precomputed
+        # train-derived stats (via `_frozen_norm_stats`), apply them directly to
+        # these rows instead of recomputing from the [:eval_pos] prefix. This is
+        # what lets the context encode be built once (over train) and reused
+        # across query batches that arrive WITHOUT a train prefix -- the applied
+        # stats are bit-identical to the transductive path, which also normalizes
+        # test rows with train stats. `drop_outliers`/`normalize_mean0_std1`
+        # already skip their eval_pos computation when given lower/upper/mean/std.
+        frozen = input.get('_frozen_norm_stats')
+        captured: dict[str, torch.Tensor] = {}
         if self.remove_outliers:
-            x, lower, upper = drop_outliers(x, eval_pos=pos, std_sigma=self.std_sigma)
+            lower = frozen.get('lower') if frozen else None
+            upper = frozen.get('upper') if frozen else None
+            x, lower, upper = drop_outliers(
+                x, eval_pos=pos, std_sigma=self.std_sigma, lower=lower, upper=upper)
+            captured['lower'], captured['upper'] = lower, upper
         if self.normalize_x:
-            x, mean, std = normalize_mean0_std1(x, eval_pos=pos)
+            mean = frozen.get('mean') if frozen else None
+            std = frozen.get('std') if frozen else None
+            x, mean, std = normalize_mean0_std1(x, eval_pos=pos, mean=mean, std=std)
             # Store on self for backward compat (inference predictor reads it),
             # and also pass through dict for compile-friendly access.
             self.mean = mean.detach()
             self.std = std.detach()
             input['_norm_mean'] = mean
             input['_norm_std'] = std
+            captured['mean'], captured['std'] = mean, std
 
         input[self.out_key] = x
+        # Expose the stats actually used so build_context_cache can capture them
+        # for later frozen reuse (the values are train-derived whether freshly
+        # computed here or passed in via `_frozen_norm_stats`).
+        input['_norm_stats'] = captured
         return input
 
 
