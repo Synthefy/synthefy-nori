@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -55,6 +56,23 @@ class _MixedLoader(_Loader):
         if unit.dataset == "bad":
             raise OSError(f"fixture is unavailable: {unit.meta.source_path}/N_train.npy")
         return super().materialize(unit)
+
+
+class _CacheFailureLoader(_Loader):
+    ctx_cap = None
+
+    def __init__(self, delegated):
+        super().__init__()
+        self.cache_dir = None if delegated else "/private/openml"
+        self._openml = (
+            SimpleNamespace(cache_dir="/private/openml") if delegated else None
+        )
+
+    def units(self):
+        yield BenchmarkEvalUnit(source=self.name, dataset="bad")
+
+    def materialize(self, unit):
+        raise OSError("cache unavailable: /private/openml/tasks/task.pkl")
 
 
 class _Wrapper:
@@ -193,6 +211,25 @@ def test_materialization_failure_is_recorded_and_next_unit_runs(tmp_path):
     assert "<local-path>" in error
     assert frame.loc[frame["dataset"] == "good", "error"].isna().all()
     assert wrapper.calls == 1
+
+
+@pytest.mark.parametrize("delegated", [False, True])
+def test_materialization_failure_redacts_cache_with_no_source_path(
+    tmp_path,
+    delegated,
+):
+    loader = _CacheFailureLoader(delegated)
+    unit = next(loader.units())
+    assert unit.meta.source_path is None
+    frame = run_benchmark(
+        [loader],
+        _registry(_Wrapper()),
+        out_jsonl=str(tmp_path / "results.jsonl"),
+    )
+
+    error = frame.loc[0, "error"]
+    assert "/private/openml" not in error
+    assert "<local-path>" in error
 
 
 def test_current_invocation_rows_excludes_stale_resume_records(tmp_path):

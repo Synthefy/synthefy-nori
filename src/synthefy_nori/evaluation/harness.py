@@ -214,9 +214,19 @@ def _sanitize(value):
     return value
 
 
-def _path_safe_error(exc: Exception, private_path=None, placeholder="<local-path>") -> str:
+def _loader_local_paths(loader, unit) -> tuple:
+    paths = [unit.meta.source_path]
+    for owner in (loader, getattr(loader, "_openml", None)):
+        if owner is not None:
+            paths.extend(getattr(owner, name, None) for name in ("root", "cache_dir"))
+    return tuple(path for path in paths if path)
+
+
+def _path_safe_error(exc: Exception, private_paths=(), placeholder="<local-path>") -> str:
     message = f"{type(exc).__name__}: {exc}"
-    return message.replace(str(private_path), placeholder) if private_path else message
+    for private_path in filter(None, private_paths):
+        message = message.replace(str(private_path), placeholder)
+    return message
 
 
 def _row(
@@ -334,7 +344,7 @@ def run_benchmark(
                     X_test, y_test = _subsample(split.X_test, split.y_test, test_cap, rng)
                     X_train, X_test = _apply_impute(X_train, X_test, impute)
                 except Exception as exc:
-                    error = f"MaterializationError: {_path_safe_error(exc, unit.meta.source_path)}"
+                    error = f"MaterializationError: {_path_safe_error(exc, _loader_local_paths(loader, unit))}"
                     for name, _, metadata, key in pending:
                         row = _row(
                             unit=unit,
@@ -361,7 +371,7 @@ def run_benchmark(
                     except Exception as exc:
                         error = _path_safe_error(
                             exc,
-                            getattr(entry.wrapper, "model_path", None),
+                            (getattr(entry.wrapper, "model_path", None),),
                             "<checkpoint>",
                         )
                     row = _row(
