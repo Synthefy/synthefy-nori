@@ -972,9 +972,8 @@ class NoriPredictor:
             return int(budget)
         # Legacy, still supported: SYNTHEFY_MAX_ELEMENTS_BUDGET shipped on main long
         # before this policy existed, is documented in public/README.md, and is how
-        # the eval CLI's --max-elements-budget reaches inference
-        # (evaluation/cli.py sets it, evaluation/harness.py records it). It is NOT
-        # part of the MemoryPolicy surface; prefer memory_policy={"elements_budget": N}.
+        # older callers configured inference. It is NOT part of the MemoryPolicy
+        # surface; prefer memory_policy={"elements_budget": N}.
         env_budget = os.environ.get("SYNTHEFY_MAX_ELEMENTS_BUDGET")
         return int(env_budget) if env_budget else self._default_max_elements_budget()
 

@@ -1,16 +1,16 @@
-# TabArena regression datasets — the official TabArena curated uploads on
-# OpenML, pinned by dataset ID so downloads are bit-reproducible.
-# Format: name,openml_dataset_id
-Another-Dataset-on-used-Fiat-500,46907
-Food_Delivery_Time,46928
-QSAR-TID-11,46953
-QSAR_fish_toxicity,46954
-airfoil_self_noise,46904
-concrete_compressive_strength,46917
-diamonds,46923
-healthcare_insurance_expenses,46931
-houses,46934
-miami_housing,46942
-physiochemical_protein,46949
-superconductivity,46961
-wine_quality,46964
+# TabArena-v0.1 regression datasets, pinned to TabArena's own OpenML tasks.
+# The task registrations carry the official outer repeated-CV splits.
+# Format: name,openml_dataset_id,openml_task_id
+Another-Dataset-on-used-Fiat-500,46907,363615
+Food_Delivery_Time,46928,363672
+QSAR-TID-11,46953,363697
+QSAR_fish_toxicity,46954,363698
+airfoil_self_noise,46904,363612
+concrete_compressive_strength,46917,363625
+diamonds,46923,363631
+healthcare_insurance_expenses,46931,363675
+houses,46934,363678
+miami_housing,46942,363686
+physiochemical_protein,46949,363693
+superconductivity,46961,363705
+wine_quality,46964,363708

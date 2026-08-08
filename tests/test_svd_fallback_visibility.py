@@ -208,44 +208,56 @@ class _WarningWrapper:
         pass
 
 
-def _run_runner_with(wrapper, tmp_path):
-    from synthefy_nori.evaluation.datasets import DatasetEntry
-    from synthefy_nori.evaluation.models import ModelEntry
-    from synthefy_nori.evaluation.runner import EvalRunner
-
-    class _Registry:
-        pass
-
-    ds = DatasetEntry(
-        name="d",
-        source="synth",
-        task_type="regression",
-        X_train=np.zeros((5, 2), np.float32),
-        y_train=np.arange(5, dtype=np.float64),
-        X_test=np.zeros((3, 2), np.float32),
-        y_test=np.arange(3, dtype=np.float64),
+def _run_harness_with(wrapper, tmp_path):
+    from synthefy_nori.evaluation.harness import (
+        OFFICIAL_ALLOW_SUBSAMPLE,
+        OFFICIAL_ELEMENTS_BUDGET,
+        run_benchmark,
     )
-    runner = EvalRunner(
-        _Registry(), _Registry(),
-        output_dir=tmp_path / "out",
-        cache_dir=tmp_path / "cache",
-        no_cache=True,
-        verbose=False,
+    from synthefy_nori.evaluation.models import ModelEntry, ModelRegistry
+    from synthefy_nori.evaluation.protocol import BenchmarkEvalUnit, MaterializedSplit
+
+    class _Loader:
+        name = "synth"
+
+        def units(self):
+            yield BenchmarkEvalUnit(source=self.name, dataset="d")
+
+        def materialize(self, unit):
+            return MaterializedSplit(
+                X_train=np.zeros((5, 2), np.float32),
+                y_train=np.arange(5, dtype=np.float64),
+                X_test=np.zeros((3, 2), np.float32),
+                y_test=np.arange(3, dtype=np.float64),
+                n_features=2,
+            )
+
+    registry = ModelRegistry(device="cpu")
+    registry.register(
+        ModelEntry(
+            name=wrapper.name,
+            wrapper=wrapper,
+            model_type="custom",
+            metadata={
+                "memory_policy": {
+                    "elements_budget": OFFICIAL_ELEMENTS_BUDGET,
+                    "allow_subsample": OFFICIAL_ALLOW_SUBSAMPLE,
+                },
+            },
+        )
     )
-    entry = ModelEntry(name=wrapper.name, wrapper=wrapper, model_type="custom")
-    row = runner._eval_one(entry, ds, "[test]").to_dict()
-    row.setdefault("r2", None)
-    return row
+    frame = run_benchmark([_Loader()], registry, out_jsonl=str(tmp_path / "results.jsonl"))
+    return frame.iloc[-1].to_dict()
 
 
-def test_runner_records_a_broken_svd_as_failed_not_scored(tmp_path):
+def test_harness_records_a_broken_svd_as_failed_not_scored(tmp_path):
     """The guarantee: an eval can never report a degraded pipeline as a score."""
-    row = _run_runner_with(_WarningWrapper(SvdFallbackWarning), tmp_path)
+    row = _run_harness_with(_WarningWrapper(SvdFallbackWarning), tmp_path)
     assert row["r2"] is None or np.isnan(row["r2"])       # NOT scored
     assert "SvdFallbackWarning" in (row["error"] or "")   # recorded instead
 
 
-def test_runner_still_scores_a_subsampled_context(tmp_path):
+def test_harness_still_scores_a_subsampled_context(tmp_path):
     """Control: only the SVD fallback is escalated.
 
     Trimming context to an element budget is expected on large tables, so
@@ -253,7 +265,7 @@ def test_runner_still_scores_a_subsampled_context(tmp_path):
     {'allow_subsample': False} is the knob for refusing that.
     """
     with pytest.warns(ContextSubsampledWarning):        # warns, but does not fail
-        row = _run_runner_with(_WarningWrapper(ContextSubsampledWarning), tmp_path)
+        row = _run_harness_with(_WarningWrapper(ContextSubsampledWarning), tmp_path)
     assert row["error"] is None
     assert row["r2"] is not None and not np.isnan(row["r2"])
 
@@ -271,9 +283,9 @@ class _DistPointDegrader:
         pass
 
 
-def test_runner_guards_every_scored_predict(tmp_path):
+def test_harness_guards_every_scored_predict(tmp_path):
     """Every scored prediction is guarded by the strict SVD filter."""
-    row = _run_runner_with(_DistPointDegrader(), tmp_path)
+    row = _run_harness_with(_DistPointDegrader(), tmp_path)
     assert "SvdFallbackWarning" in (row["error"] or "")   # recorded as failed
     assert row["r2"] is None or np.isnan(row["r2"])       # NOT scored
 

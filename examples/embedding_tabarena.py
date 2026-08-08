@@ -1,7 +1,7 @@
 """Nori embeddings on a real TabArena dataset: extract, probe, and visualize.
 
 The same workflow as ``embedding_synthetic.py``, but on a real regression dataset
-from the TabArena suite (downloaded once from OpenML, pinned by dataset ID). It
+from the TabArena suite (downloaded once from OpenML, pinned by task ID). It
 extracts Nori row embeddings, runs a downstream Ridge probe, compares against
 Nori's own native head, and draws a t-SNE of raw features vs embeddings.
 
@@ -17,8 +17,8 @@ preprocessing-pipeline ensemble) for a 2D feature matrix:
   2. ``NoriEmbedding`` — an sklearn transformer; with ``n_fold >= 2`` it produces
      leakage-free out-of-fold embeddings for the training rows.
 
-The first run downloads the dataset CSVs and the public ~47MB checkpoint; GPU if
-available, else CPU.
+The first run downloads the official OpenML task data and the public ~47MB
+checkpoint; GPU if available, else CPU.
 """
 
 from __future__ import annotations
@@ -33,21 +33,19 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from synthefy_nori import NoriEmbedding, NoriRegressor
-from synthefy_nori.evaluation.datasets import DatasetRegistry
+from synthefy_nori.evaluation.loaders import TabArenaLoader
 
 OUT_DIR = "results"
-CACHE_DIR = "cache/tabarena_reg"
+CACHE_DIR = "cache/openml"
 DEFAULT_DATASET = "wine_quality"
 MAX_TRAIN, MAX_TEST = 3000, 1500   # keep the demo fast (embeddings scale w/ context)
 
 
-def load_registry():
-    """Download (once) and load the TabArena regression suite."""
-    reg = DatasetRegistry(cache_dir="cache/eval_datasets", max_train_samples=MAX_TRAIN)
-    if not os.path.isdir(CACHE_DIR) or not os.listdir(CACHE_DIR):
-        reg.download_tabarena(reg_dir=CACHE_DIR)   # needs `openml`
-    reg.load_tabarena(reg_dir=CACHE_DIR)
-    return reg
+def load_suite():
+    """Enumerate TabArena's pinned tasks and official outer folds."""
+    loader = TabArenaLoader(cache_dir=CACHE_DIR)
+    units = [unit for unit in loader.units() if unit.fold == 0]
+    return loader, units
 
 
 def extract_embeddings(X_train, y_train, X_test):
@@ -134,8 +132,8 @@ def main():
                    help="print available dataset names and exit")
     args = p.parse_args()
 
-    reg = load_registry()
-    names = [k.split("/", 1)[1] for k in reg.list_datasets() if k.startswith("tabarena/")]
+    loader, units = load_suite()
+    names = [unit.dataset for unit in units]
     if args.list:
         print("Available TabArena regression datasets:")
         for n in names:
@@ -144,14 +142,15 @@ def main():
     if not names:
         raise SystemExit("No TabArena datasets loaded (check network / `openml`).")
 
-    entry = reg.get(f"tabarena/{args.dataset}")
-    if entry is None:
+    unit = next((unit for unit in units if unit.dataset == args.dataset), None)
+    if unit is None:
         raise SystemExit(f"Dataset '{args.dataset}' not found. Try --list "
                          f"(e.g. {names[0]}).")
 
-    X_train, y_train = entry.X_train, entry.y_train
-    X_test, y_test = subsample(entry.X_test, entry.y_test, MAX_TEST)
-    print(f"{entry.name}: train={len(X_train)} test={len(X_test)} "
+    split = loader.materialize(unit)
+    X_train, y_train = subsample(split.X_train, split.y_train, MAX_TRAIN)
+    X_test, y_test = subsample(split.X_test, split.y_test, MAX_TEST)
+    print(f"{unit.dataset}: train={len(X_train)} test={len(X_test)} "
           f"features={X_train.shape[1]}")
 
     Z_train, Z_test, native = extract_embeddings(X_train, y_train, X_test)
@@ -164,8 +163,8 @@ def main():
     print(f"  Nori native head (ref.)    : {native_r2:.4f}")
 
     tsne_plot(X_test, Z_test, y_test,
-              f"t-SNE — {entry.name} (color = target y)",
-              f"embedding_tabarena_{entry.name}_tsne.png", cbar_label="target y")
+              f"t-SNE — {unit.dataset} (color = target y)",
+              f"embedding_tabarena_{unit.dataset}_tsne.png", cbar_label="target y")
 
 
 if __name__ == "__main__":

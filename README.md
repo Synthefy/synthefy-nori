@@ -18,9 +18,9 @@ The model is trained entirely on synthetic data.
 This repository contains the public training, inference, evaluation, and Hugging
 Face checkpoint tooling.
 
-Across 96 public regression tasks the base (~6M) averages **0.75 mean / 0.87 median R²**, and the
-larger **Nori-30M** variant (`model="nori-30m"`) is stronger on every suite — see
-[Benchmarks](#benchmarks) for the full breakdown and how to reproduce it.
+The packaged evaluator covers 148 suite-dataset memberships (130 distinct
+dataset names) using native official split protocols. See
+[Benchmarks](#benchmarks) for the exact scope and command.
 
 ## Table of contents
 
@@ -342,103 +342,58 @@ Reproduce (prints the results table and writes `benchmarks/plots/shap_speed.png`
 
 ## Benchmarks
 
-Mean and median R² across 96 regression tasks from three public benchmark suites, for both
-Nori sizes — select with `model="nori"` (~6M, default) or `model="nori-30m"` (~29M):
+The public evaluator covers exactly three regression benchmarks and uses each
+benchmark's native official split protocol.
 
-| Suite | Datasets | Nori · mean / median | Nori-30M · mean / median |
-|-------|---------:|:--------------------:|:------------------------:|
-| TabArena | 13 | 0.8117 / 0.8757 | 0.8148 / 0.8834 |
-| TALENT | 72 | 0.7569 / 0.8802 | 0.7575 / 0.8844 |
-| OpenML | 11 | 0.6373 / 0.5856 | 0.6459 / 0.6212 |
-| **Overall** | **96** | **0.7506 / 0.8702** | **0.7525 / 0.8745** |
+| Suite | Dataset memberships | Evaluation units |
+|---|---:|---:|
+| TALENT-100 | 100 | 100 |
+| OpenML-CTR23 | 35 | 800 |
+| TabArena v0.1 | 13 | 222 |
+| **Total memberships** | **148** | **1,122** |
 
-Nori-30M is stronger on every suite. Both models are evaluated under the identical protocol
-below. Per-dataset numbers behind the base-model column are in
-[`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv).
+The memberships cover 130 distinct dataset names because the suites overlap.
 
-Large-N / long-context tables (common in TabArena) are the current focus of the
-large-table training stages.
+No generated CSV holdouts or 72/11-dataset subsets are part of this evaluator.
 
-> **Thinking** is an inference-time reasoning extension that improves these
-> numbers further. Details are forthcoming.
+### Run the official protocol
 
-### Reproducing these numbers
+Install the evaluation extra and acquire the pinned TALENT-100 native archive
+once. OpenML-CTR23 and TabArena download their pinned OpenML tasks on first use.
 
 ```bash
 pip install "synthefy-nori[eval]"
 
-synthefy-nori-eval --download-benchmarks --openml-reg
+mkdir -p cache/talent
+curl -L --fail \
+  -o cache/talent/dataset-latest.zip \
+  https://huggingface.co/datasets/LAMDA-Tabular/TALENT/resolve/7bd276bcb7f6b4c0998025855528bd76bd88f13d/dataset-latest.zip
+echo "4c8481107153593eb98ef5bb677b00dedfa04cd4c31441babf696a8d100f207c  cache/talent/dataset-latest.zip" \
+  | sha256sum --check
+unzip cache/talent/dataset-latest.zip -d cache/talent
+
+synthefy-nori-eval \
+  --model nori-6m \
+  --model nori-30m \
+  --talent-root cache/talent/data \
+  --output results/eval/official_results.jsonl
 ```
 
-The first run downloads the pretrained checkpoint from the Hugging Face Hub and
-fetches the benchmark datasets into `cache/` as CSVs: TabArena from the
-official TabArena curated uploads on OpenML (pinned by OpenML dataset ID, so
-the data is immutable), TALENT from OpenML by name, and the OpenML regression
-suite on the fly. Dataset membership is pinned by lists shipped with the
-package (`synthefy_nori/evaluation/benchmark_lists/`), and train/test
-splits use a fixed seed, so the evaluation data is fully deterministic.
-Evaluation uses the bundled default inference config
-(`reg_allordinal_poly10_adaptive_svd256.json`).
+The command evaluates TALENT-100, OpenML-CTR23, and TabArena by default. Use a
+repeatable `--suite talent`, `--suite openml-ctr23`, or `--suite tabarena`
+to run a subset. It verifies immutable public checkpoint revisions and SHA-256
+hashes, uses the bundled SVD-256 config, fixes the element budget at 8,000,000,
+and forbids silent context subsampling. Results flush to resumable JSONL after
+every unit.
 
-The benchmark uses the **large-GPU protocol**: up to 50,000 context rows per
-dataset (no memory-based row cap) and an inference element budget of 8M
-(`SYNTHEFY_MAX_ELEMENTS_BUDGET`, settable via `--max-elements-budget`). The
-table was produced on a single H200. On smaller GPUs, pass `--gpu-mem-gb
-<GiB>` to enable a memory-based cap on context rows and/or lower
-`--max-elements-budget` — the run then fits in memory, but results on the
-largest tables drop below the table above (more context is genuinely better).
-
-The command prints a per-source mean R² summary matching the table above and
-writes per-dataset metrics to `results/eval/all_results.csv`. Expect roughly
-30–40 minutes on a single large GPU (`--device cuda:0` by default).
-
-Exact per-dataset R² can move by ±0.001–0.002 across GPU models and
-PyTorch/NumPy versions; per-source means should match the table to within
-about ±0.003. The TALENT dataset `stock_fardamento02` has a heavy-tailed
-target and is the least stable single dataset across environments.
-
-### Script-style harness
-
-An alternative harness drives the public `NoriRegressor` API directly at
-[`tests/test_benchmark_performance.py`](tests/test_benchmark_performance.py).
-It reads the same CSV caches under `./cache/`; populate them once with
-`synthefy-nori-eval --download-benchmarks` (TabArena from the official
-TabArena uploads on OpenML pinned by dataset ID, TALENT by name), then run
-from the repo root (`uv sync` installs a CUDA 12.8 torch build on Linux by
-default, so `uv run` works as-is):
-
-```bash
-# OpenML only — works out of the box, no cached CSVs needed
-uv run python tests/test_benchmark_performance.py --suites openml
-
-# full sweep over the downloaded caches
-uv run python tests/test_benchmark_performance.py --device cuda:0
-```
-
-Note the script's OpenML suite uses its own 70/30 split (the packaged CLI uses
-80/20), so its OpenML numbers differ slightly from the table above.
-
-### RelBench (relational tasks)
-
-Nori also runs on the [RelBench](https://relbench.stanford.edu) leaderboard
-tasks via the entity-table tabular protocol (the regime tabular foundation
-models like TabPFN are listed under), covering the classification (AUROC) and
-regression (MAE) entity tasks across the seven canonical RelBench datasets:
-
-```bash
-pip install "synthefy-nori[relbench]"
-synthefy-nori-eval --relbench
-```
-
-Results (split by task type) and a submission package land in
-`results/relbench/`. See [`docs/evaluation.md`](docs/evaluation.md#relbench-relational-tasks)
-for details, including the current RelBench submission status.
+See [the evaluation guide](docs/evaluation.md) for the exact task IDs, unit
+counts, aggregation rule, run identity, smoke-test flags, and local-checkpoint
+usage.
 
 ## Performance (inference speedups)
 
 The speedups below are **on by default** and **deterministic** — identical results
-run-to-run with the same settings — and the published [Results](#results) were
-produced with them on. The **KV cache** is **R²-equivalent** to the un-cached path,
+run-to-run with the same settings. The **KV cache** is **R²-equivalent** to the un-cached path,
 not bit-identical: the two paths reduce in a different order, so predictions differ by
 mixed-precision noise (max abs diff ~3e-3, measured below) at identical R². The
 **preprocessing speedups** are **R²-neutral**:
@@ -736,13 +691,12 @@ cache setup, measurements, and reproducibility controls.
 ## Evaluation
 
 ```bash
-synthefy-nori-eval --checkpoint "Synthefy:path/to/checkpoint.pt"
+synthefy-nori-eval --suite openml-ctr23 --checkpoint "my-run:path/to/checkpoint.pt"
 ```
 
 or `bash scripts/evaluate.sh`. See [docs/evaluation.md](docs/evaluation.md) for
 benchmark sources and how to evaluate a Nori checkpoint, and
-[Reproducing these numbers](#reproducing-these-numbers) for the published
-benchmark run.
+the [official protocol](#run-the-official-protocol).
 
 ## Hugging Face
 
