@@ -1,0 +1,38 @@
+# OpenML-CTR23 regression benchmark (suite 353), pinned by TASK id.
+# Fold/repeat totals are read from each task's official metadata at runtime.
+# Format: name,openml_task_id
+abalone,361234
+airfoil_self_noise,361235
+auction_verification,361236
+brazilian_houses,361267
+california_housing,361255
+cars,361622
+concrete_compressive_strength,361237
+cps88wages,361261
+cpu_activity,361256
+diamonds,361257
+energy_efficiency,361617
+fifa,361272
+forest_fires,361618
+fps_benchmark,361268
+geographical_origin_of_music,361243
+grid_stability,361251
+health_insurance,361269
+kin8nm,361258
+kings_county,361266
+miami_housing,361260
+Moneyball,361616
+naval_propulsion_plant,361247
+physiochemical_protein,361241
+pumadyn32nh,361259
+QSAR_fish_toxicity,361621
+red_wine,361250
+sarcos,361254
+socmob,361264
+solar_flare,361244
+space_ga,361623
+student_performance_por,361619
+superconductivity,361242
+video_transcoding,361252
+wave_energy,361253
+white_wine,361249
