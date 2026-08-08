@@ -72,6 +72,15 @@ class OpenMLTaskLoader:
         self._meta = {}
         self._xy = {}
 
+    def _local_paths(self) -> tuple[str, ...]:
+        """Return the effective process-global cache only when no root was explicit."""
+        if self.cache_dir is not None:
+            return ()
+        try:
+            return (_openml().config.get_cache_directory(),)
+        except ImportError:
+            return ()
+
     def fingerprint(self) -> str:
         """Hash the pinned task membership and repeat-policy implementation."""
         policy = getattr(self.n_repeats_policy, "__qualname__", None)

@@ -219,6 +219,9 @@ def _loader_local_paths(loader, unit) -> tuple:
     for owner in (loader, getattr(loader, "_openml", None)):
         if owner is not None:
             paths.extend(getattr(owner, name, None) for name in ("root", "cache_dir"))
+            provider = getattr(owner, "_local_paths", None)
+            if callable(provider):
+                paths.extend(provider())
     return tuple(path for path in paths if path)
 
 

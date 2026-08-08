@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -47,6 +48,15 @@ def test_official_task_lists_are_pinned_without_network():
     tabarena_ids = TabArenaLoader().task_ids
     assert len(ctr_ids) == len(set(ctr_ids)) == 35
     assert len(tabarena_ids) == len(set(tabarena_ids)) == 13
+
+
+def test_openml_default_cache_uses_public_config(monkeypatch):
+    default = "/private/default/openml/org/openml/www"
+    config = SimpleNamespace(get_cache_directory=lambda: default)
+    client = SimpleNamespace(config=config)
+    monkeypatch.setattr("synthefy_nori.evaluation.loaders.openml_task._openml", lambda: client)
+    assert OpenMLTaskLoader([1])._local_paths() == (default,)
+    assert OpenMLTaskLoader([1], cache_dir="cache/openml")._local_paths() == ()
 
 
 def test_tabarena_repeat_policy_matches_official_thresholds():

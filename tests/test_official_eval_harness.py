@@ -60,19 +60,23 @@ class _MixedLoader(_Loader):
 
 class _CacheFailureLoader(_Loader):
     ctx_cap = None
+    explicit_cache = "/private/openml"
+    default_cache = "/private/default/openml/org/openml/www"
 
-    def __init__(self, delegated):
+    def __init__(self, delegated, default_cache):
         super().__init__()
-        self.cache_dir = None if delegated else "/private/openml"
-        self._openml = (
-            SimpleNamespace(cache_dir="/private/openml") if delegated else None
-        )
+        self._openml = SimpleNamespace() if delegated else None
+        owner = self._openml if delegated else self
+        owner.cache_dir = None if default_cache else self.explicit_cache
+        if default_cache:
+            owner._local_paths = lambda: (self.default_cache,)
+        self.error_path = self.default_cache if default_cache else self.explicit_cache
 
     def units(self):
         yield BenchmarkEvalUnit(source=self.name, dataset="bad")
 
     def materialize(self, unit):
-        raise OSError("cache unavailable: /private/openml/tasks/task.pkl")
+        raise OSError(f"cache unavailable: {self.error_path}/tasks/task.pkl")
 
 
 class _Wrapper:
@@ -214,11 +218,13 @@ def test_materialization_failure_is_recorded_and_next_unit_runs(tmp_path):
 
 
 @pytest.mark.parametrize("delegated", [False, True])
+@pytest.mark.parametrize("default_cache", [False, True])
 def test_materialization_failure_redacts_cache_with_no_source_path(
     tmp_path,
     delegated,
+    default_cache,
 ):
-    loader = _CacheFailureLoader(delegated)
+    loader = _CacheFailureLoader(delegated, default_cache)
     unit = next(loader.units())
     assert unit.meta.source_path is None
     frame = run_benchmark(
@@ -228,7 +234,7 @@ def test_materialization_failure_redacts_cache_with_no_source_path(
     )
 
     error = frame.loc[0, "error"]
-    assert "/private/openml" not in error
+    assert loader.error_path not in error
     assert "<local-path>" in error
 
 
