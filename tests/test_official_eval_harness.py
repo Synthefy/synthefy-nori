@@ -14,7 +14,7 @@ from synthefy_nori.evaluation.harness import (
     run_benchmark,
 )
 from synthefy_nori.evaluation.models import ModelEntry, ModelRegistry
-from synthefy_nori.evaluation.protocol import BenchmarkEvalUnit, MaterializedSplit
+from synthefy_nori.evaluation.protocol import BenchmarkEvalUnit, MaterializedSplit, UnitMeta
 
 
 class _Loader:
@@ -44,12 +44,16 @@ class _MixedLoader(_Loader):
     ctx_cap = None
 
     def units(self):
-        yield BenchmarkEvalUnit(source=self.name, dataset="bad")
+        yield BenchmarkEvalUnit(
+            source=self.name,
+            dataset="bad",
+            meta=UnitMeta(source_path="/private/talent/data/bad"),
+        )
         yield BenchmarkEvalUnit(source=self.name, dataset="good")
 
     def materialize(self, unit):
         if unit.dataset == "bad":
-            raise OSError("fixture is unavailable")
+            raise OSError(f"fixture is unavailable: {unit.meta.source_path}/N_train.npy")
         return super().materialize(unit)
 
 
@@ -183,7 +187,10 @@ def test_materialization_failure_is_recorded_and_next_unit_runs(tmp_path):
     )
 
     assert len(frame) == 2
-    assert "MaterializationError" in frame.loc[frame["dataset"] == "bad", "error"].item()
+    error = frame.loc[frame["dataset"] == "bad", "error"].item()
+    assert "MaterializationError" in error
+    assert "/private/talent" not in error
+    assert "<local-path>" in error
     assert frame.loc[frame["dataset"] == "good", "error"].isna().all()
     assert wrapper.calls == 1
 

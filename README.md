@@ -18,9 +18,9 @@ The model is trained entirely on synthetic data.
 This repository contains the public training, inference, evaluation, and Hugging
 Face checkpoint tooling.
 
-The packaged evaluator reproduces Nori on 148 public regression datasets using
-their native official split protocols. See [Benchmarks](#benchmarks) for the
-exact scope and command.
+The packaged evaluator covers 148 suite-dataset memberships (130 distinct
+dataset names) using native official split protocols. See
+[Benchmarks](#benchmarks) for the exact scope and command.
 
 ## Table of contents
 
@@ -345,12 +345,14 @@ Reproduce (prints the results table and writes `benchmarks/plots/shap_speed.png`
 The public evaluator covers exactly three regression benchmarks and uses each
 benchmark's native official split protocol.
 
-| Suite | Datasets | Evaluation units |
+| Suite | Dataset memberships | Evaluation units |
 |---|---:|---:|
 | TALENT-100 | 100 | 100 |
 | OpenML-CTR23 | 35 | 800 |
 | TabArena v0.1 | 13 | 222 |
-| **Overall** | **148** | **1,122** |
+| **Total memberships** | **148** | **1,122** |
+
+The memberships cover 130 distinct dataset names because the suites overlap.
 
 No generated CSV holdouts or 72/11-dataset subsets are part of this evaluator.
 

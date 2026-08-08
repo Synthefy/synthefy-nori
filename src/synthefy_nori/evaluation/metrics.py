@@ -7,7 +7,10 @@ from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_err
 
 
 def compute_reg_metrics(y_true, y_pred) -> dict[str, float]:
-    """Return PR #400's pairwise-finite R², RMSE, and MAE semantics."""
+    """Compute metrics on pairwise-finite targets and predictions.
+
+    R² requires at least two valid pairs; RMSE and MAE remain defined for one.
+    """
     y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
     y_pred = np.asarray(y_pred, dtype=np.float64).reshape(-1)
     if y_true.shape != y_pred.shape:

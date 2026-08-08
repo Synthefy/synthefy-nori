@@ -214,10 +214,9 @@ def _sanitize(value):
     return value
 
 
-def _model_error(exc: Exception, wrapper) -> str:
+def _path_safe_error(exc: Exception, private_path=None, placeholder="<local-path>") -> str:
     message = f"{type(exc).__name__}: {exc}"
-    model_path = getattr(wrapper, "model_path", None)
-    return message.replace(str(model_path), "<checkpoint>") if model_path else message
+    return message.replace(str(private_path), placeholder) if private_path else message
 
 
 def _row(
@@ -335,7 +334,7 @@ def run_benchmark(
                     X_test, y_test = _subsample(split.X_test, split.y_test, test_cap, rng)
                     X_train, X_test = _apply_impute(X_train, X_test, impute)
                 except Exception as exc:
-                    error = f"MaterializationError: {type(exc).__name__}: {exc}"
+                    error = f"MaterializationError: {_path_safe_error(exc, unit.meta.source_path)}"
                     for name, _, metadata, key in pending:
                         row = _row(
                             unit=unit,
@@ -360,7 +359,11 @@ def run_benchmark(
                             prediction = entry.wrapper.predict_regression(X_train, y_train, X_test)
                         metrics = compute_reg_metrics(y_test, np.asarray(prediction).reshape(-1))
                     except Exception as exc:
-                        error = _model_error(exc, entry.wrapper)
+                        error = _path_safe_error(
+                            exc,
+                            getattr(entry.wrapper, "model_path", None),
+                            "<checkpoint>",
+                        )
                     row = _row(
                         unit=unit,
                         name=name,
