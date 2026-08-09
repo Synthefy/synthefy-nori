@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DatasetImporter, LocalDatasetWorkspace, type LocalDataset } from "./local-datasets";
 
 type Capability = "embeddings" | "explain" | "predict" | "scenario";
 type Question = "default" | "credit";
@@ -31,7 +32,7 @@ type EmbeddingData = {
   };
 };
 
-type Point = { index: number; clientX: number; clientY: number };
+type Point = { index: number; x: number; y: number };
 
 const CAPABILITIES: Array<{
   id: Capability;
@@ -241,7 +242,12 @@ function EmbeddingCanvas({
         tabIndex={0}
         onPointerMove={(event) => {
           const index = nearestPoint(event.clientX, event.clientY);
-          const point = index === null ? null : { index, clientX: event.clientX, clientY: event.clientY };
+          const rect = event.currentTarget.getBoundingClientRect();
+          const point = index === null ? null : {
+            index,
+            x: clamp(event.clientX - rect.left + 12, 12, rect.width - 178),
+            y: clamp(event.clientY - rect.top + 12, 12, rect.height - 84),
+          };
           hoveredRef.current = point;
           setHovered(point);
           draw();
@@ -272,8 +278,8 @@ function EmbeddingCanvas({
         <div
           className="point-tooltip"
           style={{
-            left: clamp(hovered.clientX - (canvasRef.current?.getBoundingClientRect().left ?? 0) + 12, 12, dimensionsRef.current.width - 178),
-            top: clamp(hovered.clientY - (canvasRef.current?.getBoundingClientRect().top ?? 0) + 12, 12, dimensionsRef.current.height - 84),
+            left: hovered.x,
+            top: hovered.y,
           }}
         >
           <strong>Customer #{hovered.index + 1}</strong>
@@ -312,10 +318,10 @@ export default function Home() {
   const [raw, setRaw] = useState(false);
   const [selected, setSelected] = useState(907);
   const [explanationMode, setExplanationMode] = useState<ExplanationMode>("shapley");
-  const [scenarioAge, setScenarioAge] = useState(38);
-  const [scenarioLimit, setScenarioLimit] = useState(150_000);
-  const [scenarioPay0, setScenarioPay0] = useState(0);
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [scenario, setScenario] = useState({ rowIndex: 907, age: 38, limit: 150_000, pay0: 0 });
+  const [localDatasets, setLocalDatasets] = useState<LocalDataset[]>([]);
+  const [activeDatasetId, setActiveDatasetId] = useState("credit");
+  const [importerOpen, setImporterOpen] = useState(false);
 
   useEffect(() => {
     fetch("/data/nori-embeddings.json")
@@ -326,14 +332,11 @@ export default function Home() {
       .then((payload: EmbeddingData) => setData(payload));
   }, []);
 
-  useEffect(() => {
-    if (!data) return;
-    setScenarioAge(data.age[selected]);
-    setScenarioLimit(data.limit[selected]);
-    setScenarioPay0(data.pay0[selected]);
-  }, [data, selected]);
-
   const activeCapability = CAPABILITIES.find((item) => item.id === capability) ?? CAPABILITIES[0];
+  const activeLocalDataset = localDatasets.find((dataset) => dataset.id === activeDatasetId) ?? null;
+  const scenarioAge = scenario.rowIndex === selected ? scenario.age : data?.age[selected] ?? 38;
+  const scenarioLimit = scenario.rowIndex === selected ? scenario.limit : data?.limit[selected] ?? 150_000;
+  const scenarioPay0 = scenario.rowIndex === selected ? scenario.pay0 : data?.pay0[selected] ?? 0;
 
   const originalRisk = useMemo(() => {
     if (!data) return 0;
@@ -371,7 +374,6 @@ export default function Home() {
 
   const selectCapability = (next: Capability) => {
     setCapability(next);
-    setMobileNavOpen(false);
   };
 
   return (
@@ -383,92 +385,54 @@ export default function Home() {
           <span className="brand-divider" />
           <span className="brand-product">Studio</span>
         </a>
+        <p className="brand-promise">Understand any table.</p>
         <div className="topbar-actions">
           <span className="preview-pill"><span /> Public preview</span>
           <a className="github-link" href="https://github.com/Synthefy/synthefy-nori" target="_blank" rel="noreferrer">
             View on GitHub <span aria-hidden="true">↗</span>
           </a>
-          <button
-            type="button"
-            className="mobile-menu"
-            aria-label="Toggle navigation"
-            aria-expanded={mobileNavOpen}
-            onClick={() => setMobileNavOpen((value) => !value)}
-          >
-            <span /><span />
-          </button>
         </div>
       </header>
 
-      <div className="workspace">
-        <aside className={`sidebar ${mobileNavOpen ? "is-open" : ""}`}>
-          <div>
-            <p className="nav-label">Explore Nori</p>
-            <nav className="capability-nav" aria-label="Nori capabilities">
-              {CAPABILITIES.map((item) => (
-                <button
-                  type="button"
-                  className={capability === item.id ? "is-active" : ""}
-                  onClick={() => selectCapability(item.id)}
-                  key={item.id}
-                >
-                  <span className="capability-icon">{item.eyebrow}</span>
-                  <span>
-                    <strong>{item.label}</strong>
-                    <small>{item.description}</small>
-                  </span>
-                </button>
-              ))}
-            </nav>
-          </div>
+      <section className="studio-toolbar" aria-label="Studio controls">
+        <label className="dataset-picker">
+          <span>Dataset</span>
+          <select value={activeDatasetId} onChange={(event) => setActiveDatasetId(event.target.value)}>
+            <option value="credit">Credit card default · UCI</option>
+            {localDatasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.name} · local</option>)}
+          </select>
+        </label>
+        <nav className="mode-tabs" aria-label="Nori capabilities">
+          {CAPABILITIES.map((item) => (
+            <button type="button" className={capability === item.id ? "is-active" : ""} onClick={() => selectCapability(item.id)} key={item.id}>
+              <span>{item.eyebrow}</span>
+              <strong>{item.label}</strong>
+              <small>{item.description}</small>
+            </button>
+          ))}
+        </nav>
+        <button type="button" className="add-dataset-button" onClick={() => setImporterOpen(true)}><span>+</span> Add dataset</button>
+      </section>
 
-          <div className="dataset-card">
-            <div className="dataset-card-topline">
-              <span>Active dataset</span>
-              <span className="live-dot">Loaded</span>
-            </div>
-            <strong>Credit card default</strong>
-            <p>UCI · held-out customer cohort</p>
-            <div className="dataset-stats">
-              <span><b>3,000</b> rows</span>
-              <span><b>18</b> features</span>
-            </div>
-            <a href="https://archive.ics.uci.edu/dataset/350/default+of+credit+card+clients" target="_blank" rel="noreferrer">
-              View source <span aria-hidden="true">↗</span>
-            </a>
-          </div>
-        </aside>
-
-        <main className="main" id="main">
-          <section className="intro">
-            <div>
-              <p className="eyebrow">Credit intelligence lab</p>
-              <h1>See what Nori understands.</h1>
-              <p className="intro-copy">
-                Explore the same 3,000 customers through prediction, representation, and explanation—without training a task-specific model.
-              </p>
-            </div>
-            <div className="intro-metric">
-              <span>Current lens</span>
-              <strong>{activeCapability.label}</strong>
-              <small>{activeCapability.description}</small>
-            </div>
-          </section>
+      <main className="studio-main" id="main">
 
           <section className="analysis-card">
             <div className="analysis-header">
               <div>
-                <p className="section-kicker">Dataset workspace</p>
+                <p className="section-kicker">{activeLocalDataset ? activeLocalDataset.source : "Credit intelligence lab · UCI public data"}</p>
                 <h2>{activeCapability.label}</h2>
+                <p>{activeCapability.description}</p>
               </div>
-              <div className="row-switcher">
+              {!activeLocalDataset ? <div className="row-switcher">
                 <button type="button" onClick={() => setSelected((selected - 1 + data.n) % data.n)} aria-label="Previous customer">←</button>
                 <span>Customer <b>#{selected + 1}</b></span>
                 <button type="button" onClick={() => setSelected((selected + 1) % data.n)} aria-label="Next customer">→</button>
-              </div>
+              </div> : <span className="local-status"><i /> Data stays in this tab</span>}
             </div>
 
-            {capability === "embeddings" && (
+            {activeLocalDataset ? <LocalDatasetWorkspace key={activeLocalDataset.id} dataset={activeLocalDataset} capability={capability} /> : null}
+
+            {!activeLocalDataset && capability === "embeddings" && (
               <div className="embedding-layout">
                 <div className="embedding-main">
                   <div className="control-strip">
@@ -518,7 +482,7 @@ export default function Home() {
               </div>
             )}
 
-            {capability === "explain" && (
+            {!activeLocalDataset && capability === "explain" && (
               <div className="explain-layout">
                 <div className="explain-main">
                   <div className="explain-toolbar">
@@ -601,7 +565,7 @@ export default function Home() {
               </div>
             )}
 
-            {capability === "predict" && (
+            {!activeLocalDataset && capability === "predict" && (
               <div className="predict-layout">
                 <div className="prediction-card">
                   <div className="prediction-topline">
@@ -640,30 +604,28 @@ export default function Home() {
               </div>
             )}
 
-            {capability === "scenario" && (
+            {!activeLocalDataset && capability === "scenario" && (
               <div className="scenario-layout">
                 <div className="scenario-controls">
                   <div className="scenario-heading">
                     <div><p className="section-kicker">Scenario inputs</p><h3>What would change the profile?</h3></div>
                     <button type="button" onClick={() => {
-                      setScenarioAge(data.age[selected]);
-                      setScenarioLimit(data.limit[selected]);
-                      setScenarioPay0(data.pay0[selected]);
+                      setScenario({ rowIndex: selected, age: data.age[selected], limit: data.limit[selected], pay0: data.pay0[selected] });
                     }}>Reset</button>
                   </div>
-                  <label className="slider-field">
+                  <label className="slider-field" htmlFor="scenario-repayment">
                     <span><b>Repayment status</b><strong>{scenarioPay0 <= 0 ? "On time" : `${scenarioPay0} months late`}</strong></span>
-                    <input type="range" min="-2" max="8" step="1" value={scenarioPay0} onChange={(event) => setScenarioPay0(Number(event.target.value))} />
+                    <input id="scenario-repayment" aria-label="Repayment status" type="range" min="-2" max="8" step="1" value={scenarioPay0} onChange={(event) => setScenario({ rowIndex: selected, age: scenarioAge, limit: scenarioLimit, pay0: Number(event.target.value) })} />
                     <small><span>2 months early</span><span>8 months late</span></small>
                   </label>
-                  <label className="slider-field">
+                  <label className="slider-field" htmlFor="scenario-credit-limit">
                     <span><b>Credit limit</b><strong>{money(scenarioLimit)}</strong></span>
-                    <input type="range" min="10000" max="700000" step="10000" value={scenarioLimit} onChange={(event) => setScenarioLimit(Number(event.target.value))} />
+                    <input id="scenario-credit-limit" aria-label="Credit limit" type="range" min="10000" max="700000" step="10000" value={scenarioLimit} onChange={(event) => setScenario({ rowIndex: selected, age: scenarioAge, limit: Number(event.target.value), pay0: scenarioPay0 })} />
                     <small><span>$10k</span><span>$700k</span></small>
                   </label>
-                  <label className="slider-field">
+                  <label className="slider-field" htmlFor="scenario-age">
                     <span><b>Age</b><strong>{scenarioAge}</strong></span>
-                    <input type="range" min="21" max="75" step="1" value={scenarioAge} onChange={(event) => setScenarioAge(Number(event.target.value))} />
+                    <input id="scenario-age" aria-label="Age" type="range" min="21" max="75" step="1" value={scenarioAge} onChange={(event) => setScenario({ rowIndex: selected, age: Number(event.target.value), limit: scenarioLimit, pay0: scenarioPay0 })} />
                     <small><span>21</span><span>75</span></small>
                   </label>
                 </div>
@@ -695,15 +657,16 @@ export default function Home() {
               </div>
             )}
           </section>
-
-          <section className="proof-strip" aria-label="Nori product qualities">
-            <div><span>01</span><strong>Pretrained</strong><small>Learned from synthetic tables</small></div>
-            <div><span>02</span><strong>Context-aware</strong><small>Understands rows in relation</small></div>
-            <div><span>03</span><strong>Inspectible</strong><small>Shapley-native sklearn API</small></div>
-            <div><span>04</span><strong>Open source</strong><small>Apache-2.0 · public weights</small></div>
-          </section>
-        </main>
-      </div>
+      </main>
+      <DatasetImporter
+        open={importerOpen}
+        onClose={() => setImporterOpen(false)}
+        onImport={(dataset) => {
+          setLocalDatasets((datasets) => [...datasets, dataset]);
+          setActiveDatasetId(dataset.id);
+          setCapability("embeddings");
+        }}
+      />
     </div>
   );
 }

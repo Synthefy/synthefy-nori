@@ -39,8 +39,7 @@ yarn-error.log*
 /outputs/
 /work/
 
-# The parent Python repository ignores generic build/ and data/ directories.
-# These two assets are source files for the UI and must remain tracked there.
+# Public demo artifacts are intentionally versioned in the parent monorepo.
 !/build/
 !/build/sites-vite-plugin.ts
 !/public/data/

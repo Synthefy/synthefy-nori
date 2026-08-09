@@ -31,18 +31,19 @@ test("server-renders Nori Studio metadata and a useful loading state", async () 
   const html = await response.text();
   assert.match(html, /<title>Nori Studio — Explore tabular intelligence<\/title>/i);
   assert.match(html, /Loading the public credit dataset/);
-  assert.match(html, /property="og:image" content="http:\/\/localhost(?::3000)?\/og\.png"/i);
+  assert.match(html, /property="og:image" content="http:\/\/localhost(?::3000)?\/og-v2\.png"/i);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
-test("ships the product UI, public artifact, and social card", async () => {
-  const [page, layout, packageJson, readme, dataFile, socialCard] = await Promise.all([
+test("ships the product UI, local CSV importer, public artifact, and social card", async () => {
+  const [page, importer, layout, packageJson, readme, dataFile, socialCard] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/local-datasets.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../README.md", import.meta.url), "utf8"),
     readFile(new URL("../public/data/nori-embeddings.json", import.meta.url), "utf8"),
-    stat(new URL("../public/og.png", import.meta.url)),
+    stat(new URL("../public/og-v2.png", import.meta.url)),
   ]);
 
   assert.match(page, /Embeddings/);
@@ -50,8 +51,13 @@ test("ships the product UI, public artifact, and social card", async () => {
   assert.match(page, /Zero-shot inference/);
   assert.match(page, /Scenario inputs/);
   assert.match(page, /Interface preview/);
+  assert.match(page, /Add dataset/);
+  assert.match(page, /mode-tabs/);
+  assert.match(importer, /Drop a CSV here/);
+  assert.match(importer, /Files are parsed locally/);
+  assert.match(importer, /Public CSV URL/);
   assert.match(layout, /x-forwarded-host/);
-  assert.match(layout, /\/og\.png/);
+  assert.match(layout, /\/og-v2\.png/);
   assert.match(packageJson, /"name": "nori-studio-ui"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.match(readme, /UCI Default of Credit Card Clients/);

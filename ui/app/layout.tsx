@@ -15,7 +15,7 @@ export async function generateMetadata(): Promise<Metadata> {
   } catch {
     // Keep a valid metadata URL even if a development proxy sends a malformed host.
   }
-  const socialImage = `${origin}/og.png`;
+  const socialImage = `${origin}/og-v2.png`;
 
   return {
     title: "Nori Studio — Explore tabular intelligence",

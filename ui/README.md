@@ -26,6 +26,19 @@ interaction and is labeled **Interface preview**. The zero-shot percentage is a
 nearest-neighbor cohort baseline and is labeled **Static demo**. Neither is
 presented as live Nori inference.
 
+## Bring your own CSV
+
+Use **Add dataset** to drop a local CSV or load a public, CORS-enabled CSV URL.
+The browser reads up to 3,000 rows, detects numeric columns, and lets you choose
+the outcome Nori should reason about. Local datasets get a working raw-feature
+projection, correlation-based signal preview, nearest-neighbor baseline, and
+interactive scenarios across the same four workspace lenses.
+
+Uploaded files stay in the current browser tab and are not sent to Nori Studio.
+Linked files are fetched directly by the browser, so their host must allow CORS.
+These local diagnostics are clearly labeled and are not represented as live Nori,
+SHAP, or SHAP-IQ output.
+
 ## Connecting live Nori
 
 The production service can replace the local preview calculations with endpoints
