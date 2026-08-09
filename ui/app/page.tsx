@@ -1,7 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { DatasetImporter, LocalDatasetWorkspace, type LocalDataset } from "./local-datasets";
+import {
+  DatasetImporter,
+  LocalDatasetWorkspace,
+  STARTER_DATASETS,
+  loadStarterDataset,
+  type LocalDataset,
+  type StarterDataset,
+} from "./local-datasets";
 
 type Capability = "embeddings" | "explain" | "predict" | "scenario";
 type Question = "default" | "credit";
@@ -322,6 +329,9 @@ export default function Home() {
   const [localDatasets, setLocalDatasets] = useState<LocalDataset[]>([]);
   const [activeDatasetId, setActiveDatasetId] = useState("credit");
   const [importerOpen, setImporterOpen] = useState(false);
+  const [studioStarted, setStudioStarted] = useState(false);
+  const [loadingStarter, setLoadingStarter] = useState<string | null>(null);
+  const [starterError, setStarterError] = useState("");
 
   useEffect(() => {
     fetch("/data/nori-embeddings.json")
@@ -376,10 +386,26 @@ export default function Home() {
     setCapability(next);
   };
 
+  const openStarter = async (starter: StarterDataset) => {
+    setLoadingStarter(starter.id);
+    setStarterError("");
+    try {
+      const dataset = await loadStarterDataset(starter);
+      setLocalDatasets((datasets) => [...datasets.filter((item) => item.id !== dataset.id), dataset]);
+      setActiveDatasetId(dataset.id);
+      setCapability("embeddings");
+      setStudioStarted(true);
+    } catch (reason) {
+      setStarterError(reason instanceof Error ? reason.message : "Could not open that starter dataset.");
+    } finally {
+      setLoadingStarter(null);
+    }
+  };
+
   return (
     <div className="site-shell">
       <header className="topbar">
-        <a className="brand" href="#main" aria-label="Nori Studio home">
+        <a className="brand" href="#welcome" aria-label="Nori Studio home" onClick={() => setStudioStarted(false)}>
           <span className="brand-mark" aria-hidden="true"><span /></span>
           <span>Nori</span>
           <span className="brand-divider" />
@@ -394,6 +420,48 @@ export default function Home() {
         </div>
       </header>
 
+      {!studioStarted ? (
+        <main className="welcome" id="welcome">
+          <section className="welcome-hero" aria-labelledby="welcome-title">
+            <div className="welcome-hero-figure" role="img" aria-label="Four softly colored data clusters organized around a selected row in Nori Studio" />
+            <div className="welcome-hero-caption">
+              <span>Target-aware tabular intelligence</span>
+              <strong id="welcome-title">Start with a table. Choose what matters.</strong>
+              <button type="button" onClick={() => setImporterOpen(true)}>Upload your CSV <b>→</b></button>
+            </div>
+          </section>
+
+          <section className="dataset-library" aria-labelledby="dataset-library-title">
+            <div className="library-heading">
+              <div><p className="section-kicker">Five ready-to-explore tables</p><h2 id="dataset-library-title">Choose a dataset.</h2></div>
+              <div className="split-principle"><span>01</span><p><strong>Pick a target</strong><small>The outcome defines every lens.</small></p><b>→</b><span>02</span><p><strong>Split context + test</strong><small>One seeded 80 / 20 split, everywhere.</small></p></div>
+            </div>
+            <div className="starter-grid">
+              <button type="button" className="starter-card featured" onClick={() => { setActiveDatasetId("credit"); setCapability("embeddings"); setStudioStarted(true); }}>
+                <span className="starter-glyph">Cr</span>
+                <span className="starter-task">Classification · Nori artifact</span>
+                <strong>Credit Card Default</strong>
+                <small>Explore repayment risk with a precomputed target-aware Nori embedding.</small>
+                <span className="starter-meta"><i>30k rows</i><i>18 features</i><i>target: default</i></span>
+                <b>Open dataset <span>→</span></b>
+              </button>
+              {STARTER_DATASETS.map((starter) => (
+                <button type="button" className="starter-card" onClick={() => void openStarter(starter)} disabled={loadingStarter !== null} key={starter.id}>
+                  <span className="starter-glyph">{starter.glyph}</span>
+                  <span className="starter-task">{starter.task} · public sample</span>
+                  <strong>{starter.name}</strong>
+                  <small>{starter.description}</small>
+                  <span className="starter-meta"><i>{starter.rows} rows</i><i>{starter.features} features</i><i>target: {starter.target}</i></span>
+                  <b>{loadingStarter === starter.id ? "Preparing split…" : "Open dataset"} <span>→</span></b>
+                </button>
+              ))}
+            </div>
+            {starterError ? <p className="starter-error" role="alert">{starterError}</p> : null}
+            <p className="library-footnote">Starter CSVs are bundled from the <a href="https://github.com/mwaskom/seaborn-data" target="_blank" rel="noreferrer">seaborn sample-data repository ↗</a> for reliable demos. Uploaded tables stay in this browser tab.</p>
+          </section>
+        </main>
+      ) : (
+        <>
       <section className="studio-toolbar" aria-label="Studio controls">
         <label className="dataset-picker">
           <span>Dataset</span>
@@ -658,6 +726,8 @@ export default function Home() {
             )}
           </section>
       </main>
+        </>
+      )}
       <DatasetImporter
         open={importerOpen}
         onClose={() => setImporterOpen(false)}
@@ -665,6 +735,7 @@ export default function Home() {
           setLocalDatasets((datasets) => [...datasets, dataset]);
           setActiveDatasetId(dataset.id);
           setCapability("embeddings");
+          setStudioStarted(true);
         }}
       />
     </div>

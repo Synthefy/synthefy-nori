@@ -10,15 +10,112 @@ export type LocalDataset = {
   rows: string[][];
   numericColumns: string[];
   target: string;
+  trainIndices: number[];
+  testIndices: number[];
+  splitSeed: number;
 };
+
+export type StarterDataset = {
+  id: string;
+  name: string;
+  description: string;
+  path: string;
+  sourceUrl: string;
+  rows: string;
+  features: string;
+  target: string;
+  task: "Classification" | "Regression";
+  glyph: string;
+};
+
+export const STARTER_DATASETS: StarterDataset[] = [
+  {
+    id: "penguins",
+    name: "Palmer Penguins",
+    description: "Identify a penguin species from interpretable body measurements.",
+    path: "/data/starters/penguins.csv",
+    sourceUrl: "https://github.com/mwaskom/seaborn-data/blob/master/penguins.csv",
+    rows: "344",
+    features: "6",
+    target: "species",
+    task: "Classification",
+    glyph: "Pg",
+  },
+  {
+    id: "auto-mpg",
+    name: "Automobile MPG",
+    description: "Estimate fuel economy from engine, weight, and model-year signals.",
+    path: "/data/starters/auto-mpg.csv",
+    sourceUrl: "https://github.com/mwaskom/seaborn-data/blob/master/mpg.csv",
+    rows: "398",
+    features: "8",
+    target: "mpg",
+    task: "Regression",
+    glyph: "Mp",
+  },
+  {
+    id: "restaurant-tips",
+    name: "Restaurant Tips",
+    description: "Explore how bill, party size, and service context relate to tips.",
+    path: "/data/starters/restaurant-tips.csv",
+    sourceUrl: "https://github.com/mwaskom/seaborn-data/blob/master/tips.csv",
+    rows: "244",
+    features: "6",
+    target: "tip",
+    task: "Regression",
+    glyph: "Tp",
+  },
+  {
+    id: "titanic",
+    name: "Titanic Survival",
+    description: "Classify survival from passenger and voyage attributes.",
+    path: "/data/starters/titanic.csv",
+    sourceUrl: "https://github.com/mwaskom/seaborn-data/blob/master/titanic.csv",
+    rows: "891",
+    features: "14",
+    target: "survived",
+    task: "Classification",
+    glyph: "Tt",
+  },
+];
 
 type Capability = "embeddings" | "explain" | "predict" | "scenario";
 
 const MAX_ROWS = 3_000;
 const MAX_BYTES = 12 * 1024 * 1024;
+const TEST_FRACTION = 0.2;
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const formatNumber = (value: number) => new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);
+
+function hashString(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function seededRandom(seed: number) {
+  let state = seed || 1;
+  return () => {
+    state += 0x6d2b79f5;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffled(indices: number[], random: () => number) {
+  const result = [...indices];
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const next = Math.floor(random() * (index + 1));
+    [result[index], result[next]] = [result[next], result[index]];
+  }
+  return result;
+}
 
 function parseCSV(text: string, name: string, source: string): LocalDataset {
   const matrix: string[][] = [];
@@ -74,8 +171,59 @@ function parseCSV(text: string, name: string, source: string): LocalDataset {
     headers,
     rows,
     numericColumns,
-    target: headers.at(-1) ?? headers[0],
+    target: "",
+    trainIndices: [],
+    testIndices: [],
+    splitSeed: 0,
   };
+}
+
+function isClassificationTarget(dataset: LocalDataset, indices: number[]) {
+  const targetIndex = dataset.headers.indexOf(dataset.target);
+  const values = indices.map((index) => dataset.rows[index]?.[targetIndex] ?? "Missing");
+  const present = values.filter((value) => value !== "");
+  const numeric = present.filter((value) => Number.isFinite(Number(value))).length / Math.max(present.length, 1) >= 0.85;
+  const unique = new Set(present).size;
+  return !numeric || unique <= Math.min(20, Math.max(2, Math.round(Math.sqrt(present.length))));
+}
+
+export function prepareDataset(dataset: LocalDataset, target: string) {
+  const next = { ...dataset, target };
+  const seed = hashString(`${dataset.name}:${target}:${dataset.rows.length}`);
+  const random = seededRandom(seed);
+  const allIndices = dataset.rows.map((_, index) => index);
+  const testIndices: number[] = [];
+  const trainIndices: number[] = [];
+
+  if (isClassificationTarget(next, allIndices)) {
+    const targetIndex = dataset.headers.indexOf(target);
+    const groups = new Map<string, number[]>();
+    allIndices.forEach((index) => {
+      const label = dataset.rows[index][targetIndex] || "Missing";
+      groups.set(label, [...(groups.get(label) ?? []), index]);
+    });
+    groups.forEach((indices) => {
+      const group = shuffled(indices, random);
+      const testCount = group.length > 1 ? Math.max(1, Math.round(group.length * TEST_FRACTION)) : 0;
+      testIndices.push(...group.slice(0, testCount));
+      trainIndices.push(...group.slice(testCount));
+    });
+  } else {
+    const indices = shuffled(allIndices, random);
+    const testCount = Math.max(1, Math.round(indices.length * TEST_FRACTION));
+    testIndices.push(...indices.slice(0, testCount));
+    trainIndices.push(...indices.slice(testCount));
+  }
+
+  if (testIndices.length === 0 && trainIndices.length > 1) testIndices.push(trainIndices.pop() as number);
+  return { ...next, trainIndices: shuffled(trainIndices, random), testIndices: shuffled(testIndices, random), splitSeed: seed };
+}
+
+export async function loadStarterDataset(starter: StarterDataset) {
+  const response = await fetch(starter.path);
+  if (!response.ok) throw new Error(`Could not load ${starter.name}.`);
+  const dataset = parseCSV(await response.text(), starter.name, `Starter dataset · ${starter.task}`);
+  return prepareDataset({ ...dataset, id: `starter-${starter.id}` }, starter.target);
 }
 
 function valuesFor(dataset: LocalDataset, column: string) {
@@ -88,11 +236,19 @@ function rangeFor(dataset: LocalDataset, column: string) {
   return { min: Math.min(...values), max: Math.max(...values), mean: values.reduce((sum, value) => sum + value, 0) / Math.max(values.length, 1) };
 }
 
-function targetProfile(dataset: LocalDataset) {
+function numericValue(dataset: LocalDataset, row: string[], column: string) {
+  const raw = row[dataset.headers.indexOf(column)];
+  const value = raw === "" ? Number.NaN : Number(raw);
+  return Number.isFinite(value) ? value : rangeFor(dataset, column).mean;
+}
+
+function targetProfile(dataset: LocalDataset, indices = dataset.rows.map((_, index) => index)) {
   const index = dataset.headers.indexOf(dataset.target);
-  const raw = dataset.rows.map((row) => row[index]);
+  const raw = indices.map((rowIndex) => dataset.rows[rowIndex][index]);
   const numeric = raw.filter((value) => value !== "" && Number.isFinite(Number(value)));
-  if (numeric.length / Math.max(raw.length, 1) >= 0.85) {
+  const numericTarget = numeric.length / Math.max(raw.length, 1) >= 0.85;
+  const classification = isClassificationTarget(dataset, indices);
+  if (numericTarget && !classification) {
     const values = numeric.map(Number);
     return {
       numeric: true,
@@ -125,28 +281,34 @@ function pearson(left: number[], right: number[]) {
 }
 
 function neighborEstimate(dataset: LocalDataset, query: Record<string, number>, selected: number) {
-  const profile = targetProfile(dataset);
   const targetIndex = dataset.headers.indexOf(dataset.target);
   const features = dataset.numericColumns.filter((column) => column !== dataset.target).slice(0, 8);
   const ranges = Object.fromEntries(features.map((column) => [column, rangeFor(dataset, column)]));
-  const distances = dataset.rows.map((row, rowIndex) => {
+  const contextIndices = dataset.trainIndices.length > 0 ? dataset.trainIndices : dataset.rows.map((_, index) => index);
+  const profile = targetProfile(dataset, contextIndices);
+  const distances = contextIndices.map((rowIndex) => {
+    const row = dataset.rows[rowIndex];
     let distance = 0;
     features.forEach((column) => {
-      const value = Number(row[dataset.headers.indexOf(column)]);
+      const value = numericValue(dataset, row, column);
       const range = ranges[column];
       const scale = range.max - range.min || 1;
       distance += ((value - (query[column] ?? value)) / scale) ** 2;
     });
     return { row, rowIndex, distance };
-  }).filter((item) => item.rowIndex !== selected).sort((a, b) => a.distance - b.distance).slice(0, Math.min(42, Math.max(8, Math.round(Math.sqrt(dataset.rows.length)))));
+  }).filter((item) => item.rowIndex !== selected).sort((a, b) => a.distance - b.distance).slice(0, Math.min(42, Math.max(8, Math.round(Math.sqrt(contextIndices.length)))));
 
   if (profile.numeric) {
     const values = distances.map((item) => Number(item.row[targetIndex])).filter(Number.isFinite);
     return { value: values.reduce((sum, value) => sum + value, 0) / Math.max(values.length, 1), label: dataset.target, numeric: true };
   }
-  const selectedLabel = dataset.rows[selected]?.[targetIndex] || profile.labels[0] || "Match";
-  const matches = distances.filter((item) => item.row[targetIndex] === selectedLabel).length;
-  return { value: matches / Math.max(distances.length, 1), label: selectedLabel, numeric: false };
+  const counts = new Map<string, number>();
+  distances.forEach((item) => {
+    const label = item.row[targetIndex] || "Missing";
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  });
+  const [predictedLabel, matches] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0] ?? [profile.labels[0] ?? "Unknown", 0];
+  return { value: matches / Math.max(distances.length, 1), label: predictedLabel, numeric: false };
 }
 
 export function DatasetImporter({ open, onClose, onImport }: { open: boolean; onClose: () => void; onImport: (dataset: LocalDataset) => void }) {
@@ -236,19 +398,25 @@ export function DatasetImporter({ open, onClose, onImport }: { open: boolean; on
               <div><strong>{draft.name}</strong><small>{draft.rows.length.toLocaleString()} rows · {draft.headers.length} columns · {draft.numericColumns.length} numeric</small></div>
             </div>
             <label className="target-field">
-              <span>What should Nori reason about?</span>
+              <span>1. Pick the target column</span>
               <select value={draft.target} onChange={(event) => setDraft({ ...draft, target: event.target.value })}>
+                <option value="" disabled>Select an outcome…</option>
                 {draft.headers.map((header) => <option value={header} key={header}>{header}</option>)}
               </select>
-              <small>Choose the outcome or concept that the demo should explain.</small>
+              <small>This becomes the outcome Nori predicts, organizes around, and explains.</small>
             </label>
+            <div className="split-preview">
+              <div><span>2. Random context / query split</span><strong>80% <i>context</i> · 20% <i>test</i></strong></div>
+              <div className="split-bar"><span /><i /></div>
+              <small>Classification targets are stratified. The seeded split stays fixed across every lens.</small>
+            </div>
             <div className="column-preview">
               {draft.headers.slice(0, 8).map((header) => <span key={header}>{header}{draft.numericColumns.includes(header) ? <i>#</i> : null}</span>)}
               {draft.headers.length > 8 ? <span>+{draft.headers.length - 8} more</span> : null}
             </div>
             <div className="import-actions">
               <button type="button" className="quiet-button" onClick={() => setDraft(null)}>Choose another</button>
-              <button type="button" className="solid-button" onClick={() => { onImport(draft); closeImporter(); }}>Open in Studio <span>→</span></button>
+              <button type="button" className="solid-button" disabled={!draft.target} onClick={() => { onImport(prepareDataset(draft, draft.target)); closeImporter(); }}>Create demo <span>→</span></button>
             </div>
           </div>
         )}
@@ -262,10 +430,9 @@ function LocalProjection({ dataset, xColumn, yColumn, selected, onSelect }: { da
   const xRange = rangeFor(dataset, xColumn);
   const yRange = rangeFor(dataset, yColumn);
   const targetIndex = dataset.headers.indexOf(dataset.target);
-  const xIndex = dataset.headers.indexOf(xColumn);
-  const yIndex = dataset.headers.indexOf(yColumn);
-  const profile = targetProfile(dataset);
+  const profile = targetProfile(dataset, dataset.trainIndices);
   const selectedTarget = dataset.rows[selected]?.[targetIndex];
+  const testSet = new Set(dataset.testIndices);
   return (
     <div className="local-projection">
       <svg viewBox="0 0 1000 620" preserveAspectRatio="none" role="img" aria-label={`Raw projection of ${dataset.rows.length} rows by ${xColumn} and ${yColumn}`}>
@@ -274,42 +441,45 @@ function LocalProjection({ dataset, xColumn, yColumn, selected, onSelect }: { da
           {[1, 2, 3, 4].map((line) => <line key={`h${line}`} x1="0" x2="1000" y1={line * 124} y2={line * 124} />)}
         </g>
         {dataset.rows.map((row, index) => {
-          const x = 30 + ((Number(row[xIndex]) - xRange.min) / (xRange.max - xRange.min || 1)) * 940;
-          const y = 590 - ((Number(row[yIndex]) - yRange.min) / (yRange.max - yRange.min || 1)) * 560;
+          const x = 30 + ((numericValue(dataset, row, xColumn) - xRange.min) / (xRange.max - xRange.min || 1)) * 940;
+          const y = 590 - ((numericValue(dataset, row, yColumn) - yRange.min) / (yRange.max - yRange.min || 1)) * 560;
           const active = profile.numeric ? Number(row[targetIndex]) >= profile.threshold : row[targetIndex] === selectedTarget;
-          return <circle key={index} cx={x} cy={y} r={index === selected ? 9 : active ? 4.2 : 3} className={`${active ? "target-point" : "context-point"} ${index === selected ? "selected-point" : ""}`} onClick={() => onSelect(index)} />;
+          const isTest = testSet.has(index);
+          return <circle key={index} cx={x} cy={y} r={index === selected ? 9 : active ? 4.2 : 3} className={`${active ? "target-point" : "context-point"} ${isTest ? "test-point" : "train-point"} ${index === selected ? "selected-point" : ""}`} onClick={isTest ? () => onSelect(index) : undefined} />;
         })}
       </svg>
       <span className="projection-label x-label">{xColumn}</span>
       <span className="projection-label y-label">{yColumn}</span>
-      <div className="projection-badge"><span>Raw feature projection</span><strong>{dataset.rows.length.toLocaleString()} rows in your browser</strong></div>
+      <div className="projection-badge"><span>Random 80 / 20 split</span><strong>{dataset.trainIndices.length.toLocaleString()} context · {dataset.testIndices.length.toLocaleString()} test</strong></div>
+      <div className="projection-split-key"><span><i /> context</span><span><i /> test query</span></div>
     </div>
   );
 }
 
 export function LocalDatasetWorkspace({ dataset, capability }: { dataset: LocalDataset; capability: Capability }) {
-  const [selected, setSelected] = useState(0);
+  const [selected, setSelected] = useState(dataset.testIndices[0] ?? 0);
   const features = useMemo(() => dataset.numericColumns.filter((column) => column !== dataset.target), [dataset]);
   const [xColumn, setXColumn] = useState(features[0] ?? dataset.numericColumns[0]);
   const [yColumn, setYColumn] = useState(features[1] ?? dataset.numericColumns[1] ?? dataset.numericColumns[0]);
   const selectedRow = dataset.rows[selected] ?? dataset.rows[0];
   const targetIndex = dataset.headers.indexOf(dataset.target);
-  const query = useMemo(() => Object.fromEntries(features.map((column) => [column, Number(selectedRow[dataset.headers.indexOf(column)])])), [dataset, features, selectedRow]);
-  const [scenarioState, setScenarioState] = useState<{ rowIndex: number; values: Record<string, number> }>({ rowIndex: 0, values: query });
+  const query = useMemo(() => Object.fromEntries(features.map((column) => [column, numericValue(dataset, selectedRow, column)])), [dataset, features, selectedRow]);
+  const [scenarioState, setScenarioState] = useState<{ rowIndex: number; values: Record<string, number> }>({ rowIndex: selected, values: query });
   const scenario = scenarioState.rowIndex === selected ? scenarioState.values : query;
-  const profile = useMemo(() => targetProfile(dataset), [dataset]);
+  const profile = useMemo(() => targetProfile(dataset, dataset.trainIndices), [dataset]);
   const estimate = useMemo(() => neighborEstimate(dataset, query, selected), [dataset, query, selected]);
   const scenarioEstimate = useMemo(() => neighborEstimate(dataset, scenario, selected), [dataset, scenario, selected]);
 
   const effects = useMemo(() => {
+    const contextRows = dataset.trainIndices.map((index) => dataset.rows[index]);
     const targetValues = profile.numeric
-      ? dataset.rows.map((row) => Number(row[targetIndex]))
-      : dataset.rows.map((row) => row[targetIndex] === selectedRow[targetIndex] ? 1 : 0);
+      ? contextRows.map((row) => Number(row[targetIndex]))
+      : contextRows.map((row) => row[targetIndex] === selectedRow[targetIndex] ? 1 : 0);
     return features.map((column) => {
       const range = rangeFor(dataset, column);
-      const values = dataset.rows.map((row) => Number(row[dataset.headers.indexOf(column)]));
+      const values = contextRows.map((row) => numericValue(dataset, row, column));
       const correlation = pearson(values, targetValues);
-      const selectedValue = Number(selectedRow[dataset.headers.indexOf(column)]);
+      const selectedValue = numericValue(dataset, selectedRow, column);
       const standardized = (selectedValue - range.mean) / (range.max - range.min || 1);
       return { name: column, value: clamp(correlation * standardized * 2.2, -0.46, 0.46), detail: formatNumber(selectedValue), correlation };
     }).sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, 6);
@@ -318,11 +488,15 @@ export function LocalDatasetWorkspace({ dataset, capability }: { dataset: LocalD
   const selectedTarget = selectedRow[targetIndex] || "Missing";
   const resultLabel = estimate.numeric ? formatNumber(estimate.value) : `${Math.round(estimate.value * 100)}%`;
   const baselineLabel = profile.numeric ? formatNumber(profile.baseline) : `${Math.round(profile.baseline * 100)}%`;
+  const nextTestRow = () => {
+    const position = dataset.testIndices.indexOf(selected);
+    setSelected(dataset.testIndices[(position + 1) % dataset.testIndices.length] ?? selected);
+  };
 
   return (
     <div className="local-workspace">
       <div className="local-context-bar">
-        <span><b>{dataset.rows.length.toLocaleString()}</b> rows</span><span><b>{dataset.headers.length}</b> columns</span><span>Target <b>{dataset.target}</b></span>
+        <span><b>{dataset.trainIndices.length.toLocaleString()}</b> context rows</span><span><b>{dataset.testIndices.length}</b> test queries</span><span>Target <b>{dataset.target}</b></span>
         <span className="local-only">Browser-local preview</span>
       </div>
 
@@ -332,12 +506,12 @@ export function LocalDatasetWorkspace({ dataset, capability }: { dataset: LocalD
             <div className="local-axis-controls">
               <label><span>X axis</span><select value={xColumn} onChange={(event) => setXColumn(event.target.value)}>{features.map((column) => <option key={column}>{column}</option>)}</select></label>
               <label><span>Y axis</span><select value={yColumn} onChange={(event) => setYColumn(event.target.value)}>{features.map((column) => <option key={column}>{column}</option>)}</select></label>
-              <p>This is an immediate raw projection. Connect a Nori endpoint to replace it with a target-aware embedding.</p>
+              <p>Context rows form the reference set; outlined test rows are held out as queries. Connect Nori to replace this with a target-aware embedding.</p>
             </div>
             <LocalProjection dataset={dataset} xColumn={xColumn} yColumn={yColumn} selected={selected} onSelect={setSelected} />
           </div>
           <aside className="local-record-panel">
-            <div className="record-heading"><span>Selected row</span><b>#{selected + 1}</b></div>
+            <div className="record-heading"><span>Held-out test row</span><b>#{selected + 1}</b></div>
             <div className="local-target-value"><span>{dataset.target}</span><strong>{selectedTarget}</strong></div>
             <dl className="record-list">
               {dataset.headers.slice(0, 7).map((header, index) => <div key={header}><dt>{header}</dt><dd title={selectedRow[index]}>{selectedRow[index] || "—"}</dd></div>)}
@@ -360,7 +534,7 @@ export function LocalDatasetWorkspace({ dataset, capability }: { dataset: LocalD
             </div>
             <div className="method-note"><span className="method-mark">i</span><p>This browser-local diagnostic is deliberately not labeled as SHAP or SHAP-IQ. It becomes a Nori explanation when the public explainer endpoint is connected.</p></div>
           </div>
-          <aside className="local-insight-panel"><p className="section-kicker">Selected outcome</p><strong className="giant-local-value">{selectedTarget}</strong><p>The largest local signal is <b>{effects[0]?.name ?? "not available"}</b>. Choose another row from Embeddings to compare its profile.</p><button type="button" className="row-step" onClick={() => setSelected((selected + 1) % dataset.rows.length)}>Next row <span>→</span></button></aside>
+          <aside className="local-insight-panel"><p className="section-kicker">Held-out outcome</p><strong className="giant-local-value">{selectedTarget}</strong><p>The largest local signal is <b>{effects[0]?.name ?? "not available"}</b>. Effects use only the training context as their baseline.</p><button type="button" className="row-step" onClick={nextTestRow}>Next test row <span>→</span></button></aside>
         </div>
       ) : null}
 
@@ -372,7 +546,7 @@ export function LocalDatasetWorkspace({ dataset, capability }: { dataset: LocalD
             <div className="prediction-band"><span style={{ left: `${estimate.numeric ? clamp(((estimate.value - rangeFor(dataset, dataset.target).min) / (rangeFor(dataset, dataset.target).max - rangeFor(dataset, dataset.target).min || 1)) * 100, 3, 97) : clamp(estimate.value * 100, 3, 97)}%` }} /></div>
             <div className="prediction-scale"><span>Dataset baseline {baselineLabel}</span><span>Selected row {selectedTarget}</span></div>
           </div>
-          <aside className="local-method-panel"><p className="section-kicker">Nori-ready setup</p><h3>{features.length} numeric signals, one target, zero training UI.</h3><ol className="context-flow"><li><b>01</b><span><strong>Reference context</strong><small>{dataset.rows.length.toLocaleString()} rows from {dataset.name}</small></span></li><li><b>02</b><span><strong>Query row</strong><small>Row #{selected + 1} · target hidden</small></span></li><li><b>03</b><span><strong>Swap in Nori</strong><small>Replace this baseline with one API response</small></span></li></ol><button type="button" className="row-step" onClick={() => setSelected((selected + 1) % dataset.rows.length)}>Try another row <span>→</span></button></aside>
+          <aside className="local-method-panel"><p className="section-kicker">Nori-ready setup</p><h3>{features.length} numeric signals, one target, zero training UI.</h3><ol className="context-flow"><li><b>01</b><span><strong>Reference context</strong><small>{dataset.trainIndices.length.toLocaleString()} randomly sampled training rows</small></span></li><li><b>02</b><span><strong>Held-out query</strong><small>Test row #{selected + 1} · target hidden</small></span></li><li><b>03</b><span><strong>Evaluate output</strong><small>Reveal actual {dataset.target}: {selectedTarget}</small></span></li></ol><button type="button" className="row-step" onClick={nextTestRow}>Try another test row <span>→</span></button></aside>
         </div>
       ) : null}
 
