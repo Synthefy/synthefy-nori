@@ -1,0 +1,1101 @@
+customer_id,days_since_purchase,orders_12m,spend_12m,email_open_rate,sms_opt_in,web_visits_30d,household_segment,preferred_category,campaign_channel,responded_30d
+M00001,21,11,601.22,0.074,Yes,11,Urban single,Electronics,Email,1
+M00002,136,5,318.68,0.392,No,6,Family,Home,Direct mail,0
+M00003,146,6,503.19,0.162,Yes,9,Urban single,Grocery,Email,1
+M00004,114,13,866.11,0.091,Yes,11,Urban single,Electronics,Paid social,0
+M00005,64,11,376.41,0.199,No,11,Retired,Home,Paid social,1
+M00006,119,4,195.87,0.262,Yes,10,Young household,Grocery,Email,1
+M00007,76,3,223.15,0.134,Yes,8,Urban single,Apparel,Paid social,1
+M00008,133,10,852.55,0.136,No,8,Established,Apparel,Email,0
+M00009,4,18,216,0.344,No,18,Retired,Grocery,Email,1
+M00010,64,3,228.27,0.217,No,9,Urban single,Grocery,SMS,1
+M00011,6,7,517.56,0.344,Yes,9,Retired,Electronics,SMS,0
+M00012,94,12,1256.99,0.025,No,16,Family,Beauty,Paid social,1
+M00013,89,11,585.77,0.207,Yes,13,Urban single,Beauty,SMS,1
+M00014,37,12,404.01,0.223,Yes,12,Retired,Apparel,Direct mail,1
+M00015,87,9,160.58,0.23,No,8,Retired,Beauty,SMS,1
+M00016,134,7,293.27,0.226,No,12,Retired,Home,Paid social,1
+M00017,41,6,562.93,0.186,No,5,Young household,Grocery,SMS,0
+M00018,85,10,138.32,0.159,No,12,Young household,Apparel,Paid social,0
+M00019,53,5,290.16,0.22,Yes,12,Established,Electronics,Paid social,0
+M00020,103,9,453.91,0.497,No,6,Young household,Apparel,Direct mail,1
+M00021,59,11,468.05,0.089,No,11,Young household,Electronics,Paid social,1
+M00022,57,11,586.22,0.042,Yes,9,Established,Electronics,Email,0
+M00023,57,5,209.54,0.354,Yes,10,Established,Grocery,Paid social,0
+M00024,84,11,758.56,0.307,No,10,Family,Apparel,Paid social,0
+M00025,66,5,60,0.563,No,7,Urban single,Apparel,Direct mail,1
+M00026,119,5,309,0.141,Yes,7,Young household,Home,Paid social,0
+M00027,89,13,893.05,0.279,Yes,9,Family,Electronics,Email,1
+M00028,39,15,463.97,0.299,Yes,16,Retired,Apparel,Paid social,0
+M00029,31,14,525.66,0.195,No,10,Young household,Beauty,Direct mail,0
+M00030,48,5,358.39,0.31,No,7,Family,Grocery,Email,1
+M00031,35,13,694.31,0.028,Yes,16,Urban single,Grocery,Direct mail,0
+M00032,5,11,827.44,0.42,Yes,11,Retired,Grocery,SMS,1
+M00033,25,8,474.37,0,No,6,Urban single,Home,SMS,0
+M00034,121,2,117.84,0.333,No,7,Established,Electronics,Paid social,0
+M00035,84,10,671.43,0.172,No,8,Retired,Grocery,SMS,1
+M00036,83,8,292.04,0,No,12,Urban single,Electronics,Email,0
+M00037,48,13,904.73,0.564,No,13,Family,Apparel,Paid social,1
+M00038,134,4,204.91,0.247,No,4,Urban single,Beauty,Direct mail,0
+M00039,56,11,431.77,0.087,No,8,Established,Electronics,SMS,1
+M00040,137,6,367.22,0,No,4,Established,Electronics,Direct mail,0
+M00041,130,8,355.47,0,No,7,Urban single,Grocery,SMS,0
+M00042,146,4,63.15,0.272,Yes,4,Retired,Home,Email,0
+M00043,132,4,292.57,0.125,Yes,6,Urban single,Apparel,SMS,1
+M00044,136,6,325.02,0.297,Yes,9,Young household,Beauty,Paid social,0
+M00045,113,8,243.27,0.266,No,14,Urban single,Beauty,Direct mail,0
+M00046,7,7,585.02,0.104,Yes,4,Established,Home,Paid social,1
+M00047,141,10,560.99,0.289,No,12,Family,Grocery,SMS,1
+M00048,110,13,541.73,0.004,Yes,10,Retired,Beauty,Direct mail,1
+M00049,110,6,322.17,0.275,No,4,Retired,Apparel,Direct mail,0
+M00050,69,12,815.96,0.251,No,9,Retired,Grocery,Email,1
+M00051,21,13,1179.65,0,Yes,15,Retired,Grocery,Paid social,1
+M00052,137,6,371.17,0.534,No,7,Established,Home,Email,1
+M00053,87,8,262.74,0.236,No,10,Established,Electronics,Email,0
+M00054,111,9,437.66,0.069,Yes,9,Established,Apparel,SMS,0
+M00055,74,9,622.37,0.212,Yes,6,Family,Apparel,Paid social,1
+M00056,35,8,414.34,0.106,No,12,Young household,Electronics,Email,0
+M00057,117,8,631.69,0.219,No,7,Young household,Grocery,Paid social,1
+M00058,15,12,590.21,0.319,Yes,12,Young household,Beauty,SMS,1
+M00059,56,13,704.01,0.347,No,13,Retired,Electronics,Paid social,1
+M00060,33,7,321.93,0.022,No,4,Retired,Home,SMS,1
+M00061,22,9,514.44,0.11,No,11,Family,Grocery,Paid social,1
+M00062,117,12,1031.2,0.141,No,15,Young household,Home,Paid social,1
+M00063,51,3,392.05,0.293,Yes,8,Urban single,Grocery,SMS,0
+M00064,128,7,421.67,0.127,No,11,Urban single,Home,SMS,1
+M00065,25,15,508.06,0.314,No,15,Young household,Electronics,Direct mail,1
+M00066,77,6,341.85,0.229,No,8,Young household,Electronics,Email,1
+M00067,129,9,108,0.387,Yes,7,Established,Grocery,SMS,0
+M00068,94,11,897.37,0.391,Yes,8,Young household,Home,Paid social,1
+M00069,145,4,174.17,0.132,Yes,7,Family,Beauty,Email,0
+M00070,148,6,332.2,0.015,Yes,8,Urban single,Apparel,SMS,1
+M00071,53,13,622.2,0.343,No,9,Established,Electronics,Email,0
+M00072,83,9,313.11,0.271,No,14,Established,Beauty,Direct mail,0
+M00073,11,5,307.34,0.139,Yes,9,Young household,Grocery,Direct mail,1
+M00074,87,12,345.11,0.318,Yes,13,Urban single,Electronics,Email,1
+M00075,25,10,644.04,0.457,No,9,Urban single,Beauty,SMS,0
+M00076,8,14,742.8,0.05,Yes,11,Retired,Electronics,Direct mail,0
+M00077,15,12,498.57,0.421,No,13,Urban single,Electronics,Email,1
+M00078,97,7,246.81,0.279,No,10,Retired,Grocery,Paid social,1
+M00079,128,8,355.03,0.082,No,7,Retired,Apparel,Paid social,1
+M00080,18,9,496.11,0.371,No,11,Urban single,Beauty,Email,1
+M00081,107,6,72,0.271,No,7,Urban single,Electronics,SMS,0
+M00082,65,6,317.64,0.016,Yes,7,Established,Beauty,Direct mail,0
+M00083,124,7,562.48,0.148,Yes,13,Young household,Home,Paid social,0
+M00084,22,13,667.51,0.299,Yes,12,Retired,Apparel,SMS,0
+M00085,57,10,861.05,0.143,Yes,8,Urban single,Home,Email,1
+M00086,59,8,625.08,0.221,No,10,Young household,Beauty,Email,0
+M00087,100,10,597.17,0,No,10,Young household,Home,Paid social,1
+M00088,26,10,714.55,0,No,12,Family,Electronics,Paid social,0
+M00089,46,5,316.41,0.067,No,9,Young household,Home,Direct mail,0
+M00090,56,15,1236.73,0.253,Yes,12,Young household,Home,Email,1
+M00091,70,6,415.86,0.353,Yes,6,Established,Beauty,Direct mail,0
+M00092,29,5,264.6,0.222,No,10,Established,Electronics,SMS,1
+M00093,60,12,515.36,0.119,No,16,Young household,Home,Direct mail,1
+M00094,18,9,728.99,0.11,No,8,Established,Grocery,Direct mail,1
+M00095,7,5,328.92,0.364,Yes,4,Established,Electronics,SMS,1
+M00096,149,12,498.27,0.246,No,11,Established,Beauty,Direct mail,0
+M00097,75,13,285.74,0.292,Yes,14,Young household,Grocery,SMS,1
+M00098,128,2,149.58,0.278,No,2,Young household,Beauty,Email,0
+M00099,43,10,475.14,0.357,Yes,10,Young household,Beauty,Email,1
+M00100,125,2,160.33,0.626,No,6,Urban single,Electronics,Paid social,0
+M00101,59,7,214.28,0.082,No,4,Urban single,Grocery,SMS,0
+M00102,132,9,108,0.401,Yes,10,Urban single,Electronics,Email,1
+M00103,10,10,670.77,0.183,No,13,Established,Home,SMS,1
+M00104,73,10,273.9,0.059,Yes,10,Retired,Electronics,Paid social,1
+M00105,118,12,144,0.172,No,12,Retired,Beauty,Email,0
+M00106,13,17,496.17,0.129,No,14,Young household,Home,Email,0
+M00107,12,8,606.82,0.51,Yes,7,Established,Apparel,SMS,1
+M00108,87,11,711.07,0.135,Yes,15,Retired,Beauty,Email,1
+M00109,58,11,1021.37,0.251,No,9,Young household,Beauty,SMS,1
+M00110,30,10,505.27,0.388,No,12,Family,Grocery,SMS,1
+M00111,107,9,162.23,0.126,No,6,Young household,Home,Paid social,0
+M00112,32,10,622.78,0.348,No,6,Urban single,Beauty,SMS,1
+M00113,11,7,386.3,0.211,No,12,Family,Grocery,Direct mail,1
+M00114,137,9,595.86,0.176,Yes,8,Family,Beauty,SMS,0
+M00115,97,10,805.63,0.672,No,10,Urban single,Beauty,Email,1
+M00116,99,3,157.04,0.069,Yes,4,Urban single,Apparel,Paid social,0
+M00117,35,7,214,0.267,No,6,Established,Grocery,Email,0
+M00118,76,11,522.77,0,Yes,12,Urban single,Electronics,SMS,1
+M00119,66,10,347.49,0.198,Yes,11,Family,Grocery,SMS,0
+M00120,89,10,732.31,0.453,No,11,Established,Beauty,Direct mail,1
+M00121,34,14,1286.75,0.382,No,18,Established,Grocery,Email,1
+M00122,135,4,334.77,0.21,No,10,Urban single,Electronics,SMS,1
+M00123,136,5,446.12,0.288,No,7,Urban single,Beauty,Direct mail,0
+M00124,32,8,221.04,0.239,No,13,Retired,Apparel,SMS,1
+M00125,150,8,391.14,0.427,No,9,Established,Home,Email,1
+M00126,39,7,520.73,0.371,Yes,12,Urban single,Beauty,Email,0
+M00127,26,12,556.19,0,No,11,Established,Home,Email,1
+M00128,128,1,93.69,0.268,No,7,Urban single,Apparel,Direct mail,0
+M00129,108,6,230.86,0.398,No,7,Retired,Electronics,Direct mail,0
+M00130,142,9,342.49,0.466,Yes,6,Established,Grocery,Paid social,0
+M00131,84,16,1100.75,0.199,Yes,15,Established,Apparel,Paid social,1
+M00132,132,7,267.33,0.063,Yes,5,Urban single,Grocery,Paid social,0
+M00133,101,6,493.16,0,Yes,9,Young household,Beauty,Direct mail,0
+M00134,83,8,591.88,0.155,No,9,Family,Beauty,Direct mail,0
+M00135,125,10,649.09,0.383,No,14,Urban single,Grocery,Email,0
+M00136,71,5,451,0,No,11,Young household,Home,Paid social,0
+M00137,117,11,678.12,0.127,No,14,Retired,Beauty,Email,1
+M00138,140,11,198.92,0.288,Yes,7,Retired,Apparel,Direct mail,0
+M00139,60,8,548.91,0.497,No,9,Retired,Grocery,SMS,0
+M00140,81,5,305.59,0.262,No,3,Urban single,Apparel,Direct mail,0
+M00141,100,6,72,0.329,No,9,Family,Electronics,Paid social,0
+M00142,31,8,553.37,0.244,No,11,Urban single,Grocery,SMS,1
+M00143,79,8,752.26,0.125,Yes,7,Family,Grocery,Paid social,0
+M00144,74,8,269.52,0.052,No,11,Family,Apparel,SMS,0
+M00145,28,9,271.29,0.249,Yes,13,Urban single,Home,SMS,1
+M00146,75,8,468.67,0.242,No,12,Family,Home,Direct mail,1
+M00147,105,6,330.8,0.187,No,6,Retired,Apparel,Email,0
+M00148,49,10,381.68,0.19,Yes,13,Retired,Home,Direct mail,0
+M00149,68,9,312.44,0.316,No,14,Established,Home,Direct mail,1
+M00150,96,8,514.06,0.505,No,8,Established,Beauty,Email,1
+M00151,43,13,270.45,0.345,No,13,Urban single,Home,Email,1
+M00152,137,11,601.33,0.515,Yes,12,Family,Beauty,SMS,1
+M00153,50,11,1010.86,0.064,Yes,13,Young household,Grocery,SMS,1
+M00154,47,6,501.63,0.42,No,5,Retired,Grocery,Direct mail,0
+M00155,124,3,123.08,0.059,Yes,3,Retired,Apparel,Direct mail,0
+M00156,95,11,933.6,0.182,Yes,13,Family,Grocery,Paid social,1
+M00157,14,12,431.84,0,No,14,Family,Beauty,Paid social,0
+M00158,107,10,561.76,0.227,Yes,13,Established,Beauty,Paid social,0
+M00159,133,3,158.24,0.519,No,5,Retired,Home,Direct mail,0
+M00160,124,6,150.62,0.285,No,5,Established,Home,Direct mail,0
+M00161,84,9,591.02,0.005,No,6,Family,Electronics,SMS,1
+M00162,17,7,621.34,0.228,Yes,9,Urban single,Home,SMS,1
+M00163,41,8,386,0.394,No,8,Urban single,Beauty,Direct mail,1
+M00164,130,11,156.33,0.172,Yes,8,Established,Grocery,Direct mail,0
+M00165,30,6,303.66,0.066,Yes,6,Urban single,Home,Paid social,0
+M00166,95,5,317.21,0.074,No,9,Family,Home,Paid social,0
+M00167,86,9,758.81,0.292,No,13,Established,Grocery,Direct mail,1
+M00168,32,12,682.99,0.29,Yes,13,Urban single,Electronics,SMS,1
+M00169,83,10,656.69,0.249,No,9,Established,Grocery,Direct mail,1
+M00170,60,5,404.88,0.148,No,6,Established,Home,Paid social,1
+M00171,75,11,397.37,0.293,Yes,7,Family,Home,Direct mail,0
+M00172,116,7,466.93,0.298,Yes,8,Young household,Grocery,Direct mail,0
+M00173,10,7,705.4,0.258,No,11,Urban single,Home,SMS,1
+M00174,45,12,997.42,0.244,Yes,10,Urban single,Apparel,SMS,1
+M00175,15,15,674.27,0.091,No,16,Urban single,Apparel,Direct mail,1
+M00176,129,10,366.38,0.204,Yes,13,Urban single,Grocery,SMS,1
+M00177,1,12,227.89,0.278,No,15,Family,Apparel,Email,0
+M00178,50,12,668.44,0,Yes,13,Family,Electronics,SMS,0
+M00179,51,6,222.63,0.185,No,6,Retired,Electronics,Direct mail,0
+M00180,116,12,377.08,0.456,No,15,Young household,Home,Direct mail,1
+M00181,111,2,26.84,0.146,Yes,0,Established,Home,Direct mail,0
+M00182,60,8,308.82,0.296,Yes,10,Urban single,Grocery,Paid social,1
+M00183,6,7,476.54,0.338,No,11,Retired,Home,Paid social,0
+M00184,95,7,303.75,0.401,No,5,Urban single,Electronics,SMS,1
+M00185,114,7,557.74,0.153,No,11,Established,Grocery,Paid social,0
+M00186,3,12,533.9,0.378,No,9,Retired,Beauty,Direct mail,1
+M00187,74,13,552.53,0.329,Yes,14,Young household,Beauty,Paid social,1
+M00188,87,2,150.05,0.525,No,8,Retired,Grocery,Paid social,0
+M00189,43,6,290.27,0.298,Yes,9,Established,Home,Direct mail,1
+M00190,143,11,800.05,0.459,No,13,Urban single,Home,Paid social,1
+M00191,106,10,819.02,0.212,No,12,Urban single,Electronics,Paid social,0
+M00192,28,14,988.81,0,No,11,Retired,Grocery,SMS,1
+M00193,24,5,352.12,0.174,No,11,Family,Electronics,Paid social,1
+M00194,75,16,456.31,0.317,Yes,15,Retired,Grocery,Email,1
+M00195,104,9,108,0.19,No,6,Established,Apparel,SMS,0
+M00196,100,10,803.76,0.258,No,9,Family,Electronics,SMS,1
+M00197,14,11,857.29,0.115,No,12,Retired,Apparel,Direct mail,1
+M00198,53,12,266.37,0.427,No,13,Established,Beauty,Email,1
+M00199,11,7,406.64,0.354,No,10,Established,Grocery,Direct mail,1
+M00200,24,15,956.24,0.503,Yes,13,Young household,Beauty,SMS,1
+M00201,135,7,244.52,0.418,Yes,5,Young household,Electronics,SMS,1
+M00202,84,12,475.86,0,No,15,Young household,Beauty,SMS,0
+M00203,30,7,318.45,0.246,No,13,Urban single,Beauty,Paid social,0
+M00204,98,5,342.76,0.231,No,12,Established,Apparel,Email,0
+M00205,49,6,72,0.466,Yes,6,Young household,Grocery,SMS,1
+M00206,117,2,49.01,0.213,No,4,Family,Apparel,Paid social,0
+M00207,10,8,372.18,0,Yes,9,Urban single,Apparel,Paid social,1
+M00208,44,15,539.48,0.308,Yes,16,Family,Grocery,Email,1
+M00209,63,7,419.01,0,No,11,Urban single,Electronics,Email,0
+M00210,40,14,778.92,0,No,16,Young household,Electronics,SMS,0
+M00211,17,7,367.3,0.126,Yes,9,Established,Apparel,Paid social,1
+M00212,31,15,765.46,0.299,Yes,14,Established,Electronics,Direct mail,1
+M00213,123,9,652.62,0.414,No,9,Established,Grocery,Email,0
+M00214,90,12,511.11,0.266,Yes,10,Family,Home,SMS,0
+M00215,41,14,602.02,0.386,Yes,13,Young household,Grocery,Paid social,1
+M00216,22,14,1117.09,0.403,No,14,Retired,Electronics,Email,1
+M00217,7,9,537.4,0.112,No,6,Family,Grocery,SMS,1
+M00218,114,7,399.64,0.455,No,4,Retired,Electronics,Email,0
+M00219,30,10,653.18,0.454,No,8,Retired,Beauty,Email,1
+M00220,17,13,1578.09,0.31,Yes,17,Retired,Grocery,Direct mail,1
+M00221,115,5,265.53,0.196,Yes,6,Young household,Apparel,SMS,0
+M00222,99,5,235.25,0.165,No,5,Established,Beauty,Direct mail,0
+M00223,140,3,207.59,0.403,Yes,6,Young household,Apparel,SMS,1
+M00224,116,4,150.36,0.297,Yes,7,Retired,Apparel,Paid social,1
+M00225,59,12,490.4,0.416,Yes,12,Family,Grocery,Paid social,0
+M00226,81,8,288.36,0.022,Yes,7,Urban single,Grocery,SMS,0
+M00227,40,14,1289.44,0.324,Yes,16,Established,Electronics,SMS,1
+M00228,28,8,307.97,0.119,Yes,7,Urban single,Electronics,Direct mail,0
+M00229,124,7,640.38,0.134,Yes,6,Established,Grocery,SMS,1
+M00230,21,14,870.69,0.345,No,17,Retired,Beauty,Direct mail,1
+M00231,55,9,176.73,0.458,No,8,Young household,Beauty,SMS,1
+M00232,128,6,368.04,0.252,Yes,4,Young household,Beauty,Email,1
+M00233,101,7,560.9,0.235,No,11,Urban single,Electronics,Email,1
+M00234,132,8,513.95,0.21,Yes,11,Established,Electronics,Email,0
+M00235,128,12,302.73,0.264,No,13,Young household,Grocery,Direct mail,1
+M00236,146,7,393.95,0.224,No,8,Established,Grocery,Direct mail,0
+M00237,83,7,267.82,0.389,No,7,Urban single,Grocery,Email,0
+M00238,93,4,134.73,0,Yes,5,Urban single,Beauty,Email,0
+M00239,2,8,469.95,0.083,Yes,13,Family,Apparel,SMS,1
+M00240,35,6,431.91,0.09,Yes,8,Urban single,Grocery,SMS,0
+M00241,64,11,341.4,0.261,Yes,14,Retired,Grocery,Email,1
+M00242,129,15,1021.72,0,No,14,Urban single,Electronics,SMS,1
+M00243,125,6,356.69,0.372,No,8,Family,Beauty,Paid social,1
+M00244,122,10,300.24,0.516,No,12,Retired,Home,Email,0
+M00245,146,9,550.13,0,No,12,Established,Beauty,Direct mail,0
+M00246,148,7,356.68,0.258,No,9,Retired,Electronics,SMS,1
+M00247,109,4,254.26,0.323,No,7,Young household,Electronics,Email,0
+M00248,77,6,449.65,0.134,No,5,Family,Apparel,SMS,0
+M00249,102,8,455.73,0.239,No,11,Family,Apparel,Direct mail,0
+M00250,138,3,36,0.098,Yes,3,Established,Electronics,Paid social,0
+M00251,89,8,422.36,0.412,Yes,7,Young household,Apparel,SMS,0
+M00252,71,7,554.13,0,No,7,Family,Grocery,Direct mail,0
+M00253,23,8,627.8,0.432,No,10,Urban single,Electronics,Direct mail,1
+M00254,150,12,764.61,0.26,No,10,Young household,Beauty,SMS,1
+M00255,110,7,406.71,0.233,Yes,10,Established,Grocery,SMS,0
+M00256,49,12,704.23,0.018,Yes,15,Established,Home,SMS,1
+M00257,47,6,462.18,0.305,Yes,9,Established,Beauty,Paid social,1
+M00258,74,8,315.71,0.296,No,7,Established,Home,Email,1
+M00259,83,13,821.19,0.052,Yes,9,Retired,Electronics,SMS,1
+M00260,49,5,389.3,0,No,10,Family,Grocery,Paid social,1
+M00261,120,5,357.54,0.067,No,8,Urban single,Electronics,Paid social,0
+M00262,17,10,372.96,0.277,No,11,Retired,Beauty,Email,1
+M00263,95,13,616.32,0,No,17,Young household,Grocery,Email,1
+M00264,77,10,713.27,0.55,Yes,8,Established,Beauty,Email,0
+M00265,93,4,242.46,0.12,Yes,8,Retired,Apparel,Paid social,0
+M00266,148,5,321.99,0.325,Yes,9,Urban single,Beauty,Email,0
+M00267,35,12,386.16,0.312,Yes,14,Retired,Apparel,SMS,1
+M00268,24,15,627.79,0.434,No,18,Established,Apparel,SMS,1
+M00269,142,1,62.04,0,Yes,10,Family,Home,SMS,0
+M00270,126,3,69.92,0.164,Yes,4,Established,Electronics,Email,0
+M00271,96,12,1145.66,0.496,Yes,12,Retired,Apparel,Email,0
+M00272,67,13,1150.67,0.424,Yes,13,Young household,Home,Email,0
+M00273,30,15,328.28,0.062,No,15,Urban single,Beauty,Direct mail,1
+M00274,11,8,131.76,0.189,No,11,Young household,Electronics,Direct mail,0
+M00275,110,6,74.25,0.085,No,8,Family,Home,Paid social,1
+M00276,23,7,390.69,0,No,11,Retired,Home,SMS,1
+M00277,48,7,168.09,0.13,No,13,Young household,Electronics,SMS,0
+M00278,142,3,109.39,0.23,No,4,Urban single,Apparel,Email,0
+M00279,78,14,551.01,0.164,No,10,Established,Beauty,Email,1
+M00280,51,11,314.69,0.178,Yes,9,Young household,Grocery,SMS,1
+M00281,94,4,292.62,0.102,Yes,1,Urban single,Beauty,Direct mail,1
+M00282,79,5,377.49,0.378,No,9,Established,Apparel,SMS,1
+M00283,118,9,143,0.344,No,12,Established,Electronics,SMS,0
+M00284,139,3,277.08,0.399,No,5,Urban single,Beauty,Email,0
+M00285,18,8,498.92,0.014,Yes,9,Family,Apparel,Paid social,1
+M00286,81,12,840.71,0,Yes,8,Retired,Grocery,Email,1
+M00287,77,9,729.85,0.136,Yes,7,Urban single,Apparel,Paid social,0
+M00288,138,6,317.31,0.239,No,5,Young household,Electronics,Email,0
+M00289,127,9,450.96,0.178,Yes,12,Urban single,Grocery,SMS,1
+M00290,4,15,1010.23,0.609,No,15,Young household,Electronics,Email,0
+M00291,123,7,584.82,0.428,No,6,Retired,Apparel,Paid social,0
+M00292,39,8,327.5,0.052,No,7,Retired,Grocery,Direct mail,1
+M00293,105,7,425.42,0.124,No,5,Retired,Beauty,Email,0
+M00294,25,13,906.39,0.45,No,12,Urban single,Grocery,Email,1
+M00295,110,7,394.83,0.175,No,9,Established,Home,SMS,1
+M00296,8,14,453.36,0.312,No,16,Young household,Apparel,Paid social,1
+M00297,145,2,82.83,0.448,No,5,Urban single,Electronics,Paid social,0
+M00298,89,7,220.62,0,Yes,9,Established,Electronics,Email,0
+M00299,20,10,609.54,0.124,Yes,6,Urban single,Grocery,SMS,0
+M00300,119,7,310.86,0.096,Yes,13,Young household,Electronics,Email,0
+M00301,73,14,428.38,0.341,No,13,Retired,Electronics,Paid social,1
+M00302,4,9,336.26,0.295,No,7,Young household,Grocery,Direct mail,1
+M00303,136,6,371.76,0.373,Yes,7,Established,Beauty,SMS,1
+M00304,148,5,91.3,0.151,Yes,5,Established,Beauty,Direct mail,0
+M00305,51,6,188.9,0.427,No,7,Urban single,Electronics,SMS,0
+M00306,140,10,747.03,0.117,No,8,Young household,Home,SMS,0
+M00307,58,5,310.34,0.303,No,5,Urban single,Grocery,Direct mail,0
+M00308,131,8,741.81,0.212,Yes,7,Established,Apparel,SMS,0
+M00309,11,7,307.05,0.116,No,8,Family,Apparel,Email,1
+M00310,51,11,734.98,0.379,Yes,14,Family,Electronics,Paid social,1
+M00311,83,12,578.13,0.127,No,11,Young household,Electronics,Email,0
+M00312,10,13,1270.85,0,No,9,Young household,Apparel,SMS,1
+M00313,73,7,588.39,0.333,No,6,Established,Home,Email,0
+M00314,122,3,220.31,0.017,No,2,Urban single,Home,Direct mail,0
+M00315,111,4,411.4,0.27,Yes,5,Retired,Apparel,Paid social,0
+M00316,133,5,381.09,0.173,No,7,Young household,Home,Direct mail,0
+M00317,97,9,501.69,0.21,Yes,7,Retired,Electronics,Email,0
+M00318,109,7,653.29,0.169,No,6,Young household,Grocery,Email,0
+M00319,59,12,699.62,0.177,Yes,12,Family,Beauty,Email,1
+M00320,51,6,375.89,0.334,No,8,Family,Apparel,Paid social,0
+M00321,7,11,927.46,0.296,Yes,14,Established,Beauty,Email,1
+M00322,102,6,366.5,0.083,Yes,11,Urban single,Home,Email,0
+M00323,4,11,830.79,0.031,No,13,Urban single,Apparel,Direct mail,1
+M00324,66,5,198.9,0.075,No,8,Retired,Apparel,Paid social,0
+M00325,122,10,363.55,0.03,Yes,6,Urban single,Apparel,Email,0
+M00326,123,7,223.47,0.354,No,7,Young household,Home,Paid social,0
+M00327,129,9,340.85,0.278,No,7,Retired,Apparel,Paid social,0
+M00328,138,8,264.16,0.001,No,9,Urban single,Apparel,SMS,0
+M00329,65,8,1022.52,0.193,No,7,Family,Apparel,SMS,0
+M00330,95,7,267.12,0.313,No,6,Family,Beauty,SMS,1
+M00331,47,8,227.58,0.408,Yes,10,Established,Home,Paid social,1
+M00332,116,5,219.28,0.159,Yes,10,Young household,Apparel,Email,0
+M00333,50,7,434.67,0.484,No,9,Established,Home,SMS,1
+M00334,49,14,1299.83,0.394,No,11,Established,Beauty,Email,1
+M00335,5,14,1247.59,0.236,No,16,Family,Apparel,Paid social,1
+M00336,81,15,1535.22,0.269,No,17,Young household,Electronics,Direct mail,0
+M00337,98,3,114.52,0.015,No,6,Urban single,Grocery,SMS,0
+M00338,129,9,435.76,0.322,No,6,Retired,Home,SMS,0
+M00339,45,7,198.62,0,Yes,11,Family,Apparel,SMS,0
+M00340,138,4,362.57,0.279,No,8,Urban single,Apparel,Direct mail,0
+M00341,29,12,616.57,0.277,Yes,12,Young household,Beauty,SMS,1
+M00342,124,2,65.54,0.222,Yes,0,Retired,Apparel,Paid social,0
+M00343,63,10,941.34,0.429,No,10,Established,Apparel,SMS,0
+M00344,12,11,556.2,0.5,No,14,Urban single,Apparel,Email,0
+M00345,80,11,359.75,0.453,No,14,Established,Electronics,Paid social,1
+M00346,31,10,997.03,0.048,Yes,6,Urban single,Electronics,SMS,1
+M00347,51,8,851.25,0,No,11,Retired,Electronics,SMS,0
+M00348,76,4,306.15,0.064,Yes,6,Established,Beauty,SMS,0
+M00349,88,14,730.94,0.048,Yes,13,Urban single,Grocery,Direct mail,0
+M00350,95,13,938.82,0.403,No,11,Urban single,Beauty,Direct mail,1
+M00351,140,9,126.27,0.207,Yes,8,Urban single,Apparel,Paid social,0
+M00352,53,10,120,0.337,No,11,Established,Electronics,SMS,0
+M00353,147,6,545.07,0.393,No,9,Retired,Beauty,Email,1
+M00354,62,7,184.59,0.214,Yes,10,Urban single,Home,SMS,1
+M00355,147,7,398.09,0.244,No,10,Young household,Home,Paid social,1
+M00356,100,9,676.62,0.373,No,9,Established,Beauty,SMS,1
+M00357,45,6,303.24,0.263,Yes,8,Urban single,Beauty,SMS,0
+M00358,83,9,806.85,0.644,No,10,Family,Electronics,Paid social,0
+M00359,131,4,275.26,0.392,Yes,8,Established,Grocery,Direct mail,0
+M00360,127,6,400.6,0.396,No,8,Young household,Beauty,SMS,0
+M00361,60,12,1006.41,0.258,No,14,Young household,Home,Paid social,1
+M00362,22,6,313.41,0.182,Yes,10,Young household,Electronics,Direct mail,1
+M00363,108,11,1236.08,0.292,No,12,Family,Home,Email,1
+M00364,95,8,898.22,0.145,No,8,Urban single,Apparel,Paid social,0
+M00365,78,7,631.2,0.191,No,11,Young household,Home,SMS,0
+M00366,20,15,1345.1,0.359,Yes,18,Established,Electronics,Paid social,1
+M00367,100,3,36,0.188,No,7,Family,Home,Paid social,0
+M00368,94,11,377.09,0.209,Yes,10,Retired,Electronics,Paid social,1
+M00369,10,11,1042.73,0,Yes,10,Urban single,Electronics,Direct mail,1
+M00370,127,10,381.35,0.156,No,12,Family,Beauty,Direct mail,0
+M00371,124,14,663.82,0.262,No,17,Family,Grocery,SMS,0
+M00372,49,12,755.53,0.13,Yes,12,Established,Apparel,Direct mail,1
+M00373,125,10,985.36,0.074,Yes,12,Family,Apparel,Email,1
+M00374,91,11,527.44,0.321,Yes,11,Young household,Beauty,Direct mail,1
+M00375,72,11,710.3,0.406,No,13,Young household,Grocery,SMS,1
+M00376,62,10,240.99,0.286,Yes,9,Urban single,Electronics,Email,1
+M00377,141,6,352.29,0.515,Yes,11,Retired,Apparel,Paid social,0
+M00378,145,8,160.43,0.159,No,8,Young household,Electronics,SMS,0
+M00379,93,6,387.26,0.28,No,7,Young household,Beauty,Paid social,1
+M00380,95,9,332.13,0.175,Yes,12,Urban single,Apparel,Email,1
+M00381,94,9,352.14,0,Yes,10,Family,Home,Paid social,1
+M00382,150,10,636.7,0.196,Yes,14,Retired,Grocery,Email,1
+M00383,12,4,271.06,0.026,Yes,8,Urban single,Grocery,Email,0
+M00384,4,10,334.87,0.217,Yes,10,Established,Grocery,SMS,1
+M00385,122,11,438.36,0.426,No,12,Family,Grocery,Paid social,0
+M00386,58,11,665.33,0.351,No,11,Family,Grocery,SMS,0
+M00387,48,8,636.86,0.06,Yes,7,Family,Grocery,Direct mail,1
+M00388,27,10,771.46,0.307,No,14,Young household,Apparel,Direct mail,1
+M00389,135,13,1270.07,0.554,No,13,Young household,Home,Direct mail,1
+M00390,97,10,878.61,0,Yes,10,Family,Apparel,Direct mail,0
+M00391,76,4,113.87,0,No,5,Urban single,Home,Email,0
+M00392,66,10,317.92,0,No,7,Established,Apparel,Email,0
+M00393,105,14,870.45,0.161,Yes,13,Retired,Apparel,Direct mail,0
+M00394,38,12,544.91,0.312,Yes,10,Retired,Beauty,Paid social,1
+M00395,33,12,694.75,0.053,No,11,Family,Beauty,SMS,0
+M00396,19,15,1199.9,0.368,Yes,12,Family,Home,Email,1
+M00397,104,11,365.2,0.29,Yes,13,Young household,Electronics,Direct mail,1
+M00398,107,12,692.59,0.363,No,12,Established,Grocery,Direct mail,0
+M00399,30,7,652.13,0.116,No,11,Retired,Apparel,Paid social,1
+M00400,17,9,391.39,0,Yes,5,Established,Grocery,Email,0
+M00401,89,4,57.34,0.339,No,8,Young household,Grocery,Email,0
+M00402,100,8,229.58,0.003,No,9,Urban single,Apparel,SMS,0
+M00403,36,3,297.02,0.325,Yes,4,Urban single,Beauty,Direct mail,0
+M00404,49,6,359.78,0.396,Yes,7,Young household,Grocery,Paid social,1
+M00405,59,8,382.43,0.004,No,8,Family,Apparel,SMS,1
+M00406,102,6,409.29,0.024,Yes,10,Established,Grocery,Email,0
+M00407,35,9,429.4,0.091,No,7,Retired,Grocery,SMS,0
+M00408,26,13,951.2,0.41,No,11,Urban single,Grocery,Paid social,0
+M00409,26,6,240.68,0.178,Yes,11,Young household,Apparel,SMS,0
+M00410,10,7,212.79,0.517,Yes,5,Urban single,Electronics,Email,1
+M00411,92,4,241.58,0.35,Yes,4,Established,Grocery,Paid social,1
+M00412,10,7,394.1,0.27,No,11,Retired,Apparel,Email,1
+M00413,10,7,124.27,0,Yes,8,Family,Beauty,SMS,1
+M00414,27,10,876.15,0.086,No,10,Urban single,Beauty,Paid social,0
+M00415,35,9,928.77,0.296,No,13,Established,Electronics,Email,0
+M00416,117,8,378.83,0.127,No,12,Retired,Apparel,Email,0
+M00417,125,9,541.44,0.206,No,9,Family,Home,Paid social,1
+M00418,83,8,580.36,0.605,No,8,Young household,Beauty,SMS,1
+M00419,25,7,298.24,0.324,No,5,Retired,Beauty,SMS,0
+M00420,112,11,643.86,0,Yes,8,Retired,Apparel,Direct mail,0
+M00421,100,9,108,0.15,Yes,16,Established,Beauty,Email,0
+M00422,43,10,630.95,0.145,No,14,Retired,Beauty,Paid social,1
+M00423,30,6,463.22,0.048,No,10,Retired,Home,Direct mail,0
+M00424,103,14,301.1,0.443,Yes,14,Retired,Electronics,Paid social,1
+M00425,102,7,355.82,0.459,Yes,7,Established,Grocery,SMS,0
+M00426,135,7,601.09,0,Yes,8,Urban single,Electronics,Email,0
+M00427,79,9,774.55,0.163,No,8,Young household,Beauty,SMS,1
+M00428,109,6,447.99,0.429,Yes,3,Young household,Apparel,SMS,1
+M00429,73,11,819.25,0.188,No,9,Family,Apparel,Direct mail,0
+M00430,66,5,266.12,0.055,No,9,Young household,Grocery,Email,1
+M00431,3,17,1263.26,0.385,No,16,Established,Home,Email,1
+M00432,47,11,988.84,0.187,Yes,11,Established,Home,Paid social,1
+M00433,73,7,819.67,0.055,No,9,Family,Beauty,Paid social,0
+M00434,42,11,861.85,0.293,Yes,10,Family,Grocery,Email,1
+M00435,105,11,714.23,0.167,No,11,Young household,Grocery,Direct mail,1
+M00436,69,11,827.08,0.354,No,9,Retired,Grocery,Email,1
+M00437,143,4,195.82,0,Yes,5,Urban single,Home,Paid social,0
+M00438,8,13,407.68,0.328,Yes,12,Young household,Apparel,Direct mail,1
+M00439,65,6,340.2,0,No,11,Young household,Apparel,Email,0
+M00440,27,12,463,0.284,No,12,Young household,Grocery,Direct mail,1
+M00441,27,12,1011.74,0.187,No,10,Young household,Grocery,Paid social,1
+M00442,133,3,229.32,0.249,No,6,Young household,Beauty,SMS,0
+M00443,9,6,284.84,0.079,No,5,Young household,Grocery,Paid social,0
+M00444,56,7,417.62,0.201,Yes,12,Urban single,Apparel,Email,1
+M00445,94,3,193.67,0,No,8,Family,Electronics,Paid social,0
+M00446,77,6,522.19,0.121,No,8,Family,Grocery,Email,0
+M00447,91,8,530.63,0.064,No,8,Retired,Apparel,Paid social,1
+M00448,108,11,571.36,0.036,No,13,Young household,Grocery,Email,1
+M00449,107,11,487.55,0,No,11,Retired,Apparel,Direct mail,0
+M00450,14,7,578.83,0.124,No,7,Established,Home,Email,1
+M00451,141,4,364.63,0.595,No,10,Family,Electronics,Email,0
+M00452,107,5,235.46,0.052,No,11,Family,Grocery,Email,1
+M00453,7,7,299.42,0.117,No,7,Family,Grocery,Direct mail,0
+M00454,13,6,103.83,0.295,Yes,6,Urban single,Apparel,SMS,1
+M00455,77,9,185.55,0.037,No,12,Urban single,Electronics,Direct mail,0
+M00456,66,10,884.54,0.106,No,14,Urban single,Apparel,Direct mail,1
+M00457,136,5,151.71,0,No,10,Family,Electronics,Email,0
+M00458,20,11,917.28,0.577,Yes,8,Established,Home,Paid social,1
+M00459,12,14,1179.22,0.201,No,14,Young household,Apparel,SMS,1
+M00460,61,13,220.75,0.21,Yes,14,Young household,Beauty,Direct mail,1
+M00461,91,14,721.27,0.712,No,16,Established,Apparel,Paid social,1
+M00462,74,5,317.24,0,No,8,Young household,Apparel,Direct mail,0
+M00463,18,16,438.74,0.289,Yes,16,Family,Home,Paid social,1
+M00464,148,10,756.78,0.306,Yes,7,Urban single,Grocery,Direct mail,0
+M00465,73,3,175.26,0.387,Yes,5,Family,Apparel,Paid social,1
+M00466,59,14,1294.75,0.348,No,9,Young household,Electronics,Paid social,1
+M00467,114,4,108.79,0.478,No,5,Retired,Home,SMS,1
+M00468,92,8,585.42,0.127,Yes,11,Retired,Grocery,Paid social,0
+M00469,72,6,482.07,0.175,No,9,Retired,Apparel,Email,0
+M00470,7,10,670.59,0.292,No,15,Young household,Home,Paid social,1
+M00471,76,6,531.13,0.192,Yes,9,Young household,Beauty,Email,1
+M00472,128,5,221.2,0.241,Yes,7,Family,Grocery,SMS,0
+M00473,62,10,436.11,0.451,No,17,Family,Apparel,Direct mail,1
+M00474,52,14,982,0.445,Yes,12,Retired,Apparel,Direct mail,1
+M00475,61,8,594.43,0.319,Yes,9,Established,Electronics,SMS,1
+M00476,118,8,522.29,0.264,No,6,Established,Beauty,Direct mail,0
+M00477,66,9,770.28,0.096,No,7,Urban single,Grocery,Email,0
+M00478,90,5,184.83,0.123,Yes,7,Retired,Grocery,SMS,0
+M00479,139,7,474.72,0.308,No,8,Urban single,Electronics,Email,0
+M00480,82,6,533.29,0.144,No,9,Young household,Apparel,Paid social,0
+M00481,117,8,409.27,0.209,No,7,Urban single,Home,SMS,0
+M00482,13,7,548.35,0.358,Yes,11,Young household,Home,Paid social,1
+M00483,24,12,638.72,0.286,No,8,Young household,Electronics,SMS,1
+M00484,107,12,370.19,0.508,Yes,14,Established,Beauty,Paid social,1
+M00485,146,2,135.62,0.067,Yes,5,Retired,Beauty,SMS,0
+M00486,140,12,144,0,No,12,Urban single,Home,Paid social,0
+M00487,98,9,685.8,0.228,Yes,9,Urban single,Electronics,SMS,1
+M00488,82,13,500.58,0.109,No,15,Retired,Beauty,SMS,1
+M00489,82,7,297.03,0.23,No,7,Established,Electronics,SMS,0
+M00490,73,9,721.92,0.22,Yes,9,Urban single,Grocery,Email,1
+M00491,108,8,617.88,0.103,Yes,7,Retired,Grocery,Email,0
+M00492,106,13,632.19,0.323,No,12,Urban single,Apparel,Direct mail,1
+M00493,45,11,421.68,0.376,No,11,Family,Electronics,Paid social,0
+M00494,95,12,473.96,0.294,No,16,Urban single,Electronics,Paid social,1
+M00495,145,7,657.05,0,No,7,Young household,Beauty,Direct mail,0
+M00496,37,10,551.87,0.006,Yes,7,Retired,Home,Email,1
+M00497,71,13,1256.43,0.187,Yes,12,Retired,Home,Email,1
+M00498,48,8,480.32,0.063,No,7,Young household,Grocery,Email,0
+M00499,107,7,183.54,0.181,No,9,Retired,Apparel,Email,0
+M00500,66,2,131.94,0.09,No,2,Young household,Apparel,Email,0
+M00501,114,12,552.79,0.234,No,9,Established,Apparel,Paid social,1
+M00502,80,6,249.34,0.133,No,8,Urban single,Electronics,Direct mail,1
+M00503,127,7,218.06,0,No,9,Established,Beauty,Direct mail,1
+M00504,28,8,377.17,0.163,No,10,Retired,Beauty,Direct mail,0
+M00505,120,7,426.43,0.303,Yes,11,Established,Apparel,SMS,1
+M00506,83,8,508.23,0.103,No,5,Young household,Electronics,Paid social,1
+M00507,62,11,651.57,0.117,Yes,9,Retired,Grocery,Paid social,1
+M00508,93,8,545.25,0,No,5,Established,Electronics,Email,1
+M00509,120,10,721.91,0.191,Yes,9,Retired,Beauty,SMS,1
+M00510,147,11,891.41,0.054,No,15,Family,Apparel,Paid social,1
+M00511,30,9,578.21,0.304,Yes,11,Urban single,Grocery,Direct mail,1
+M00512,89,11,706.89,0.229,Yes,9,Retired,Grocery,Paid social,1
+M00513,90,10,571.37,0.009,No,13,Urban single,Grocery,SMS,0
+M00514,73,10,767.79,0.264,No,10,Family,Apparel,SMS,1
+M00515,114,6,551.32,0.26,No,9,Urban single,Grocery,Paid social,0
+M00516,120,6,253.23,0.134,No,5,Established,Home,Email,0
+M00517,149,2,136.33,0.306,No,6,Retired,Electronics,Paid social,0
+M00518,2,6,257.9,0.232,Yes,4,Established,Grocery,Direct mail,1
+M00519,57,11,292.92,0.463,Yes,8,Retired,Beauty,Paid social,1
+M00520,21,7,270.26,0.508,Yes,9,Young household,Apparel,Email,0
+M00521,132,5,309.35,0.32,Yes,6,Established,Beauty,SMS,0
+M00522,14,15,601.34,0.233,Yes,12,Established,Grocery,Email,1
+M00523,107,9,495.23,0.237,No,12,Young household,Grocery,Direct mail,0
+M00524,112,5,250.79,0,No,9,Established,Beauty,Paid social,1
+M00525,4,18,440.26,0.486,Yes,21,Family,Grocery,Direct mail,1
+M00526,9,13,673.73,0.281,Yes,18,Established,Electronics,Email,0
+M00527,100,12,997.5,0.468,No,13,Young household,Grocery,SMS,1
+M00528,71,13,638.2,0.397,No,16,Urban single,Electronics,SMS,1
+M00529,85,9,615.17,0.249,No,12,Family,Beauty,Email,1
+M00530,36,9,310.06,0,No,13,Urban single,Grocery,SMS,0
+M00531,142,5,207.94,0.296,No,5,Retired,Grocery,Direct mail,0
+M00532,75,6,280.78,0.144,Yes,9,Family,Home,SMS,0
+M00533,29,7,608.47,0.221,No,5,Family,Apparel,SMS,1
+M00534,40,7,428.88,0.077,Yes,7,Family,Apparel,SMS,1
+M00535,2,10,619.2,0.132,Yes,13,Urban single,Home,Direct mail,1
+M00536,136,10,465.63,0.141,Yes,8,Established,Beauty,Paid social,1
+M00537,28,13,1652.02,0.323,No,12,Urban single,Grocery,Paid social,1
+M00538,125,12,1241.11,0,No,16,Young household,Home,Paid social,0
+M00539,127,9,316.96,0.287,Yes,8,Retired,Electronics,Direct mail,0
+M00540,67,11,530.28,0.21,Yes,16,Young household,Apparel,SMS,1
+M00541,102,8,715.08,0.199,Yes,12,Urban single,Apparel,Email,1
+M00542,53,12,528.44,0.342,No,10,Family,Home,Direct mail,1
+M00543,68,13,1068.91,0.157,Yes,12,Urban single,Home,Direct mail,0
+M00544,19,10,669.29,0.396,No,10,Family,Grocery,Email,1
+M00545,39,11,801.16,0.352,No,10,Retired,Electronics,Direct mail,1
+M00546,46,7,719.36,0.122,No,9,Family,Beauty,Paid social,0
+M00547,39,13,767.15,0.185,Yes,15,Urban single,Beauty,SMS,1
+M00548,45,9,208.06,0.26,No,6,Young household,Beauty,Paid social,1
+M00549,31,8,189.53,0.171,No,8,Retired,Electronics,Direct mail,0
+M00550,12,11,190.45,0.355,No,8,Family,Grocery,Direct mail,1
+M00551,15,15,887.19,0.332,Yes,18,Retired,Grocery,Email,1
+M00552,29,19,1073.97,0.26,Yes,16,Family,Beauty,Paid social,1
+M00553,46,14,1460.36,0.159,No,12,Young household,Apparel,SMS,1
+M00554,102,7,352.95,0.249,No,10,Established,Home,SMS,1
+M00555,98,10,402.23,0.139,No,10,Established,Apparel,SMS,0
+M00556,147,8,487.78,0.563,Yes,7,Established,Apparel,Paid social,1
+M00557,128,10,408.36,0.112,No,7,Retired,Apparel,SMS,1
+M00558,87,11,732.84,0.561,No,10,Retired,Home,Paid social,1
+M00559,133,1,66.84,0.307,No,6,Established,Electronics,SMS,0
+M00560,126,8,472.2,0.169,No,10,Urban single,Beauty,Paid social,0
+M00561,38,9,723.83,0.305,Yes,11,Young household,Home,SMS,1
+M00562,66,11,915.19,0.277,Yes,11,Urban single,Grocery,Email,1
+M00563,24,11,420.87,0.392,No,11,Established,Home,Direct mail,0
+M00564,131,11,461.5,0.288,No,10,Retired,Beauty,Email,1
+M00565,34,8,363.81,0,Yes,8,Urban single,Beauty,SMS,0
+M00566,78,11,558.09,0.128,No,15,Urban single,Grocery,Paid social,0
+M00567,89,9,389.35,0.191,Yes,6,Young household,Electronics,Email,0
+M00568,145,4,371.27,0,No,10,Family,Apparel,SMS,0
+M00569,19,14,877.25,0.24,No,14,Retired,Home,SMS,0
+M00570,97,4,283.78,0.087,No,7,Urban single,Electronics,Email,0
+M00571,150,8,367.37,0.282,Yes,11,Family,Electronics,Paid social,0
+M00572,24,14,974.89,0.035,Yes,16,Young household,Grocery,SMS,1
+M00573,121,3,128.1,0.28,No,4,Young household,Grocery,Direct mail,0
+M00574,16,10,791.87,0.371,No,12,Urban single,Home,Paid social,1
+M00575,145,5,276.85,0.32,Yes,7,Urban single,Electronics,Direct mail,1
+M00576,150,6,354.76,0.161,Yes,11,Retired,Grocery,Email,1
+M00577,120,10,674.32,0.319,No,13,Urban single,Grocery,Paid social,0
+M00578,31,8,335.93,0.124,No,10,Young household,Home,Email,0
+M00579,71,11,438.18,0.152,No,9,Urban single,Grocery,SMS,1
+M00580,115,4,161.03,0.166,No,1,Young household,Electronics,Email,0
+M00581,100,1,61.12,0.188,No,4,Urban single,Grocery,Email,0
+M00582,15,15,567.23,0.142,Yes,12,Urban single,Beauty,Paid social,1
+M00583,87,12,303.96,0,Yes,11,Retired,Beauty,SMS,1
+M00584,44,9,638.55,0.276,No,11,Family,Grocery,Direct mail,1
+M00585,137,11,290.51,0,Yes,14,Family,Apparel,Paid social,1
+M00586,29,10,541.01,0.431,No,10,Young household,Electronics,Email,1
+M00587,69,11,1173.78,0.005,No,12,Retired,Beauty,Direct mail,1
+M00588,49,7,423.6,0.187,Yes,11,Urban single,Apparel,SMS,1
+M00589,89,9,366.9,0.085,Yes,9,Young household,Beauty,Direct mail,0
+M00590,114,12,530.58,0.152,Yes,9,Retired,Apparel,Direct mail,0
+M00591,19,13,859.17,0.213,No,14,Young household,Grocery,Paid social,1
+M00592,88,8,210.89,0.181,No,10,Retired,Home,SMS,1
+M00593,113,9,751.81,0.477,No,14,Family,Home,Direct mail,0
+M00594,18,7,467.29,0.083,Yes,6,Established,Apparel,Direct mail,1
+M00595,109,6,348.64,0.301,Yes,10,Family,Grocery,SMS,1
+M00596,90,5,198.05,0.393,No,7,Established,Home,Email,0
+M00597,43,7,251.52,0.26,Yes,8,Young household,Electronics,Direct mail,0
+M00598,49,3,164.61,0.526,No,8,Family,Beauty,SMS,0
+M00599,130,8,233.38,0.372,Yes,12,Family,Electronics,Direct mail,0
+M00600,104,9,405.86,0,No,13,Urban single,Electronics,Direct mail,1
+M00601,47,7,599.98,0.24,No,6,Established,Electronics,Direct mail,1
+M00602,81,12,838.32,0.007,Yes,15,Young household,Home,Paid social,1
+M00603,23,8,242.57,0.137,Yes,12,Retired,Apparel,SMS,1
+M00604,38,6,348.17,0.065,No,10,Urban single,Apparel,Direct mail,0
+M00605,149,5,221.21,0.346,No,10,Retired,Beauty,Direct mail,1
+M00606,69,4,139.17,0.311,No,9,Family,Electronics,Direct mail,1
+M00607,130,11,384.83,0.221,No,10,Family,Home,SMS,0
+M00608,23,7,395.59,0.231,No,4,Retired,Grocery,Direct mail,0
+M00609,63,10,120,0.246,No,10,Family,Grocery,SMS,1
+M00610,77,14,1181.97,0.245,Yes,14,Family,Grocery,Direct mail,1
+M00611,121,7,452.02,0.233,Yes,9,Established,Electronics,Paid social,0
+M00612,7,13,1307.39,0.413,Yes,12,Retired,Home,Paid social,1
+M00613,116,8,476.98,0.187,No,6,Urban single,Beauty,Direct mail,0
+M00614,63,14,576.8,0,Yes,15,Established,Electronics,Email,1
+M00615,150,12,362.51,0.25,No,11,Family,Apparel,Direct mail,0
+M00616,119,8,315.44,0.139,Yes,12,Young household,Grocery,Paid social,0
+M00617,31,7,656.56,0.385,No,6,Established,Apparel,Paid social,0
+M00618,99,6,427.09,0.288,No,4,Family,Beauty,Paid social,0
+M00619,102,14,451.85,0.23,Yes,16,Young household,Grocery,Paid social,1
+M00620,70,13,1085.83,0.307,Yes,10,Young household,Home,Email,1
+M00621,143,1,101.19,0.356,No,4,Established,Beauty,Direct mail,0
+M00622,83,14,937.91,0.204,Yes,11,Family,Grocery,Paid social,1
+M00623,147,9,790.7,0.254,No,8,Family,Electronics,Email,0
+M00624,118,9,444.88,0.082,Yes,14,Young household,Grocery,Direct mail,0
+M00625,82,10,860.78,0.603,No,11,Young household,Grocery,Email,0
+M00626,23,17,619.87,0.076,No,13,Urban single,Beauty,Direct mail,1
+M00627,98,8,547.2,0.446,Yes,6,Urban single,Home,SMS,1
+M00628,41,16,900.15,0.086,No,13,Urban single,Electronics,SMS,0
+M00629,84,10,497.28,0,Yes,10,Young household,Apparel,Direct mail,1
+M00630,3,8,722.5,0.344,No,13,Established,Home,Direct mail,1
+M00631,146,6,238.08,0.155,No,7,Family,Home,Email,0
+M00632,37,13,410.26,0.199,Yes,13,Family,Apparel,Email,1
+M00633,50,10,573.88,0.252,Yes,10,Established,Electronics,Direct mail,1
+M00634,46,18,1614.58,0.028,No,17,Retired,Beauty,Paid social,0
+M00635,58,8,683.29,0.236,No,6,Family,Electronics,SMS,1
+M00636,75,9,1004.88,0.232,Yes,9,Urban single,Electronics,Direct mail,0
+M00637,72,11,515.99,0.163,No,15,Established,Apparel,Paid social,1
+M00638,35,6,359.37,0.122,No,8,Retired,Grocery,SMS,1
+M00639,129,4,222.53,0.134,No,3,Retired,Beauty,Direct mail,0
+M00640,131,8,260.81,0.167,No,10,Young household,Home,SMS,1
+M00641,135,12,540.55,0.241,No,12,Urban single,Grocery,Direct mail,0
+M00642,9,10,956.09,0.034,Yes,8,Retired,Beauty,Email,0
+M00643,44,13,1273.78,0.343,Yes,10,Family,Apparel,Email,0
+M00644,3,8,289.64,0.146,Yes,12,Retired,Home,Email,0
+M00645,127,9,747.34,0,No,13,Established,Home,SMS,1
+M00646,88,12,899.9,0.396,No,16,Young household,Apparel,SMS,1
+M00647,137,7,352.15,0.117,No,10,Urban single,Beauty,Paid social,0
+M00648,92,11,882.46,0.313,Yes,12,Established,Electronics,Direct mail,0
+M00649,135,11,731.76,0.416,No,13,Retired,Apparel,Paid social,1
+M00650,140,8,286.9,0.199,No,8,Retired,Beauty,Direct mail,0
+M00651,87,10,694.99,0.318,Yes,12,Urban single,Apparel,Direct mail,1
+M00652,28,13,464.21,0,No,9,Retired,Electronics,Email,1
+M00653,61,13,595.73,0.225,No,11,Urban single,Electronics,Paid social,1
+M00654,142,3,298.94,0.158,No,6,Young household,Apparel,Direct mail,0
+M00655,113,5,203.75,0.116,No,4,Retired,Electronics,SMS,0
+M00656,23,13,620.72,0.267,Yes,10,Established,Grocery,Paid social,1
+M00657,71,8,575.57,0.207,Yes,12,Family,Grocery,SMS,0
+M00658,70,9,252.88,0.175,No,12,Family,Electronics,SMS,1
+M00659,88,11,397.39,0.335,Yes,8,Young household,Grocery,Direct mail,1
+M00660,114,12,852.85,0.398,No,11,Urban single,Apparel,Direct mail,1
+M00661,48,7,517.51,0.103,No,8,Urban single,Grocery,Email,0
+M00662,33,14,954.56,0.159,Yes,17,Family,Home,Email,1
+M00663,113,10,1000.7,0.403,No,8,Established,Electronics,Direct mail,1
+M00664,93,11,665.14,0.115,No,10,Established,Apparel,Paid social,0
+M00665,68,8,448.07,0.039,Yes,8,Young household,Grocery,Email,0
+M00666,50,6,489.88,0.201,Yes,3,Established,Grocery,Email,0
+M00667,111,13,905.97,0,No,11,Family,Electronics,Paid social,1
+M00668,53,15,204.34,0.388,Yes,13,Young household,Home,Direct mail,1
+M00669,105,15,1002.64,0.12,No,9,Established,Beauty,Paid social,0
+M00670,9,16,619.53,0.311,No,16,Retired,Electronics,Direct mail,1
+M00671,102,6,395.36,0.299,No,6,Young household,Electronics,Paid social,1
+M00672,126,9,716.86,0,Yes,10,Established,Home,Direct mail,1
+M00673,25,14,1347.14,0.011,No,11,Young household,Electronics,Email,1
+M00674,2,14,1156.08,0.503,Yes,12,Retired,Beauty,Paid social,1
+M00675,115,5,327.74,0.464,No,8,Established,Home,Direct mail,1
+M00676,16,16,745.08,0.246,No,14,Family,Grocery,Paid social,1
+M00677,123,1,68.75,0.301,Yes,5,Established,Home,Email,0
+M00678,86,5,247.73,0.435,No,9,Family,Grocery,Email,1
+M00679,7,16,1348.32,0.137,Yes,15,Established,Home,Direct mail,1
+M00680,3,10,285.91,0.375,Yes,13,Family,Beauty,Paid social,0
+M00681,46,6,374.25,0.364,Yes,7,Retired,Beauty,Paid social,0
+M00682,3,14,591.78,0.068,No,12,Retired,Electronics,SMS,1
+M00683,33,13,156,0.335,No,11,Established,Apparel,Email,1
+M00684,4,13,721.63,0.264,Yes,18,Retired,Grocery,SMS,1
+M00685,120,11,254.95,0.36,Yes,8,Young household,Electronics,Paid social,0
+M00686,86,10,737.48,0.007,No,9,Family,Home,SMS,1
+M00687,134,4,55.84,0.158,Yes,8,Family,Home,Paid social,0
+M00688,136,4,229.53,0.249,No,7,Young household,Grocery,Direct mail,0
+M00689,17,8,550.51,0.256,Yes,8,Family,Grocery,Paid social,1
+M00690,131,11,385.27,0.326,Yes,11,Urban single,Apparel,Email,0
+M00691,107,14,942.95,0.259,Yes,14,Retired,Grocery,Email,1
+M00692,21,12,629.03,0.29,No,11,Urban single,Electronics,Direct mail,1
+M00693,53,16,1262.53,0.412,No,14,Retired,Apparel,Email,1
+M00694,83,11,1042.3,0.235,No,11,Young household,Apparel,SMS,1
+M00695,150,6,349.62,0.328,Yes,9,Established,Grocery,Direct mail,1
+M00696,95,6,229.52,0.079,No,8,Retired,Electronics,Direct mail,0
+M00697,70,14,741.02,0.407,No,12,Urban single,Apparel,SMS,1
+M00698,76,9,465.16,0.236,No,8,Family,Beauty,Paid social,0
+M00699,44,12,629.98,0.3,No,12,Urban single,Apparel,Paid social,0
+M00700,27,12,887.32,0.198,No,15,Urban single,Home,Paid social,1
+M00701,102,8,291.22,0.13,Yes,11,Urban single,Grocery,SMS,1
+M00702,114,9,869.29,0.326,Yes,13,Family,Electronics,SMS,1
+M00703,74,10,498.07,0.226,Yes,11,Established,Grocery,Paid social,0
+M00704,137,5,257.78,0.28,No,7,Retired,Apparel,SMS,1
+M00705,74,6,415.21,0.6,Yes,8,Young household,Beauty,Direct mail,0
+M00706,74,5,146.5,0.253,Yes,2,Urban single,Apparel,Direct mail,1
+M00707,48,13,700.07,0,Yes,16,Established,Beauty,SMS,0
+M00708,142,0,0,0.062,Yes,0,Established,Electronics,SMS,0
+M00709,101,12,750.97,0.032,No,7,Urban single,Electronics,Paid social,0
+M00710,17,4,418.81,0.131,Yes,4,Young household,Electronics,SMS,1
+M00711,140,5,185.88,0.142,Yes,10,Urban single,Beauty,SMS,1
+M00712,34,9,354.11,0.472,Yes,9,Retired,Grocery,Email,1
+M00713,139,4,141.18,0.247,Yes,2,Urban single,Home,Paid social,0
+M00714,75,10,466.59,0.278,Yes,13,Established,Beauty,SMS,1
+M00715,9,18,1611.97,0.369,No,13,Family,Beauty,SMS,1
+M00716,99,5,264.1,0.248,No,9,Urban single,Beauty,Direct mail,1
+M00717,66,12,432.67,0.425,Yes,10,Family,Home,SMS,1
+M00718,130,9,210.51,0.141,Yes,11,Urban single,Beauty,Paid social,0
+M00719,8,8,152.89,0.112,Yes,8,Established,Electronics,Email,1
+M00720,105,7,616.2,0.107,Yes,12,Young household,Grocery,Paid social,1
+M00721,90,10,853.89,0.238,No,7,Retired,Apparel,Paid social,1
+M00722,48,8,399.01,0.25,No,7,Established,Home,SMS,1
+M00723,142,6,322.39,0.254,No,12,Retired,Beauty,Paid social,1
+M00724,33,13,765.7,0.129,Yes,16,Urban single,Beauty,Paid social,1
+M00725,68,15,742.07,0.055,Yes,15,Urban single,Electronics,Paid social,1
+M00726,109,1,39.2,0.143,No,1,Established,Home,Direct mail,0
+M00727,8,15,1560.58,0.099,No,11,Urban single,Electronics,Email,1
+M00728,55,6,361.41,0,Yes,8,Retired,Grocery,Paid social,0
+M00729,10,14,967.43,0.463,Yes,13,Established,Apparel,Direct mail,1
+M00730,108,10,547.95,0.239,No,11,Retired,Beauty,Email,1
+M00731,88,12,344.64,0.414,Yes,10,Retired,Apparel,Paid social,0
+M00732,140,8,390.41,0,No,9,Young household,Grocery,SMS,0
+M00733,11,11,540.94,0,Yes,11,Family,Electronics,Email,1
+M00734,79,11,326.29,0.323,Yes,14,Family,Beauty,Direct mail,1
+M00735,33,13,855.8,0.108,Yes,13,Young household,Home,Email,0
+M00736,55,11,683.85,0.115,Yes,10,Established,Home,Direct mail,0
+M00737,50,10,510.31,0.192,No,7,Urban single,Beauty,Paid social,1
+M00738,131,2,147.02,0.087,Yes,0,Established,Apparel,Paid social,0
+M00739,31,12,427.38,0.033,No,10,Retired,Home,SMS,1
+M00740,9,14,1222.29,0.152,No,12,Established,Beauty,Direct mail,1
+M00741,132,9,548.08,0.397,Yes,6,Retired,Grocery,SMS,1
+M00742,148,10,120,0.312,No,9,Retired,Electronics,SMS,1
+M00743,71,13,1595.11,0.056,Yes,13,Urban single,Grocery,Paid social,0
+M00744,14,13,907.4,0.419,No,9,Retired,Home,Paid social,1
+M00745,107,12,640.13,0.03,Yes,16,Family,Electronics,SMS,1
+M00746,94,11,1008.26,0.279,Yes,12,Established,Beauty,Paid social,0
+M00747,133,10,388.58,0.148,Yes,7,Established,Home,Email,0
+M00748,11,16,864.73,0.076,Yes,18,Urban single,Home,Paid social,0
+M00749,96,13,1133.49,0.373,No,8,Established,Grocery,Direct mail,1
+M00750,136,5,428.12,0.234,No,8,Established,Grocery,Direct mail,0
+M00751,138,10,590.19,0.233,No,8,Established,Beauty,Paid social,1
+M00752,88,11,514.59,0.271,Yes,14,Family,Home,Email,1
+M00753,1,17,584.46,0.078,No,17,Established,Electronics,Direct mail,1
+M00754,83,13,1246.88,0.154,Yes,17,Retired,Beauty,Direct mail,1
+M00755,122,10,911.35,0.044,No,7,Established,Grocery,Paid social,1
+M00756,11,13,518.05,0.18,No,8,Young household,Electronics,Paid social,1
+M00757,28,14,1740.65,0.46,Yes,9,Urban single,Beauty,SMS,1
+M00758,60,9,724.16,0.343,No,9,Established,Electronics,Direct mail,1
+M00759,105,7,130.25,0.301,Yes,6,Family,Grocery,SMS,1
+M00760,125,11,723.89,0.151,No,9,Family,Home,Paid social,0
+M00761,141,10,580.59,0.299,Yes,7,Retired,Home,Paid social,1
+M00762,72,11,1004.33,0.189,Yes,15,Retired,Grocery,SMS,1
+M00763,120,12,572.42,0.101,No,14,Young household,Apparel,SMS,0
+M00764,70,9,515.38,0.335,Yes,4,Young household,Apparel,Direct mail,0
+M00765,113,9,319,0.167,Yes,8,Family,Beauty,Paid social,1
+M00766,97,4,262.8,0.142,Yes,3,Young household,Home,Direct mail,0
+M00767,21,13,987.19,0.401,No,14,Family,Apparel,Email,1
+M00768,120,3,164.85,0.251,Yes,8,Young household,Electronics,SMS,1
+M00769,30,8,428.04,0.153,No,9,Urban single,Apparel,Direct mail,1
+M00770,91,9,638.83,0,Yes,11,Family,Grocery,SMS,1
+M00771,17,14,1206.79,0.308,No,9,Young household,Apparel,Paid social,1
+M00772,1,14,1166.75,0.14,No,15,Established,Electronics,Direct mail,1
+M00773,46,9,844.49,0.364,No,7,Young household,Electronics,Email,0
+M00774,20,13,355.03,0.021,No,16,Young household,Beauty,Paid social,1
+M00775,147,8,340.49,0.305,No,5,Established,Beauty,Email,0
+M00776,128,9,501.14,0.319,No,6,Urban single,Electronics,Direct mail,1
+M00777,4,8,517.96,0.181,No,8,Young household,Apparel,Paid social,1
+M00778,89,2,118.82,0.178,No,3,Urban single,Beauty,Email,0
+M00779,49,7,432.51,0.476,No,9,Young household,Apparel,Paid social,1
+M00780,38,9,470.93,0.35,No,11,Family,Home,SMS,1
+M00781,9,8,96,0,Yes,11,Family,Grocery,Paid social,1
+M00782,87,7,612.14,0.426,Yes,8,Retired,Grocery,Direct mail,0
+M00783,105,9,108,0.258,No,8,Family,Apparel,Email,1
+M00784,115,10,670.8,0.235,Yes,6,Young household,Home,SMS,0
+M00785,73,13,789.49,0.038,No,14,Family,Electronics,Email,0
+M00786,100,9,527.83,0.179,No,6,Urban single,Home,Direct mail,0
+M00787,54,8,433.08,0.284,No,7,Retired,Apparel,Direct mail,0
+M00788,22,17,783.88,0,No,15,Retired,Electronics,Email,1
+M00789,142,4,346.61,0.204,No,8,Family,Grocery,Email,0
+M00790,58,8,320.8,0.048,Yes,8,Urban single,Apparel,Paid social,1
+M00791,67,9,732.33,0.148,No,9,Retired,Apparel,Direct mail,1
+M00792,32,11,508.31,0.291,No,12,Established,Electronics,Direct mail,1
+M00793,131,3,220.54,0.306,Yes,4,Urban single,Grocery,Direct mail,0
+M00794,5,17,402.96,0.204,No,11,Family,Home,Paid social,1
+M00795,91,9,230.48,0,No,9,Family,Home,SMS,0
+M00796,52,7,825.4,0.128,No,8,Family,Grocery,Direct mail,1
+M00797,84,5,382.44,0.28,Yes,5,Young household,Apparel,SMS,0
+M00798,91,13,820.37,0.229,No,14,Retired,Electronics,Paid social,1
+M00799,85,5,513.43,0.301,Yes,7,Family,Apparel,Direct mail,0
+M00800,145,11,1244.07,0.214,No,9,Retired,Electronics,Direct mail,0
+M00801,51,15,535.74,0.14,Yes,14,Urban single,Beauty,SMS,1
+M00802,105,9,392.79,0,No,10,Family,Grocery,Paid social,1
+M00803,83,8,511.06,0.171,No,9,Established,Beauty,Paid social,1
+M00804,120,6,145.7,0,No,6,Urban single,Electronics,SMS,0
+M00805,47,10,813.38,0.341,No,11,Young household,Home,Direct mail,1
+M00806,105,11,646.47,0.154,Yes,15,Young household,Home,SMS,1
+M00807,63,8,501.47,0.395,No,9,Established,Home,Email,1
+M00808,82,7,160.59,0.171,Yes,8,Retired,Home,Email,1
+M00809,147,8,289.16,0.506,Yes,11,Young household,Electronics,Direct mail,0
+M00810,96,13,445.68,0.157,No,8,Family,Electronics,Direct mail,0
+M00811,19,15,1351.78,0.328,Yes,16,Urban single,Apparel,Paid social,1
+M00812,55,8,423.54,0.264,No,4,Established,Apparel,Email,0
+M00813,150,7,474.24,0.288,No,12,Family,Apparel,Email,1
+M00814,111,8,714.95,0.345,No,7,Retired,Electronics,SMS,1
+M00815,87,12,573.46,0.131,No,7,Young household,Beauty,Direct mail,0
+M00816,23,13,614.01,0.323,No,15,Urban single,Beauty,Paid social,0
+M00817,117,2,132.64,0.025,No,3,Family,Beauty,SMS,0
+M00818,6,11,1071.39,0.359,Yes,11,Established,Home,Paid social,1
+M00819,17,16,611.76,0.504,Yes,16,Young household,Electronics,SMS,1
+M00820,71,7,347.62,0.124,No,13,Urban single,Beauty,Paid social,1
+M00821,141,6,110.62,0.085,Yes,6,Retired,Grocery,SMS,1
+M00822,90,11,932.98,0.088,Yes,14,Urban single,Grocery,SMS,0
+M00823,149,8,633.98,0.224,No,11,Young household,Electronics,Paid social,1
+M00824,106,9,117.75,0.195,No,13,Young household,Electronics,Paid social,0
+M00825,106,13,558.15,0.244,No,15,Urban single,Beauty,Direct mail,0
+M00826,92,11,275.19,0.075,No,10,Urban single,Grocery,Paid social,1
+M00827,93,12,348.03,0.241,No,13,Young household,Beauty,Direct mail,1
+M00828,16,18,1394.44,0.251,No,19,Family,Home,SMS,1
+M00829,68,8,297.76,0,Yes,5,Retired,Beauty,Direct mail,1
+M00830,131,8,597.59,0,No,11,Family,Electronics,Paid social,0
+M00831,36,13,537.05,0.035,No,12,Urban single,Home,Email,1
+M00832,101,9,601.93,0.342,No,11,Young household,Beauty,Direct mail,1
+M00833,54,8,411.07,0.005,Yes,8,Family,Grocery,Paid social,1
+M00834,122,13,703.64,0.211,No,7,Retired,Grocery,Direct mail,0
+M00835,54,7,477.02,0.323,No,8,Urban single,Beauty,SMS,1
+M00836,132,6,685.25,0.066,No,6,Established,Electronics,Direct mail,1
+M00837,97,13,156,0.284,Yes,8,Urban single,Apparel,Paid social,1
+M00838,11,13,651.48,0.296,No,15,Established,Apparel,Email,1
+M00839,114,3,117.78,0.171,No,7,Urban single,Electronics,Email,0
+M00840,28,12,1050,0.371,No,12,Retired,Apparel,Email,1
+M00841,92,11,672.88,0.315,Yes,11,Urban single,Home,Paid social,0
+M00842,76,7,278.02,0.097,Yes,6,Family,Electronics,Email,0
+M00843,70,10,517.33,0.275,No,15,Young household,Apparel,Email,1
+M00844,82,8,310.01,0.294,Yes,9,Established,Grocery,Email,0
+M00845,143,4,232.77,0.134,Yes,2,Family,Grocery,Email,0
+M00846,5,13,1237.29,0.236,Yes,11,Retired,Apparel,SMS,1
+M00847,78,13,860.79,0,Yes,16,Family,Beauty,SMS,1
+M00848,126,4,304.55,0.121,Yes,7,Established,Apparel,Email,0
+M00849,100,6,442.48,0.344,No,10,Young household,Grocery,Email,1
+M00850,36,13,1198.06,0,Yes,8,Urban single,Grocery,Paid social,1
+M00851,87,3,220.5,0.212,Yes,7,Urban single,Apparel,Direct mail,0
+M00852,90,9,108,0.307,Yes,11,Established,Apparel,Email,0
+M00853,95,13,514.88,0.229,No,13,Urban single,Electronics,SMS,0
+M00854,88,10,587.25,0.358,No,10,Urban single,Electronics,Email,1
+M00855,34,18,832.14,0.32,No,11,Young household,Beauty,Email,1
+M00856,27,8,687.03,0.03,No,9,Young household,Electronics,Email,0
+M00857,130,4,270.13,0.073,No,10,Retired,Beauty,SMS,0
+M00858,98,10,623.06,0,Yes,9,Established,Apparel,SMS,1
+M00859,113,11,844.85,0.166,No,10,Young household,Apparel,Paid social,1
+M00860,120,11,602.83,0.391,Yes,11,Retired,Home,Direct mail,1
+M00861,67,9,711.62,0.074,Yes,8,Young household,Electronics,Direct mail,0
+M00862,65,7,331.08,0.286,No,9,Urban single,Electronics,SMS,0
+M00863,135,6,436.19,0.129,Yes,5,Young household,Grocery,Paid social,0
+M00864,78,6,471.9,0,No,5,Urban single,Electronics,SMS,0
+M00865,116,6,183.2,0.15,No,10,Established,Home,Paid social,0
+M00866,56,14,1107.05,0.26,No,12,Retired,Grocery,SMS,1
+M00867,43,9,1010.38,0,Yes,8,Urban single,Electronics,Email,0
+M00868,116,12,635.27,0,No,14,Urban single,Grocery,Direct mail,0
+M00869,24,20,426.78,0.349,Yes,19,Retired,Apparel,Direct mail,1
+M00870,120,9,458.9,0.29,No,8,Retired,Electronics,Email,0
+M00871,29,8,421.13,0.114,Yes,10,Retired,Apparel,Email,1
+M00872,110,3,235.15,0,Yes,10,Family,Home,Direct mail,0
+M00873,58,9,298.94,0.099,Yes,12,Retired,Electronics,Direct mail,0
+M00874,3,13,544.85,0.447,Yes,12,Young household,Home,Direct mail,1
+M00875,91,8,450.2,0.595,Yes,6,Retired,Home,Direct mail,1
+M00876,65,8,770.02,0.213,No,8,Established,Electronics,SMS,1
+M00877,110,4,266.01,0.306,No,11,Young household,Electronics,SMS,1
+M00878,107,10,875.71,0.49,Yes,13,Family,Apparel,SMS,1
+M00879,69,9,779.49,0.069,No,8,Retired,Beauty,Paid social,0
+M00880,120,6,310.95,0,Yes,9,Established,Home,SMS,0
+M00881,107,5,369.78,0.077,No,4,Retired,Grocery,Direct mail,0
+M00882,80,10,739.35,0.359,No,12,Family,Apparel,Direct mail,1
+M00883,106,11,220.55,0.143,No,10,Family,Grocery,SMS,0
+M00884,62,14,718.41,0.189,Yes,14,Family,Home,SMS,1
+M00885,79,11,559.02,0.575,No,10,Young household,Beauty,Email,1
+M00886,35,6,515.12,0.438,Yes,12,Young household,Apparel,Direct mail,1
+M00887,111,13,796.75,0,No,13,Urban single,Electronics,Email,0
+M00888,105,8,544.99,0.305,Yes,6,Established,Electronics,Direct mail,1
+M00889,102,10,733.35,0.328,Yes,7,Established,Grocery,Direct mail,1
+M00890,86,5,323.86,0.027,No,7,Family,Electronics,Direct mail,0
+M00891,125,9,465.62,0.269,Yes,15,Family,Beauty,Email,1
+M00892,67,10,579.34,0.464,Yes,13,Urban single,Home,Email,1
+M00893,85,2,190.65,0.089,Yes,7,Urban single,Apparel,Direct mail,1
+M00894,22,15,1594.56,0.417,No,16,Established,Beauty,Direct mail,1
+M00895,80,10,261.59,0.354,Yes,13,Retired,Apparel,Email,1
+M00896,63,7,168.11,0.371,No,8,Retired,Beauty,Direct mail,0
+M00897,140,7,471.25,0.217,Yes,7,Family,Home,SMS,1
+M00898,23,9,502.51,0.389,No,8,Established,Electronics,Email,1
+M00899,56,12,486.29,0.233,No,9,Established,Beauty,Direct mail,0
+M00900,18,9,317.04,0,Yes,8,Retired,Grocery,Paid social,0
+M00901,133,6,355.24,0.367,Yes,6,Retired,Home,SMS,0
+M00902,24,10,347.17,0,No,12,Established,Beauty,Direct mail,1
+M00903,150,10,813.03,0.177,Yes,8,Family,Home,SMS,1
+M00904,118,10,960.06,0,No,9,Family,Electronics,Paid social,0
+M00905,47,8,425.31,0.147,Yes,8,Family,Electronics,Paid social,0
+M00906,135,7,385.13,0.328,No,6,Family,Electronics,SMS,0
+M00907,76,7,330.3,0,Yes,5,Urban single,Beauty,SMS,1
+M00908,138,1,67.28,0.447,Yes,5,Retired,Home,Email,0
+M00909,133,1,70.15,0.282,Yes,8,Retired,Home,SMS,1
+M00910,81,4,248.29,0.181,No,4,Retired,Electronics,Direct mail,0
+M00911,18,15,180,0.572,No,12,Young household,Electronics,SMS,1
+M00912,119,5,489.08,0.145,Yes,6,Urban single,Electronics,SMS,0
+M00913,46,5,301.6,0.117,Yes,3,Retired,Apparel,Paid social,0
+M00914,66,9,604.23,0.479,No,7,Urban single,Home,Email,0
+M00915,64,8,414.4,0.281,No,7,Young household,Electronics,Direct mail,0
+M00916,131,7,408.77,0.136,Yes,12,Urban single,Beauty,Email,0
+M00917,73,11,327.56,0.087,No,7,Urban single,Electronics,Paid social,1
+M00918,26,9,469.78,0.187,Yes,7,Established,Apparel,Direct mail,1
+M00919,43,11,469.23,0.282,No,11,Established,Grocery,Email,1
+M00920,115,4,270.01,0.259,Yes,6,Young household,Apparel,Email,0
+M00921,89,9,757.71,0.18,No,11,Urban single,Grocery,Email,1
+M00922,13,14,526.4,0.223,No,13,Young household,Beauty,Email,1
+M00923,63,10,310.9,0.419,No,10,Established,Home,Paid social,1
+M00924,13,15,1230.77,0.215,No,15,Urban single,Apparel,Direct mail,0
+M00925,96,6,303.49,0.133,No,4,Young household,Grocery,Direct mail,1
+M00926,116,13,532.94,0,Yes,9,Retired,Beauty,Email,1
+M00927,88,8,392.87,0,Yes,12,Young household,Grocery,Paid social,0
+M00928,84,5,348.58,0.163,No,6,Young household,Electronics,SMS,0
+M00929,36,9,182,0.346,Yes,11,Family,Apparel,SMS,1
+M00930,83,6,596.67,0.333,No,9,Family,Electronics,Paid social,1
+M00931,17,12,863.88,0.051,No,12,Urban single,Grocery,Direct mail,1
+M00932,130,5,291.13,0.339,No,7,Established,Electronics,Direct mail,1
+M00933,37,5,60,0.28,Yes,7,Established,Electronics,Direct mail,0
+M00934,114,15,425.59,0.224,Yes,14,Family,Beauty,Email,1
+M00935,22,11,453.54,0.311,No,13,Young household,Grocery,SMS,1
+M00936,96,10,929.16,0.185,No,13,Established,Beauty,Direct mail,0
+M00937,10,16,836.36,0.241,No,17,Young household,Home,Email,1
+M00938,81,6,381.8,0.127,No,7,Retired,Beauty,Direct mail,0
+M00939,65,9,654.25,0.372,Yes,10,Urban single,Grocery,Direct mail,0
+M00940,67,5,250.12,0.295,Yes,4,Family,Apparel,SMS,0
+M00941,122,6,72,0.09,No,6,Urban single,Electronics,Paid social,0
+M00942,79,8,96,0.104,No,11,Urban single,Electronics,Direct mail,0
+M00943,141,7,388.59,0.263,Yes,7,Urban single,Electronics,SMS,0
+M00944,64,7,406.21,0.28,No,7,Established,Beauty,SMS,0
+M00945,127,7,378.57,0.176,Yes,8,Established,Home,Direct mail,1
+M00946,125,3,61.47,0.114,No,6,Established,Beauty,Email,0
+M00947,64,12,409.56,0.267,Yes,11,Family,Electronics,SMS,1
+M00948,51,8,415.38,0.225,Yes,9,Retired,Home,SMS,0
+M00949,8,11,657.58,0.44,No,11,Urban single,Grocery,Email,1
+M00950,98,3,136.21,0.159,Yes,5,Young household,Beauty,Email,1
+M00951,79,7,360.58,0.115,Yes,12,Established,Electronics,Email,0
+M00952,108,4,259.11,0,No,6,Retired,Beauty,Email,1
+M00953,70,8,302.82,0.06,Yes,5,Retired,Electronics,Paid social,0
+M00954,140,14,595.27,0.026,Yes,14,Urban single,Apparel,Direct mail,0
+M00955,113,11,1091.84,0,Yes,11,Retired,Grocery,Email,0
+M00956,143,5,330.77,0.134,Yes,5,Retired,Electronics,Direct mail,1
+M00957,135,7,217.6,0.073,No,9,Young household,Apparel,Direct mail,1
+M00958,40,8,106.72,0.279,No,12,Family,Grocery,Direct mail,0
+M00959,141,8,552.76,0,No,5,Established,Beauty,Paid social,0
+M00960,34,5,347.01,0.357,Yes,4,Family,Electronics,Direct mail,0
+M00961,72,4,257.83,0.192,No,8,Family,Home,Email,1
+M00962,49,9,856.52,0.071,No,7,Family,Apparel,Email,1
+M00963,42,13,628.76,0.27,Yes,13,Young household,Grocery,SMS,1
+M00964,20,10,742.78,0.041,Yes,11,Established,Electronics,Direct mail,1
+M00965,5,13,507.41,0.454,No,13,Family,Electronics,Direct mail,1
+M00966,13,17,687.21,0.456,No,16,Urban single,Beauty,Email,1
+M00967,120,7,339.13,0.332,Yes,9,Established,Home,Email,1
+M00968,21,13,1107.37,0,No,14,Family,Beauty,Email,1
+M00969,70,16,1095,0.168,No,14,Urban single,Apparel,SMS,1
+M00970,12,5,232.66,0.242,Yes,5,Retired,Beauty,SMS,0
+M00971,70,11,408.2,0.323,No,7,Retired,Grocery,Email,1
+M00972,40,7,346.4,0.145,No,11,Urban single,Apparel,Paid social,0
+M00973,144,9,747.62,0.192,No,13,Urban single,Grocery,Paid social,1
+M00974,122,10,497.67,0.143,No,10,Family,Home,Direct mail,0
+M00975,18,13,794.84,0.336,No,11,Family,Grocery,Direct mail,1
+M00976,79,13,343.46,0.197,Yes,13,Young household,Grocery,SMS,0
+M00977,84,1,68.69,0.418,No,2,Young household,Apparel,Email,0
+M00978,31,13,860.74,0.36,Yes,13,Young household,Apparel,Email,1
+M00979,77,8,96,0.374,No,9,Urban single,Apparel,Paid social,0
+M00980,149,5,321.25,0.334,Yes,4,Young household,Beauty,Email,0
+M00981,121,7,596.43,0.112,Yes,10,Urban single,Home,Email,1
+M00982,68,9,426.19,0.125,Yes,6,Retired,Beauty,Direct mail,1
+M00983,92,11,547.13,0.273,No,10,Retired,Electronics,Paid social,0
+M00984,19,8,904.44,0.278,Yes,7,Young household,Electronics,Paid social,1
+M00985,131,9,603.01,0.225,No,8,Family,Apparel,SMS,1
+M00986,148,13,757.2,0.224,No,14,Urban single,Electronics,Email,0
+M00987,137,1,76.77,0.212,Yes,0,Family,Beauty,Direct mail,0
+M00988,20,11,647.61,0.068,Yes,10,Urban single,Home,Email,1
+M00989,114,6,190.13,0.457,Yes,8,Young household,Home,Direct mail,0
+M00990,132,4,229.29,0.283,No,10,Family,Home,Direct mail,1
+M00991,99,11,812.96,0.073,No,14,Urban single,Beauty,Email,0
+M00992,137,9,923.97,0.375,No,13,Retired,Electronics,Direct mail,0
+M00993,70,14,1108.39,0.205,No,14,Urban single,Beauty,SMS,1
+M00994,48,12,691.81,0.517,Yes,13,Young household,Grocery,Paid social,1
+M00995,15,10,653.78,0.078,Yes,11,Urban single,Home,Direct mail,0
+M00996,110,7,195.81,0.046,Yes,7,Retired,Apparel,Email,1
+M00997,128,3,247.44,0.202,No,9,Family,Home,SMS,1
+M00998,39,11,703.78,0.136,No,10,Established,Grocery,Email,0
+M00999,143,13,1098.06,0.182,No,15,Retired,Apparel,Email,0
+M01000,17,14,529.68,0.065,Yes,16,Urban single,Electronics,Paid social,1
+M01001,131,12,520.64,0.289,No,11,Family,Beauty,SMS,1
+M01002,38,4,259.67,0.099,Yes,9,Retired,Beauty,SMS,0
+M01003,66,13,1513.82,0.36,No,13,Established,Home,Direct mail,1
+M01004,21,12,838.76,0.334,No,15,Young household,Electronics,SMS,1
+M01005,98,5,320.01,0.03,Yes,10,Family,Grocery,Email,1
+M01006,39,15,988.88,0.327,No,12,Established,Apparel,Direct mail,1
+M01007,67,12,144,0.202,No,11,Established,Grocery,Direct mail,0
+M01008,123,4,121.02,0.237,No,8,Young household,Beauty,Paid social,0
+M01009,69,10,593.91,0.352,No,11,Established,Beauty,SMS,1
+M01010,45,5,185.3,0.113,Yes,9,Family,Beauty,Direct mail,0
+M01011,145,2,120.14,0.179,Yes,2,Young household,Grocery,Direct mail,0
+M01012,69,6,320.73,0.131,No,6,Young household,Grocery,Direct mail,0
+M01013,80,11,944.98,0.014,No,12,Retired,Grocery,Email,1
+M01014,22,7,572.74,0.159,Yes,7,Family,Electronics,SMS,0
+M01015,124,12,822.87,0.056,No,9,Urban single,Beauty,Paid social,0
+M01016,116,8,529.22,0.409,No,9,Young household,Home,Paid social,1
+M01017,81,4,281.03,0.173,No,6,Retired,Grocery,Direct mail,0
+M01018,78,14,1158.55,0.106,No,14,Established,Beauty,SMS,1
+M01019,124,4,172.52,0.229,No,7,Retired,Beauty,Paid social,0
+M01020,132,7,454.47,0.253,No,7,Established,Grocery,Paid social,0
+M01021,68,9,208.35,0.2,No,13,Family,Home,SMS,1
+M01022,107,13,1217.72,0.127,No,12,Family,Home,SMS,0
+M01023,73,3,105.61,0.166,No,8,Urban single,Home,Paid social,1
+M01024,51,14,798.51,0.206,No,15,Established,Electronics,SMS,1
+M01025,32,16,939.74,0.429,No,14,Family,Beauty,SMS,1
+M01026,38,12,447.95,0.222,Yes,14,Family,Grocery,Paid social,1
+M01027,42,7,369.17,0.427,No,7,Retired,Electronics,Email,1
+M01028,25,9,390.64,0.095,Yes,9,Established,Apparel,Paid social,0
+M01029,139,10,774.29,0.329,No,6,Family,Home,Email,1
+M01030,28,16,1539.37,0.126,No,15,Urban single,Home,Direct mail,1
+M01031,126,8,627.63,0,No,8,Urban single,Beauty,Paid social,0
+M01032,32,9,162.06,0.227,No,8,Retired,Grocery,Paid social,1
+M01033,130,12,376.02,0.244,No,10,Urban single,Grocery,SMS,0
+M01034,4,16,988.03,0,Yes,10,Young household,Home,Email,1
+M01035,57,5,300.79,0.362,No,10,Family,Beauty,Email,0
+M01036,33,13,156,0.038,Yes,13,Retired,Apparel,Paid social,1
+M01037,69,13,838.89,0.266,No,10,Retired,Electronics,Paid social,1
+M01038,116,10,752.09,0.15,Yes,12,Family,Electronics,Email,1
+M01039,65,10,760.81,0.145,Yes,13,Established,Beauty,SMS,0
+M01040,20,13,811.37,0.213,No,16,Retired,Grocery,Paid social,0
+M01041,46,8,344.79,0.002,Yes,7,Urban single,Electronics,Paid social,1
+M01042,41,9,700.47,0.188,No,10,Young household,Beauty,Email,1
+M01043,75,16,693,0.267,Yes,17,Young household,Apparel,Direct mail,1
+M01044,134,10,793.96,0.234,Yes,9,Retired,Beauty,SMS,1
+M01045,18,9,537.73,0.042,No,11,Established,Electronics,Email,1
+M01046,34,7,596.15,0.392,Yes,8,Family,Electronics,Paid social,1
+M01047,91,12,680.49,0.325,No,13,Established,Apparel,Email,1
+M01048,51,9,342.62,0.61,Yes,10,Urban single,Home,SMS,1
+M01049,124,8,465.62,0.196,No,7,Established,Apparel,Paid social,0
+M01050,92,5,376.3,0.433,No,10,Young household,Apparel,Paid social,1
+M01051,39,12,947.85,0.236,No,14,Established,Beauty,Paid social,1
+M01052,104,14,889.56,0.256,No,9,Family,Beauty,SMS,0
+M01053,35,7,347.9,0,Yes,9,Retired,Electronics,SMS,0
+M01054,125,5,99.41,0.042,No,5,Established,Beauty,Paid social,0
+M01055,106,4,420.88,0.126,Yes,6,Urban single,Beauty,Paid social,0
+M01056,125,6,173.58,0.669,No,5,Family,Grocery,SMS,1
+M01057,85,7,84,0.251,No,11,Young household,Home,SMS,1
+M01058,88,8,754.39,0,No,6,Retired,Grocery,SMS,1
+M01059,114,6,298,0.272,Yes,5,Family,Home,SMS,0
+M01060,91,10,694.5,0,No,11,Established,Beauty,Direct mail,0
+M01061,139,2,217.33,0.269,No,10,Family,Home,Email,0
+M01062,106,8,731.12,0.236,Yes,12,Family,Apparel,SMS,1
+M01063,25,11,1381.28,0.348,Yes,9,Young household,Apparel,Paid social,1
+M01064,7,13,518.5,0.019,No,14,Urban single,Grocery,Paid social,0
+M01065,103,10,960.75,0.187,No,11,Urban single,Electronics,SMS,1
+M01066,105,7,601.64,0.255,No,5,Retired,Grocery,Email,0
+M01067,102,7,131.57,0.327,No,10,Family,Beauty,SMS,0
+M01068,114,11,787.33,0.078,Yes,9,Urban single,Grocery,Direct mail,1
+M01069,50,14,609.24,0.132,No,12,Young household,Grocery,Email,1
+M01070,39,15,916.78,0.15,No,15,Family,Beauty,Paid social,0
+M01071,56,10,535.64,0.251,Yes,8,Urban single,Beauty,SMS,1
+M01072,65,9,425.55,0.061,Yes,13,Urban single,Apparel,SMS,0
+M01073,92,9,622.81,0.11,Yes,9,Established,Electronics,Email,0
+M01074,47,10,552.86,0.341,Yes,12,Urban single,Grocery,SMS,0
+M01075,58,11,1069.96,0,No,13,Retired,Home,SMS,1
+M01076,86,5,458.75,0,No,4,Urban single,Apparel,Paid social,1
+M01077,61,11,1019.41,0.288,No,8,Established,Beauty,SMS,0
+M01078,128,10,412.8,0.297,Yes,13,Established,Grocery,Paid social,0
+M01079,6,5,346.08,0.322,Yes,9,Retired,Grocery,Paid social,0
+M01080,117,4,155.84,0.473,No,10,Young household,Apparel,Paid social,1
+M01081,65,16,629.37,0.26,No,17,Young household,Electronics,Direct mail,0
+M01082,60,4,127.09,0.285,No,9,Family,Apparel,Paid social,1
+M01083,55,7,509.61,0.232,No,5,Family,Apparel,Email,1
+M01084,40,13,937.32,0.047,Yes,14,Established,Home,SMS,1
+M01085,90,8,440.49,0.53,No,13,Family,Apparel,Direct mail,1
+M01086,66,4,317.65,0.034,No,12,Young household,Home,Email,1
+M01087,2,12,597.5,0.201,Yes,11,Young household,Home,Email,1
+M01088,149,11,1060.33,0.154,No,15,Retired,Beauty,Paid social,1
+M01089,1,12,810.88,0.121,No,17,Family,Home,Direct mail,0
+M01090,47,7,355.02,0,Yes,8,Established,Electronics,Direct mail,0
+M01091,146,3,188.9,0.071,Yes,10,Established,Grocery,Direct mail,0
+M01092,74,10,803.45,0.299,Yes,8,Young household,Grocery,Email,0
+M01093,16,14,308.66,0.282,Yes,16,Established,Beauty,Direct mail,1
+M01094,74,10,395.49,0.296,Yes,12,Urban single,Apparel,Paid social,1
+M01095,10,15,579.79,0.252,No,13,Established,Electronics,Email,1
+M01096,120,12,904.05,0.192,No,11,Young household,Electronics,SMS,1
+M01097,60,10,202.43,0.481,Yes,10,Family,Apparel,Email,1
+M01098,48,14,1064.87,0.192,Yes,13,Urban single,Apparel,Direct mail,1
+M01099,103,12,801.88,0.268,No,15,Established,Home,Paid social,1
+M01100,103,11,493.27,0,No,12,Young household,Home,Email,1

@@ -44,5 +44,5 @@ yarn-error.log*
 !/build/sites-vite-plugin.ts
 !/public/data/
 !/public/data/nori-embeddings.json
-!/public/data/starters/
-!/public/data/starters/*.csv
+!/public/data/retail/
+!/public/data/retail/*.csv

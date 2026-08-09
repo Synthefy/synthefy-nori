@@ -3,9 +3,9 @@
 An interactive public-data workspace for exploring Nori embeddings, explanations,
 zero-shot inference, and scenario simulation.
 
-The opening dataset gallery offers five demos: the precomputed UCI credit-default
-artifact plus bundled Palmer Penguins, Automobile MPG, Restaurant Tips, and
-Titanic CSVs from the seaborn sample-data repository.
+The opening dataset gallery offers six demos: the precomputed UCI credit-default
+artifact plus five realistic retail cohorts for customer lifetime value, churn,
+conversion, promotion uplift, and campaign response.
 
 ## Run locally
 
@@ -29,6 +29,12 @@ local calculations over its display-safe attributes to demonstrate the product
 interaction and is labeled **Interface preview**. The zero-shot percentage is a
 nearest-neighbor cohort baseline and is labeled **Static demo**. Neither is
 presented as live Nori inference.
+
+The retail cohorts in `public/data/retail` are deterministic synthetic data with
+no customer PII. They are designed to resemble useful retail demo problems, not
+to reproduce any company or customer population. Regenerate them with
+`npm run data:retail`; the seeded generator lives in
+`scripts/generate-retail-datasets.mjs`.
 
 ## Bring your own CSV
 

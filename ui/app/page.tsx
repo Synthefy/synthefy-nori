@@ -405,7 +405,11 @@ export default function Home() {
   return (
     <div className="site-shell">
       <header className="topbar">
-        <a className="brand" href="#welcome" aria-label="Nori Studio home" onClick={() => setStudioStarted(false)}>
+        <a className="brand" href="#welcome" aria-label="Nori Studio home" onClick={(event) => {
+          event.preventDefault();
+          setStudioStarted(false);
+          window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "auto" }));
+        }}>
           <span className="brand-mark" aria-hidden="true"><span /></span>
           <span>Nori</span>
           <span className="brand-divider" />
@@ -433,7 +437,7 @@ export default function Home() {
 
           <section className="dataset-library" aria-labelledby="dataset-library-title">
             <div className="library-heading">
-              <div><p className="section-kicker">Five ready-to-explore tables</p><h2 id="dataset-library-title">Choose a dataset.</h2></div>
+              <div><p className="section-kicker">Six ready-to-explore tables</p><h2 id="dataset-library-title">Choose a retail outcome.</h2></div>
               <div className="split-principle"><span>01</span><p><strong>Pick a target</strong><small>The outcome defines every lens.</small></p><b>→</b><span>02</span><p><strong>Split context + test</strong><small>One seeded 80 / 20 split, everywhere.</small></p></div>
             </div>
             <div className="starter-grid">
@@ -448,7 +452,7 @@ export default function Home() {
               {STARTER_DATASETS.map((starter) => (
                 <button type="button" className="starter-card" onClick={() => void openStarter(starter)} disabled={loadingStarter !== null} key={starter.id}>
                   <span className="starter-glyph">{starter.glyph}</span>
-                  <span className="starter-task">{starter.task} · public sample</span>
+                  <span className="starter-task">{starter.task} · retail cohort</span>
                   <strong>{starter.name}</strong>
                   <small>{starter.description}</small>
                   <span className="starter-meta"><i>{starter.rows} rows</i><i>{starter.features} features</i><i>target: {starter.target}</i></span>
@@ -457,7 +461,7 @@ export default function Home() {
               ))}
             </div>
             {starterError ? <p className="starter-error" role="alert">{starterError}</p> : null}
-            <p className="library-footnote">Starter CSVs are bundled from the <a href="https://github.com/mwaskom/seaborn-data" target="_blank" rel="noreferrer">seaborn sample-data repository ↗</a> for reliable demos. Uploaded tables stay in this browser tab.</p>
+            <p className="library-footnote">Retail cohorts are realistic, reproducible, and synthetic—safe for demos with no customer PII. Uploaded tables stay in this browser tab.</p>
           </section>
         </main>
       ) : (

@@ -20,7 +20,6 @@ export type StarterDataset = {
   name: string;
   description: string;
   path: string;
-  sourceUrl: string;
   rows: string;
   features: string;
   target: string;
@@ -30,52 +29,59 @@ export type StarterDataset = {
 
 export const STARTER_DATASETS: StarterDataset[] = [
   {
-    id: "penguins",
-    name: "Palmer Penguins",
-    description: "Identify a penguin species from interpretable body measurements.",
-    path: "/data/starters/penguins.csv",
-    sourceUrl: "https://github.com/mwaskom/seaborn-data/blob/master/penguins.csv",
-    rows: "344",
-    features: "6",
-    target: "species",
-    task: "Classification",
-    glyph: "Pg",
-  },
-  {
-    id: "auto-mpg",
-    name: "Automobile MPG",
-    description: "Estimate fuel economy from engine, weight, and model-year signals.",
-    path: "/data/starters/auto-mpg.csv",
-    sourceUrl: "https://github.com/mwaskom/seaborn-data/blob/master/mpg.csv",
-    rows: "398",
-    features: "8",
-    target: "mpg",
+    id: "customer-lifetime-value",
+    name: "Customer Lifetime Value",
+    description: "Model the next 12 months of customer value from orders, loyalty, and engagement.",
+    path: "/data/retail/customer-lifetime-value.csv",
+    rows: "1,050",
+    features: "10",
+    target: "lifetime_value_12m",
     task: "Regression",
-    glyph: "Mp",
+    glyph: "Lv",
   },
   {
-    id: "restaurant-tips",
-    name: "Restaurant Tips",
-    description: "Explore how bill, party size, and service context relate to tips.",
-    path: "/data/starters/restaurant-tips.csv",
-    sourceUrl: "https://github.com/mwaskom/seaborn-data/blob/master/tips.csv",
-    rows: "244",
-    features: "6",
-    target: "tip",
-    task: "Regression",
-    glyph: "Tp",
-  },
-  {
-    id: "titanic",
-    name: "Titanic Survival",
-    description: "Classify survival from passenger and voyage attributes.",
-    path: "/data/starters/titanic.csv",
-    sourceUrl: "https://github.com/mwaskom/seaborn-data/blob/master/titanic.csv",
-    rows: "891",
-    features: "14",
-    target: "survived",
+    id: "customer-churn",
+    name: "Customer Churn",
+    description: "Find customers likely to lapse using recency, purchase, return, and service behavior.",
+    path: "/data/retail/customer-churn.csv",
+    rows: "1,000",
+    features: "10",
+    target: "churned_90d",
     task: "Classification",
-    glyph: "Tt",
+    glyph: "Ch",
+  },
+  {
+    id: "customer-conversion",
+    name: "Customer Conversion",
+    description: "Predict purchase conversion from sessions, product interest, carts, and channel.",
+    path: "/data/retail/customer-conversion.csv",
+    rows: "1,200",
+    features: "10",
+    target: "converted_14d",
+    task: "Classification",
+    glyph: "Cv",
+  },
+  {
+    id: "promotion-uplift",
+    name: "Promotion Uplift",
+    description: "Study heterogeneous offer response across treated and untreated customer cohorts.",
+    path: "/data/retail/promotion-uplift.csv",
+    rows: "1,300",
+    features: "10",
+    target: "purchased_30d",
+    task: "Classification",
+    glyph: "Up",
+  },
+  {
+    id: "campaign-response",
+    name: "Campaign Response",
+    description: "Model marketing response from RFM, channel, engagement, and audience signals.",
+    path: "/data/retail/campaign-response.csv",
+    rows: "1,100",
+    features: "10",
+    target: "responded_30d",
+    task: "Classification",
+    glyph: "Mk",
   },
 ];
 
@@ -87,6 +93,9 @@ const TEST_FRACTION = 0.2;
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const formatNumber = (value: number) => new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);
+const formatTargetValue = (dataset: LocalDataset, value: number) => /value|spend|revenue|amount|sales|price|cost|income/i.test(dataset.target)
+  ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value)
+  : formatNumber(value);
 
 function hashString(value: string) {
   let hash = 2166136261;
@@ -222,13 +231,13 @@ export function prepareDataset(dataset: LocalDataset, target: string) {
 export async function loadStarterDataset(starter: StarterDataset) {
   const response = await fetch(starter.path);
   if (!response.ok) throw new Error(`Could not load ${starter.name}.`);
-  const dataset = parseCSV(await response.text(), starter.name, `Starter dataset · ${starter.task}`);
+  const dataset = parseCSV(await response.text(), starter.name, `Retail demo cohort · ${starter.task}`);
   return prepareDataset({ ...dataset, id: `starter-${starter.id}` }, starter.target);
 }
 
 function valuesFor(dataset: LocalDataset, column: string) {
   const index = dataset.headers.indexOf(column);
-  return dataset.rows.map((row) => Number(row[index])).filter(Number.isFinite);
+  return dataset.rows.map((row) => row[index] === "" ? Number.NaN : Number(row[index])).filter(Number.isFinite);
 }
 
 function rangeFor(dataset: LocalDataset, column: string) {
@@ -426,31 +435,96 @@ export function DatasetImporter({ open, onClose, onImport }: { open: boolean; on
   );
 }
 
-function LocalProjection({ dataset, xColumn, yColumn, selected, onSelect }: { dataset: LocalDataset; xColumn: string; yColumn: string; selected: number; onSelect: (index: number) => void }) {
-  const xRange = rangeFor(dataset, xColumn);
-  const yRange = rangeFor(dataset, yColumn);
+function pcaCoordinates(dataset: LocalDataset, features: string[]) {
+  const activeFeatures = features.slice(0, 10);
+  const columns = activeFeatures.map((column) => {
+    const values = dataset.rows.map((row) => numericValue(dataset, row, column));
+    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+    const deviation = Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(values.length - 1, 1)) || 1;
+    return { values, mean, deviation };
+  });
+  const matrix = dataset.rows.map((_, rowIndex) => columns.map((column) => (column.values[rowIndex] - column.mean) / column.deviation));
+  const size = activeFeatures.length;
+  const covariance = Array.from({ length: size }, (_, left) => Array.from({ length: size }, (_, right) => matrix.reduce((sum, row) => sum + row[left] * row[right], 0) / Math.max(matrix.length - 1, 1)));
+
+  const component = (seed: number[], previous?: number[]) => {
+    let vector = seed;
+    for (let iteration = 0; iteration < 36; iteration += 1) {
+      let next = covariance.map((row) => row.reduce((sum, value, index) => sum + value * vector[index], 0));
+      if (previous) {
+        const projection = next.reduce((sum, value, index) => sum + value * previous[index], 0);
+        next = next.map((value, index) => value - projection * previous[index]);
+      }
+      const length = Math.sqrt(next.reduce((sum, value) => sum + value * value, 0)) || 1;
+      vector = next.map((value) => value / length);
+    }
+    return vector;
+  };
+
+  const first = component(Array.from({ length: size }, (_, index) => 1 + index / Math.max(size, 1)));
+  const second = component(Array.from({ length: size }, (_, index) => index % 2 === 0 ? 1 : -1), first);
+  const raw = matrix.map((row) => ({
+    x: row.reduce((sum, value, index) => sum + value * first[index], 0),
+    y: row.reduce((sum, value, index) => sum + value * second[index], 0),
+  }));
+  const normalize = (values: number[]) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    const low = sorted[Math.floor(sorted.length * 0.02)] ?? 0;
+    const high = sorted[Math.floor(sorted.length * 0.98)] ?? 1;
+    return values.map((value) => clamp((value - low) / (high - low || 1), 0, 1));
+  };
+  const normalizedX = normalize(raw.map((point) => point.x));
+  const normalizedY = normalize(raw.map((point) => point.y));
+  return raw.map((_, index) => ({ x: normalizedX[index], y: normalizedY[index] }));
+}
+
+function LocalProjection({ dataset, features, mode, xColumn, yColumn, selected, onSelect }: { dataset: LocalDataset; features: string[]; mode: "pca" | "axes"; xColumn: string; yColumn: string; selected: number; onSelect: (index: number) => void }) {
   const targetIndex = dataset.headers.indexOf(dataset.target);
   const profile = targetProfile(dataset, dataset.trainIndices);
-  const selectedTarget = dataset.rows[selected]?.[targetIndex];
   const testSet = new Set(dataset.testIndices);
+  const palette = ["#c45f10", "#1e2a78", "#4f9b73", "#8b63b8", "#c45f7b", "#54748f"];
+  const categoryColors = new Map(profile.labels.slice(0, palette.length).map((label, index) => [label, palette[index]]));
+  const regressionRange = rangeFor(dataset, dataset.target);
+  const xRange = rangeFor(dataset, xColumn);
+  const yRange = rangeFor(dataset, yColumn);
+  const points = mode === "pca"
+    ? pcaCoordinates(dataset, features)
+    : dataset.rows.map((row) => {
+      return {
+        x: clamp((numericValue(dataset, row, xColumn) - xRange.min) / (xRange.max - xRange.min || 1), 0, 1),
+        y: clamp((numericValue(dataset, row, yColumn) - yRange.min) / (yRange.max - yRange.min || 1), 0, 1),
+      };
+    });
+  const colorFor = (row: string[]) => {
+    if (!profile.numeric) return categoryColors.get(row[targetIndex] || "Missing") ?? "#9da3a1";
+    const value = Number(row[targetIndex]);
+    const ratio = Number.isFinite(value) ? clamp((value - regressionRange.min) / (regressionRange.max - regressionRange.min || 1), 0, 1) : 0.5;
+    const red = Math.round(30 + (196 - 30) * ratio);
+    const green = Math.round(42 + (95 - 42) * ratio);
+    const blue = Math.round(120 + (16 - 120) * ratio);
+    return `rgb(${red}, ${green}, ${blue})`;
+  };
   return (
     <div className="local-projection">
-      <svg viewBox="0 0 1000 620" preserveAspectRatio="none" role="img" aria-label={`Raw projection of ${dataset.rows.length} rows by ${xColumn} and ${yColumn}`}>
+      <svg viewBox="0 0 1000 600" preserveAspectRatio="xMidYMid meet" role="img" aria-label={`${mode === "pca" ? "PCA overview" : "Feature projection"} of ${dataset.rows.length} rows`}>
         <g className="projection-grid">
-          {[1, 2, 3, 4].map((line) => <line key={`v${line}`} x1={line * 200} x2={line * 200} y1="0" y2="620" />)}
-          {[1, 2, 3, 4].map((line) => <line key={`h${line}`} x1="0" x2="1000" y1={line * 124} y2={line * 124} />)}
+          {[1, 2, 3, 4].map((line) => <line key={`v${line}`} x1={line * 200} x2={line * 200} y1="0" y2="600" />)}
+          {[1, 2, 3, 4].map((line) => <line key={`h${line}`} x1="0" x2="1000" y1={line * 120} y2={line * 120} />)}
         </g>
         {dataset.rows.map((row, index) => {
-          const x = 30 + ((numericValue(dataset, row, xColumn) - xRange.min) / (xRange.max - xRange.min || 1)) * 940;
-          const y = 590 - ((numericValue(dataset, row, yColumn) - yRange.min) / (yRange.max - yRange.min || 1)) * 560;
-          const active = profile.numeric ? Number(row[targetIndex]) >= profile.threshold : row[targetIndex] === selectedTarget;
+          const x = 55 + points[index].x * 890;
+          const y = 550 - points[index].y * 500;
           const isTest = testSet.has(index);
-          return <circle key={index} cx={x} cy={y} r={index === selected ? 9 : active ? 4.2 : 3} className={`${active ? "target-point" : "context-point"} ${isTest ? "test-point" : "train-point"} ${index === selected ? "selected-point" : ""}`} onClick={isTest ? () => onSelect(index) : undefined} />;
+          return <circle key={index} cx={x} cy={y} r={index === selected ? 11 : isTest ? 6.2 : 4.8} style={{ fill: colorFor(row) }} className={`${isTest ? "test-point" : "train-point"} ${index === selected ? "selected-point" : ""}`} onClick={isTest ? () => onSelect(index) : undefined} />;
         })}
       </svg>
-      <span className="projection-label x-label">{xColumn}</span>
-      <span className="projection-label y-label">{yColumn}</span>
+      <span className="projection-label x-label">{mode === "pca" ? "principal direction 01" : xColumn}</span>
+      <span className="projection-label y-label">{mode === "pca" ? "principal direction 02" : yColumn}</span>
       <div className="projection-badge"><span>Random 80 / 20 split</span><strong>{dataset.trainIndices.length.toLocaleString()} context · {dataset.testIndices.length.toLocaleString()} test</strong></div>
+      <div className="projection-target-legend">
+        <strong>Color · {dataset.target}</strong>
+        {profile.numeric ? <><span><i style={{ background: palette[1] }} /> lower</span><span><i style={{ background: palette[0] }} /> higher</span></> : profile.labels.slice(0, palette.length).map((label, index) => <span key={label}><i style={{ background: palette[index] }} /> {label}</span>)}
+      </div>
       <div className="projection-split-key"><span><i /> context</span><span><i /> test query</span></div>
     </div>
   );
@@ -459,6 +533,7 @@ function LocalProjection({ dataset, xColumn, yColumn, selected, onSelect }: { da
 export function LocalDatasetWorkspace({ dataset, capability }: { dataset: LocalDataset; capability: Capability }) {
   const [selected, setSelected] = useState(dataset.testIndices[0] ?? 0);
   const features = useMemo(() => dataset.numericColumns.filter((column) => column !== dataset.target), [dataset]);
+  const [projectionMode, setProjectionMode] = useState<"pca" | "axes">("pca");
   const [xColumn, setXColumn] = useState(features[0] ?? dataset.numericColumns[0]);
   const [yColumn, setYColumn] = useState(features[1] ?? dataset.numericColumns[1] ?? dataset.numericColumns[0]);
   const selectedRow = dataset.rows[selected] ?? dataset.rows[0];
@@ -473,7 +548,7 @@ export function LocalDatasetWorkspace({ dataset, capability }: { dataset: LocalD
   const effects = useMemo(() => {
     const contextRows = dataset.trainIndices.map((index) => dataset.rows[index]);
     const targetValues = profile.numeric
-      ? contextRows.map((row) => Number(row[targetIndex]))
+      ? contextRows.map((row) => row[targetIndex] === "" ? Number.NaN : Number(row[targetIndex]))
       : contextRows.map((row) => row[targetIndex] === selectedRow[targetIndex] ? 1 : 0);
     return features.map((column) => {
       const range = rangeFor(dataset, column);
@@ -485,9 +560,9 @@ export function LocalDatasetWorkspace({ dataset, capability }: { dataset: LocalD
     }).sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, 6);
   }, [dataset, features, profile.numeric, selectedRow, targetIndex]);
 
-  const selectedTarget = selectedRow[targetIndex] || "Missing";
-  const resultLabel = estimate.numeric ? formatNumber(estimate.value) : `${Math.round(estimate.value * 100)}%`;
-  const baselineLabel = profile.numeric ? formatNumber(profile.baseline) : `${Math.round(profile.baseline * 100)}%`;
+  const selectedTarget = profile.numeric && Number.isFinite(Number(selectedRow[targetIndex])) ? formatTargetValue(dataset, Number(selectedRow[targetIndex])) : selectedRow[targetIndex] || "Missing";
+  const resultLabel = estimate.numeric ? formatTargetValue(dataset, estimate.value) : `${Math.round(estimate.value * 100)}%`;
+  const baselineLabel = profile.numeric ? formatTargetValue(dataset, profile.baseline) : `${Math.round(profile.baseline * 100)}%`;
   const nextTestRow = () => {
     const position = dataset.testIndices.indexOf(selected);
     setSelected(dataset.testIndices[(position + 1) % dataset.testIndices.length] ?? selected);
@@ -504,11 +579,11 @@ export function LocalDatasetWorkspace({ dataset, capability }: { dataset: LocalD
         <div className="local-embedding-layout">
           <div className="local-embedding-main">
             <div className="local-axis-controls">
-              <label><span>X axis</span><select value={xColumn} onChange={(event) => setXColumn(event.target.value)}>{features.map((column) => <option key={column}>{column}</option>)}</select></label>
-              <label><span>Y axis</span><select value={yColumn} onChange={(event) => setYColumn(event.target.value)}>{features.map((column) => <option key={column}>{column}</option>)}</select></label>
-              <p>Context rows form the reference set; outlined test rows are held out as queries. Connect Nori to replace this with a target-aware embedding.</p>
+              <div className="projection-mode-control"><span>Projection</span><div className="segmented"><button type="button" className={projectionMode === "pca" ? "is-active indigo" : ""} onClick={() => setProjectionMode("pca")}>PCA overview</button><button type="button" className={projectionMode === "axes" ? "is-active orange" : ""} onClick={() => setProjectionMode("axes")}>Feature axes</button></div></div>
+              {projectionMode === "axes" ? <div className="projection-axis-pickers"><label><span>X axis</span><select value={xColumn} onChange={(event) => setXColumn(event.target.value)}>{features.map((column) => <option key={column}>{column}</option>)}</select></label><label><span>Y axis</span><select value={yColumn} onChange={(event) => setYColumn(event.target.value)}>{features.map((column) => <option key={column}>{column}</option>)}</select></label></div> : <div className="projection-summary"><strong>{features.length} numeric signals</strong><span>standardized into two principal directions</span></div>}
+              <p>{projectionMode === "pca" ? "A browser-local PCA overview colored by the chosen target. Outlined points are held-out test queries." : "Compare two raw features directly. Missing numeric values are mean-imputed for display."}</p>
             </div>
-            <LocalProjection dataset={dataset} xColumn={xColumn} yColumn={yColumn} selected={selected} onSelect={setSelected} />
+            <LocalProjection dataset={dataset} features={features} mode={projectionMode} xColumn={xColumn} yColumn={yColumn} selected={selected} onSelect={setSelected} />
           </div>
           <aside className="local-record-panel">
             <div className="record-heading"><span>Held-out test row</span><b>#{selected + 1}</b></div>
@@ -563,8 +638,8 @@ export function LocalDatasetWorkspace({ dataset, capability }: { dataset: LocalD
           </div>
           <div className="local-scenario-result">
             <div className="scenario-result-top"><p className="section-kicker">Local cohort comparison</p><span className="prototype-tag">Interactive</span></div>
-            <div className="local-comparison"><div><span>Original estimate</span><strong>{resultLabel}</strong></div><b>→</b><div><span>Scenario estimate</span><strong>{scenarioEstimate.numeric ? formatNumber(scenarioEstimate.value) : `${Math.round(scenarioEstimate.value * 100)}%`}</strong></div></div>
-            <div className="scenario-delta"><span className={scenarioEstimate.value <= estimate.value ? "down" : "up"}>{scenarioEstimate.value <= estimate.value ? "↓" : "↑"}</span><div><strong>{formatNumber(Math.abs(scenarioEstimate.value - estimate.value))} estimated change</strong><small>using the same browser-local reference cohort</small></div></div>
+            <div className="local-comparison"><div><span>Original estimate</span><strong>{resultLabel}</strong></div><b>→</b><div><span>Scenario estimate</span><strong>{scenarioEstimate.numeric ? formatTargetValue(dataset, scenarioEstimate.value) : `${Math.round(scenarioEstimate.value * 100)}%`}</strong></div></div>
+            <div className="scenario-delta"><span className={scenarioEstimate.value <= estimate.value ? "down" : "up"}>{scenarioEstimate.value <= estimate.value ? "↓" : "↑"}</span><div><strong>{estimate.numeric ? formatTargetValue(dataset, Math.abs(scenarioEstimate.value - estimate.value)) : `${Math.round(Math.abs(scenarioEstimate.value - estimate.value) * 100)} points`} estimated change</strong><small>using the same browser-local reference cohort</small></div></div>
             <p className="scenario-copy">This gives you a working demo flow on any numeric CSV. A connected Nori service can use the same controls to rerun true zero-shot inference and explanation.</p>
           </div>
         </div>

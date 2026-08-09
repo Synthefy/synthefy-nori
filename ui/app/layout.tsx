@@ -19,7 +19,7 @@ export async function generateMetadata(): Promise<Metadata> {
 
   return {
     title: "Nori Studio — Explore tabular intelligence",
-    description: "Explore Nori embeddings, interpretability, zero-shot inference, and scenario simulation on a public credit dataset.",
+    description: "Explore Nori embeddings, interpretability, zero-shot inference, and scenarios across retail outcomes or your own CSV.",
     openGraph: {
       title: "Nori Studio — See what Nori understands",
       description: "An interactive workspace for target-aware tabular intelligence.",

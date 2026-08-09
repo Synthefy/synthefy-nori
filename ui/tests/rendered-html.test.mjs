@@ -44,10 +44,11 @@ test("ships the product UI, local CSV importer, public artifact, and social card
     readFile(new URL("../README.md", import.meta.url), "utf8"),
     readFile(new URL("../public/data/nori-embeddings.json", import.meta.url), "utf8"),
     stat(new URL("../public/og-v2.png", import.meta.url)),
-    readFile(new URL("../public/data/starters/penguins.csv", import.meta.url), "utf8"),
-    readFile(new URL("../public/data/starters/auto-mpg.csv", import.meta.url), "utf8"),
-    readFile(new URL("../public/data/starters/restaurant-tips.csv", import.meta.url), "utf8"),
-    readFile(new URL("../public/data/starters/titanic.csv", import.meta.url), "utf8"),
+    readFile(new URL("../public/data/retail/customer-lifetime-value.csv", import.meta.url), "utf8"),
+    readFile(new URL("../public/data/retail/customer-churn.csv", import.meta.url), "utf8"),
+    readFile(new URL("../public/data/retail/customer-conversion.csv", import.meta.url), "utf8"),
+    readFile(new URL("../public/data/retail/promotion-uplift.csv", import.meta.url), "utf8"),
+    readFile(new URL("../public/data/retail/campaign-response.csv", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /Embeddings/);
@@ -57,9 +58,15 @@ test("ships the product UI, local CSV importer, public artifact, and social card
   assert.match(page, /Interface preview/);
   assert.match(page, /Add dataset/);
   assert.match(page, /mode-tabs/);
-  assert.match(page, /Five ready-to-explore tables/);
+  assert.match(page, /Six ready-to-explore tables/);
   assert.match(page, /Credit Card Default/);
   assert.match(page, /STARTER_DATASETS/);
+  assert.match(importer, /Customer Lifetime Value/);
+  assert.match(importer, /Customer Churn/);
+  assert.match(importer, /Customer Conversion/);
+  assert.match(importer, /Promotion Uplift/);
+  assert.match(importer, /Campaign Response/);
+  assert.match(importer, /PCA overview/);
   assert.match(importer, /Drop a CSV here/);
   assert.match(importer, /Files are parsed locally/);
   assert.match(importer, /Public CSV URL/);
@@ -73,8 +80,8 @@ test("ships the product UI, local CSV importer, public artifact, and social card
   assert.match(readme, /UCI Default of Credit Card Clients/);
   assert.equal(JSON.parse(dataFile).n, 3000);
   assert.ok(socialCard.size > 100_000);
-  assert.equal(starterFiles.length, 4);
-  starterFiles.forEach((csv) => assert.ok(csv.split("\n").length > 200));
+  assert.equal(starterFiles.length, 5);
+  starterFiles.forEach((csv) => assert.ok(csv.split("\n").length > 1_000));
 
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
 });

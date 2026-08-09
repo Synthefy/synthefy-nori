@@ -1,0 +1,1201 @@
+visitor_id,sessions_30d,product_views,cart_adds,wishlist_items,avg_session_minutes,prior_orders,email_clicks_30d,acquisition_channel,device,converted_14d
+V00001,1,1,0,2,0.4,3,1,Search,Mobile,0
+V00002,4,10,1,2,2.44,3,1,Organic,Desktop,1
+V00003,12,39,7,4,15.92,2,1,Affiliate,Tablet,1
+V00004,3,11,2,1,3.52,0,0,Organic,Tablet,0
+V00005,13,67,13,6,17.12,0,1,Affiliate,Mobile,1
+V00006,5,20,2,2,6.28,3,0,Affiliate,Tablet,1
+V00007,1,5,1,0,5.6,0,1,Affiliate,Desktop,0
+V00008,6,25,3,1,8.49,1,0,Affiliate,Tablet,0
+V00009,6,22,4,0,9.95,3,2,Search,Desktop,1
+V00010,13,31,5,2,12.53,5,0,Paid social,Tablet,1
+V00011,11,34,4,2,10.57,4,0,Email,Tablet,1
+V00012,4,16,3,2,7.71,4,3,Search,Mobile,1
+V00013,14,69,9,3,16.25,1,1,Organic,Desktop,1
+V00014,9,44,6,3,11.73,0,0,Paid social,Tablet,1
+V00015,4,20,3,2,7.8,5,4,Organic,Mobile,1
+V00016,5,24,1,1,5.98,0,4,Email,Tablet,1
+V00017,11,44,3,0,12.4,2,2,Affiliate,Mobile,1
+V00018,12,50,9,3,11.65,2,3,Email,Tablet,1
+V00019,14,45,7,4,14.15,1,2,Paid social,Desktop,1
+V00020,2,2,0,0,3.23,1,1,Affiliate,Tablet,0
+V00021,12,47,9,3,14.54,3,4,Email,Desktop,1
+V00022,12,34,2,1,9.91,4,1,Affiliate,Tablet,1
+V00023,12,37,2,0,10.24,2,2,Affiliate,Mobile,1
+V00024,11,27,2,0,8.38,0,2,Paid social,Tablet,1
+V00025,8,21,1,0,9.54,1,1,Paid social,Mobile,1
+V00026,1,1,0,0,4.44,3,1,Search,Mobile,0
+V00027,13,54,10,4,17.69,2,3,Organic,Mobile,1
+V00028,13,42,4,1,10.32,0,1,Affiliate,Tablet,0
+V00029,10,35,3,1,8.63,0,4,Email,Desktop,0
+V00030,13,62,11,5,18.78,1,4,Email,Desktop,1
+V00031,7,27,2,1,4.88,2,1,Affiliate,Desktop,1
+V00032,9,28,6,2,10.1,4,3,Search,Mobile,1
+V00033,6,27,3,1,4.09,0,3,Email,Tablet,1
+V00034,1,2,0,0,3.37,4,3,Organic,Mobile,0
+V00035,11,57,10,4,16.63,3,4,Email,Tablet,1
+V00036,12,36,4,0,11.85,0,3,Organic,Desktop,1
+V00037,2,9,1,1,6.39,3,3,Organic,Tablet,1
+V00038,7,34,7,4,12.09,2,0,Search,Tablet,1
+V00039,10,39,7,3,9.69,2,3,Paid social,Mobile,1
+V00040,11,44,2,2,10.19,4,1,Email,Mobile,1
+V00041,9,44,5,3,12.89,1,0,Email,Mobile,1
+V00042,6,28,2,2,10.34,4,2,Search,Desktop,1
+V00043,5,6,1,0,2.24,1,0,Affiliate,Mobile,0
+V00044,10,29,5,1,10.94,2,1,Email,Tablet,1
+V00045,10,27,1,2,8.6,1,1,Paid social,Mobile,1
+V00046,8,28,5,1,9.54,6,2,Email,Tablet,1
+V00047,12,28,6,3,15.8,2,4,Affiliate,Desktop,1
+V00048,3,9,1,0,3.85,1,3,Search,Mobile,0
+V00049,6,21,4,1,5.97,4,4,Email,Desktop,1
+V00050,6,31,6,2,7.61,3,1,Organic,Desktop,1
+V00051,2,7,1,3,6.73,2,0,Paid social,Desktop,1
+V00052,2,8,1,2,1.54,0,3,Organic,Mobile,0
+V00053,13,35,6,2,13.68,0,3,Search,Desktop,1
+V00054,11,32,6,2,11.3,0,2,Search,Tablet,1
+V00055,12,47,6,4,14.41,1,2,Paid social,Mobile,1
+V00056,13,50,6,3,11.79,0,0,Organic,Tablet,1
+V00057,8,24,1,0,7.53,4,2,Organic,Tablet,1
+V00058,13,40,4,0,10.23,3,0,Affiliate,Desktop,0
+V00059,1,1,0,2,1.84,4,4,Affiliate,Desktop,1
+V00060,6,25,2,2,7.17,2,0,Paid social,Tablet,1
+V00061,14,48,3,0,10.36,2,1,Organic,Mobile,1
+V00062,10,32,4,2,10.09,1,3,Organic,Tablet,1
+V00063,1,1,0,0,2.78,0,1,Search,Desktop,0
+V00064,8,22,3,1,7.54,0,3,Search,Mobile,0
+V00065,5,15,2,1,8.05,0,1,Search,Mobile,0
+V00066,6,27,3,0,5.53,2,2,Affiliate,Mobile,1
+V00067,3,17,3,1,5.66,1,0,Search,Tablet,1
+V00068,10,47,9,5,15.35,2,0,Paid social,Desktop,1
+V00069,7,25,4,3,9.65,4,0,Search,Mobile,1
+V00070,9,27,4,3,10.25,2,4,Organic,Mobile,1
+V00071,5,18,1,0,5.92,0,2,Affiliate,Desktop,1
+V00072,3,18,2,1,5.75,2,0,Email,Tablet,1
+V00073,11,53,6,4,13.05,5,2,Search,Desktop,1
+V00074,8,26,2,1,9.42,4,3,Email,Tablet,1
+V00075,8,24,3,2,7.1,4,0,Paid social,Desktop,1
+V00076,11,44,5,3,8.26,3,2,Affiliate,Tablet,1
+V00077,12,34,7,3,11.86,4,0,Organic,Mobile,1
+V00078,7,15,3,1,11.41,6,3,Affiliate,Mobile,1
+V00079,11,45,4,2,13.8,0,2,Organic,Desktop,0
+V00080,11,43,4,3,9.23,3,2,Email,Mobile,1
+V00081,7,36,2,0,6.95,4,4,Paid social,Tablet,0
+V00082,7,25,4,2,11.43,2,1,Paid social,Desktop,1
+V00083,7,33,6,2,10.78,6,0,Email,Mobile,1
+V00084,9,29,6,2,7.24,0,0,Search,Desktop,1
+V00085,2,10,1,0,5.55,2,0,Email,Mobile,0
+V00086,3,12,2,1,0.62,2,2,Paid social,Desktop,1
+V00087,6,14,1,0,4.93,3,1,Search,Tablet,1
+V00088,7,29,2,1,7.96,0,0,Organic,Desktop,0
+V00089,12,37,5,2,12.15,4,0,Paid social,Mobile,1
+V00090,2,12,2,2,5.53,4,0,Search,Mobile,1
+V00091,2,8,1,2,8.8,3,2,Email,Mobile,0
+V00092,6,23,1,0,6.04,4,4,Search,Mobile,0
+V00093,9,25,2,0,8.1,2,0,Search,Tablet,0
+V00094,6,20,4,1,5.01,2,2,Affiliate,Mobile,1
+V00095,1,4,1,1,2.81,6,1,Organic,Mobile,0
+V00096,6,25,2,2,7.09,0,3,Search,Tablet,0
+V00097,8,42,9,3,12.88,2,2,Organic,Tablet,1
+V00098,6,26,4,3,7.15,1,1,Organic,Mobile,1
+V00099,13,61,12,5,19,2,0,Email,Desktop,1
+V00100,13,41,8,3,14.39,0,1,Email,Desktop,1
+V00101,2,3,0,2,2.18,3,3,Search,Mobile,0
+V00102,4,7,1,0,3.17,5,0,Search,Mobile,0
+V00103,3,9,2,0,4.26,0,3,Affiliate,Mobile,0
+V00104,13,32,6,3,12.82,5,0,Affiliate,Desktop,1
+V00105,3,11,1,1,3.22,5,3,Organic,Tablet,1
+V00106,6,18,1,0,5.73,4,1,Affiliate,Tablet,0
+V00107,1,1,0,0,3.74,1,1,Organic,Mobile,0
+V00108,11,37,4,3,9.33,3,2,Search,Mobile,1
+V00109,3,6,1,0,6.31,3,0,Organic,Tablet,0
+V00110,4,23,3,2,6.9,1,3,Email,Tablet,1
+V00111,6,33,3,1,10.74,1,1,Email,Mobile,1
+V00112,6,27,5,1,8.31,0,3,Paid social,Mobile,1
+V00113,11,53,11,4,16.29,0,2,Affiliate,Mobile,1
+V00114,11,52,6,2,9.59,0,0,Search,Tablet,1
+V00115,4,16,1,0,2.58,1,0,Affiliate,Tablet,0
+V00116,3,19,3,2,6.84,3,1,Affiliate,Desktop,1
+V00117,5,16,3,2,5.7,1,3,Organic,Mobile,1
+V00118,10,45,8,2,11.01,3,1,Email,Desktop,1
+V00119,5,9,1,0,6.93,1,4,Affiliate,Tablet,0
+V00120,7,14,3,2,9.1,5,0,Search,Tablet,1
+V00121,11,27,2,1,10.88,2,0,Paid social,Mobile,1
+V00122,11,23,4,0,10.76,1,4,Search,Desktop,0
+V00123,8,19,1,2,8.28,5,1,Organic,Tablet,0
+V00124,11,29,4,2,13.11,4,0,Organic,Mobile,1
+V00125,6,22,3,1,8.36,2,2,Email,Mobile,1
+V00126,6,28,2,2,7.46,1,2,Email,Tablet,1
+V00127,1,4,0,0,4.18,1,2,Affiliate,Tablet,0
+V00128,13,39,3,1,13.29,3,3,Email,Desktop,1
+V00129,8,31,5,5,8.94,1,3,Paid social,Tablet,0
+V00130,8,39,4,2,11.92,0,3,Organic,Tablet,1
+V00131,1,1,0,0,2.98,3,1,Affiliate,Tablet,0
+V00132,14,73,10,6,18.24,3,1,Search,Tablet,1
+V00133,6,22,4,1,8.81,6,1,Paid social,Tablet,1
+V00134,1,5,1,0,5.26,3,0,Email,Tablet,1
+V00135,10,26,5,3,6.34,1,1,Search,Desktop,0
+V00136,7,26,4,2,5.11,2,0,Search,Desktop,1
+V00137,12,59,4,3,9.15,1,0,Affiliate,Desktop,1
+V00138,6,29,6,3,8.5,0,0,Paid social,Mobile,0
+V00139,3,13,2,3,8.45,0,1,Organic,Mobile,0
+V00140,3,14,2,1,3.47,1,0,Organic,Mobile,0
+V00141,4,21,2,0,1.47,1,4,Email,Tablet,1
+V00142,3,11,2,0,5.26,0,3,Search,Desktop,0
+V00143,11,33,4,2,8.83,2,1,Organic,Tablet,1
+V00144,2,8,2,0,5.22,0,2,Organic,Tablet,0
+V00145,10,29,3,2,10.41,3,1,Email,Desktop,1
+V00146,4,18,3,2,7.87,3,2,Organic,Desktop,0
+V00147,5,15,2,1,4.86,3,1,Paid social,Tablet,0
+V00148,8,43,7,3,9.62,1,0,Affiliate,Tablet,1
+V00149,9,24,4,2,7.92,0,0,Search,Tablet,1
+V00150,11,35,6,3,12.99,0,1,Search,Mobile,1
+V00151,12,57,9,4,11.26,0,3,Email,Desktop,1
+V00152,11,38,3,2,10.53,7,0,Email,Desktop,1
+V00153,5,23,4,1,8.7,2,4,Affiliate,Desktop,0
+V00154,14,38,7,3,10.68,3,4,Affiliate,Tablet,1
+V00155,13,23,2,0,10.72,0,3,Paid social,Tablet,1
+V00156,7,40,6,3,8.08,4,1,Affiliate,Mobile,1
+V00157,13,42,4,3,10.77,1,0,Paid social,Mobile,1
+V00158,7,33,7,2,12.45,2,0,Organic,Desktop,1
+V00159,6,30,4,2,7.74,3,4,Organic,Tablet,1
+V00160,4,10,1,0,3.8,0,0,Organic,Mobile,1
+V00161,6,23,3,2,8.74,4,4,Organic,Desktop,1
+V00162,3,14,1,0,3.09,1,2,Email,Tablet,0
+V00163,7,29,4,2,7.51,2,4,Affiliate,Desktop,1
+V00164,9,27,5,3,8.61,2,2,Affiliate,Desktop,1
+V00165,14,65,11,4,17.25,0,2,Organic,Mobile,1
+V00166,7,17,3,2,6.6,2,1,Email,Tablet,1
+V00167,12,31,2,0,9.38,1,2,Email,Mobile,0
+V00168,12,35,7,2,11.44,1,3,Paid social,Tablet,1
+V00169,1,1,0,0,6.72,3,1,Paid social,Tablet,0
+V00170,10,44,5,1,11.85,3,0,Search,Mobile,1
+V00171,10,56,10,3,12.24,0,0,Search,Tablet,1
+V00172,14,34,5,3,8.32,2,3,Organic,Tablet,1
+V00173,9,24,3,1,9.72,5,3,Organic,Mobile,1
+V00174,1,1,0,1,2.63,3,2,Organic,Desktop,0
+V00175,11,36,3,1,8.99,1,0,Affiliate,Mobile,1
+V00176,11,44,7,3,10.8,0,1,Search,Tablet,1
+V00177,8,28,4,1,8.85,3,2,Email,Desktop,1
+V00178,13,66,10,5,16.28,0,4,Affiliate,Desktop,1
+V00179,10,52,3,3,7.96,0,4,Affiliate,Desktop,1
+V00180,12,45,9,4,16.77,1,0,Organic,Tablet,1
+V00181,2,11,1,0,1.83,0,0,Email,Mobile,0
+V00182,9,17,2,1,8.1,6,1,Email,Mobile,1
+V00183,3,14,3,2,7.02,2,0,Search,Tablet,1
+V00184,13,55,7,2,12.53,4,0,Organic,Tablet,1
+V00185,13,36,2,2,7.09,2,3,Organic,Desktop,1
+V00186,8,24,1,0,6.59,4,0,Paid social,Desktop,1
+V00187,3,7,1,2,4.81,5,0,Paid social,Desktop,0
+V00188,1,4,0,1,1.69,3,1,Affiliate,Desktop,0
+V00189,4,21,3,2,4.92,1,2,Affiliate,Mobile,1
+V00190,11,46,10,5,14.25,1,3,Email,Mobile,1
+V00191,9,47,2,0,10.23,2,3,Affiliate,Desktop,0
+V00192,2,15,1,0,3.66,0,3,Email,Mobile,0
+V00193,10,42,7,3,15.85,0,4,Search,Tablet,1
+V00194,10,49,7,3,12.31,1,0,Paid social,Tablet,1
+V00195,13,67,6,4,13.16,5,3,Affiliate,Desktop,1
+V00196,3,6,1,2,3.63,0,2,Search,Tablet,0
+V00197,13,57,8,4,15.36,0,0,Organic,Desktop,1
+V00198,6,21,3,1,10.24,2,0,Affiliate,Mobile,0
+V00199,13,55,4,0,13.11,2,3,Affiliate,Tablet,1
+V00200,4,9,1,2,5.01,2,0,Organic,Tablet,0
+V00201,1,2,0,0,0.4,1,1,Search,Tablet,0
+V00202,7,24,5,2,8.71,0,1,Paid social,Mobile,1
+V00203,6,19,2,0,8.14,2,0,Email,Tablet,0
+V00204,3,13,1,0,3.56,3,2,Organic,Mobile,0
+V00205,2,6,1,0,5.17,1,0,Affiliate,Mobile,1
+V00206,9,34,3,3,8.04,5,1,Organic,Mobile,0
+V00207,12,51,9,4,15.39,1,0,Affiliate,Tablet,1
+V00208,11,59,4,0,11.72,0,3,Email,Mobile,1
+V00209,12,53,9,3,15.84,1,4,Paid social,Mobile,1
+V00210,6,18,2,0,9.37,2,2,Paid social,Tablet,1
+V00211,9,22,1,1,6.65,3,0,Paid social,Tablet,1
+V00212,11,53,11,5,16.19,2,0,Paid social,Tablet,1
+V00213,13,45,3,1,11.94,2,0,Email,Desktop,0
+V00214,8,25,2,1,7.34,4,1,Paid social,Mobile,0
+V00215,4,13,1,1,4.83,2,0,Search,Desktop,0
+V00216,8,20,4,1,9.65,0,0,Search,Desktop,1
+V00217,14,77,11,4,16.55,1,3,Affiliate,Tablet,1
+V00218,7,28,5,1,10.34,5,1,Affiliate,Desktop,1
+V00219,10,28,5,3,10.9,2,0,Paid social,Mobile,1
+V00220,1,2,0,1,3.48,1,4,Search,Tablet,0
+V00221,14,70,12,5,19,1,0,Email,Mobile,1
+V00222,5,10,2,0,3.49,5,2,Organic,Desktop,1
+V00223,11,28,5,1,8.19,1,1,Email,Tablet,1
+V00224,13,33,6,4,13.68,0,2,Paid social,Desktop,1
+V00225,10,47,4,2,10.86,0,3,Email,Tablet,1
+V00226,10,40,7,3,12.17,2,1,Organic,Desktop,1
+V00227,5,13,1,0,5.85,0,0,Paid social,Desktop,0
+V00228,10,32,4,0,9.36,3,1,Paid social,Mobile,0
+V00229,13,44,9,3,16.59,1,3,Email,Mobile,1
+V00230,3,12,2,1,4.58,4,2,Affiliate,Tablet,1
+V00231,3,13,2,1,5.76,3,1,Email,Mobile,1
+V00232,8,27,3,1,8.2,2,0,Affiliate,Tablet,1
+V00233,4,20,2,1,5.81,0,1,Affiliate,Desktop,1
+V00234,5,15,1,2,2.57,2,0,Affiliate,Mobile,1
+V00235,2,6,1,1,4.17,0,2,Email,Desktop,0
+V00236,6,30,3,2,4.89,2,0,Organic,Mobile,1
+V00237,7,26,5,3,9.36,2,0,Email,Mobile,1
+V00238,12,50,10,6,15.43,2,1,Paid social,Mobile,1
+V00239,9,31,3,0,9.16,3,3,Organic,Mobile,1
+V00240,13,54,9,6,16.9,1,0,Email,Desktop,1
+V00241,7,13,1,1,8.35,0,2,Email,Desktop,0
+V00242,7,29,4,2,10.01,2,3,Email,Tablet,1
+V00243,13,59,12,6,17.15,6,4,Email,Desktop,1
+V00244,4,12,1,1,5.88,2,4,Paid social,Desktop,1
+V00245,10,39,5,1,10.45,2,0,Organic,Mobile,1
+V00246,5,20,2,0,5.74,0,4,Paid social,Tablet,0
+V00247,8,36,3,3,7.29,6,0,Organic,Tablet,1
+V00248,13,30,2,0,7.17,0,3,Affiliate,Tablet,1
+V00249,1,4,0,3,1.3,1,1,Affiliate,Mobile,0
+V00250,11,25,4,2,9.75,0,0,Organic,Tablet,1
+V00251,10,49,10,5,17.77,0,0,Search,Mobile,1
+V00252,13,60,4,4,11.13,1,1,Affiliate,Desktop,1
+V00253,1,8,1,2,2.82,2,1,Search,Mobile,0
+V00254,7,25,2,1,4.84,2,0,Paid social,Mobile,0
+V00255,11,52,7,4,8.86,4,4,Affiliate,Mobile,1
+V00256,12,40,8,5,10.04,4,0,Organic,Desktop,1
+V00257,1,1,0,0,0.88,4,0,Paid social,Mobile,1
+V00258,4,8,1,0,7.85,3,1,Affiliate,Mobile,0
+V00259,14,31,6,3,13.68,0,4,Email,Desktop,1
+V00260,12,54,7,1,10.03,1,0,Paid social,Mobile,1
+V00261,2,5,1,0,3.87,0,3,Search,Tablet,0
+V00262,14,27,2,0,11.84,5,0,Email,Mobile,1
+V00263,13,56,9,4,19,2,4,Search,Mobile,1
+V00264,10,33,2,1,11.19,4,1,Paid social,Mobile,1
+V00265,7,12,1,0,6.21,0,4,Paid social,Desktop,1
+V00266,12,53,5,2,12.59,4,2,Affiliate,Tablet,1
+V00267,8,20,4,3,13.3,3,0,Search,Tablet,1
+V00268,10,34,2,0,4.92,2,3,Paid social,Mobile,0
+V00269,14,32,3,2,10.79,0,0,Affiliate,Mobile,0
+V00270,1,4,1,1,4.87,0,0,Affiliate,Desktop,0
+V00271,13,35,2,0,10.83,3,3,Email,Desktop,0
+V00272,9,29,3,1,7,2,0,Email,Desktop,1
+V00273,1,3,0,0,2.91,5,0,Search,Desktop,0
+V00274,8,33,3,2,10.16,4,1,Email,Desktop,1
+V00275,8,34,4,1,7.92,4,1,Search,Mobile,1
+V00276,9,46,4,1,6.55,3,0,Affiliate,Desktop,0
+V00277,2,2,0,2,6.31,5,2,Paid social,Tablet,1
+V00278,11,29,4,3,8.52,2,3,Organic,Tablet,1
+V00279,12,52,9,3,15.25,0,1,Organic,Tablet,1
+V00280,1,5,1,3,3.91,0,0,Paid social,Tablet,1
+V00281,2,2,0,1,0.4,4,1,Organic,Mobile,0
+V00282,14,67,7,2,14.26,0,0,Paid social,Tablet,1
+V00283,11,24,2,0,9.81,0,4,Search,Tablet,0
+V00284,5,14,1,0,2.97,5,1,Paid social,Desktop,1
+V00285,5,19,4,1,5.42,2,1,Organic,Tablet,1
+V00286,14,55,10,5,17.42,4,3,Paid social,Mobile,1
+V00287,2,5,1,1,3.81,1,1,Search,Mobile,1
+V00288,6,16,3,3,8.5,0,0,Paid social,Mobile,1
+V00289,11,49,7,5,15.99,2,0,Search,Desktop,1
+V00290,9,43,7,2,9.29,1,3,Email,Desktop,1
+V00291,14,46,2,0,12.34,3,0,Email,Tablet,0
+V00292,7,34,3,2,9.61,0,2,Search,Tablet,0
+V00293,7,41,2,0,7.02,1,1,Search,Tablet,0
+V00294,9,30,5,4,11.96,0,0,Affiliate,Tablet,1
+V00295,8,29,3,0,6.03,1,0,Search,Tablet,0
+V00296,7,25,5,1,10.29,1,0,Affiliate,Tablet,1
+V00297,1,1,0,0,2.49,2,1,Organic,Desktop,0
+V00298,9,45,9,2,13.31,2,2,Email,Tablet,1
+V00299,7,28,5,2,12.96,0,0,Search,Desktop,1
+V00300,4,16,1,0,3.44,1,0,Search,Mobile,0
+V00301,3,17,3,1,7.21,1,1,Paid social,Desktop,1
+V00302,2,10,1,0,3.82,0,2,Paid social,Desktop,1
+V00303,2,8,0,0,3.25,2,3,Search,Mobile,0
+V00304,3,10,1,0,8.29,2,1,Paid social,Desktop,1
+V00305,6,19,3,3,4.99,3,4,Search,Mobile,1
+V00306,10,41,7,4,14.14,2,2,Organic,Mobile,1
+V00307,8,20,2,0,6.64,5,2,Search,Mobile,1
+V00308,4,17,3,1,7.88,0,0,Organic,Tablet,1
+V00309,8,35,3,1,9.39,3,0,Organic,Desktop,1
+V00310,14,57,8,3,14.35,3,4,Paid social,Mobile,1
+V00311,10,39,3,3,11.76,3,0,Email,Tablet,1
+V00312,2,12,1,0,3.53,3,2,Paid social,Mobile,0
+V00313,5,20,4,2,9.14,4,1,Organic,Desktop,1
+V00314,2,6,1,2,4.57,1,0,Organic,Mobile,0
+V00315,13,63,12,4,17.7,3,3,Search,Desktop,1
+V00316,10,23,3,1,8.84,1,0,Search,Tablet,0
+V00317,11,34,5,2,12.44,1,0,Email,Mobile,1
+V00318,11,25,4,4,9.96,2,0,Search,Desktop,1
+V00319,11,39,5,1,11.51,1,0,Search,Mobile,1
+V00320,6,21,1,0,2.4,3,2,Paid social,Tablet,0
+V00321,6,27,2,0,5.68,2,3,Affiliate,Mobile,1
+V00322,6,16,1,1,6.42,4,1,Affiliate,Mobile,0
+V00323,13,53,10,4,17.09,1,4,Organic,Tablet,1
+V00324,13,65,4,2,12.64,4,3,Paid social,Tablet,1
+V00325,11,47,8,2,10.51,0,0,Search,Mobile,1
+V00326,4,17,3,0,6.7,0,4,Search,Mobile,1
+V00327,14,37,3,0,10.85,6,3,Organic,Mobile,1
+V00328,6,17,1,0,5.94,5,1,Email,Desktop,1
+V00329,1,5,1,0,1.58,1,1,Paid social,Tablet,1
+V00330,3,17,1,0,4.31,5,0,Affiliate,Tablet,0
+V00331,5,24,4,2,8.33,0,1,Organic,Mobile,0
+V00332,5,13,1,1,2.67,0,0,Affiliate,Mobile,1
+V00333,10,30,2,2,11.75,2,3,Organic,Tablet,1
+V00334,6,14,3,3,10.13,1,1,Paid social,Desktop,0
+V00335,12,29,6,3,11.02,3,1,Search,Tablet,1
+V00336,12,33,6,3,12.61,6,1,Paid social,Tablet,1
+V00337,10,33,6,3,10.74,0,0,Organic,Mobile,1
+V00338,13,40,6,3,9.81,0,3,Search,Mobile,1
+V00339,1,3,0,1,3.75,0,0,Organic,Tablet,0
+V00340,7,36,7,3,13.05,0,0,Search,Mobile,1
+V00341,11,54,5,1,10.1,4,3,Affiliate,Mobile,1
+V00342,8,24,2,0,6.04,0,0,Paid social,Mobile,1
+V00343,13,65,8,3,18.63,0,4,Affiliate,Mobile,1
+V00344,2,9,1,0,3.67,5,0,Search,Mobile,0
+V00345,1,10,2,2,1.16,2,0,Affiliate,Tablet,0
+V00346,11,25,4,2,9.97,3,1,Email,Mobile,1
+V00347,11,47,4,0,10.46,6,4,Organic,Mobile,1
+V00348,12,24,5,2,9.56,3,4,Paid social,Mobile,1
+V00349,12,57,11,4,17.94,1,0,Affiliate,Tablet,1
+V00350,3,6,1,0,6.19,4,0,Email,Mobile,1
+V00351,9,23,3,1,9.29,1,4,Email,Tablet,1
+V00352,5,23,2,2,3.78,6,0,Search,Mobile,1
+V00353,11,26,4,3,9.95,5,1,Affiliate,Tablet,1
+V00354,8,22,2,0,7.4,1,1,Paid social,Mobile,0
+V00355,2,10,1,2,2.8,1,1,Email,Mobile,0
+V00356,4,18,2,1,6.17,3,0,Email,Tablet,0
+V00357,13,49,6,4,16.49,0,2,Organic,Tablet,1
+V00358,12,51,10,3,15.74,3,1,Search,Tablet,1
+V00359,11,58,5,3,12.43,1,4,Affiliate,Mobile,1
+V00360,7,31,2,0,6.34,0,1,Affiliate,Mobile,0
+V00361,7,38,5,2,9.61,3,3,Paid social,Desktop,1
+V00362,8,31,5,3,8.04,2,0,Paid social,Mobile,1
+V00363,9,47,6,2,11.37,0,1,Search,Mobile,1
+V00364,4,17,3,2,6.06,2,3,Email,Desktop,1
+V00365,12,24,1,1,9.52,4,4,Search,Mobile,0
+V00366,11,45,9,3,11.39,1,1,Paid social,Desktop,1
+V00367,3,17,3,2,8.55,3,0,Organic,Mobile,0
+V00368,8,19,2,1,8.59,1,3,Search,Desktop,1
+V00369,13,45,8,3,17.54,2,0,Affiliate,Desktop,1
+V00370,13,51,3,1,9.04,4,2,Search,Mobile,1
+V00371,3,11,1,1,5.66,0,0,Paid social,Mobile,1
+V00372,12,49,3,1,5.12,2,3,Organic,Desktop,0
+V00373,12,58,4,3,12.71,2,2,Email,Desktop,1
+V00374,13,35,6,3,11.06,4,1,Paid social,Tablet,1
+V00375,11,55,5,3,13.42,3,4,Email,Mobile,1
+V00376,4,19,2,3,3.86,3,2,Affiliate,Mobile,1
+V00377,4,10,2,0,4.69,4,4,Affiliate,Desktop,0
+V00378,5,17,3,0,5.3,4,2,Affiliate,Tablet,0
+V00379,13,40,7,1,16.44,2,0,Search,Tablet,1
+V00380,2,7,1,0,3.52,2,0,Paid social,Desktop,0
+V00381,13,63,10,4,14.34,4,0,Affiliate,Mobile,1
+V00382,11,45,7,3,15.25,4,1,Email,Tablet,1
+V00383,3,8,1,1,6.25,2,1,Search,Mobile,0
+V00384,12,46,7,3,17.14,2,0,Affiliate,Tablet,1
+V00385,2,7,1,0,6.44,1,3,Email,Mobile,0
+V00386,7,35,7,4,9.26,1,1,Email,Tablet,1
+V00387,3,11,2,0,4.11,0,1,Search,Desktop,0
+V00388,13,49,4,1,14.12,3,0,Affiliate,Tablet,1
+V00389,8,36,3,1,9.09,3,0,Search,Tablet,1
+V00390,1,9,2,0,4.32,7,2,Paid social,Mobile,0
+V00391,4,23,3,2,7.95,2,1,Search,Tablet,1
+V00392,6,11,1,0,7.73,0,1,Search,Tablet,0
+V00393,6,31,5,3,6.75,6,3,Email,Tablet,1
+V00394,10,52,11,6,11.9,0,0,Paid social,Desktop,1
+V00395,14,71,12,5,19,1,3,Search,Tablet,1
+V00396,9,43,8,4,15.73,4,0,Email,Tablet,1
+V00397,11,54,8,5,14.04,0,0,Paid social,Tablet,1
+V00398,7,24,5,3,10.15,3,4,Organic,Desktop,1
+V00399,4,13,3,1,5.45,4,0,Affiliate,Tablet,0
+V00400,14,74,14,6,19,4,3,Email,Desktop,1
+V00401,3,10,2,2,4.66,2,3,Paid social,Tablet,0
+V00402,10,41,3,3,9.59,2,2,Organic,Mobile,1
+V00403,9,37,3,0,10.9,0,3,Email,Desktop,1
+V00404,12,58,4,2,10.37,3,0,Search,Mobile,1
+V00405,9,47,4,3,8.76,7,1,Paid social,Tablet,1
+V00406,10,22,3,1,7.8,3,2,Paid social,Mobile,1
+V00407,3,22,3,1,7.07,5,0,Email,Desktop,1
+V00408,7,17,2,0,3.58,1,4,Organic,Mobile,1
+V00409,10,48,8,1,14.31,2,4,Organic,Tablet,1
+V00410,13,55,10,4,15.66,3,1,Email,Desktop,1
+V00411,14,34,3,2,9.04,4,4,Search,Tablet,0
+V00412,13,53,10,4,12.18,2,0,Search,Desktop,1
+V00413,10,46,5,1,12.17,3,1,Organic,Tablet,1
+V00414,12,52,4,2,9.45,2,3,Email,Desktop,1
+V00415,13,65,12,7,16.96,0,3,Organic,Desktop,1
+V00416,14,50,10,5,19,1,0,Paid social,Mobile,1
+V00417,7,26,3,2,7.07,2,0,Organic,Tablet,0
+V00418,11,48,8,3,9.96,2,1,Affiliate,Mobile,1
+V00419,11,26,3,2,10.5,2,0,Paid social,Desktop,1
+V00420,6,19,2,2,5.78,3,0,Organic,Tablet,0
+V00421,5,11,1,0,2.62,4,1,Organic,Tablet,0
+V00422,10,26,2,1,8.61,4,0,Affiliate,Tablet,0
+V00423,12,57,5,4,14.84,4,2,Paid social,Desktop,1
+V00424,8,30,4,2,9.61,3,3,Email,Mobile,1
+V00425,7,35,3,0,7.77,4,3,Organic,Mobile,1
+V00426,3,16,1,1,5.34,1,2,Paid social,Mobile,1
+V00427,3,6,1,0,2.23,1,0,Search,Mobile,0
+V00428,6,21,4,3,8.81,6,3,Paid social,Desktop,1
+V00429,7,28,2,4,5.88,1,3,Affiliate,Tablet,0
+V00430,5,25,4,2,9.82,2,4,Paid social,Desktop,1
+V00431,14,37,2,1,12.97,0,0,Organic,Tablet,1
+V00432,13,61,10,6,14.41,3,0,Paid social,Tablet,1
+V00433,7,21,2,0,5.64,3,2,Organic,Tablet,1
+V00434,9,18,2,3,5,1,3,Email,Mobile,1
+V00435,6,12,1,0,6.59,0,0,Affiliate,Tablet,0
+V00436,5,14,1,0,5.67,5,3,Affiliate,Mobile,1
+V00437,1,3,0,0,4.17,0,1,Search,Tablet,0
+V00438,8,26,3,1,7.14,0,2,Paid social,Tablet,1
+V00439,1,1,0,0,4.41,3,2,Email,Tablet,0
+V00440,13,55,8,3,9.82,3,4,Organic,Mobile,1
+V00441,9,40,5,1,10.45,2,1,Search,Mobile,1
+V00442,13,66,12,7,17.81,0,1,Email,Desktop,1
+V00443,4,19,4,2,9.43,2,1,Affiliate,Mobile,1
+V00444,14,51,8,5,13.72,2,3,Email,Tablet,1
+V00445,3,14,1,0,4.49,1,0,Search,Desktop,0
+V00446,12,40,7,3,13.02,2,0,Organic,Tablet,1
+V00447,13,70,11,6,18.04,3,4,Search,Tablet,1
+V00448,10,27,2,2,9.99,0,0,Organic,Mobile,0
+V00449,12,57,11,5,15.66,2,4,Email,Tablet,1
+V00450,1,4,0,0,0.4,2,2,Email,Mobile,0
+V00451,1,1,0,1,2.68,4,0,Organic,Desktop,0
+V00452,1,4,1,0,1.32,2,2,Search,Desktop,0
+V00453,5,18,2,1,9.37,2,1,Search,Tablet,1
+V00454,2,5,1,2,5.96,1,0,Paid social,Mobile,0
+V00455,1,8,1,1,5.05,2,0,Paid social,Mobile,0
+V00456,7,23,1,1,5.09,1,0,Search,Desktop,0
+V00457,4,19,3,2,8.19,2,0,Search,Mobile,1
+V00458,13,62,10,4,16.45,2,2,Organic,Mobile,1
+V00459,2,5,1,1,4.7,3,1,Paid social,Mobile,0
+V00460,7,28,5,3,10.92,2,2,Email,Tablet,1
+V00461,12,42,8,4,14.38,2,1,Search,Desktop,1
+V00462,4,22,4,2,6.15,0,2,Organic,Desktop,1
+V00463,3,8,1,0,1.19,0,4,Affiliate,Mobile,1
+V00464,6,16,3,2,9.4,2,0,Paid social,Tablet,0
+V00465,10,28,4,4,8.88,2,0,Paid social,Tablet,1
+V00466,5,16,2,0,5.3,0,0,Affiliate,Tablet,0
+V00467,5,28,2,1,1.44,0,2,Affiliate,Mobile,1
+V00468,7,30,2,1,7.15,0,0,Email,Tablet,1
+V00469,3,12,1,2,5.33,2,0,Search,Mobile,1
+V00470,5,17,1,0,0.4,5,4,Organic,Desktop,1
+V00471,7,33,6,4,8.36,5,0,Paid social,Mobile,1
+V00472,14,39,5,3,13.14,3,1,Search,Mobile,1
+V00473,11,36,7,2,13.63,1,0,Email,Mobile,1
+V00474,7,26,4,2,10.08,3,4,Organic,Desktop,1
+V00475,11,26,3,0,10.18,3,0,Organic,Desktop,1
+V00476,8,22,5,2,8.95,1,1,Search,Desktop,1
+V00477,9,33,5,3,10.4,3,1,Email,Desktop,1
+V00478,11,47,7,3,10.08,0,0,Paid social,Tablet,1
+V00479,11,39,4,2,8.94,4,2,Email,Desktop,1
+V00480,2,2,0,0,3.51,2,1,Search,Desktop,0
+V00481,11,49,9,4,14.57,0,3,Search,Desktop,1
+V00482,14,74,6,4,14.43,0,0,Email,Desktop,1
+V00483,11,39,7,3,12.88,0,0,Email,Mobile,1
+V00484,3,8,1,0,4.27,0,3,Affiliate,Desktop,0
+V00485,8,38,6,3,9.86,0,0,Search,Desktop,1
+V00486,11,44,6,1,11.9,0,2,Organic,Tablet,1
+V00487,5,19,2,0,4.33,3,3,Paid social,Tablet,0
+V00488,4,12,2,2,1.79,1,2,Organic,Tablet,1
+V00489,13,64,6,2,12.5,3,0,Organic,Desktop,1
+V00490,8,24,5,3,10.94,1,2,Email,Tablet,1
+V00491,14,48,7,3,16.7,2,0,Paid social,Desktop,1
+V00492,13,55,6,3,13.58,1,0,Affiliate,Tablet,0
+V00493,4,17,3,2,6.15,1,1,Affiliate,Desktop,1
+V00494,1,6,1,1,5.65,2,3,Search,Desktop,0
+V00495,13,41,4,3,11.31,0,2,Search,Tablet,0
+V00496,9,41,7,3,11.7,3,1,Paid social,Mobile,1
+V00497,1,6,1,0,1.19,4,1,Paid social,Mobile,0
+V00498,2,6,1,0,2.62,3,1,Email,Tablet,0
+V00499,12,52,6,3,12.21,2,0,Search,Tablet,1
+V00500,6,27,2,0,7.93,3,4,Paid social,Desktop,1
+V00501,2,12,2,0,4.84,4,3,Search,Tablet,1
+V00502,4,18,3,0,9.67,3,0,Search,Tablet,1
+V00503,9,31,6,1,8.78,0,3,Affiliate,Desktop,1
+V00504,9,19,2,0,7.19,4,2,Search,Tablet,1
+V00505,9,25,4,2,9.92,0,1,Paid social,Tablet,0
+V00506,6,11,2,0,6.04,0,1,Paid social,Tablet,0
+V00507,8,36,7,4,12.71,4,2,Affiliate,Mobile,1
+V00508,8,27,5,4,10.56,4,2,Email,Tablet,1
+V00509,7,14,2,3,7.12,4,2,Organic,Desktop,1
+V00510,2,9,2,0,5.92,4,2,Email,Desktop,0
+V00511,6,31,3,2,4.13,4,0,Affiliate,Desktop,1
+V00512,2,6,1,1,2.84,1,3,Search,Desktop,0
+V00513,11,42,3,0,8.52,2,3,Paid social,Tablet,1
+V00514,14,39,2,1,10.92,2,0,Paid social,Tablet,0
+V00515,14,35,6,3,14.04,0,2,Email,Desktop,1
+V00516,1,4,1,2,2.83,1,1,Organic,Tablet,0
+V00517,10,50,5,0,13.21,1,3,Affiliate,Desktop,1
+V00518,12,57,7,4,12.45,0,2,Affiliate,Desktop,1
+V00519,11,30,5,1,11.11,2,0,Affiliate,Desktop,1
+V00520,6,25,5,2,8.37,4,1,Affiliate,Tablet,1
+V00521,9,43,7,3,13.37,1,1,Organic,Mobile,1
+V00522,2,9,1,3,4.13,5,2,Affiliate,Mobile,0
+V00523,1,7,1,0,4.71,2,0,Affiliate,Tablet,0
+V00524,7,19,1,0,5.95,0,0,Email,Desktop,0
+V00525,13,31,6,3,12.91,1,4,Organic,Desktop,1
+V00526,2,8,1,0,3.25,5,0,Email,Desktop,1
+V00527,4,20,3,0,2.95,2,0,Search,Mobile,0
+V00528,13,59,10,5,15.23,0,1,Organic,Desktop,1
+V00529,8,26,4,2,6.88,3,3,Email,Desktop,1
+V00530,4,14,1,0,6.24,1,3,Affiliate,Mobile,0
+V00531,8,38,7,4,12.15,0,0,Paid social,Desktop,1
+V00532,12,46,8,5,13.05,2,0,Search,Mobile,1
+V00533,2,6,1,1,4.64,2,0,Search,Tablet,0
+V00534,5,24,3,1,8.77,2,1,Paid social,Desktop,1
+V00535,8,31,5,1,6.6,0,0,Organic,Tablet,0
+V00536,3,14,1,0,1.69,1,3,Paid social,Mobile,0
+V00537,7,34,4,2,10.88,2,3,Affiliate,Desktop,1
+V00538,5,13,2,0,6.57,2,0,Paid social,Tablet,1
+V00539,12,33,5,0,11.97,2,2,Search,Tablet,1
+V00540,7,28,3,2,6.76,5,3,Email,Mobile,1
+V00541,8,44,6,3,9.63,0,3,Search,Tablet,1
+V00542,7,18,3,2,4.36,1,3,Affiliate,Tablet,0
+V00543,3,8,1,1,5.82,2,0,Organic,Tablet,0
+V00544,3,12,2,1,4.96,5,3,Search,Tablet,1
+V00545,11,53,4,2,10.42,0,0,Paid social,Tablet,1
+V00546,5,21,3,2,7.99,0,2,Organic,Mobile,0
+V00547,10,41,6,2,10.91,2,4,Email,Desktop,1
+V00548,3,17,1,1,6.63,1,0,Affiliate,Desktop,0
+V00549,14,76,12,5,17.62,0,2,Affiliate,Tablet,1
+V00550,12,55,9,3,14.23,1,2,Email,Desktop,1
+V00551,1,2,0,0,4.55,3,4,Affiliate,Mobile,1
+V00552,11,51,7,3,12.61,2,2,Affiliate,Desktop,1
+V00553,8,26,1,0,7.08,2,3,Organic,Mobile,0
+V00554,9,44,7,3,11.89,0,1,Affiliate,Tablet,1
+V00555,2,12,1,0,1.98,2,3,Affiliate,Tablet,0
+V00556,11,34,6,3,10.67,0,0,Search,Mobile,1
+V00557,11,46,4,2,11.91,5,1,Organic,Tablet,1
+V00558,12,32,6,5,11.19,1,3,Paid social,Tablet,1
+V00559,3,4,1,1,4.88,5,1,Search,Tablet,1
+V00560,6,34,2,1,9.56,0,3,Organic,Tablet,0
+V00561,13,62,4,3,11.68,4,0,Email,Tablet,1
+V00562,8,23,4,3,10.1,1,0,Affiliate,Mobile,0
+V00563,9,25,5,1,9.73,3,2,Search,Desktop,1
+V00564,2,7,1,1,4.73,2,3,Paid social,Mobile,0
+V00565,1,6,1,0,3.27,3,1,Search,Desktop,0
+V00566,5,18,1,2,5.12,1,0,Email,Mobile,1
+V00567,14,36,5,0,13.77,0,3,Affiliate,Mobile,1
+V00568,13,48,3,2,11.55,2,1,Search,Mobile,1
+V00569,1,11,1,0,2.21,4,0,Organic,Tablet,1
+V00570,10,33,2,1,9.46,4,0,Organic,Desktop,1
+V00571,12,38,5,3,13.19,0,0,Paid social,Desktop,1
+V00572,5,22,4,2,7.21,2,1,Search,Tablet,1
+V00573,12,28,2,1,9.44,5,2,Search,Mobile,1
+V00574,4,17,1,0,6.91,4,0,Search,Tablet,0
+V00575,6,30,6,3,10.1,1,2,Affiliate,Mobile,1
+V00576,4,17,3,1,4.84,3,1,Search,Desktop,0
+V00577,10,19,3,3,8.18,2,0,Search,Desktop,1
+V00578,10,42,6,2,10.6,3,4,Email,Tablet,1
+V00579,9,19,2,1,6.61,3,1,Organic,Mobile,1
+V00580,7,21,4,2,9.24,2,3,Search,Desktop,1
+V00581,10,42,7,2,13.56,1,2,Search,Tablet,1
+V00582,12,58,12,4,18.76,5,4,Paid social,Tablet,1
+V00583,5,19,2,1,6.07,3,0,Organic,Mobile,1
+V00584,11,37,3,2,11.16,3,3,Organic,Mobile,1
+V00585,6,30,4,2,8.13,3,0,Organic,Mobile,1
+V00586,12,38,4,2,10.11,2,0,Organic,Desktop,0
+V00587,2,11,1,0,4.57,0,1,Affiliate,Desktop,0
+V00588,7,31,2,0,6.11,1,3,Paid social,Desktop,1
+V00589,8,21,3,1,8.77,1,2,Paid social,Tablet,0
+V00590,4,17,2,0,3.16,2,1,Paid social,Tablet,0
+V00591,3,6,1,0,2.34,4,1,Paid social,Tablet,0
+V00592,12,59,11,7,14.2,1,2,Organic,Mobile,1
+V00593,8,25,3,3,11.41,4,2,Email,Tablet,1
+V00594,5,28,2,0,7.1,2,1,Affiliate,Tablet,1
+V00595,13,50,10,5,17.46,6,0,Search,Tablet,1
+V00596,2,5,0,0,3.1,6,2,Affiliate,Mobile,0
+V00597,11,51,9,5,12.82,0,2,Organic,Tablet,1
+V00598,1,5,1,2,4.64,3,1,Search,Mobile,0
+V00599,2,8,1,1,2.44,1,3,Email,Mobile,0
+V00600,7,30,2,1,5.38,2,1,Search,Mobile,0
+V00601,8,34,6,2,8.21,0,3,Search,Desktop,1
+V00602,5,28,3,2,1.06,2,0,Affiliate,Tablet,1
+V00603,6,22,2,0,5.56,0,1,Organic,Mobile,0
+V00604,5,27,5,2,7.52,2,0,Paid social,Desktop,1
+V00605,6,21,2,0,5.82,0,0,Search,Mobile,0
+V00606,11,38,2,0,8.55,2,0,Organic,Desktop,1
+V00607,2,3,0,0,4.79,4,3,Paid social,Tablet,0
+V00608,9,25,2,0,7.33,0,2,Affiliate,Desktop,1
+V00609,7,29,2,1,3.71,1,2,Search,Desktop,0
+V00610,12,39,3,0,7.82,0,0,Affiliate,Tablet,0
+V00611,12,41,8,3,11.07,2,0,Paid social,Tablet,1
+V00612,11,47,4,3,8.96,3,1,Paid social,Mobile,1
+V00613,3,14,1,0,3.78,4,2,Affiliate,Tablet,1
+V00614,5,15,3,1,8.69,1,3,Affiliate,Mobile,1
+V00615,13,59,8,4,14.26,0,3,Affiliate,Mobile,1
+V00616,14,68,11,6,15.1,2,3,Search,Desktop,1
+V00617,1,1,0,0,1.02,7,3,Email,Tablet,0
+V00618,13,35,4,2,13.95,1,3,Paid social,Mobile,1
+V00619,13,60,9,4,13.21,4,0,Affiliate,Mobile,1
+V00620,8,40,2,0,7.13,2,2,Email,Mobile,1
+V00621,2,4,0,0,3.89,1,3,Email,Mobile,0
+V00622,14,78,11,6,17.79,4,1,Paid social,Desktop,1
+V00623,8,16,3,3,9.89,4,2,Email,Mobile,1
+V00624,8,26,5,2,11.46,3,0,Affiliate,Tablet,1
+V00625,10,40,4,2,12.66,4,2,Email,Tablet,1
+V00626,2,12,2,2,1.32,4,0,Affiliate,Mobile,0
+V00627,12,33,2,1,11.04,2,2,Organic,Tablet,1
+V00628,13,48,7,4,15.48,3,2,Email,Mobile,1
+V00629,6,15,2,1,5.73,0,2,Search,Tablet,0
+V00630,12,29,3,0,9.28,0,4,Paid social,Tablet,1
+V00631,9,28,3,0,9.57,2,4,Search,Tablet,1
+V00632,11,59,3,1,7.43,1,1,Email,Desktop,0
+V00633,3,9,1,0,0.46,3,1,Email,Desktop,0
+V00634,1,1,0,0,0.68,1,4,Email,Mobile,1
+V00635,6,17,1,1,6.97,2,1,Organic,Tablet,1
+V00636,7,29,4,0,7.18,4,0,Search,Mobile,1
+V00637,8,28,5,3,10.67,0,2,Affiliate,Mobile,1
+V00638,6,29,2,1,9.58,6,1,Email,Desktop,1
+V00639,13,53,6,1,14.55,1,0,Affiliate,Desktop,1
+V00640,3,4,1,2,9.51,3,2,Search,Desktop,0
+V00641,8,23,2,2,6.49,3,4,Affiliate,Desktop,1
+V00642,12,51,5,2,9.9,3,1,Affiliate,Tablet,1
+V00643,2,9,1,0,2.16,4,2,Email,Mobile,0
+V00644,1,2,0,0,7.51,4,2,Paid social,Mobile,0
+V00645,5,15,2,2,5.6,5,1,Paid social,Mobile,0
+V00646,3,16,2,1,4.61,2,3,Affiliate,Desktop,0
+V00647,9,35,3,0,9.91,0,0,Email,Tablet,1
+V00648,7,37,3,1,11.09,1,0,Paid social,Tablet,1
+V00649,3,11,2,2,6.77,1,0,Search,Mobile,0
+V00650,14,30,5,4,13.85,0,0,Search,Desktop,1
+V00651,3,7,1,0,3.02,1,2,Email,Mobile,0
+V00652,13,68,6,3,13.71,0,1,Organic,Mobile,1
+V00653,3,19,3,2,6.08,3,2,Search,Mobile,1
+V00654,5,14,2,1,6.04,4,2,Email,Mobile,1
+V00655,10,50,10,4,15.1,3,2,Email,Desktop,1
+V00656,2,6,0,0,7.02,0,2,Organic,Desktop,0
+V00657,5,21,3,2,7.19,0,0,Search,Mobile,1
+V00658,4,24,2,2,4.25,1,3,Paid social,Tablet,0
+V00659,7,42,8,5,12.34,0,3,Affiliate,Mobile,1
+V00660,3,9,1,1,5.05,1,4,Email,Desktop,1
+V00661,10,52,11,6,13.55,0,1,Affiliate,Desktop,1
+V00662,5,21,4,2,6.81,4,0,Email,Tablet,1
+V00663,12,59,3,0,13.99,2,2,Search,Desktop,1
+V00664,5,23,2,0,7.12,0,4,Paid social,Mobile,0
+V00665,2,8,1,2,6.41,2,4,Email,Tablet,0
+V00666,12,39,3,2,9.47,4,1,Affiliate,Tablet,1
+V00667,9,18,2,0,7.98,0,0,Paid social,Mobile,1
+V00668,2,13,2,0,3.37,2,0,Paid social,Tablet,0
+V00669,13,29,5,2,11.06,1,4,Email,Desktop,1
+V00670,5,19,4,3,9.79,3,3,Email,Mobile,1
+V00671,2,9,2,0,6.6,0,3,Search,Desktop,1
+V00672,9,35,7,3,12.41,1,2,Email,Desktop,1
+V00673,1,3,0,0,0.4,2,3,Paid social,Desktop,0
+V00674,1,5,1,0,2.52,3,0,Organic,Mobile,0
+V00675,6,26,2,1,7.74,0,0,Paid social,Mobile,0
+V00676,3,12,2,1,6.73,6,0,Paid social,Tablet,1
+V00677,4,14,2,1,3.43,5,3,Paid social,Mobile,1
+V00678,3,13,2,1,5.24,3,2,Email,Mobile,0
+V00679,13,47,3,1,10.09,1,4,Organic,Desktop,1
+V00680,13,47,5,2,10.4,0,2,Organic,Tablet,1
+V00681,8,31,3,1,7.99,0,0,Email,Mobile,1
+V00682,8,19,3,1,9.8,0,0,Paid social,Mobile,0
+V00683,2,9,1,0,4.01,1,0,Affiliate,Desktop,0
+V00684,13,45,4,2,13.55,1,0,Affiliate,Tablet,0
+V00685,3,10,2,0,4.99,3,0,Paid social,Mobile,1
+V00686,14,48,10,4,15.89,5,4,Email,Tablet,1
+V00687,10,36,7,2,12.31,5,0,Organic,Tablet,1
+V00688,12,29,4,1,9.59,5,0,Email,Desktop,1
+V00689,8,29,4,1,9.19,2,2,Email,Mobile,1
+V00690,8,30,4,3,8.47,0,2,Email,Mobile,1
+V00691,1,2,0,0,0.5,0,0,Affiliate,Desktop,0
+V00692,1,7,1,0,5.23,1,4,Search,Desktop,1
+V00693,7,21,4,1,8.1,3,4,Search,Tablet,1
+V00694,4,23,4,2,5.51,0,1,Organic,Desktop,0
+V00695,4,21,3,1,7.95,0,3,Email,Tablet,0
+V00696,4,8,1,0,6.97,5,2,Email,Mobile,1
+V00697,9,39,3,1,10.51,3,3,Paid social,Desktop,1
+V00698,2,8,1,0,1.62,7,1,Email,Mobile,1
+V00699,6,12,1,1,4.92,2,4,Email,Tablet,1
+V00700,10,30,5,2,9.79,3,3,Search,Tablet,1
+V00701,13,52,9,6,17.9,3,2,Affiliate,Mobile,1
+V00702,13,54,3,0,7.18,2,3,Email,Tablet,1
+V00703,3,9,1,0,4.53,1,4,Paid social,Tablet,1
+V00704,3,11,1,1,3.69,2,1,Paid social,Tablet,1
+V00705,3,17,2,1,6.6,3,3,Search,Desktop,0
+V00706,14,57,5,3,10.33,5,2,Email,Mobile,1
+V00707,1,7,1,2,8.44,1,2,Email,Tablet,0
+V00708,13,51,5,3,9.81,5,3,Search,Desktop,1
+V00709,8,21,1,1,6.98,2,0,Search,Mobile,0
+V00710,4,19,3,0,9.8,3,0,Affiliate,Desktop,0
+V00711,2,12,1,1,5.92,1,3,Affiliate,Mobile,0
+V00712,4,25,3,2,7.61,3,4,Organic,Mobile,1
+V00713,5,32,4,1,9.21,4,0,Affiliate,Desktop,1
+V00714,1,2,0,0,3.34,3,0,Search,Tablet,0
+V00715,10,52,3,1,8.86,3,0,Organic,Desktop,1
+V00716,11,38,3,1,10.39,1,2,Email,Tablet,1
+V00717,3,3,0,0,1.89,4,0,Paid social,Desktop,0
+V00718,10,47,7,3,10.37,2,1,Affiliate,Tablet,1
+V00719,3,13,1,1,4.54,2,0,Organic,Tablet,0
+V00720,9,40,2,1,7.37,3,2,Search,Tablet,0
+V00721,3,5,1,0,3.06,4,2,Paid social,Mobile,1
+V00722,11,58,3,1,10.21,1,4,Organic,Mobile,1
+V00723,5,27,5,3,4.52,3,0,Paid social,Mobile,1
+V00724,8,39,7,4,11.77,3,3,Paid social,Mobile,1
+V00725,9,30,3,1,6.98,2,1,Paid social,Desktop,0
+V00726,6,14,1,0,5.77,3,2,Organic,Mobile,1
+V00727,2,7,0,0,6.48,1,0,Affiliate,Desktop,0
+V00728,3,15,1,2,4.23,1,0,Email,Tablet,0
+V00729,3,13,1,0,5.75,0,2,Affiliate,Tablet,1
+V00730,3,13,2,1,8.11,2,3,Organic,Desktop,0
+V00731,8,27,5,2,13.39,1,3,Affiliate,Desktop,1
+V00732,3,15,1,1,4.51,4,3,Organic,Desktop,1
+V00733,7,33,6,5,10.09,4,0,Paid social,Tablet,1
+V00734,12,31,3,0,8,1,1,Search,Desktop,1
+V00735,6,26,3,1,6.19,5,0,Organic,Desktop,1
+V00736,7,28,6,3,10.21,1,1,Affiliate,Mobile,1
+V00737,9,32,4,3,11.77,1,2,Affiliate,Desktop,1
+V00738,13,49,8,2,14.82,3,4,Organic,Mobile,1
+V00739,3,6,1,0,5.22,3,1,Email,Desktop,0
+V00740,11,34,5,3,13.79,1,3,Affiliate,Desktop,1
+V00741,2,9,1,2,3.56,5,0,Paid social,Mobile,1
+V00742,9,23,2,0,6.93,1,0,Organic,Desktop,0
+V00743,13,60,12,6,14.49,3,4,Organic,Tablet,1
+V00744,13,59,7,5,13.21,1,3,Paid social,Desktop,1
+V00745,10,39,8,1,14.85,1,4,Email,Tablet,1
+V00746,11,57,5,3,12.78,2,4,Search,Desktop,1
+V00747,3,15,2,2,4.86,3,3,Organic,Desktop,1
+V00748,14,34,4,3,9.16,3,0,Paid social,Mobile,1
+V00749,9,48,8,3,14.97,1,0,Affiliate,Mobile,1
+V00750,13,59,10,5,19,0,1,Search,Desktop,1
+V00751,3,9,2,0,6.02,6,1,Affiliate,Tablet,0
+V00752,1,5,0,0,2.16,2,0,Organic,Desktop,0
+V00753,13,36,3,2,11.01,0,1,Search,Tablet,0
+V00754,4,12,3,1,3.27,3,3,Paid social,Desktop,1
+V00755,2,4,0,1,5.49,4,0,Organic,Mobile,0
+V00756,12,32,2,1,4.93,1,0,Affiliate,Mobile,0
+V00757,4,14,1,1,3.59,4,0,Organic,Tablet,1
+V00758,7,27,2,0,9.51,2,2,Email,Tablet,0
+V00759,10,40,7,3,13.41,2,2,Organic,Desktop,1
+V00760,8,43,3,0,8.54,4,0,Paid social,Desktop,1
+V00761,14,57,9,4,17.81,4,2,Organic,Tablet,1
+V00762,10,45,4,1,9.33,4,0,Affiliate,Mobile,1
+V00763,12,30,6,5,13.23,4,3,Email,Desktop,1
+V00764,3,14,1,2,5.95,1,1,Email,Mobile,0
+V00765,8,41,5,3,6.86,4,0,Paid social,Mobile,1
+V00766,2,3,1,1,0.4,0,2,Paid social,Mobile,0
+V00767,8,33,4,3,9.12,2,0,Organic,Desktop,1
+V00768,7,36,7,3,13.47,5,2,Organic,Mobile,1
+V00769,3,16,1,1,6.98,2,1,Affiliate,Desktop,0
+V00770,8,25,5,2,12.72,1,2,Search,Desktop,1
+V00771,7,20,3,1,6.15,6,4,Affiliate,Tablet,1
+V00772,8,22,2,2,10.99,1,1,Search,Tablet,0
+V00773,8,29,5,2,10.32,4,4,Search,Tablet,1
+V00774,6,23,3,3,7.11,0,3,Organic,Desktop,1
+V00775,1,1,0,1,2.87,2,0,Organic,Mobile,0
+V00776,6,24,3,3,5.91,1,3,Paid social,Mobile,0
+V00777,2,12,2,2,4.97,2,0,Email,Mobile,1
+V00778,13,55,3,2,11.3,3,3,Email,Tablet,0
+V00779,4,7,1,1,2.38,4,0,Organic,Tablet,0
+V00780,9,31,2,2,10.37,3,0,Email,Desktop,0
+V00781,12,65,7,3,11.67,2,3,Organic,Mobile,1
+V00782,7,36,5,2,10.07,3,0,Search,Desktop,1
+V00783,8,32,3,1,9.02,4,3,Organic,Desktop,1
+V00784,13,54,8,1,19,2,0,Search,Desktop,1
+V00785,10,36,5,3,9,0,1,Email,Mobile,0
+V00786,10,47,8,3,14.71,2,0,Email,Tablet,1
+V00787,10,39,7,4,12.52,2,0,Email,Mobile,1
+V00788,5,16,2,2,5.38,2,2,Email,Mobile,1
+V00789,10,41,4,3,10.82,0,0,Affiliate,Desktop,1
+V00790,3,6,1,0,4.86,4,2,Organic,Mobile,0
+V00791,12,51,10,6,14.75,2,0,Paid social,Desktop,1
+V00792,7,18,2,1,3.79,2,4,Organic,Mobile,1
+V00793,12,33,2,1,13.59,4,2,Email,Mobile,1
+V00794,2,5,0,0,4.73,1,4,Affiliate,Desktop,0
+V00795,8,31,6,4,11.01,3,1,Paid social,Desktop,1
+V00796,8,23,2,3,8.33,6,3,Search,Tablet,1
+V00797,7,36,4,2,8.88,2,1,Email,Mobile,1
+V00798,3,13,1,0,3.59,0,0,Organic,Mobile,0
+V00799,10,49,9,4,15.29,1,4,Paid social,Mobile,1
+V00800,6,23,2,1,4.33,1,1,Affiliate,Tablet,0
+V00801,8,44,4,3,11.71,5,0,Paid social,Tablet,1
+V00802,12,31,5,1,9.71,2,2,Search,Mobile,1
+V00803,1,5,1,1,0.76,0,3,Email,Desktop,0
+V00804,8,24,5,1,12.71,0,1,Affiliate,Mobile,1
+V00805,6,29,2,0,6.44,0,1,Search,Tablet,1
+V00806,7,25,2,0,5.06,0,0,Paid social,Mobile,0
+V00807,4,8,2,0,2.81,2,2,Organic,Mobile,0
+V00808,11,36,6,2,14.54,5,0,Affiliate,Tablet,1
+V00809,9,26,4,2,8.33,4,3,Email,Mobile,1
+V00810,9,22,2,0,6.62,3,2,Search,Mobile,1
+V00811,6,32,2,0,6.41,2,0,Affiliate,Tablet,0
+V00812,2,8,1,0,4.16,4,1,Organic,Mobile,0
+V00813,5,25,5,1,8.82,0,2,Search,Tablet,1
+V00814,3,12,2,2,4.86,0,4,Organic,Desktop,0
+V00815,14,34,6,3,10.89,4,3,Paid social,Tablet,1
+V00816,14,62,13,6,16.96,3,1,Search,Desktop,1
+V00817,1,2,0,0,1.02,6,1,Email,Mobile,0
+V00818,4,12,1,2,5.81,3,3,Email,Tablet,1
+V00819,4,17,1,0,5.74,0,4,Affiliate,Desktop,0
+V00820,8,42,8,3,12.09,2,0,Search,Tablet,1
+V00821,13,61,9,3,16.9,1,3,Affiliate,Mobile,1
+V00822,10,24,2,2,13.15,1,4,Email,Mobile,0
+V00823,7,28,5,2,7.42,0,0,Organic,Mobile,1
+V00824,11,46,4,2,13.46,3,3,Paid social,Tablet,1
+V00825,12,63,6,3,12.85,3,0,Organic,Tablet,1
+V00826,3,14,2,0,4.4,5,0,Search,Mobile,0
+V00827,5,16,2,0,6.83,2,0,Email,Tablet,0
+V00828,5,11,2,1,8.98,1,3,Email,Tablet,1
+V00829,8,23,2,2,11.28,0,1,Search,Desktop,1
+V00830,5,29,4,3,8.94,0,0,Search,Mobile,1
+V00831,3,15,3,0,5.52,0,0,Affiliate,Desktop,1
+V00832,13,67,13,6,15.75,2,3,Organic,Tablet,1
+V00833,6,35,7,2,8.26,1,0,Paid social,Mobile,0
+V00834,1,1,0,0,4.76,4,1,Email,Tablet,0
+V00835,4,23,1,1,6.73,2,0,Paid social,Desktop,0
+V00836,5,22,1,1,6.56,1,0,Organic,Desktop,0
+V00837,14,61,9,3,15.71,2,4,Email,Tablet,1
+V00838,1,3,1,1,6.63,1,0,Email,Mobile,1
+V00839,2,14,2,1,4.46,0,0,Search,Desktop,1
+V00840,13,46,7,5,15.73,4,0,Search,Mobile,1
+V00841,4,13,2,0,7.86,0,3,Organic,Tablet,0
+V00842,1,1,0,0,2.28,1,1,Paid social,Mobile,0
+V00843,4,25,5,2,7.56,0,1,Email,Desktop,1
+V00844,9,37,7,5,11.15,1,0,Search,Mobile,1
+V00845,10,51,7,2,10.95,5,2,Affiliate,Mobile,1
+V00846,10,46,9,5,11.27,1,2,Affiliate,Tablet,1
+V00847,2,7,1,0,2.73,4,3,Affiliate,Desktop,1
+V00848,1,6,1,2,5.48,2,0,Affiliate,Mobile,0
+V00849,1,4,0,1,4.2,3,0,Search,Tablet,0
+V00850,14,44,9,4,16.46,1,4,Paid social,Tablet,1
+V00851,13,29,5,1,10.61,2,1,Affiliate,Mobile,1
+V00852,8,42,7,3,8.84,2,0,Affiliate,Mobile,1
+V00853,9,24,3,0,9.59,5,1,Organic,Tablet,1
+V00854,3,12,1,1,4.54,2,2,Organic,Mobile,0
+V00855,3,19,1,0,4.23,2,2,Search,Tablet,0
+V00856,9,41,6,1,12.19,2,0,Email,Mobile,1
+V00857,11,36,6,4,9.97,3,0,Email,Mobile,1
+V00858,12,36,5,2,11.3,2,4,Paid social,Tablet,1
+V00859,11,58,8,4,15.43,2,2,Organic,Mobile,1
+V00860,14,67,7,2,14.36,3,2,Paid social,Tablet,1
+V00861,11,46,9,2,11.65,0,0,Search,Tablet,1
+V00862,5,26,4,3,8.05,2,2,Search,Mobile,1
+V00863,1,12,1,0,4.32,4,3,Paid social,Mobile,1
+V00864,12,35,7,4,11.57,0,0,Paid social,Tablet,1
+V00865,7,21,4,3,7.24,1,1,Search,Mobile,1
+V00866,14,69,9,5,19,4,1,Paid social,Desktop,1
+V00867,11,36,7,2,13.22,0,0,Email,Tablet,1
+V00868,8,39,6,1,11.06,0,0,Organic,Tablet,1
+V00869,12,51,6,3,11.38,1,2,Search,Tablet,1
+V00870,1,2,0,0,1.48,2,4,Paid social,Desktop,1
+V00871,13,66,5,2,11.65,3,1,Search,Tablet,1
+V00872,11,26,2,2,8.53,1,3,Email,Tablet,1
+V00873,9,39,5,2,12.09,4,1,Search,Tablet,1
+V00874,4,16,3,2,4.78,0,4,Search,Tablet,1
+V00875,9,35,7,3,11.46,5,0,Search,Desktop,1
+V00876,5,23,3,3,5.74,3,0,Affiliate,Tablet,0
+V00877,5,20,4,2,7.95,1,0,Search,Mobile,1
+V00878,14,61,5,1,11.97,3,0,Email,Mobile,1
+V00879,13,38,8,5,13.11,3,1,Organic,Tablet,1
+V00880,10,43,7,4,8.45,3,0,Organic,Mobile,1
+V00881,7,14,2,3,6.7,0,2,Search,Desktop,1
+V00882,3,11,2,2,6.34,2,0,Organic,Desktop,1
+V00883,14,58,6,2,15.85,4,3,Paid social,Tablet,1
+V00884,13,60,12,6,17.18,0,0,Email,Desktop,1
+V00885,4,22,2,0,1.96,5,0,Email,Mobile,1
+V00886,7,10,1,2,8.46,4,0,Paid social,Desktop,0
+V00887,6,26,3,0,2.75,1,1,Email,Mobile,1
+V00888,11,40,3,2,8.17,3,3,Affiliate,Desktop,1
+V00889,3,8,1,0,4.05,1,0,Search,Mobile,0
+V00890,12,58,4,2,6.77,0,3,Paid social,Desktop,1
+V00891,9,48,10,4,15.41,2,0,Search,Desktop,1
+V00892,6,22,4,1,7.7,4,2,Email,Tablet,1
+V00893,9,25,3,2,9.3,3,2,Search,Tablet,1
+V00894,3,7,0,1,6.11,4,0,Paid social,Tablet,0
+V00895,8,30,6,3,9.54,4,0,Organic,Mobile,1
+V00896,11,65,9,5,16.5,0,4,Email,Desktop,1
+V00897,1,5,1,1,3.87,0,3,Affiliate,Tablet,0
+V00898,6,17,3,2,7.09,6,2,Search,Desktop,1
+V00899,12,40,3,1,9.07,1,0,Organic,Tablet,0
+V00900,14,67,6,2,10.99,3,1,Search,Desktop,1
+V00901,11,48,7,2,12.54,1,1,Affiliate,Mobile,1
+V00902,3,7,1,0,3.67,3,0,Organic,Tablet,0
+V00903,13,48,9,4,14.3,2,0,Search,Mobile,1
+V00904,6,28,5,0,7.31,1,2,Search,Desktop,1
+V00905,10,53,7,3,10.97,0,3,Affiliate,Tablet,1
+V00906,2,6,1,0,5.34,1,4,Paid social,Desktop,0
+V00907,7,20,2,2,5.53,3,2,Search,Tablet,1
+V00908,13,42,2,0,11.58,4,3,Affiliate,Mobile,1
+V00909,8,40,3,0,9.2,0,0,Paid social,Tablet,0
+V00910,13,47,7,2,14.99,1,3,Paid social,Tablet,1
+V00911,10,25,2,2,8.79,6,3,Organic,Desktop,1
+V00912,1,4,1,1,5.62,2,0,Organic,Mobile,1
+V00913,5,21,3,1,8.11,6,0,Affiliate,Desktop,1
+V00914,12,37,3,3,10.1,2,4,Search,Desktop,1
+V00915,13,69,7,4,16.8,2,2,Organic,Tablet,1
+V00916,7,16,2,1,6.8,2,3,Paid social,Mobile,1
+V00917,14,35,3,2,11.49,4,4,Organic,Tablet,0
+V00918,3,18,3,0,4.37,3,3,Paid social,Tablet,0
+V00919,9,40,8,4,11.3,3,2,Search,Desktop,1
+V00920,3,12,2,1,8.61,2,4,Search,Mobile,1
+V00921,5,23,2,1,5.38,3,2,Paid social,Desktop,1
+V00922,2,4,1,0,7.51,1,1,Search,Tablet,0
+V00923,8,34,6,2,8.96,2,0,Organic,Desktop,0
+V00924,9,26,2,1,5.53,3,2,Organic,Mobile,1
+V00925,6,26,4,1,9.46,2,2,Paid social,Tablet,1
+V00926,10,33,4,0,7.42,5,2,Organic,Desktop,1
+V00927,3,4,1,2,7.94,4,2,Search,Tablet,0
+V00928,3,13,2,3,7.91,5,1,Organic,Desktop,1
+V00929,3,21,4,1,8.96,2,1,Organic,Desktop,1
+V00930,11,31,6,3,11.27,2,3,Search,Tablet,1
+V00931,3,4,0,0,3.31,3,1,Affiliate,Mobile,0
+V00932,6,21,2,0,8.5,1,3,Paid social,Desktop,0
+V00933,9,36,3,0,6.42,4,1,Search,Desktop,1
+V00934,11,45,4,1,8.11,4,2,Organic,Tablet,1
+V00935,10,48,4,1,8.07,3,1,Paid social,Desktop,1
+V00936,14,53,9,5,16.1,2,2,Affiliate,Mobile,1
+V00937,5,19,3,2,5.75,3,0,Email,Tablet,1
+V00938,3,9,1,0,6.17,4,3,Email,Desktop,1
+V00939,5,12,2,1,5.58,4,2,Paid social,Mobile,1
+V00940,5,19,4,1,8.02,0,0,Search,Mobile,0
+V00941,11,60,7,3,14.29,1,3,Paid social,Desktop,1
+V00942,8,14,2,1,11.75,0,3,Email,Mobile,1
+V00943,10,31,2,1,7.91,0,0,Paid social,Desktop,1
+V00944,2,4,1,1,4.46,0,0,Paid social,Tablet,0
+V00945,13,35,2,0,11.97,1,0,Search,Tablet,0
+V00946,11,61,12,6,15.44,1,2,Search,Tablet,1
+V00947,3,13,2,3,7,4,0,Organic,Mobile,1
+V00948,7,28,3,0,10.99,0,1,Email,Mobile,0
+V00949,7,28,2,2,5.73,1,0,Search,Desktop,0
+V00950,2,11,1,0,4.1,1,1,Search,Mobile,1
+V00951,5,17,3,2,9.42,1,2,Paid social,Mobile,1
+V00952,12,55,6,3,13.26,5,0,Search,Tablet,1
+V00953,7,33,6,1,11.2,3,4,Email,Tablet,1
+V00954,7,17,3,2,9.32,0,0,Paid social,Mobile,0
+V00955,10,33,4,3,13.98,2,1,Affiliate,Desktop,1
+V00956,12,36,4,0,12.34,3,0,Organic,Tablet,0
+V00957,11,35,2,1,7.23,2,0,Affiliate,Desktop,1
+V00958,1,2,0,0,0.4,4,3,Search,Desktop,0
+V00959,7,21,3,3,5.3,0,2,Paid social,Tablet,0
+V00960,9,33,5,1,10.86,5,3,Organic,Mobile,1
+V00961,5,16,2,2,7.68,2,2,Search,Mobile,1
+V00962,6,16,2,0,6.13,1,1,Search,Mobile,0
+V00963,8,30,5,1,8.85,2,0,Organic,Desktop,1
+V00964,10,27,2,2,4.11,2,1,Affiliate,Tablet,1
+V00965,7,20,3,0,8.28,1,3,Paid social,Mobile,1
+V00966,5,11,1,0,5.95,0,0,Paid social,Tablet,0
+V00967,12,26,3,1,10.92,2,3,Search,Mobile,0
+V00968,10,45,8,5,13.74,5,2,Paid social,Mobile,1
+V00969,14,49,4,0,12.37,4,2,Affiliate,Tablet,1
+V00970,9,36,3,3,10.37,4,2,Search,Tablet,1
+V00971,7,23,3,1,7.32,3,3,Paid social,Mobile,1
+V00972,3,8,1,0,4.54,1,3,Paid social,Tablet,0
+V00973,7,18,1,0,2.72,1,3,Email,Mobile,1
+V00974,13,39,6,3,12.71,4,0,Paid social,Desktop,1
+V00975,2,4,0,1,6.5,2,0,Email,Desktop,0
+V00976,3,15,1,1,7.54,5,2,Search,Desktop,0
+V00977,2,6,1,0,3.84,0,0,Search,Tablet,0
+V00978,13,37,6,3,13.12,1,1,Email,Desktop,1
+V00979,10,25,3,2,5.84,3,3,Paid social,Desktop,0
+V00980,12,57,9,3,12.96,1,1,Paid social,Desktop,1
+V00981,14,37,3,2,12.62,2,1,Paid social,Desktop,1
+V00982,7,18,2,0,9.44,0,3,Search,Desktop,0
+V00983,14,56,8,5,10.32,1,2,Search,Desktop,1
+V00984,2,4,1,2,4.41,6,0,Search,Desktop,0
+V00985,14,34,5,3,11.81,0,1,Email,Mobile,1
+V00986,11,39,7,4,14.03,1,3,Affiliate,Mobile,1
+V00987,3,11,1,1,3.89,1,2,Organic,Mobile,1
+V00988,13,40,5,1,12.1,0,0,Organic,Mobile,1
+V00989,13,62,6,3,14.33,0,3,Email,Desktop,1
+V00990,5,25,3,2,9,2,0,Organic,Mobile,1
+V00991,14,38,7,3,16.2,3,2,Email,Desktop,1
+V00992,12,41,7,3,13.59,1,1,Organic,Tablet,1
+V00993,13,38,4,1,10.33,0,1,Affiliate,Tablet,1
+V00994,9,29,4,2,10.56,4,3,Search,Mobile,1
+V00995,10,51,10,4,15.66,4,0,Email,Desktop,1
+V00996,7,28,2,2,7.25,1,0,Affiliate,Mobile,0
+V00997,3,11,1,0,6.49,3,1,Paid social,Desktop,0
+V00998,1,5,0,0,0.68,0,2,Email,Mobile,0
+V00999,10,39,6,2,12.73,1,0,Organic,Mobile,1
+V01000,9,31,2,0,6.87,0,1,Paid social,Desktop,1
+V01001,4,20,3,3,6.46,1,2,Search,Tablet,1
+V01002,1,5,0,0,2.01,1,3,Email,Tablet,0
+V01003,6,19,4,3,7.99,1,2,Email,Tablet,1
+V01004,10,35,6,3,10.38,3,0,Organic,Mobile,1
+V01005,5,26,3,0,6.07,4,3,Search,Mobile,0
+V01006,8,28,5,0,9.13,3,3,Search,Mobile,1
+V01007,1,8,1,1,3.53,0,3,Email,Tablet,1
+V01008,3,16,3,2,6.36,3,4,Affiliate,Mobile,1
+V01009,5,17,3,0,8.8,2,2,Affiliate,Tablet,0
+V01010,3,4,0,0,0.96,0,0,Paid social,Mobile,0
+V01011,2,8,1,1,4.47,1,4,Email,Tablet,1
+V01012,3,16,2,1,4.93,4,1,Paid social,Tablet,0
+V01013,9,33,2,1,6.98,0,3,Search,Tablet,0
+V01014,5,14,3,0,6.54,3,1,Affiliate,Desktop,1
+V01015,9,52,3,2,12.02,2,3,Email,Tablet,1
+V01016,4,13,2,2,4.82,1,2,Paid social,Tablet,0
+V01017,10,44,6,3,10.26,5,1,Affiliate,Tablet,1
+V01018,12,47,7,2,14.15,2,2,Email,Mobile,1
+V01019,2,7,1,0,4.87,4,1,Organic,Mobile,0
+V01020,5,14,2,2,6.6,2,3,Organic,Mobile,1
+V01021,6,26,4,3,9.04,6,3,Email,Tablet,1
+V01022,11,45,2,1,8.01,5,1,Email,Mobile,1
+V01023,12,55,5,1,11.69,2,1,Email,Tablet,1
+V01024,11,25,2,1,7.62,2,1,Search,Mobile,1
+V01025,9,50,9,4,14.21,2,3,Email,Mobile,1
+V01026,14,45,4,2,8.96,3,3,Paid social,Desktop,1
+V01027,2,14,1,1,3.74,6,1,Affiliate,Mobile,0
+V01028,9,25,4,0,9.68,3,1,Affiliate,Desktop,1
+V01029,4,8,1,0,5.43,0,2,Organic,Desktop,0
+V01030,13,32,2,2,8.82,4,3,Search,Tablet,1
+V01031,3,8,1,0,4.05,3,0,Organic,Tablet,0
+V01032,1,7,1,3,2.26,1,1,Paid social,Tablet,0
+V01033,8,17,1,2,11.06,4,1,Affiliate,Desktop,0
+V01034,1,6,1,0,6.02,2,3,Paid social,Mobile,1
+V01035,13,64,9,4,12.54,3,2,Email,Desktop,1
+V01036,11,50,3,1,8.98,3,0,Search,Desktop,1
+V01037,12,67,13,6,16.98,1,0,Paid social,Tablet,1
+V01038,4,19,3,1,4.86,2,0,Affiliate,Mobile,0
+V01039,5,29,5,3,7.54,1,2,Paid social,Tablet,1
+V01040,13,31,3,2,11.11,4,3,Organic,Desktop,1
+V01041,5,17,2,0,6.86,4,0,Email,Desktop,1
+V01042,4,19,4,2,8.9,2,2,Email,Mobile,1
+V01043,11,53,5,2,10.92,5,0,Paid social,Tablet,1
+V01044,14,76,11,6,15.61,4,0,Paid social,Tablet,1
+V01045,12,29,2,0,8.93,2,3,Paid social,Desktop,1
+V01046,2,9,1,0,1.43,4,0,Affiliate,Desktop,0
+V01047,5,21,3,2,5.73,1,2,Email,Mobile,1
+V01048,11,50,6,3,10.38,0,3,Email,Desktop,1
+V01049,2,5,1,0,4.13,4,0,Paid social,Tablet,0
+V01050,3,16,1,1,5.68,2,3,Email,Desktop,1
+V01051,14,43,6,3,11.89,0,3,Search,Tablet,1
+V01052,7,33,6,2,8.94,1,2,Organic,Mobile,1
+V01053,6,36,6,4,11.19,2,3,Organic,Mobile,1
+V01054,13,37,4,3,9.71,5,4,Affiliate,Desktop,1
+V01055,8,18,2,1,8.75,2,4,Affiliate,Tablet,1
+V01056,10,24,5,2,12.71,3,2,Organic,Tablet,1
+V01057,12,33,6,2,13.84,2,0,Organic,Desktop,1
+V01058,2,7,1,0,1.96,3,1,Organic,Tablet,0
+V01059,8,21,4,4,8.14,4,3,Paid social,Mobile,1
+V01060,8,36,4,2,8.16,1,3,Paid social,Tablet,1
+V01061,14,75,13,6,19,2,4,Paid social,Desktop,1
+V01062,13,41,6,3,14.05,0,0,Search,Desktop,1
+V01063,1,3,0,0,2.22,0,4,Email,Tablet,0
+V01064,7,29,5,1,9.68,5,4,Organic,Tablet,1
+V01065,1,6,1,1,1.56,1,3,Paid social,Desktop,1
+V01066,5,24,4,4,8.33,2,2,Email,Desktop,1
+V01067,13,26,4,2,8.8,2,0,Email,Desktop,1
+V01068,14,58,6,3,14.18,0,1,Email,Mobile,1
+V01069,4,24,3,2,7.19,5,3,Search,Tablet,1
+V01070,9,22,1,1,7.45,1,0,Paid social,Desktop,0
+V01071,9,16,3,2,7.38,4,1,Organic,Mobile,1
+V01072,13,33,2,0,10.88,0,1,Organic,Desktop,1
+V01073,4,13,2,0,3.76,1,3,Organic,Mobile,0
+V01074,5,14,2,0,4.67,1,1,Organic,Desktop,0
+V01075,11,56,5,3,9.2,2,3,Organic,Desktop,1
+V01076,8,18,2,1,8.81,3,3,Email,Desktop,0
+V01077,8,36,7,5,12.24,2,0,Organic,Desktop,1
+V01078,11,36,5,3,7.65,0,0,Search,Tablet,1
+V01079,6,21,3,3,9.6,3,4,Email,Tablet,1
+V01080,14,66,4,3,10.23,0,2,Search,Mobile,1
+V01081,3,6,1,1,4,3,2,Email,Mobile,1
+V01082,4,22,2,0,6.19,0,0,Organic,Tablet,0
+V01083,4,19,2,1,9.17,4,3,Email,Tablet,1
+V01084,7,37,6,3,8.95,3,1,Search,Mobile,1
+V01085,6,20,3,0,7.42,2,2,Organic,Tablet,1
+V01086,14,62,7,3,19,3,1,Affiliate,Mobile,1
+V01087,8,42,6,2,8.42,3,4,Email,Desktop,1
+V01088,5,15,3,0,7.61,2,4,Search,Desktop,0
+V01089,5,20,2,1,5.81,2,1,Email,Tablet,0
+V01090,11,27,4,2,10.64,3,1,Paid social,Desktop,1
+V01091,10,46,3,0,9.55,0,4,Email,Tablet,1
+V01092,5,21,2,0,4.53,0,4,Affiliate,Mobile,0
+V01093,3,10,1,1,4.46,2,4,Affiliate,Mobile,1
+V01094,5,13,2,0,7.36,1,0,Organic,Tablet,0
+V01095,5,21,4,1,6.35,2,0,Organic,Desktop,1
+V01096,11,52,10,6,16.18,5,2,Organic,Mobile,1
+V01097,9,31,6,2,11.06,0,1,Search,Desktop,1
+V01098,14,33,7,3,12.97,4,2,Organic,Mobile,1
+V01099,9,21,3,2,6.33,2,4,Paid social,Tablet,1
+V01100,7,37,4,0,11.31,3,4,Paid social,Tablet,1
+V01101,9,51,6,3,11.86,3,0,Email,Tablet,1
+V01102,10,45,9,3,17.45,2,3,Organic,Mobile,1
+V01103,7,34,5,1,9.97,2,2,Affiliate,Desktop,1
+V01104,10,39,8,2,10.32,4,2,Search,Tablet,1
+V01105,13,41,3,0,12.87,2,3,Affiliate,Mobile,0
+V01106,1,3,1,2,5.66,3,1,Affiliate,Mobile,0
+V01107,12,36,7,3,10.55,3,2,Organic,Tablet,1
+V01108,8,19,3,0,7.88,6,1,Affiliate,Mobile,1
+V01109,3,20,2,0,7.69,0,2,Paid social,Tablet,1
+V01110,1,1,0,0,1.07,0,0,Email,Desktop,0
+V01111,8,25,2,4,7.9,3,2,Affiliate,Mobile,1
+V01112,7,19,1,0,10.51,0,2,Email,Desktop,0
+V01113,8,21,2,1,5.52,2,1,Email,Desktop,0
+V01114,12,50,10,5,15.9,1,0,Organic,Tablet,1
+V01115,7,32,5,1,9.29,2,3,Affiliate,Tablet,1
+V01116,12,39,2,1,9.58,3,0,Search,Tablet,1
+V01117,8,28,5,2,11.07,3,2,Paid social,Tablet,0
+V01118,5,23,5,1,8.19,4,0,Paid social,Desktop,1
+V01119,3,20,2,2,1.84,2,0,Organic,Mobile,1
+V01120,3,16,3,2,4.8,3,0,Affiliate,Tablet,0
+V01121,3,11,2,0,6.51,0,1,Email,Mobile,0
+V01122,9,36,6,1,7.96,0,0,Search,Tablet,1
+V01123,11,25,3,2,9.99,0,3,Organic,Tablet,0
+V01124,8,26,4,2,8.06,3,2,Email,Desktop,1
+V01125,4,9,1,1,2.96,3,0,Email,Mobile,1
+V01126,7,21,4,1,9.84,0,2,Email,Mobile,0
+V01127,8,46,8,3,14.07,5,3,Affiliate,Desktop,1
+V01128,9,40,7,3,12.39,0,4,Paid social,Tablet,1
+V01129,4,13,2,1,2.85,4,0,Organic,Tablet,0
+V01130,4,18,2,0,5.21,3,4,Affiliate,Tablet,1
+V01131,11,65,7,3,13.09,4,0,Email,Tablet,1
+V01132,5,14,2,1,3.71,0,0,Email,Mobile,0
+V01133,7,34,2,0,8.18,1,2,Organic,Desktop,1
+V01134,8,43,4,1,11.52,0,0,Email,Tablet,1
+V01135,11,37,7,5,13.47,3,4,Affiliate,Mobile,1
+V01136,12,27,5,4,14.52,1,3,Affiliate,Desktop,1
+V01137,11,44,9,3,12.17,1,2,Search,Tablet,1
+V01138,14,39,6,3,13.54,2,0,Organic,Mobile,1
+V01139,6,19,4,2,9.21,1,0,Affiliate,Desktop,1
+V01140,14,40,8,2,12.37,0,3,Organic,Desktop,1
+V01141,1,8,1,1,4.67,5,2,Paid social,Mobile,0
+V01142,7,30,3,1,8.12,3,3,Email,Desktop,1
+V01143,4,22,4,2,6.07,2,0,Affiliate,Mobile,1
+V01144,8,14,3,0,9.89,3,1,Search,Desktop,1
+V01145,10,29,3,0,10.95,4,0,Email,Mobile,1
+V01146,2,3,0,0,4.41,3,1,Organic,Tablet,1
+V01147,9,29,3,2,8.75,0,4,Email,Mobile,1
+V01148,3,9,2,1,5.89,4,3,Organic,Mobile,1
+V01149,3,11,2,2,5.11,1,2,Search,Desktop,1
+V01150,10,47,4,3,9.23,1,2,Email,Desktop,1
+V01151,6,26,5,1,10.86,3,1,Email,Desktop,1
+V01152,8,30,6,4,8.84,2,0,Organic,Mobile,0
+V01153,8,35,5,2,8.05,3,1,Search,Mobile,1
+V01154,5,29,3,1,6.65,2,1,Email,Mobile,0
+V01155,12,52,10,3,15.17,0,2,Affiliate,Desktop,1
+V01156,5,24,5,1,7.57,0,1,Affiliate,Desktop,1
+V01157,14,66,7,4,11.56,0,0,Affiliate,Desktop,1
+V01158,11,47,6,3,12.55,6,1,Paid social,Tablet,1
+V01159,12,61,3,1,9.33,2,0,Affiliate,Mobile,1
+V01160,9,35,4,1,11.42,6,4,Search,Desktop,1
+V01161,3,16,3,1,7.98,2,0,Paid social,Mobile,1
+V01162,10,35,7,3,9.31,3,3,Email,Mobile,1
+V01163,7,23,1,0,5.98,2,0,Paid social,Desktop,0
+V01164,9,47,7,2,14.69,1,2,Email,Desktop,1
+V01165,3,9,1,1,4.47,2,3,Organic,Mobile,0
+V01166,2,7,0,2,2.84,3,0,Search,Desktop,0
+V01167,2,7,1,0,1.86,2,2,Organic,Desktop,0
+V01168,10,42,5,0,8.4,2,4,Email,Desktop,1
+V01169,9,33,6,3,11.89,2,4,Organic,Desktop,1
+V01170,8,40,6,3,12.86,3,2,Affiliate,Tablet,1
+V01171,12,38,5,2,11.94,2,3,Email,Mobile,1
+V01172,6,20,1,0,4.85,3,0,Organic,Tablet,0
+V01173,7,18,1,1,7.35,4,1,Email,Mobile,0
+V01174,14,62,3,2,9.98,2,3,Organic,Desktop,1
+V01175,3,11,1,1,4.23,4,1,Email,Tablet,0
+V01176,10,46,5,2,9.73,1,1,Paid social,Tablet,1
+V01177,8,22,4,2,8.78,2,2,Organic,Mobile,1
+V01178,4,17,2,0,4.03,5,3,Email,Desktop,1
+V01179,5,10,2,1,4.46,2,0,Search,Mobile,0
+V01180,2,10,1,0,3.76,3,3,Email,Tablet,0
+V01181,9,39,5,2,9.77,3,4,Affiliate,Mobile,1
+V01182,12,53,10,6,18.62,0,1,Organic,Tablet,1
+V01183,13,46,8,3,16.36,0,4,Affiliate,Mobile,1
+V01184,14,72,12,5,18.83,4,2,Search,Mobile,1
+V01185,7,36,7,3,9.51,1,1,Search,Desktop,1
+V01186,1,10,1,0,2.03,3,4,Paid social,Desktop,0
+V01187,4,24,3,3,5.19,7,0,Search,Mobile,0
+V01188,7,38,3,1,8.59,2,0,Search,Desktop,1
+V01189,1,3,0,0,0.4,0,1,Email,Desktop,0
+V01190,8,36,3,0,9.91,0,2,Email,Tablet,1
+V01191,14,33,6,1,15.49,4,1,Email,Desktop,1
+V01192,1,2,0,0,2.76,2,0,Organic,Desktop,0
+V01193,11,40,6,2,11.98,1,2,Email,Tablet,1
+V01194,14,60,10,5,15.54,3,2,Email,Tablet,1
+V01195,12,40,6,2,10.52,3,3,Organic,Tablet,1
+V01196,9,49,9,4,14.82,2,4,Paid social,Desktop,1
+V01197,7,37,5,1,8.61,0,3,Organic,Tablet,1
+V01198,4,11,1,2,5.38,4,0,Paid social,Tablet,0
+V01199,7,17,1,0,5.67,0,3,Affiliate,Desktop,0
+V01200,7,17,3,1,9.89,2,1,Search,Desktop,1
