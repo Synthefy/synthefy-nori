@@ -87,6 +87,16 @@
             "declare typing-extensions as a direct dependency",
             "separate test and locked artifact-build dependency groups"
           ]
+        },
+        {
+          "input_blob": "cd572dc5c11fbc905ae64b4c96dccc2d20371431",
+          "result_blob": "0e4ca6f508711948ef8fec93adcd5a0686caec05",
+          "phase": "text_feature_ownership",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+          "changes": [
+            "declare scikit-learn as a direct synthefy[text] dependency for TruncatedSVD",
+            "record that optional feature dependencies remain outside the lightweight base install"
+          ]
         }
       ],
       "pytest.ini": [
@@ -123,6 +133,18 @@
           ]
         }
       ],
+      "src/synthefy/nori_client.py": [
+        {
+          "input_blob": "a6fb1d1d91677ff9aa8c99186088bf63fd24eea7",
+          "result_blob": "e2475072f5697e3ec48c4807b571c81ea15d73c8",
+          "phase": "text_feature_ownership",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+          "changes": [
+            "load MultimodalPreprocessor from synthefy.text_features",
+            "remove the obsolete synthefy-nori text-install guidance"
+          ]
+        }
+      ],
       "tests/conftest.py": [
         {
           "input_blob": "878c02f191956c44e9f8518cc43ab5a09e302e0a",
@@ -144,8 +166,34 @@
           "changes": [
             "skip only tests that directly require the optional synthefy-nori text runtime in base-only artifact environments"
           ]
+        },
+        {
+          "input_blob": "16e63e493698af0fefa4136e32eb313b946f6893",
+          "result_blob": "7c6e8bc27d460e7563ad35bc8c9bf43b310f3028",
+          "phase": "text_feature_ownership",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+          "changes": [
+            "probe the lightweight text runtime without requiring synthefy-nori",
+            "patch the canonical synthefy.text_features entry point in client tests"
+          ]
         }
       ]
+    },
+    "source_relocations": {
+      "src/synthefy/text_features.py": {
+        "source_project_path": "../../src/synthefy_nori/text_features.py",
+        "source_commit": "36d1e317e33ace2d439589b2ddd8365bd1e3ff91",
+        "source_blob": "104e7fb37b3c968d0156663f74d46b91aa32e341",
+        "result_blob": "24065c08c891e652a3c68bd835439388866bfdae",
+        "sha256": "f9b0b3de56223dabc4b933e0c4069242177bfa81b3c6946bdc1f0613f1c33122",
+        "phase": "text_feature_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+        "changes": [
+          "move the existing text-feature implementation into the lightweight package",
+          "adjust package-specific install guidance without changing preprocessing behavior",
+          "guard the optional scikit-learn import with actionable synthefy[text] guidance"
+        ]
+      }
     }
   },
   "build_treatment": {
@@ -172,7 +220,8 @@
         "src/synthefy/api_client.py",
         "src/synthefy/data_models.py",
         "src/synthefy/nori_client.py",
-        "src/synthefy/nori_data_models.py"
+        "src/synthefy/nori_data_models.py",
+        "src/synthefy/text_features.py"
       ],
       "wheel": [
         "synthefy/__init__.py",
@@ -180,6 +229,7 @@
         "synthefy/data_models.py",
         "synthefy/nori_client.py",
         "synthefy/nori_data_models.py",
+        "synthefy/text_features.py",
         "synthefy-7.0.0.dist-info/METADATA",
         "synthefy-7.0.0.dist-info/WHEEL",
         "synthefy-7.0.0.dist-info/licenses/LICENSE",

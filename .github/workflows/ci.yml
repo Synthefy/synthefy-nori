@@ -63,7 +63,7 @@ jobs:
 
           uv pip install --python "$CLIENT_TEST_PY" --strict "$CLIENT_TEST_ARTIFACT"
           uv pip check --python "$CLIENT_TEST_PY"
-          "$CLIENT_TEST_PY" -c 'import importlib.util; import synthefy; from importlib.metadata import metadata; assert "site-packages" in synthefy.__file__; assert synthefy.__version__ == "7.0.0"; assert metadata("synthefy")["Requires-Python"] == ">=3.9"; assert all(importlib.util.find_spec(name) is None for name in ("boto3", "sentence_transformers", "synthefy_nori", "torch"))'
+          "$CLIENT_TEST_PY" -c 'import importlib.util; import synthefy; from importlib.metadata import metadata; assert "site-packages" in synthefy.__file__; assert synthefy.__version__ == "7.0.0"; assert metadata("synthefy")["Requires-Python"] == ">=3.9"; assert all(importlib.util.find_spec(name) is None for name in ("boto3", "sentence_transformers", "sklearn", "synthefy_nori", "torch"))'
 
           uv pip install --python "$CLIENT_TEST_PY" --strict \
             "boto3>=1.34,<2" \
@@ -71,7 +71,7 @@ jobs:
             "pytest-asyncio>=0.25,<1" \
             "pytest-socket>=0.7"
           uv pip check --python "$CLIENT_TEST_PY"
-          "$CLIENT_TEST_PY" -c 'import importlib.util; assert importlib.util.find_spec("synthefy_nori") is None; assert importlib.util.find_spec("torch") is None'
+          "$CLIENT_TEST_PY" -c 'import importlib.util; assert all(importlib.util.find_spec(name) is None for name in ("sklearn", "synthefy_nori", "torch"))'
 
           cd "$RUNNER_TEMP"
           "$CLIENT_TEST_PY" -B -m pytest \
@@ -151,7 +151,7 @@ jobs:
           uv pip check --python "$INSTALLED_TEST_PY"
           cd "$RUNNER_TEMP"
           "$INSTALLED_TEST_PY" "$GITHUB_WORKSPACE/ci/probe_installed_distributions.py" client-only
-      - name: Reinstall Nori, then prove it survives a client uninstall
+      - name: Reinstall Nori, then prove its files survive a client uninstall
         run: |
           INSTALLED_TEST_PY="$RUNNER_TEMP/installed-distributions/bin/python"
           uv pip install --python "$INSTALLED_TEST_PY" --strict --no-deps "$NORI_WHEEL"

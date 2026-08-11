@@ -49,7 +49,24 @@ _EXCLUDED_BLOBS = {
     "uv.lock": "8eb03be0f17a16a394b2d7226bb2ed5526b2d8d6",
 }
 
-_TARGET_FILES = set(_IMPORTED_BLOBS) | {
+_RELOCATED_SOURCES = {
+    "src/synthefy/text_features.py": {
+        "source_project_path": "../../src/synthefy_nori/text_features.py",
+        "source_commit": "36d1e317e33ace2d439589b2ddd8365bd1e3ff91",
+        "source_blob": "104e7fb37b3c968d0156663f74d46b91aa32e341",
+        "result_blob": "24065c08c891e652a3c68bd835439388866bfdae",
+        "sha256": "f9b0b3de56223dabc4b933e0c4069242177bfa81b3c6946bdc1f0613f1c33122",
+        "phase": "text_feature_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+        "changes": [
+            "move the existing text-feature implementation into the lightweight package",
+            "adjust package-specific install guidance without changing preprocessing behavior",
+            "guard the optional scikit-learn import with actionable synthefy[text] guidance",
+        ],
+    }
+}
+
+_TARGET_FILES = set(_IMPORTED_BLOBS) | set(_RELOCATED_SOURCES) | {
     ".gitignore",
     "LICENSE",
     "NOTICE",
@@ -142,6 +159,7 @@ def test_snapshot_manifest_pins_the_source_and_selected_boundary():
     assert manifest["import"]["included_path_count"] == len(_IMPORTED_BLOBS)
     assert manifest["import"]["included_blobs"] == _IMPORTED_BLOBS
     assert manifest["post_import_history"]["current_version"] == "7.0.0"
+    assert manifest["post_import_history"]["source_relocations"] == _RELOCATED_SOURCES
 
 
 def test_byte_identical_imports_match_the_pinned_git_blobs():
@@ -175,6 +193,14 @@ def test_reviewed_transformations_and_license_files_are_pinned():
         assert build_file["sha256"] == _sha256(target)
         assert build_file["replaces_source_blob"] == _EXCLUDED_BLOBS[relative_path]
 
+    for relative_path, relocation in manifest["post_import_history"]["source_relocations"].items():
+        target = _PROJECT_ROOT / relative_path
+        assert relocation["result_blob"] == _git_blob(target)
+        assert relocation["sha256"] == _sha256(target)
+        assert relocation["changes"]
+        decision = (_PROJECT_ROOT / relocation["decision_record"]).resolve()
+        assert decision.is_file()
+
 
 def test_post_import_transformations_preserve_phase_two_and_form_continuous_chains():
     manifest = _load_manifest()
@@ -186,15 +212,17 @@ def test_post_import_transformations_preserve_phase_two_and_form_continuous_chai
         "pytest.ini",
         "src/synthefy/__init__.py",
         "src/synthefy/api_client.py",
+        "src/synthefy/nori_client.py",
         "tests/conftest.py",
         "tests/test_nori_client.py",
     }
     for relative_path, transformations in chains.items():
-        assert {
-            key: transformations[0][key] for key in ("input_blob", "result_blob")
-        } == _PHASE_TWO_CHAIN_HEADS[relative_path]
-        assert transformations[0]["phase"] == "workspace_and_package_wiring"
-        assert transformations[0]["decision_record"] == _PHASE_TWO_DECISION
+        if relative_path in _PHASE_TWO_CHAIN_HEADS:
+            assert {
+                key: transformations[0][key] for key in ("input_blob", "result_blob")
+            } == _PHASE_TWO_CHAIN_HEADS[relative_path]
+            assert transformations[0]["phase"] == "workspace_and_package_wiring"
+            assert transformations[0]["decision_record"] == _PHASE_TWO_DECISION
         phase_one = imported["transformed_paths"].get(relative_path)
         expected_input = (
             phase_one["result_blob"] if phase_one else _IMPORTED_BLOBS[relative_path]
@@ -212,7 +240,7 @@ def test_post_import_transformations_preserve_phase_two_and_form_continuous_chai
 def test_imported_project_has_the_exact_reviewed_file_boundary():
     tracked = _tracked_project_entries()
 
-    assert len(_TARGET_FILES) == 19
+    assert len(_TARGET_FILES) == 20
     assert set(tracked) == _TARGET_FILES
     assert set(tracked.values()) == {"100644"}
 

@@ -45,12 +45,14 @@
     {
       "id": "phase-2-source-hash-freeze",
       "lifecycle": "migration_scaffolding",
-      "status": "active",
-      "paths": [
+      "status": "retired",
+      "retired_paths": [
         "tests/test_synthefy_source_freeze.py"
       ],
       "retirement_event": "The first explicitly approved post-Phase-2 change to libs/synthefy source.",
-      "retirement_action": "Remove the whole-tree byte-hash freeze after that source diff is reviewed; keep the permanent package, import-layering, and provenance gates."
+      "retirement_action": "Remove the whole-tree byte-hash freeze after that source diff is reviewed; keep the permanent package, import-layering, and provenance gates.",
+      "retired_by": "https://github.com/Synthefy/synthefy-nori-internal/pull/422",
+      "retirement_result": "The text-feature ownership move is the first approved source change; the permanent SOURCE_SNAPSHOT, provenance, artifact, import-layering, and distribution-boundary gates remain."
     },
     {
       "id": "legacy-6.3-behavior-oracle",
@@ -62,6 +64,20 @@
       ],
       "retirement_event": "The minimum intentionally supported released-client lane no longer includes synthefy 6.3.0 after consolidated release verification.",
       "retirement_action": "Replace the pinned 6.3.0 oracle with the intentionally supported released-client contract, or remove it if that compatibility promise is explicitly ended."
+    },
+    {
+      "id": "legacy-6.3-text-feature-fallback",
+      "lifecycle": "migration_scaffolding",
+      "status": "active",
+      "paths": [
+        "src/synthefy_nori/_legacy_text_features.py",
+        "src/synthefy_nori/text_features.py",
+        "tests/test_text_features.py",
+        "tests/test_client_matches_api.py",
+        ".github/workflows/client-sync.yml"
+      ],
+      "retirement_event": "The released-client compatibility floor and client-sync lane are deliberately advanced to synthefy >=7.0.0 after the consolidated client release.",
+      "retirement_action": "Delete the private duplicate implementation and exact-submodule fallback, then retain the canonical synthefy.text_features identity, pickle, and optional-extra coverage."
     },
     {
       "id": "phase-2-open-gap-observation",

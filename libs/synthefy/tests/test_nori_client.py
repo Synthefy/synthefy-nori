@@ -44,15 +44,14 @@ Handler = Callable[[httpx.Request], httpx.Response]
 
 
 def _text_runtime_available() -> bool:
-    # find_spec on a dotted name imports its parent, so probe in two steps.
-    if importlib.util.find_spec("synthefy_nori") is None:
+    if importlib.util.find_spec("sklearn") is None:
         return False
-    return importlib.util.find_spec("synthefy_nori.text_features") is not None
+    return importlib.util.find_spec("synthefy.text_features") is not None
 
 
 requires_text_runtime = pytest.mark.skipif(
     not _text_runtime_available(),
-    reason="needs synthefy-nori with text_features installed",
+    reason="needs the synthefy text extra",
 )
 
 
@@ -1822,7 +1821,7 @@ def test_text_device_is_forwarded_to_multimodal_preprocessor(monkeypatch):
             return np.zeros((len(frame), 1), dtype=np.float32)
 
     monkeypatch.setattr(
-        "synthefy_nori.text_features.MultimodalPreprocessor", FakePreprocessor
+        "synthefy.text_features.MultimodalPreprocessor", FakePreprocessor
     )
     train = pd.DataFrame({"review": ["good", "bad"]})
     test = pd.DataFrame({"review": ["fine"]})

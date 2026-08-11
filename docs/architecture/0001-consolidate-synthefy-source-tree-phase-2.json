@@ -47,9 +47,9 @@
   "known_integration_gaps": [
     {
       "id": "text-source-relocation",
-      "status": "open",
+      "status": "resolved_on_internal_integration_branch",
       "required_before": "staging_promotion",
-      "detail": "synthefy[text] owns the dependency, but the implementation still imports synthefy_nori.text_features until the planned source-move PR"
+      "detail": "synthefy.text_features owns the implementation; synthefy_nori.text_features is a compatibility re-export"
     },
     {
       "id": "client-api-cleanup",
@@ -59,9 +59,9 @@
     },
     {
       "id": "optional-extra-artifact-validation",
-      "status": "open",
+      "status": "partially_resolved_on_internal_integration_branch",
       "required_before": "public_release",
-      "detail": "clean Python 3.9 artifact coverage currently proves the base and mocked AWS paths; text and forecasting need isolated gates after their source moves"
+      "detail": "clean Python 3.9 artifact coverage proves the base, mocked AWS, and isolated text extra paths; forecasting still needs its isolated gate after the source move"
     }
   ],
   "publication": {

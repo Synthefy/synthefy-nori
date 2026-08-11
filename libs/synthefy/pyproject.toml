@@ -40,9 +40,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Feature dependencies are owned by the lightweight package before their source relocates.
+# Optional feature dependencies remain outside the lightweight base install.
 forecasting = ["gluonts>=0.16", "statsmodels>=0.14", "datasets>=2.0"]
-text = ["sentence-transformers"]
+text = ["scikit-learn>=1.4", "sentence-transformers"]
 # Signed Amazon SageMaker endpoint invocation. boto3 resolves credentials from
 # its standard chain; the public client deliberately accepts no raw AWS keys.
 aws = ["boto3>=1.34.0,<2.0.0"]

@@ -83,6 +83,7 @@ def _valid_artifacts(tmp_path: Path):
         'datasets>=2.0; extra == "forecasting"',
         'gluonts>=0.16; extra == "forecasting"',
         'statsmodels>=0.14; extra == "forecasting"',
+        'scikit-learn>=1.4; extra == "text"',
         'sentence-transformers; extra == "text"',
     )
     nori_requirements = (
@@ -215,6 +216,7 @@ def test_extra_requirement_with_an_additional_environment_marker_is_rejected(tmp
         'datasets>=2.0; extra == "forecasting"',
         'gluonts>=0.16; extra == "forecasting"',
         'statsmodels>=0.14; extra == "forecasting"',
+        'scikit-learn>=1.4; extra == "text"',
         'sentence-transformers; extra == "text"',
     )
     for build in ("direct", "rebuilt"):

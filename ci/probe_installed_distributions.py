@@ -4,8 +4,8 @@
 This script runs under the isolated interpreter receiving the built wheels.  It
 rejects accidental workspace imports, exercises both import orders, and verifies
 that uninstalling either distribution leaves the other namespace intact.  Its
-extra probes verify dependency ownership without claiming that feature source has
-already moved from ``synthefy_nori`` into the lightweight client.
+extra probes verify dependency and implementation ownership across the package
+boundary.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ _CLIENT_LAZY_MODULES = (
     "botocore",
     "datasets",
     "gluonts",
+    "sklearn",
     "sentence_transformers",
     "statsmodels",
     "synthefy_nori",
@@ -125,9 +126,10 @@ def _probe_client_extra(extra: str) -> None:
         _import_required("datasets", "gluonts", "statsmodels")
     else:
         from sentence_transformers import SentenceTransformer
+        from synthefy.text_features import MultimodalPreprocessor
 
-        if not callable(SentenceTransformer):
-            raise AssertionError("SentenceTransformer is not callable")
+        if not callable(SentenceTransformer) or not callable(MultimodalPreprocessor):
+            raise AssertionError("the client text entry points are not callable")
 
     print(f"synthefy[{extra}] owns its dependencies without installing synthefy-nori")
 
@@ -154,9 +156,14 @@ def _probe_nori_extra(extra: str) -> None:
             raise AssertionError("NoriTSForecaster is not callable")
     else:
         from sentence_transformers import SentenceTransformer
-        from synthefy_nori.text_features import MultimodalPreprocessor
+        from synthefy.text_features import MultimodalPreprocessor as CanonicalPreprocessor
+        from synthefy_nori.text_features import MultimodalPreprocessor as LegacyPreprocessor
 
-        if not callable(SentenceTransformer) or not callable(MultimodalPreprocessor):
+        if (
+            not callable(SentenceTransformer)
+            or not callable(CanonicalPreprocessor)
+            or LegacyPreprocessor is not CanonicalPreprocessor
+        ):
             raise AssertionError("the text feature entry points are not callable")
 
     print(f"synthefy-nori[{extra}] forwards to the current feature entry point")
@@ -247,9 +254,20 @@ def probe_client_only() -> None:
 
 
 def probe_nori_only() -> None:
+    """The heavy wheel remains installed but needs its declared base dependency."""
     _assert_absent("synthefy")
-    _import_installed("synthefy_nori")
-    print("synthefy_nori remains importable after synthefy uninstall")
+    if importlib.util.find_spec("synthefy_nori") is None:
+        raise AssertionError("synthefy_nori files disappeared after synthefy uninstall")
+    try:
+        importlib.import_module("synthefy_nori")
+    except ModuleNotFoundError as exc:
+        if exc.name != "synthefy":
+            raise AssertionError(
+                f"synthefy_nori failed for {exc.name!r}, expected its required synthefy edge"
+            ) from exc
+    else:
+        raise AssertionError("synthefy_nori imported without its required synthefy dependency")
+    print("synthefy_nori remains installed and reports its missing synthefy dependency")
 
 
 def _parser() -> argparse.ArgumentParser:

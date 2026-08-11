@@ -153,6 +153,7 @@ def test_published_dependencies_point_only_from_heavy_to_light():
 
     forbidden_base = {
         "boto3",
+        "scikit-learn",
         "sentence-transformers",
         "synthefy-nori",
         "torch",

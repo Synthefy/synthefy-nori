@@ -1025,7 +1025,7 @@ def _widen_text_columns(
 ):
     """Embed free-text columns client-side, returning widened numeric frames.
 
-    Uses ``synthefy_nori``'s ``MultimodalPreprocessor`` to turn the named text
+    Uses ``synthefy``'s ``MultimodalPreprocessor`` to turn the named text
     columns into SVD features (fit on ``X_train`` only) appended to the numeric /
     categorical block. Both inputs must be pandas DataFrames so the text columns
     can be located by name; the result is fully numeric, so the ordinary request
@@ -1038,11 +1038,11 @@ def _widen_text_columns(
             "(so the text columns can be located by name)."
         )
     try:
-        from synthefy_nori.text_features import MultimodalPreprocessor
+        from synthefy.text_features import MultimodalPreprocessor
     except ImportError as e:  # pragma: no cover - dependency hint
         raise ImportError(
             "text_columns needs the text extra: install `pip install "
-            '"synthefy[text]"` (pulls synthefy-nori with sentence-transformers).'
+            '"synthefy[text]"`.'
         ) from e
     resolved_text_device = (
         _resolve_text_device(text_device) if isinstance(embedder, str) else None

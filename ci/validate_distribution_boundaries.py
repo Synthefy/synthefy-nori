@@ -231,7 +231,7 @@ def _validate_dependency_direction(client: WheelInfo, nori: WheelInfo) -> None:
         {
             "aws": ("boto3<2.0.0,>=1.34.0",),
             "forecasting": ("datasets>=2.0", "gluonts>=0.16", "statsmodels>=0.14"),
-            "text": ("sentence-transformers",),
+            "text": ("scikit-learn>=1.4", "sentence-transformers"),
         },
     )
     _validate_extra_requirements(
