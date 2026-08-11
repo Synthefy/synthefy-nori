@@ -19,7 +19,7 @@ jobs:
       - run: uv run pytest
       - run: uv run python ci/validate_variants.py
       - run: uv run python ci/sync_openapi.py --check
-      - run: uv run ruff check src scripts tests
+      - run: uv run ruff check src scripts tests ci/validate_distribution_boundaries.py
       - run: uv run pytest -m slow tests/test_synthefy_source_import.py::test_built_artifacts_match_reviewed_file_boundaries
       - run: uv build
 
@@ -82,6 +82,42 @@ jobs:
             "$GITHUB_WORKSPACE/libs/synthefy/tests" \
             "$GITHUB_WORKSPACE/tests/test_synthefy_client_compat.py"
 
+  distribution-boundaries:
+    name: CI validate distribution boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v8.2.0
+      - name: Build direct wheels and source distributions
+        run: |
+          uv build --package synthefy --wheel --no-sources \
+            --out-dir "$RUNNER_TEMP/artifacts/synthefy/direct"
+          uv build --package synthefy --sdist --no-sources \
+            --out-dir "$RUNNER_TEMP/artifacts/synthefy/sdist"
+          uv build --package synthefy-nori --wheel --no-sources \
+            --out-dir "$RUNNER_TEMP/artifacts/synthefy-nori/direct"
+          uv build --package synthefy-nori --sdist --no-sources \
+            --out-dir "$RUNNER_TEMP/artifacts/synthefy-nori/sdist"
+      - name: Rebuild both wheels from their source distributions
+        run: |
+          uv build --wheel --no-sources \
+            "$RUNNER_TEMP/artifacts/synthefy/sdist/"*.tar.gz \
+            --out-dir "$RUNNER_TEMP/artifacts/synthefy/rebuilt"
+          uv build --wheel --no-sources \
+            "$RUNNER_TEMP/artifacts/synthefy-nori/sdist/"*.tar.gz \
+            --out-dir "$RUNNER_TEMP/artifacts/synthefy-nori/rebuilt"
+      - name: Check every publishable artifact strictly
+        run: uvx --from 'twine>=6.1,<7' twine check --strict "$RUNNER_TEMP/artifacts/"*/*/*
+      - name: Validate wheel RECORDs and namespace ownership
+        run: |
+          uv run --no-project --python 3.11 python ci/validate_distribution_boundaries.py \
+            --client-direct "$RUNNER_TEMP/artifacts/synthefy/direct/"*.whl \
+            --client-rebuilt "$RUNNER_TEMP/artifacts/synthefy/rebuilt/"*.whl \
+            --nori-direct "$RUNNER_TEMP/artifacts/synthefy-nori/direct/"*.whl \
+            --nori-rebuilt "$RUNNER_TEMP/artifacts/synthefy-nori/rebuilt/"*.whl
 
   # Merge gate (part 1): a real inference forward pass on CPU. Downloads the
   # public Synthefy/Nori checkpoint. Mark this job as a required status check in
