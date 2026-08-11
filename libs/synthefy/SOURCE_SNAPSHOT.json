@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "source": {
     "repository": "Synthefy/synthefy",
     "commit": "9ecc3d2fad8e37e95869379cc05f328597e258f9",
@@ -71,6 +71,83 @@
       }
     }
   },
+  "post_import_history": {
+    "current_version": "7.0.0",
+    "transformations": {
+      "pyproject.toml": [
+        {
+          "input_blob": "0f9e10c5b6175b496176c717083cf3cf72862cda",
+          "result_blob": "cd572dc5c11fbc905ae64b4c96dccc2d20371431",
+          "phase": "workspace_and_package_wiring",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+          "changes": [
+            "bump the internal integration candidate to 7.0.0",
+            "pin the Python 3.9-compatible Hatchling build backend",
+            "remove reverse synthefy-to-synthefy-nori extras and assign feature dependencies to synthefy",
+            "declare typing-extensions as a direct dependency",
+            "separate test and locked artifact-build dependency groups"
+          ]
+        }
+      ],
+      "pytest.ini": [
+        {
+          "input_blob": "dbbb75cc34a9c63ad2ee66e1ecc6bfe529ab51b0",
+          "result_blob": "a15b1a9438668b6f3558ea2f8a29d2aacbc86e86",
+          "phase": "workspace_and_package_wiring",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+          "changes": [
+            "use pytest.ini syntax rather than setup.cfg syntax",
+            "exclude opt-in slow tests by default"
+          ]
+        }
+      ],
+      "src/synthefy/__init__.py": [
+        {
+          "input_blob": "056405957f4d1db3659ec1ff7154b274412f37f3",
+          "result_blob": "35e85d9327d37c798c40ddda25087075ea60af0c",
+          "phase": "workspace_and_package_wiring",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+          "changes": [
+            "match the public package version to the 7.0.0 integration candidate"
+          ]
+        }
+      ],
+      "src/synthefy/api_client.py": [
+        {
+          "input_blob": "93e3706c47020139b81b0850deee0ec4895f8907",
+          "result_blob": "e108b75e10942c51a8af17cf8e4e34b930d838e3",
+          "phase": "workspace_and_package_wiring",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+          "changes": [
+            "replace evaluated PEP 604 annotations with Optional for Python 3.9"
+          ]
+        }
+      ],
+      "tests/conftest.py": [
+        {
+          "input_blob": "878c02f191956c44e9f8518cc43ab5a09e302e0a",
+          "result_blob": "e8f50cb2d1303bb2405596412f89fa4bc8eb60fb",
+          "phase": "workspace_and_package_wiring",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+          "changes": [
+            "replace evaluated PEP 604 annotations with Optional for Python 3.9",
+            "retain marker registration when a parent pytest configuration is active"
+          ]
+        }
+      ],
+      "tests/test_nori_client.py": [
+        {
+          "input_blob": "c46acbe2b083e88eb569fe00f83c8056b7d378bf",
+          "result_blob": "16e63e493698af0fefa4136e32eb313b946f6893",
+          "phase": "workspace_and_package_wiring",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+          "changes": [
+            "skip only tests that directly require the optional synthefy-nori text runtime in base-only artifact environments"
+          ]
+        }
+      ]
+    }
+  },
   "build_treatment": {
     "builder_behavior": "Hatchling force-includes the nearest VCS ignore file in every sdist; a reviewed package-local replacement prevents the parent monorepo file from leaking into this artifact.",
     "added_files": {
@@ -103,12 +180,12 @@
         "synthefy/data_models.py",
         "synthefy/nori_client.py",
         "synthefy/nori_data_models.py",
-        "synthefy-6.3.0.dist-info/METADATA",
-        "synthefy-6.3.0.dist-info/WHEEL",
-        "synthefy-6.3.0.dist-info/licenses/LICENSE",
-        "synthefy-6.3.0.dist-info/licenses/NOTICE",
-        "synthefy-6.3.0.dist-info/licenses/licenses/Apache-2.0.txt",
-        "synthefy-6.3.0.dist-info/RECORD"
+        "synthefy-7.0.0.dist-info/METADATA",
+        "synthefy-7.0.0.dist-info/WHEEL",
+        "synthefy-7.0.0.dist-info/licenses/LICENSE",
+        "synthefy-7.0.0.dist-info/licenses/NOTICE",
+        "synthefy-7.0.0.dist-info/licenses/licenses/Apache-2.0.txt",
+        "synthefy-7.0.0.dist-info/RECORD"
       ]
     }
   },

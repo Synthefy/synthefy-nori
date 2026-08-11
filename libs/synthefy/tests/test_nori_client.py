@@ -43,6 +43,19 @@ from synthefy.nori_client import (
 Handler = Callable[[httpx.Request], httpx.Response]
 
 
+def _text_runtime_available() -> bool:
+    # find_spec on a dotted name imports its parent, so probe in two steps.
+    if importlib.util.find_spec("synthefy_nori") is None:
+        return False
+    return importlib.util.find_spec("synthefy_nori.text_features") is not None
+
+
+requires_text_runtime = pytest.mark.skipif(
+    not _text_runtime_available(),
+    reason="needs synthefy-nori with text_features installed",
+)
+
+
 def test_nori_models_are_canonical_data_models_with_compatible_exports():
     from synthefy import NoriPredictRequest as PublicRequest
     from synthefy import NoriPredictResponse as PublicResponse
@@ -1793,6 +1806,7 @@ def test_text_device_rejects_invalid_explicit_override(device):
         _resolve_text_device(device)
 
 
+@requires_text_runtime
 def test_text_device_is_forwarded_to_multimodal_preprocessor(monkeypatch):
     capture = {}
 
@@ -1847,6 +1861,7 @@ class _FakePreloadedEncoder:
     [_fake_embed, _FakePreloadedEncoder()],
     ids=["callable", "preloaded"],
 )
+@requires_text_runtime
 def test_text_device_is_ignored_for_custom_encoder(embedder):
     train = pd.DataFrame({"review": ["good", "bad", "great", "awful"]})
     test = pd.DataFrame({"review": ["fine"]})
@@ -1865,6 +1880,7 @@ def test_text_device_is_ignored_for_custom_encoder(embedder):
     assert test_features.shape == (1, 2)
 
 
+@requires_text_runtime
 def test_text_columns_embeds_client_side_and_sends_numeric():
     capture: Dict = {}
     client = SynthefyNoriClient(api_key="test-key", model="nori-30m")

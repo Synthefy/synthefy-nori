@@ -43,6 +43,7 @@ dependencies = [
     "pydantic>=2.0",
     "scikit-learn>=1.4",
     "scipy>=1.13",
+    "synthefy>=7,<8",
     "torch>=2.8,<2.14",
     "tqdm>=4.65",
     "typing-extensions>=4.10",
@@ -55,15 +56,22 @@ Issues = "https://github.com/Synthefy/synthefy-nori/issues"
 Changelog = "https://github.com/Synthefy/synthefy-nori/releases"
 
 [project.optional-dependencies]
-timeseries = ["gluonts>=0.16", "statsmodels>=0.14", "datasets>=2.0"]  # nori_ts forecasting deps
+forecasting = ["synthefy[forecasting]>=7,<8"]
+# Backward-compatible spelling; new documentation uses the broader forecasting extra.
+timeseries = ["synthefy[forecasting]>=7,<8"]
 train = ["wandb>=0.15.0", "xgboost"]
 eval = ["matplotlib", "openml"]
 interpretability = ["shapiq>=1.0", "matplotlib"]
 # Zero-shot text features: embed free-text columns and append them as numeric
-# columns (NoriRegressor(text_columns=...)). sentence-transformers is imported
-# lazily, so numeric-only use never needs it.
-text = ["sentence-transformers"]
-dev = ["build", "pytest", "ruff"]
+# columns (NoriRegressor.fit(..., text_columns=...)). sentence-transformers is
+# imported lazily, so numeric-only use never needs it.
+text = ["synthefy[text]>=7,<8"]
+dev = [
+    "build",
+    "pytest",
+    "ruff",
+    "tomli>=2.0; python_version < '3.11'",
+]
 
 [project.scripts]
 synthefy-nori-train = "synthefy_nori.training.cli:main"
@@ -91,8 +99,15 @@ environments = ["sys_platform == 'linux'", "sys_platform == 'win32'"]
 # ranges deliberately, not as a side effect of re-locking.
 constraint-dependencies = ["torch<2.9"]
 
+[tool.uv.workspace]
+members = ["libs/synthefy"]
+
+[tool.uv.sources]
+synthefy = { workspace = true }
+
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["synthefy_nori*"]
 
 [tool.setuptools.package-data]
 "synthefy_nori.configs" = ["*.json"]

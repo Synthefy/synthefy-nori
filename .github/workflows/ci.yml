@@ -14,11 +14,73 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v8.2.0
-      - run: uv sync --extra dev
-      - run: uv run python -c "import synthefy_nori"
-      - run: uv run pytest tests
+      - run: uv sync --locked --extra dev
+      - run: uv run python -c "import synthefy, synthefy_nori; assert synthefy.__version__ == '7.0.0'"
+      - run: uv run pytest
+      - run: uv run python ci/validate_variants.py
+      - run: uv run python ci/sync_openapi.py --check
       - run: uv run ruff check src scripts tests
+      - run: uv run pytest -m slow tests/test_synthefy_source_import.py::test_built_artifacts_match_reviewed_file_boundaries
       - run: uv build
+
+  synthefy-artifact:
+    name: CI test synthefy ${{ matrix.kind }} on Python ${{ matrix.python_version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python_version: "3.9"
+            kind: wheel
+            artifact_file: dist/synthefy/synthefy-7.0.0-py3-none-any.whl
+          - python_version: "3.9"
+            kind: sdist
+            artifact_file: dist/synthefy/synthefy-7.0.0.tar.gz
+          - python_version: "3.11"
+            kind: wheel
+            artifact_file: dist/synthefy/synthefy-7.0.0-py3-none-any.whl
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v8.2.0
+      - name: Build the locked client artifacts
+        run: |
+          uv sync --locked --package synthefy --no-default-groups --group package
+          uv build --package synthefy --no-build-isolation --no-sources --out-dir dist/synthefy
+          uv run --locked --package synthefy --no-sync twine check dist/synthefy/*
+      - name: Test the installed artifact outside the workspace
+        env:
+          CLIENT_TEST_ARTIFACT: ${{ matrix.artifact_file }}
+          CLIENT_TEST_KIND: ${{ matrix.kind }}
+          CLIENT_TEST_PYTHON: ${{ matrix.python_version }}
+        run: |
+          CLIENT_TEST_ENV="$RUNNER_TEMP/synthefy-$CLIENT_TEST_PYTHON-$CLIENT_TEST_KIND"
+          uv venv --no-project --python "$CLIENT_TEST_PYTHON" "$CLIENT_TEST_ENV"
+          CLIENT_TEST_PY="$CLIENT_TEST_ENV/bin/python"
+
+          uv pip install --python "$CLIENT_TEST_PY" --strict "$CLIENT_TEST_ARTIFACT"
+          uv pip check --python "$CLIENT_TEST_PY"
+          "$CLIENT_TEST_PY" -c 'import importlib.util; import synthefy; from importlib.metadata import metadata; assert "site-packages" in synthefy.__file__; assert synthefy.__version__ == "7.0.0"; assert metadata("synthefy")["Requires-Python"] == ">=3.9"; assert all(importlib.util.find_spec(name) is None for name in ("boto3", "sentence_transformers", "synthefy_nori", "torch"))'
+
+          uv pip install --python "$CLIENT_TEST_PY" --strict \
+            "boto3>=1.34,<2" \
+            "pytest>=7.4,<9" \
+            "pytest-asyncio>=0.25,<1" \
+            "pytest-socket>=0.7"
+          uv pip check --python "$CLIENT_TEST_PY"
+          "$CLIENT_TEST_PY" -c 'import importlib.util; assert importlib.util.find_spec("synthefy_nori") is None; assert importlib.util.find_spec("torch") is None'
+
+          cd "$RUNNER_TEMP"
+          "$CLIENT_TEST_PY" -B -m pytest \
+            --disable-socket \
+            --import-mode=importlib \
+            -p no:cacheprovider \
+            -c "$GITHUB_WORKSPACE/libs/synthefy/pytest.ini" \
+            -m "not slow" \
+            "$GITHUB_WORKSPACE/libs/synthefy/tests"
+
 
   # Merge gate (part 1): a real inference forward pass on CPU. Downloads the
   # public Synthefy/Nori checkpoint. Mark this job as a required status check in
@@ -32,7 +94,7 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v8.2.0
-      - run: uv sync --extra dev
+      - run: uv sync --locked --extra dev
       - run: uv run pytest -m slow tests/test_inference_e2e.py tests/test_memory_policy_e2e.py
 
   # Merge gate (part 2): one real training step from scratch on CPU (data-gen ->
@@ -46,7 +108,7 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v8.2.0
-      - run: uv sync --extra dev
+      - run: uv sync --locked --extra dev
       - run: uv run pytest -m slow tests/test_training_smoke.py
 
   # Merge gate (part 3): the embedding feature end-to-end — NoriEmbedding, the
@@ -64,7 +126,7 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v8.2.0
-      - run: uv sync --extra dev --extra eval
+      - run: uv sync --locked --extra dev --extra eval
       - run: uv run pytest -m slow tests/embedding/
 
   # torch/CUDA-range guard: the published range is `torch>=2.8,<2.14`, so verify

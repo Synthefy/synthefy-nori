@@ -194,7 +194,7 @@ def _raise_for_status(response: httpx.Response) -> None:
 class SynthefyAPIClient:
     def __init__(
         self,
-        api_key: str | None = None,
+        api_key: Optional[str] = None,
         *,
         timeout: float = 300.0,
         max_retries: int = 2,
@@ -596,7 +596,7 @@ class SynthefyAPIClient:
 class SynthefyAsyncAPIClient:
     def __init__(
         self,
-        api_key: str | None = None,
+        api_key: Optional[str] = None,
         *,
         timeout: float = 300.0,
         max_retries: int = 2,

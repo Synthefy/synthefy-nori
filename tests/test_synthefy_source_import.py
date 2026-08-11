@@ -57,9 +57,43 @@ _TARGET_FILES = set(_IMPORTED_BLOBS) | {
     "licenses/Apache-2.0.txt",
 }
 
+_PHASE_TWO_CHAIN_HEADS = {
+    "pyproject.toml": {
+        "input_blob": "0f9e10c5b6175b496176c717083cf3cf72862cda",
+        "result_blob": "cd572dc5c11fbc905ae64b4c96dccc2d20371431",
+    },
+    "pytest.ini": {
+        "input_blob": "dbbb75cc34a9c63ad2ee66e1ecc6bfe529ab51b0",
+        "result_blob": "a15b1a9438668b6f3558ea2f8a29d2aacbc86e86",
+    },
+    "src/synthefy/__init__.py": {
+        "input_blob": "056405957f4d1db3659ec1ff7154b274412f37f3",
+        "result_blob": "35e85d9327d37c798c40ddda25087075ea60af0c",
+    },
+    "src/synthefy/api_client.py": {
+        "input_blob": "93e3706c47020139b81b0850deee0ec4895f8907",
+        "result_blob": "e108b75e10942c51a8af17cf8e4e34b930d838e3",
+    },
+    "tests/conftest.py": {
+        "input_blob": "878c02f191956c44e9f8518cc43ab5a09e302e0a",
+        "result_blob": "e8f50cb2d1303bb2405596412f89fa4bc8eb60fb",
+    },
+    "tests/test_nori_client.py": {
+        "input_blob": "c46acbe2b083e88eb569fe00f83c8056b7d378bf",
+        "result_blob": "16e63e493698af0fefa4136e32eb313b946f6893",
+    },
+}
+_PHASE_TWO_DECISION = (
+    "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json"
+)
+
 
 def _load_manifest():
     return json.loads(_MANIFEST_PATH.read_text())
+
+
+def _post_import_transformations():
+    return _load_manifest()["post_import_history"]["transformations"]
 
 
 def _git_blob(path):
@@ -91,6 +125,7 @@ def _tracked_project_entries():
 def test_snapshot_manifest_pins_the_source_and_selected_boundary():
     manifest = _load_manifest()
 
+    assert manifest["schema_version"] == 2
     assert manifest["source"] == {
         "repository": "Synthefy/synthefy",
         "commit": "9ecc3d2fad8e37e95869379cc05f328597e258f9",
@@ -106,21 +141,28 @@ def test_snapshot_manifest_pins_the_source_and_selected_boundary():
     assert manifest["import"]["target_project_root"] == "libs/synthefy"
     assert manifest["import"]["included_path_count"] == len(_IMPORTED_BLOBS)
     assert manifest["import"]["included_blobs"] == _IMPORTED_BLOBS
+    assert manifest["post_import_history"]["current_version"] == "7.0.0"
 
 
 def test_byte_identical_imports_match_the_pinned_git_blobs():
     imported = _load_manifest()["import"]
+    evolved = set(_post_import_transformations())
 
     for relative_path in imported["byte_identical_paths"]:
-        assert _git_blob(_PROJECT_ROOT / relative_path) == _IMPORTED_BLOBS[relative_path]
+        if relative_path not in evolved:
+            assert _git_blob(_PROJECT_ROOT / relative_path) == _IMPORTED_BLOBS[relative_path]
 
 
 def test_reviewed_transformations_and_license_files_are_pinned():
     manifest = _load_manifest()
+    evolved = manifest["post_import_history"]["transformations"]
 
     for relative_path, transformation in manifest["import"]["transformed_paths"].items():
         assert transformation["source_blob"] == _IMPORTED_BLOBS[relative_path]
-        assert transformation["result_blob"] == _git_blob(_PROJECT_ROOT / relative_path)
+        if relative_path in evolved:
+            assert transformation["result_blob"] == evolved[relative_path][0]["input_blob"]
+        else:
+            assert transformation["result_blob"] == _git_blob(_PROJECT_ROOT / relative_path)
 
     for relative_path, license_file in manifest["license_treatment"]["added_files"].items():
         target = _PROJECT_ROOT / relative_path
@@ -132,6 +174,39 @@ def test_reviewed_transformations_and_license_files_are_pinned():
         assert build_file["git_blob"] == _git_blob(target)
         assert build_file["sha256"] == _sha256(target)
         assert build_file["replaces_source_blob"] == _EXCLUDED_BLOBS[relative_path]
+
+
+def test_post_import_transformations_preserve_phase_two_and_form_continuous_chains():
+    manifest = _load_manifest()
+    imported = manifest["import"]
+    chains = manifest["post_import_history"]["transformations"]
+
+    assert set(chains) == {
+        "pyproject.toml",
+        "pytest.ini",
+        "src/synthefy/__init__.py",
+        "src/synthefy/api_client.py",
+        "tests/conftest.py",
+        "tests/test_nori_client.py",
+    }
+    for relative_path, transformations in chains.items():
+        assert {
+            key: transformations[0][key] for key in ("input_blob", "result_blob")
+        } == _PHASE_TWO_CHAIN_HEADS[relative_path]
+        assert transformations[0]["phase"] == "workspace_and_package_wiring"
+        assert transformations[0]["decision_record"] == _PHASE_TWO_DECISION
+        phase_one = imported["transformed_paths"].get(relative_path)
+        expected_input = (
+            phase_one["result_blob"] if phase_one else _IMPORTED_BLOBS[relative_path]
+        )
+        for transformation in transformations:
+            assert transformation["input_blob"] == expected_input
+            assert transformation["changes"]
+            assert transformation["phase"]
+            decision = (_PROJECT_ROOT / transformation["decision_record"]).resolve()
+            assert decision.is_file()
+            expected_input = transformation["result_blob"]
+        assert expected_input == _git_blob(_PROJECT_ROOT / relative_path)
 
 
 def test_imported_project_has_the_exact_reviewed_file_boundary():
@@ -146,14 +221,14 @@ def test_imported_project_has_the_exact_reviewed_file_boundary():
 def test_built_artifacts_match_reviewed_file_boundaries(tmp_path):
     manifest = _load_manifest()
     subprocess.run(
-        ["uv", "build", "--project", str(_PROJECT_ROOT), "--out-dir", str(tmp_path)],
+        ["uv", "build", "--package", "synthefy", "--out-dir", str(tmp_path)],
         cwd=_REPO_ROOT,
         check=True,
         capture_output=True,
         text=True,
     )
 
-    version = manifest["source"]["version"]
+    version = manifest["post_import_history"]["current_version"]
     sdist_prefix = f"synthefy-{version}/"
     with tarfile.open(tmp_path / f"synthefy-{version}.tar.gz") as archive:
         files = {member.name.removeprefix(sdist_prefix) for member in archive.getmembers() if member.isfile()}

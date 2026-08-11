@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "record_kind": "phase_2_workspace_observation",
+  "issue": "https://github.com/Synthefy/nori-monorepo/issues/216",
+  "integration_base": {
+    "repository": "Synthefy/synthefy-nori-internal",
+    "commit": "60c12af0fc5c99302c7684e3814bd8eb5c353e4d"
+  },
+  "workspace": {
+    "root_project": "synthefy-nori",
+    "members": [
+      "libs/synthefy"
+    ],
+    "lockfile": "uv.lock",
+    "nested_lockfile_allowed": false,
+    "development_python_floor": ">=3.10",
+    "purpose": "one reproducible internal development graph for both distributions"
+  },
+  "python_compatibility": {
+    "accepted_target": ">=3.9",
+    "lightweight_distribution": {
+      "name": "synthefy",
+      "declared_floor": ">=3.9",
+      "validation": "build in the locked workspace, then install and test the wheel and sdist in a clean Python 3.9 environment outside workspace project commands"
+    },
+    "heavy_distribution": {
+      "name": "synthefy-nori",
+      "declared_floor": ">=3.10",
+      "target_status": "blocked_pending_explicit_decision",
+      "blocker": {
+        "dependency": "torch==2.10.0",
+        "probe_interpreter": "CPython 3.9.25",
+        "probe_platform": "x86_64-manylinux_2_28",
+        "command": "uv pip install --dry-run --python-version 3.9 --python-platform x86_64-manylinux_2_28 --torch-backend cpu 'torch==2.10.0'",
+        "result": "no compatible CPython 3.9 wheel; the available torch 2.10.0 wheels begin at cp310"
+      }
+    },
+    "optional_backend_follow_ups": [
+      {
+        "extra": "aws",
+        "status": "upstream_python39_support_ended",
+        "evidence": "boto3 warns that Python 3.9 support ended on 2026-04-29",
+        "scope": "base synthefy remains Python 3.9-compatible; the aws extra needs a separate pin-or-floor decision"
+      }
+    ]
+  },
+  "known_integration_gaps": [
+    {
+      "id": "text-source-relocation",
+      "status": "open",
+      "required_before": "staging_promotion",
+      "detail": "synthefy[text] owns the dependency, but the implementation still imports synthefy_nori.text_features until the planned source-move PR"
+    },
+    {
+      "id": "client-api-cleanup",
+      "status": "open",
+      "required_before": "staging_promotion",
+      "detail": "the imported client still contains mode=auto and stale standalone install guidance until the next client-refactor PR"
+    },
+    {
+      "id": "optional-extra-artifact-validation",
+      "status": "open",
+      "required_before": "public_release",
+      "detail": "clean Python 3.9 artifact coverage currently proves the base and mocked AWS paths; text and forecasting need isolated gates after their source moves"
+    }
+  ],
+  "publication": {
+    "status": "blocked",
+    "reason": "this internal integration layer still precedes the client API cleanup, serving validation, artifact license gate, and internal-to-staging-to-public promotion"
+  }
+}
