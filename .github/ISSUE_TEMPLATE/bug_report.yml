@@ -1,0 +1,80 @@
+name: Bug report
+description: Report reproducible behavior that is not working as expected
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Nori. Search existing issues before filing a new one.
+
+        **Do not report security vulnerabilities or leaked credentials here.** Follow the [security policy](https://github.com/Synthefy/synthefy-nori/security/policy) instead.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the behavior you observed and why it is a problem.
+      placeholder: A concise description of the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest self-contained example that reproduces the problem.
+      placeholder: |
+        from synthefy_nori import NoriRegressor
+
+        # Add the minimal code and inputs needed to reproduce the issue.
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include enough detail for someone else to recreate your environment.
+      placeholder: |
+        synthefy-nori version:
+        Python version:
+        PyTorch version:
+        Operating system:
+        CPU/GPU and accelerator details:
+        Installation method (PyPI, source, other):
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and traceback
+      description: Paste relevant output. Remove tokens, paths, and other sensitive information.
+      render: shell
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add screenshots, related issues, or anything else that may help.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I removed credentials, private data, and other sensitive information.
+          required: true
