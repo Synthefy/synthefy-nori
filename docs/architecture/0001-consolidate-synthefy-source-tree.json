@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "record_kind": "accepted_decision_snapshot",
+  "issue": "https://github.com/Synthefy/nori-monorepo/issues/216",
+  "decision": "docs/architecture/0001-consolidate-synthefy-source-tree.md",
+  "integration_base": {
+    "repository": "Synthefy/synthefy-nori-internal",
+    "commit": "7cc1e6780d8394fe37a5ba98febf1a26c56d24e5",
+    "tree": "5d114ba761de8082441c17938fe2d567cd453153"
+  },
+  "source_snapshot": {
+    "repository": "Synthefy/synthefy",
+    "commit": "9ecc3d2fad8e37e95869379cc05f328597e258f9",
+    "tree": "c99362d3c2449991fea1985ea1dc510e9af6d3cc",
+    "pyproject_blob": "b5af6433f10ffe069a9796b4fa0be8f074b05c12",
+    "distribution": "synthefy",
+    "version": "6.3.0",
+    "build_backend": "hatchling.build",
+    "import_method": "single_snapshot_commit",
+    "target_project_root": "libs/synthefy",
+    "declared_license": "MIT",
+    "required_license_file": "LICENSE",
+    "license_file_present": false,
+    "publication_blocked_until_license_resolved": true
+  },
+  "package_contract": {
+    "heavy_distribution": "synthefy-nori",
+    "heavy_namespace": "synthefy_nori",
+    "light_distribution": "synthefy",
+    "light_namespace": "synthefy",
+    "published_dependency_direction": "synthefy-nori -> synthefy",
+    "heavy_dependency_constraint": "synthefy>=7,<8",
+    "python_floor_target": ">=3.9",
+    "python_floor_raise_requires_explicit_approval": true,
+    "base_synthefy_must_be_torch_free": true
+  },
+  "api_contract": {
+    "public_facade": "SynthefyNoriClient",
+    "future_async_facade": "AsyncSynthefyNoriClient",
+    "request_type": "NoriPredictRequest",
+    "response_type": "NoriPredictResponse",
+    "supported_modes": [
+      "remote",
+      "sagemaker",
+      "local"
+    ],
+    "auto_mode_supported": false,
+    "bound_sessions_in_scope": false,
+    "hosted_request_fields": [
+      "X_train",
+      "y_train",
+      "X_test"
+    ]
+  },
+  "release_scope": {
+    "classification": "L1 package/source cutover preserving existing L2",
+    "promotion_order": [
+      "internal",
+      "staging",
+      "public"
+    ],
+    "public_is_only_publisher": true,
+    "artifact_publish_order": [
+      "synthefy",
+      "synthefy-nori"
+    ],
+    "stop_if_lightweight_verification_fails": true,
+    "fix_forward_only": true,
+    "hosted_wire_change": false,
+    "checkpoint_or_weight_change": false,
+    "model_slug_or_gateway_binding_change": false,
+    "pricing_or_usage_dimension_change": false,
+    "billing_allowlist_change": false,
+    "key_limit_or_entitlement_change": false,
+    "console_or_iac_behavior_change": false
+  },
+  "external_gates": [
+    {
+      "id": "disable-delete-subtree-writer",
+      "owner_repository": "Synthefy/synthefy-package",
+      "surface": ".github/workflows/sync-synthefy-subtree.yaml",
+      "required_before": "source_snapshot_import",
+      "status_at_acceptance": "open"
+    },
+    {
+      "id": "quarantine-vendored-client-source",
+      "owner_repository": "Synthefy/synthefy-package",
+      "surface": "synthefy-forecasting/synthefy",
+      "required_before": "source_snapshot_import",
+      "status_at_acceptance": "open"
+    },
+    {
+      "id": "rotate-subtree-token",
+      "owner_repository": "Synthefy/synthefy-package",
+      "surface": "SYNTHEFY_PUBLIC_REPO_TOKEN",
+      "required_before": "source_snapshot_import",
+      "status_at_acceptance": "open"
+    },
+    {
+      "id": "freeze-overlapping-client-prs",
+      "owner_repository": "cross-repository",
+      "surface": "open pull requests touching consolidation surfaces",
+      "required_before": "source_snapshot_import",
+      "status_at_acceptance": "open"
+    },
+    {
+      "id": "approve-import-license-treatment",
+      "owner_repository": "Synthefy/synthefy-nori-internal",
+      "surface": "source grants and provenance for imported files",
+      "required_before": "source_snapshot_import",
+      "status_at_acceptance": "open"
+    },
+    {
+      "id": "inventory-unbounded-consumers",
+      "owner_repository": "cross-repository",
+      "surface": "dependencies on synthefy without an upper bound",
+      "required_before": "synthefy-v7.0.0",
+      "status_at_acceptance": "open"
+    },
+    {
+      "id": "verify-artifact-license-files",
+      "owner_repository": "Synthefy/synthefy-nori-internal",
+      "surface": "grants and notices in both wheels and sdists",
+      "required_before": "candidate_artifact_publication",
+      "status_at_acceptance": "open"
+    },
+    {
+      "id": "configure-namespaced-trusted-publishers",
+      "owner_repository": "Synthefy/synthefy-nori",
+      "surface": "publish-synthefy.yml and publish-synthefy-nori.yml with distinct TestPyPI/PyPI environments",
+      "required_before": "production_cutover",
+      "status_at_acceptance": "open"
+    },
+    {
+      "id": "revoke-standalone-trusted-publisher",
+      "owner_repository": "Synthefy/synthefy",
+      "surface": "PyPI publish.yaml / pypi trusted-publisher identity",
+      "required_before": "production_cutover",
+      "status_at_acceptance": "open"
+    },
+    {
+      "id": "revoke-generic-nori-trusted-publishers",
+      "owner_repository": "Synthefy/synthefy-nori",
+      "surface": "TestPyPI and PyPI publish.yml / testpypi and pypi trusted-publisher identities",
+      "required_before": "production_cutover",
+      "status_at_acceptance": "open"
+    }
+  ]
+}
