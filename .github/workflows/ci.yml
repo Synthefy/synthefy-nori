@@ -79,7 +79,8 @@ jobs:
             -p no:cacheprovider \
             -c "$GITHUB_WORKSPACE/libs/synthefy/pytest.ini" \
             -m "not slow" \
-            "$GITHUB_WORKSPACE/libs/synthefy/tests"
+            "$GITHUB_WORKSPACE/libs/synthefy/tests" \
+            "$GITHUB_WORKSPACE/tests/test_synthefy_client_compat.py"
 
 
   # Merge gate (part 1): a real inference forward pass on CPU. Downloads the
