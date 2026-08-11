@@ -6,7 +6,8 @@ on:
   pull_request:
 
 jobs:
-  test:
+  unit:
+    name: CI unit, source, and build tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -189,6 +190,32 @@ jobs:
             "$EXTRA_PY" "$GITHUB_WORKSPACE/ci/probe_installed_distributions.py" \
               extra --case "nori-$EXTRA"
           done
+
+  # "test" is an existing required status context on main. Keep that stable,
+  # but make it fail closed over every ordinary offline package gate: otherwise
+  # the artifact or namespace jobs can be red while the protected context is
+  # green. always() makes this job report even when a dependency fails.
+  test:
+    name: test
+    needs: [unit, synthefy-artifact, distribution-boundaries]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every offline package gate
+        env:
+          UNIT_RESULT: ${{ needs.unit.result }}
+          SYNTHEFY_ARTIFACT_RESULT: ${{ needs['synthefy-artifact'].result }}
+          DISTRIBUTION_BOUNDARIES_RESULT: ${{ needs['distribution-boundaries'].result }}
+        run: |
+          set -euo pipefail
+          printf 'unit=%s synthefy-artifact=%s distribution-boundaries=%s\n' \
+            "$UNIT_RESULT" "$SYNTHEFY_ARTIFACT_RESULT" "$DISTRIBUTION_BOUNDARIES_RESULT"
+          if [ "$UNIT_RESULT" != "success" ] || \
+             [ "$SYNTHEFY_ARTIFACT_RESULT" != "success" ] || \
+             [ "$DISTRIBUTION_BOUNDARIES_RESULT" != "success" ]; then
+            echo "One or more required offline package gates failed." >&2
+            exit 1
+          fi
 
   # Merge gate (part 1): a real inference forward pass on CPU. Downloads the
   # public Synthefy/Nori checkpoint. Mark this job as a required status check in

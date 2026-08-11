@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "record_kind": "ci_gate_lifecycle",
+  "issue": "https://github.com/Synthefy/nori-monorepo/issues/216",
+  "review_base": {
+    "repository": "Synthefy/synthefy-nori-internal",
+    "branch": "codex/216-internal-integration",
+    "commit": "36d1e317e33ace2d439589b2ddd8365bd1e3ff91"
+  },
+  "policy": {
+    "permanent": "A product or release invariant that remains after repository consolidation.",
+    "migration_scaffolding": "A temporary observation or compatibility boundary with an explicit retirement event.",
+    "integration_merge_gate": "Before pull request 407 merges, every migration-scaffolding entry must be reviewed and either retired, converted into a permanent invariant, or carried with its still-valid retirement event."
+  },
+  "gates": [
+    {
+      "id": "ordinary-pr-offline-aggregate",
+      "lifecycle": "permanent",
+      "paths": [
+        ".github/workflows/ci.yml",
+        "tests/test_ci_routing.py"
+      ],
+      "purpose": "Keep the protected test context fail-closed over unit, source, artifact, and two-distribution boundary checks without granting live credentials."
+    },
+    {
+      "id": "two-distribution-artifact-boundaries",
+      "lifecycle": "permanent",
+      "paths": [
+        "ci/probe_installed_distributions.py",
+        "ci/validate_distribution_boundaries.py",
+        "tests/test_distribution_boundaries.py",
+        "tests/test_synthefy_workspace.py"
+      ],
+      "purpose": "Prove disjoint wheel ownership, clean installs, one-way dependencies, lightweight base imports, and supported Python floors."
+    },
+    {
+      "id": "snapshot-provenance",
+      "lifecycle": "permanent",
+      "paths": [
+        "libs/synthefy/SOURCE_SNAPSHOT.json",
+        "tests/test_synthefy_source_import.py"
+      ],
+      "purpose": "Retain auditable evidence of the imported source bytes, approved transformations, exclusions, licenses, and artifact boundaries."
+    },
+    {
+      "id": "phase-2-source-hash-freeze",
+      "lifecycle": "migration_scaffolding",
+      "status": "active",
+      "paths": [
+        "tests/test_synthefy_source_freeze.py"
+      ],
+      "retirement_event": "The first explicitly approved post-Phase-2 change to libs/synthefy source.",
+      "retirement_action": "Remove the whole-tree byte-hash freeze after that source diff is reviewed; keep the permanent package, import-layering, and provenance gates."
+    },
+    {
+      "id": "legacy-6.3-behavior-oracle",
+      "lifecycle": "migration_scaffolding",
+      "status": "active",
+      "paths": [
+        "tests/compat/synthefy_6_3_nori_goldens.json",
+        "tests/test_synthefy_client_compat.py"
+      ],
+      "retirement_event": "The minimum intentionally supported released-client lane no longer includes synthefy 6.3.0 after consolidated release verification.",
+      "retirement_action": "Replace the pinned 6.3.0 oracle with the intentionally supported released-client contract, or remove it if that compatibility promise is explicitly ended."
+    },
+    {
+      "id": "phase-2-open-gap-observation",
+      "lifecycle": "migration_scaffolding",
+      "status": "active",
+      "paths": [
+        "docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json"
+      ],
+      "retirement_event": "Every known_integration_gaps entry in the Phase-2 observation is resolved or superseded by a later immutable observation.",
+      "retirement_action": "Keep the Phase-2 file as historical evidence, but stop treating its open-gap set as the current merge gate and point current assertions at the successor observation."
+    }
+  ]
+}
