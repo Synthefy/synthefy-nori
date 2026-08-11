@@ -1,4 +1,4 @@
-"""Pin the immutable inputs and boundaries for repository consolidation (#216)."""
+"""Pin inputs and boundaries for Synthefy/nori-monorepo#216."""
 
 import json
 import re

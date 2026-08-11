@@ -124,8 +124,8 @@ entitlements, console pricing, or IaC behavior.
 Before the source snapshot is imported:
 
 1. Freeze standalone-client feature work and mark overlapping pull requests as
-   blocked by #216. Only an approved critical production fix may change the
-   recorded source commit before import.
+   blocked by `Synthefy/nori-monorepo#216`. Only an approved critical production
+   fix may change the recorded source commit before import.
 2. Disable and delete the `synthefy-package` subtree-sync workflow.
 3. Quarantine its stale vendored client source so it cannot sync, publish, or be
    treated as an editable source of the public SDK.
