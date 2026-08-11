@@ -19,7 +19,7 @@ jobs:
       - run: uv run pytest
       - run: uv run python ci/validate_variants.py
       - run: uv run python ci/sync_openapi.py --check
-      - run: uv run ruff check src scripts tests ci/validate_distribution_boundaries.py
+      - run: uv run ruff check src scripts tests ci/validate_distribution_boundaries.py ci/probe_installed_distributions.py
       - run: uv run pytest -m slow tests/test_synthefy_source_import.py::test_built_artifacts_match_reviewed_file_boundaries
       - run: uv build
 
@@ -118,6 +118,40 @@ jobs:
             --client-rebuilt "$RUNNER_TEMP/artifacts/synthefy/rebuilt/"*.whl \
             --nori-direct "$RUNNER_TEMP/artifacts/synthefy-nori/direct/"*.whl \
             --nori-rebuilt "$RUNNER_TEMP/artifacts/synthefy-nori/rebuilt/"*.whl
+
+      - name: Install the direct wheels outside the workspace
+        run: |
+          INSTALLED_TEST_ENV="$RUNNER_TEMP/installed-distributions"
+          INSTALLED_TEST_PY="$INSTALLED_TEST_ENV/bin/python"
+          CLIENT_WHEEL="$RUNNER_TEMP/artifacts/synthefy/direct/synthefy-7.0.0-py3-none-any.whl"
+          NORI_WHEEL="$RUNNER_TEMP/artifacts/synthefy-nori/direct/synthefy_nori-0.16.0-py3-none-any.whl"
+          uv venv --no-project --python 3.11 "$INSTALLED_TEST_ENV"
+          uv pip install --python "$INSTALLED_TEST_PY" --strict --no-sources \
+            --torch-backend cpu \
+            "$CLIENT_WHEEL" "$NORI_WHEEL"
+          uv pip check --python "$INSTALLED_TEST_PY"
+      - name: Import both distributions in either order
+        run: |
+          INSTALLED_TEST_PY="$RUNNER_TEMP/installed-distributions/bin/python"
+          cd "$RUNNER_TEMP"
+          "$INSTALLED_TEST_PY" "$GITHUB_WORKSPACE/ci/probe_installed_distributions.py" both --order client-first
+          "$INSTALLED_TEST_PY" "$GITHUB_WORKSPACE/ci/probe_installed_distributions.py" both --order nori-first
+      - name: Uninstall Nori and prove the client remains intact
+        run: |
+          INSTALLED_TEST_PY="$RUNNER_TEMP/installed-distributions/bin/python"
+          uv pip uninstall --python "$INSTALLED_TEST_PY" synthefy-nori
+          uv pip check --python "$INSTALLED_TEST_PY"
+          cd "$RUNNER_TEMP"
+          "$INSTALLED_TEST_PY" "$GITHUB_WORKSPACE/ci/probe_installed_distributions.py" client-only
+      - name: Reinstall Nori, then prove it survives a client uninstall
+        run: |
+          INSTALLED_TEST_PY="$RUNNER_TEMP/installed-distributions/bin/python"
+          NORI_WHEEL="$RUNNER_TEMP/artifacts/synthefy-nori/direct/synthefy_nori-0.16.0-py3-none-any.whl"
+          uv pip install --python "$INSTALLED_TEST_PY" --strict --no-deps "$NORI_WHEEL"
+          uv pip check --python "$INSTALLED_TEST_PY"
+          uv pip uninstall --python "$INSTALLED_TEST_PY" synthefy
+          cd "$RUNNER_TEMP"
+          "$INSTALLED_TEST_PY" "$GITHUB_WORKSPACE/ci/probe_installed_distributions.py" nori-only
 
   # Merge gate (part 1): a real inference forward pass on CPU. Downloads the
   # public Synthefy/Nori checkpoint. Mark this job as a required status check in
