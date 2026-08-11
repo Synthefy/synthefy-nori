@@ -93,6 +93,7 @@ jobs:
               *.md|docs/*|examples/*|benchmarks/*|scripts/*|licenses/*) ;;
               LICENSE|NOTICE|CITATION.cff|CLA.md|SECURITY.md|CONTRIBUTING.md) ;;
               .gitignore|.pre-commit-config.yaml|*.png) ;;
+              .github/ISSUE_TEMPLATE/*) ;;
               .github/workflows/ci.yml|.github/workflows/cla.yml) ;;
               .github/workflows/notify-sync.yml|.github/workflows/publish.yml) ;;
               *) run_gate "relevant change ($f) -> run gate" ;;
