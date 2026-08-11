@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "record_kind": "phase_0_status_observation",
+  "observed_at": "2026-08-11",
+  "observation_policy": "immutable_new_record_required_for_status_changes",
+  "decision": "docs/architecture/0001-consolidate-synthefy-source-tree.md",
+  "accepted_decision_snapshot": "docs/architecture/0001-consolidate-synthefy-source-tree.json",
+  "observed_gate_status": {
+    "disable-delete-subtree-writer": "complete",
+    "quarantine-vendored-client-source": "complete",
+    "rotate-subtree-token": "incomplete_revocation_unverified",
+    "freeze-overlapping-client-prs": "complete",
+    "approve-import-license-treatment": "complete",
+    "verify-artifact-license-files": "open"
+  },
+  "containment": {
+    "pull_request": "https://github.com/Synthefy/synthefy-package/pull/3013",
+    "merge_commit": "4b6f3f36ddacf687cce2bfacd724c0cb0ec7711a",
+    "subtree_writer_workflow": "deleted_from_main",
+    "vendored_client_source": "quarantined",
+    "last_observed_writer_run_date": "2026-02-05",
+    "standalone_dev_commit_after_containment": "9efe7009c90ae447f0aa2e0879450a607c88af4f",
+    "actions_secret": {
+      "repository": "Synthefy/synthefy-package",
+      "name": "SYNTHEFY_PUBLIC_REPO_TOKEN",
+      "status": "deleted",
+      "underlying_credential_owner": "unknown",
+      "underlying_credential_revocation": "unverified"
+    }
+  },
+  "frozen_pull_requests": {
+    "status": "open_as_draft_with_216_disposition",
+    "pull_requests": [
+      "Synthefy/synthefy#40",
+      "Synthefy/synthefy#46",
+      "Synthefy/synthefy#53",
+      "Synthefy/synthefy#54",
+      "Synthefy/synthefy#56",
+      "Synthefy/synthefy#57",
+      "Synthefy/synthefy-nori-internal#125",
+      "Synthefy/synthefy-nori-internal#224",
+      "Synthefy/synthefy-nori-internal#269",
+      "Synthefy/synthefy-nori-internal#348",
+      "Synthefy/synthefy-nori-internal#369",
+      "Synthefy/synthefy-nori-internal#371",
+      "Synthefy/synthefy-nori-internal#384",
+      "Synthefy/synthefy-nori-internal#402",
+      "Synthefy/synthefy-nori-internal#403",
+      "Synthefy/synthefy-nori-internal#404"
+    ]
+  },
+  "license_treatment": {
+    "scope": "source_snapshot_import",
+    "status": "approved",
+    "approved_by": "Raimi",
+    "approved_at": "2026-08-11",
+    "approval_record": {
+      "kind": "explicit_requester_direction",
+      "planning_issue": "https://github.com/Synthefy/nori-monorepo/issues/216",
+      "durable_confirmation": "review_and_merge_of_this_child_pull_request"
+    },
+    "reference_repository": "Synthefy/synthefy-nori",
+    "reference_commit": "3499f2ea066f96c38351d25206703c8ccc0c46fa",
+    "reference_blobs": {
+      "LICENSE": "6fd5811a83419f2a56a1cdb9162043bb29cb98e2",
+      "NOTICE": "57d16c34adc9478bb46a528bcac524af07b7ceaa",
+      "pyproject.toml": "b7c1d1aa1d4b79a361e7e0728b05584b6aceb32e"
+    },
+    "target_project_root": "libs/synthefy",
+    "target_spdx_expression": "Apache-2.0",
+    "license_file": "libs/synthefy/LICENSE",
+    "notice_file": "libs/synthefy/NOTICE",
+    "application_notice": "Copyright 2026 Synthefy",
+    "project_metadata": {
+      "license": "Apache-2.0",
+      "license_files": [
+        "LICENSE",
+        "NOTICE",
+        "licenses/*"
+      ],
+      "legacy_mit_classifier_allowed": false
+    },
+    "historical_source_fact": {
+      "declared_license": "MIT",
+      "license_file_present": false,
+      "metadata_is_an_import_license_grant": false
+    },
+    "project_scope": {
+      "root_license_and_notice_project": "synthefy-nori",
+      "nested_license_and_notice_project": "synthefy",
+      "preserve_more_specific_file_headers": true
+    },
+    "copy_root_license_verbatim": false,
+    "copy_root_notice_verbatim": false,
+    "third_party_notices_are_path_scoped": true,
+    "initial_notice_components": [
+      "Synthefy"
+    ],
+    "deferred_notice_components": [
+      "tabpfn-time-series",
+      "AutoGluon",
+      "Chronos"
+    ],
+    "excluded_notice_components_unless_source_is_packaged": [
+      "StableAI",
+      "LimiX",
+      "TabICL",
+      "model weights"
+    ],
+    "license_treatment_approved_for_source_import": true,
+    "artifact_publication_blocked_until_files_verified": true,
+    "publication_gate_id": "verify-artifact-license-files"
+  },
+  "source_import": {
+    "allowed": false,
+    "blocking_gate_ids": [
+      "rotate-subtree-token"
+    ],
+    "next_action": "revoke_or_rotate_and_verify_the_underlying_credential"
+  }
+}

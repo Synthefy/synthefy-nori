@@ -7,11 +7,16 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _ADR = _REPO_ROOT / "docs" / "architecture" / "0001-consolidate-synthefy-source-tree.md"
 _MANIFEST = _ADR.with_suffix(".json")
+_PHASE_0 = _ADR.with_name("0001-consolidate-synthefy-source-tree-phase-0.json")
 _FULL_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 def _load_manifest():
     return json.loads(_MANIFEST.read_text())
+
+
+def _load_phase_0_status():
+    return json.loads(_PHASE_0.read_text())
 
 
 def test_integration_base_is_pinned_to_the_internal_main_tree():
@@ -46,6 +51,123 @@ def test_missing_client_license_file_remains_a_publication_blocker():
     assert source["required_license_file"] == "LICENSE"
     assert source["license_file_present"] is False
     assert source["publication_blocked_until_license_resolved"] is True
+
+
+def test_approved_license_treatment_matches_the_public_nori_distribution():
+    treatment = _load_phase_0_status()["license_treatment"]
+
+    assert treatment["scope"] == "source_snapshot_import"
+    assert treatment["status"] == "approved"
+    assert treatment["approved_by"] == "Raimi"
+    assert treatment["approved_at"] == "2026-08-11"
+    assert treatment["approval_record"] == {
+        "kind": "explicit_requester_direction",
+        "planning_issue": "https://github.com/Synthefy/nori-monorepo/issues/216",
+        "durable_confirmation": "review_and_merge_of_this_child_pull_request",
+    }
+    assert treatment["reference_repository"] == "Synthefy/synthefy-nori"
+    assert treatment["reference_commit"] == ("3499f2ea066f96c38351d25206703c8ccc0c46fa")
+    assert treatment["reference_blobs"] == {
+        "LICENSE": "6fd5811a83419f2a56a1cdb9162043bb29cb98e2",
+        "NOTICE": "57d16c34adc9478bb46a528bcac524af07b7ceaa",
+        "pyproject.toml": "b7c1d1aa1d4b79a361e7e0728b05584b6aceb32e",
+    }
+    assert treatment["target_project_root"] == "libs/synthefy"
+    assert treatment["target_spdx_expression"] == "Apache-2.0"
+    assert treatment["license_file"] == "libs/synthefy/LICENSE"
+    assert treatment["notice_file"] == "libs/synthefy/NOTICE"
+    assert treatment["application_notice"] == "Copyright 2026 Synthefy"
+    assert treatment["project_metadata"] == {
+        "license": "Apache-2.0",
+        "license_files": ["LICENSE", "NOTICE", "licenses/*"],
+        "legacy_mit_classifier_allowed": False,
+    }
+    assert treatment["historical_source_fact"] == {
+        "declared_license": "MIT",
+        "license_file_present": False,
+        "metadata_is_an_import_license_grant": False,
+    }
+    assert treatment["project_scope"] == {
+        "root_license_and_notice_project": "synthefy-nori",
+        "nested_license_and_notice_project": "synthefy",
+        "preserve_more_specific_file_headers": True,
+    }
+    assert treatment["copy_root_license_verbatim"] is False
+    assert treatment["copy_root_notice_verbatim"] is False
+    assert treatment["third_party_notices_are_path_scoped"] is True
+    assert treatment["initial_notice_components"] == ["Synthefy"]
+    assert treatment["deferred_notice_components"] == [
+        "tabpfn-time-series",
+        "AutoGluon",
+        "Chronos",
+    ]
+    assert treatment["excluded_notice_components_unless_source_is_packaged"] == [
+        "StableAI",
+        "LimiX",
+        "TabICL",
+        "model weights",
+    ]
+    assert treatment["license_treatment_approved_for_source_import"] is True
+    assert treatment["artifact_publication_blocked_until_files_verified"] is True
+    assert treatment["publication_gate_id"] == "verify-artifact-license-files"
+
+
+def test_phase_0_containment_keeps_source_import_blocked_on_token_revocation():
+    status = _load_phase_0_status()
+    containment = status["containment"]
+    secret = containment["actions_secret"]
+
+    assert status["record_kind"] == "phase_0_status_observation"
+    assert status["observed_at"] == "2026-08-11"
+    assert status["observation_policy"] == "immutable_new_record_required_for_status_changes"
+    assert containment["pull_request"] == ("https://github.com/Synthefy/synthefy-package/pull/3013")
+    assert containment["merge_commit"] == "4b6f3f36ddacf687cce2bfacd724c0cb0ec7711a"
+    assert containment["subtree_writer_workflow"] == "deleted_from_main"
+    assert containment["vendored_client_source"] == "quarantined"
+    assert containment["last_observed_writer_run_date"] == "2026-02-05"
+    assert containment["standalone_dev_commit_after_containment"] == ("9efe7009c90ae447f0aa2e0879450a607c88af4f")
+    assert secret["status"] == "deleted"
+    assert secret["underlying_credential_owner"] == "unknown"
+    assert secret["underlying_credential_revocation"] == "unverified"
+    assert status["observed_gate_status"] == {
+        "disable-delete-subtree-writer": "complete",
+        "quarantine-vendored-client-source": "complete",
+        "rotate-subtree-token": "incomplete_revocation_unverified",
+        "freeze-overlapping-client-prs": "complete",
+        "approve-import-license-treatment": "complete",
+        "verify-artifact-license-files": "open",
+    }
+    assert status["source_import"] == {
+        "allowed": False,
+        "blocking_gate_ids": ["rotate-subtree-token"],
+        "next_action": "revoke_or_rotate_and_verify_the_underlying_credential",
+    }
+
+
+def test_phase_0_records_the_exact_frozen_overlapping_pull_requests():
+    frozen = _load_phase_0_status()["frozen_pull_requests"]
+    expected = {
+        "Synthefy/synthefy#40",
+        "Synthefy/synthefy#46",
+        "Synthefy/synthefy#53",
+        "Synthefy/synthefy#54",
+        "Synthefy/synthefy#56",
+        "Synthefy/synthefy#57",
+        "Synthefy/synthefy-nori-internal#125",
+        "Synthefy/synthefy-nori-internal#224",
+        "Synthefy/synthefy-nori-internal#269",
+        "Synthefy/synthefy-nori-internal#348",
+        "Synthefy/synthefy-nori-internal#369",
+        "Synthefy/synthefy-nori-internal#371",
+        "Synthefy/synthefy-nori-internal#384",
+        "Synthefy/synthefy-nori-internal#402",
+        "Synthefy/synthefy-nori-internal#403",
+        "Synthefy/synthefy-nori-internal#404",
+    }
+
+    assert frozen["status"] == "open_as_draft_with_216_disposition"
+    assert len(frozen["pull_requests"]) == len(expected)
+    assert set(frozen["pull_requests"]) == expected
 
 
 def test_package_and_api_boundaries_match_the_accepted_decision():
@@ -112,8 +234,12 @@ def test_external_gates_were_owned_bounded_and_open_at_acceptance():
 
 def test_adr_and_manifest_cross_reference_each_other():
     manifest = _load_manifest()
+    phase_0 = _load_phase_0_status()
     adr = _ADR.read_text()
 
     assert manifest["decision"] == str(_ADR.relative_to(_REPO_ROOT))
     assert _MANIFEST.name in adr
+    assert phase_0["decision"] == str(_ADR.relative_to(_REPO_ROOT))
+    assert phase_0["accepted_decision_snapshot"] == str(_MANIFEST.relative_to(_REPO_ROOT))
+    assert _PHASE_0.name in adr
     assert manifest["issue"] in adr

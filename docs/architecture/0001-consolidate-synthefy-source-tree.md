@@ -4,6 +4,7 @@
 - **Date:** 2026-08-11
 - **Issue:** [Synthefy/nori-monorepo#216](https://github.com/Synthefy/nori-monorepo/issues/216)
 - **Inputs:** [`0001-consolidate-synthefy-source-tree.json`](0001-consolidate-synthefy-source-tree.json)
+- **Phase 0 evidence:** [`0001-consolidate-synthefy-source-tree-phase-0.json`](0001-consolidate-synthefy-source-tree-phase-0.json)
 
 ## Context
 
@@ -35,7 +36,9 @@ synthefy-nori/
     ├── tests/
     ├── README.md
     ├── CHANGELOG.md
-    └── LICENSE
+    ├── LICENSE
+    ├── NOTICE
+    └── licenses/
 ```
 
 The root project continues to produce `synthefy-nori`. The project under
@@ -90,10 +93,32 @@ source repository and commit in its message. It is not a subtree merge or histor
 graft: internal, staging, and public must retain a linear promotion history.
 
 The source declares MIT metadata and includes `LICENSE` in its sdist definition,
-but the pinned tree has no matching license file. Importing the snapshot does not
-resolve that discrepancy. Publishing either consolidated artifact is blocked
-until the grants, notices, and per-wheel license contents have been reviewed and
-made complete.
+but the pinned tree has no matching license file. That remains part of the
+snapshot's provenance; it is not treated as a license grant or silently
+rewritten.
+
+The consolidated `synthefy` project will use Apache-2.0, matching the public Nori
+project's license while keeping an artifact-local license bundle. Its metadata is
+`license = "Apache-2.0"` and
+`license-files = ["LICENSE", "NOTICE", "licenses/*"]`; the legacy MIT classifier
+must be removed. `libs/synthefy/LICENSE` contains the full Apache-2.0 text with
+the application notice `Copyright 2026 Synthefy`, and `libs/synthefy/NOTICE`
+initially contains only Synthefy's notice and the Apache reference.
+
+License scope follows the owning project root and any more-specific per-file
+notice. The root `LICENSE`/`NOTICE` describe `synthefy-nori`; the nested files
+describe `synthefy`; file-level SPDX and copyright headers are preserved. Root
+files are not copied verbatim because their StableAI and third-party notices are
+not automatically applicable to the light artifact. PriorLabs, AutoGluon, and
+Chronos notices are added only when their corresponding time-series source paths
+are packaged there. StableAI, LimiX, TabICL, model-weight, and other notices stay
+out unless their corresponding source is actually shipped in `synthefy`.
+
+Raimi approved this license treatment for source import on 2026-08-11. The
+adjacent observation pins the public Nori commit and license artifacts used for
+that decision. This approval does not make either artifact publication-ready.
+Publishing remains blocked until both built wheels and sdists are inspected for
+complete, distribution-specific grants, metadata, and notices.
 
 ### Development and release order
 
@@ -133,6 +158,15 @@ Before the source snapshot is imported:
 5. Approve the source and license treatment before copying files; do not infer a
    license from package metadata. Artifact publication remains blocked until the
    per-distribution grants and notices are complete.
+
+Phase 0 evidence is captured in the adjacent point-in-time observation; the
+original manifest's `status_at_acceptance` fields remain the historical accepted
+snapshot. A later gate change requires a new observation rather than editing this
+one. As of 2026-08-11, the subtree writer is deleted, the vendored copy is
+quarantined, overlapping pull requests are frozen, the repository Actions secret
+is deleted, and the import license treatment is approved. Revocation or rotation
+of the underlying credential has not been verified, so source import remains
+blocked.
 
 Before production cutover:
 
