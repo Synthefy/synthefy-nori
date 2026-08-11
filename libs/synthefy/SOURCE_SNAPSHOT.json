@@ -1,0 +1,182 @@
+{
+  "schema_version": 1,
+  "source": {
+    "repository": "Synthefy/synthefy",
+    "commit": "9ecc3d2fad8e37e95869379cc05f328597e258f9",
+    "tree": "c99362d3c2449991fea1985ea1dc510e9af6d3cc",
+    "version": "6.3.0",
+    "subtrees": {
+      "src/synthefy": "4caf181f092208d2fdb5d5a64997d6d1046e7944",
+      "tests": "b5eb4713a8af8d0cc7031675da67c82d46cdd0f7",
+      "tests/online_tests": "74cc3c0a994a113633392900a8b1fcb05c2c173f"
+    }
+  },
+  "import": {
+    "method": "single_snapshot_commit",
+    "target_project_root": "libs/synthefy",
+    "included_path_count": 14,
+    "included_blobs": {
+      "CHANGELOG.md": "7b69d85855e255bc5af57239fa4256862ff9994f",
+      "README.md": "66e6d0f2cef027f4579084d775531374cd65a884",
+      "pyproject.toml": "b5af6433f10ffe069a9796b4fa0be8f074b05c12",
+      "pytest.ini": "46dcf9a9271b23f5faf9417a5ef5c48c041bd316",
+      "src/synthefy/__init__.py": "056405957f4d1db3659ec1ff7154b274412f37f3",
+      "src/synthefy/api_client.py": "93e3706c47020139b81b0850deee0ec4895f8907",
+      "src/synthefy/data_models.py": "725e79d92c73313da6ab1c4154b73701e61458f6",
+      "src/synthefy/nori_client.py": "a6fb1d1d91677ff9aa8c99186088bf63fd24eea7",
+      "src/synthefy/nori_data_models.py": "d915657b53526f461246b74e5de354000b508b74",
+      "tests/__init__.py": "df085fb789a46419a7a00f080c6e4f917ee156d3",
+      "tests/conftest.py": "878c02f191956c44e9f8518cc43ab5a09e302e0a",
+      "tests/test_data_models.py": "c15648965d81080db88e230c08cba86400829ca3",
+      "tests/test_nori_client.py": "c46acbe2b083e88eb569fe00f83c8056b7d378bf",
+      "tests/test_nori_data_models.py": "cafc0ab4d1dc55e2345ed65a3d2f6555dc18807d"
+    },
+    "byte_identical_paths": [
+      "CHANGELOG.md",
+      "src/synthefy/__init__.py",
+      "src/synthefy/api_client.py",
+      "src/synthefy/data_models.py",
+      "src/synthefy/nori_client.py",
+      "src/synthefy/nori_data_models.py",
+      "tests/__init__.py",
+      "tests/conftest.py",
+      "tests/test_data_models.py",
+      "tests/test_nori_client.py",
+      "tests/test_nori_data_models.py"
+    ],
+    "transformed_paths": {
+      "pyproject.toml": {
+        "source_blob": "b5af6433f10ffe069a9796b4fa0be8f074b05c12",
+        "result_blob": "0f9e10c5b6175b496176c717083cf3cf72862cda",
+        "changes": [
+          "replace legacy MIT license table with the Apache-2.0 SPDX expression",
+          "add PEP 639 license-files for LICENSE, NOTICE, and licenses/*",
+          "remove the legacy MIT trove classifier",
+          "disable parent VCS ignore-pattern application during nested builds"
+        ]
+      },
+      "README.md": {
+        "source_blob": "66e6d0f2cef027f4579084d775531374cd65a884",
+        "result_blob": "e5d3c256f4a579ec880ece9b1eca0eeb6016d6b0",
+        "changes": [
+          "replace the stale MIT license summary with Apache License 2.0"
+        ]
+      },
+      "pytest.ini": {
+        "source_blob": "46dcf9a9271b23f5faf9417a5ef5c48c041bd316",
+        "result_blob": "dbbb75cc34a9c63ad2ee66e1ecc6bfe529ab51b0",
+        "changes": [
+          "remove one trailing space rejected by the repository whitespace gate"
+        ]
+      }
+    }
+  },
+  "build_treatment": {
+    "builder_behavior": "Hatchling force-includes the nearest VCS ignore file in every sdist; a reviewed package-local replacement prevents the parent monorepo file from leaking into this artifact.",
+    "added_files": {
+      ".gitignore": {
+        "git_blob": "3ca6266a603b13369e6b17ff55bd3da2a1808b63",
+        "sha256": "732b8193757c6c856b35f3a442e5470ee8538688c050db789d35bb43e6c777b1",
+        "replaces_source_blob": "220a3ca1f278e9e308298e95f74b6df598d86af9",
+        "purpose": "minimal nested-package build and cache ignores; replaces rather than imports the standalone repository control file"
+      }
+    },
+    "artifact_files": {
+      "sdist": [
+        ".gitignore",
+        "CHANGELOG.md",
+        "LICENSE",
+        "NOTICE",
+        "PKG-INFO",
+        "README.md",
+        "licenses/Apache-2.0.txt",
+        "pyproject.toml",
+        "src/synthefy/__init__.py",
+        "src/synthefy/api_client.py",
+        "src/synthefy/data_models.py",
+        "src/synthefy/nori_client.py",
+        "src/synthefy/nori_data_models.py"
+      ],
+      "wheel": [
+        "synthefy/__init__.py",
+        "synthefy/api_client.py",
+        "synthefy/data_models.py",
+        "synthefy/nori_client.py",
+        "synthefy/nori_data_models.py",
+        "synthefy-6.3.0.dist-info/METADATA",
+        "synthefy-6.3.0.dist-info/WHEEL",
+        "synthefy-6.3.0.dist-info/licenses/LICENSE",
+        "synthefy-6.3.0.dist-info/licenses/NOTICE",
+        "synthefy-6.3.0.dist-info/licenses/licenses/Apache-2.0.txt",
+        "synthefy-6.3.0.dist-info/RECORD"
+      ]
+    }
+  },
+  "license_treatment": {
+    "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-0.json",
+    "target_spdx_expression": "Apache-2.0",
+    "approved_reference": {
+      "repository": "Synthefy/synthefy-nori",
+      "commit": "3499f2ea066f96c38351d25206703c8ccc0c46fa",
+      "blobs": {
+        "LICENSE": "6fd5811a83419f2a56a1cdb9162043bb29cb98e2",
+        "NOTICE": "57d16c34adc9478bb46a528bcac524af07b7ceaa",
+        "pyproject.toml": "b7c1d1aa1d4b79a361e7e0728b05584b6aceb32e"
+      }
+    },
+    "added_files": {
+      "LICENSE": {
+        "git_blob": "3e02466035fa2c0e7a1902ef788aaad89c724c01",
+        "sha256": "2c8e29594e73e4cdc594470f61873bd5a0d18187ed1f8ee67479cac8a91193f8",
+        "purpose": "full Apache-2.0 text with the Copyright 2026 Synthefy application notice"
+      },
+      "NOTICE": {
+        "git_blob": "c07b4572fb84412863cf9cc34650d39ba51fec2d",
+        "sha256": "29802c4102be0855d6ccaba28d697728c53a3026c4baadfe2e52d8b6f1ae383d",
+        "purpose": "artifact-local Synthefy notice and Apache-2.0 reference; no unrelated root-project notices"
+      },
+      "licenses/Apache-2.0.txt": {
+        "git_blob": "3e02466035fa2c0e7a1902ef788aaad89c724c01",
+        "sha256": "2c8e29594e73e4cdc594470f61873bd5a0d18187ed1f8ee67479cac8a91193f8",
+        "purpose": "artifact-local copy of the full Apache-2.0 text"
+      }
+    }
+  },
+  "excluded": {
+    "path_count": 16,
+    "repository_control_and_stale_guidance": {
+      "status": "excluded",
+      "blobs": {
+        ".github/workflows/publish.yaml": "37ec020d5cf1d529988e9cbb8ce4ffe56f25e046",
+        ".github/workflows/tests.yaml": "5e2b53558884cfc4db053adbf46003beabea9e5a",
+        ".gitignore": "220a3ca1f278e9e308298e95f74b6df598d86af9",
+        "INTERNAL_README.md": "bf551d97e2932eb789f22d28d8fc569c9c33a73d",
+        "uv.lock": "8eb03be0f17a16a394b2d7226bb2ed5526b2d8d6"
+      },
+      "reasons": {
+        ".github/workflows/publish.yaml": "standalone repository publishing control; consolidated publishing is designed separately",
+        ".github/workflows/tests.yaml": "standalone repository CI control; monorepo CI is designed separately",
+        ".gitignore": "standalone repository control file; the owning monorepo controls ignores",
+        "INTERNAL_README.md": "stale standalone publishing and token guidance",
+        "uv.lock": "standalone lockfile; the monorepo workspace lock is designed separately"
+      }
+    },
+    "dogfood_and_live_tests": {
+      "status": "omitted_pending_rehome_review",
+      "follow_up": "Rehome or rewrite each path in a later PR after its owner, live-service dependency, credential use, and CI destination are reviewed.",
+      "blobs": {
+        "dogfood/DOGFOOD.md": "dec0706f4d6ef3964df8bcaa76a287f5ece900f4",
+        "dogfood/dogfood_local.py": "a9f78cb9e9862b7b6d829f400bfcd13039208adc",
+        "dogfood/dogfood_remote.py": "e49e372206ab4eb1a27e2a90f5d63eb79493e6c9",
+        "dogfood/dogfood_remote_realdata.py": "af939f573bba594928c38aa7e515f11cdf8fafee",
+        "dogfood/modal_t4.py": "2009921ec1e5d00d1c58ff8f2bc8bd27db7cb8e1",
+        "tests/online_tests/__init__.py": "62dcbc5f4f18dfa9da32395806c89c4e15f617ca",
+        "tests/online_tests/test_core_forecast_backtest_api.py": "c3706d9b5cc51df03d0d09e23223165a11d35bd2",
+        "tests/online_tests/test_hotel_demand.py": "c4502e24af24d1e42fc219c7177b3009aa8a503d",
+        "tests/online_tests/test_inventory_forecasting.py": "59927286a5a9bf768e8a046d29683577bce70e74",
+        "tests/online_tests/test_nori_memory_rungs.py": "6da3cb8dd1fcac9163ce18f19800316f124d62db",
+        "tests/online_tests/test_pricing_simulation.py": "520ba09a0127585e6acfa979886ec17e4d3af78d"
+      }
+    }
+  }
+}

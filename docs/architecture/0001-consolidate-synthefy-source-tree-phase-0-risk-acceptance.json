@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "record_kind": "phase_0_status_observation",
+  "observed_at": "2026-08-11",
+  "observation_policy": "immutable_new_record_required_for_status_changes",
+  "decision": "docs/architecture/0001-consolidate-synthefy-source-tree.md",
+  "accepted_decision_snapshot": "docs/architecture/0001-consolidate-synthefy-source-tree.json",
+  "supersedes_for_source_import": "docs/architecture/0001-consolidate-synthefy-source-tree-phase-0.json",
+  "supersession_scope": "source_import_authorization_only",
+  "requester_direction": {
+    "kind": "explicit_requester_direction",
+    "decided_by": "Raimi",
+    "recorded_at": "2026-08-11",
+    "instruction": "skip_underlying_pat_revocation_and_continue",
+    "planning_issue": "https://github.com/Synthefy/nori-monorepo/issues/216"
+  },
+  "prior_observation_preserved": {
+    "path": "docs/architecture/0001-consolidate-synthefy-source-tree-phase-0.json",
+    "source_import_allowed": false,
+    "blocking_gate_ids": [
+      "rotate-subtree-token"
+    ]
+  },
+  "observed_gate_status": {
+    "disable-delete-subtree-writer": "complete",
+    "quarantine-vendored-client-source": "complete",
+    "rotate-subtree-token": "risk_accepted_open_follow_up",
+    "freeze-overlapping-client-prs": "complete",
+    "approve-import-license-treatment": "complete",
+    "verify-artifact-license-files": "open"
+  },
+  "credential_risk": {
+    "repository": "Synthefy/synthefy-package",
+    "secret_name": "SYNTHEFY_PUBLIC_REPO_TOKEN",
+    "actions_secret_status": "deleted",
+    "subtree_writer_workflow_status": "deleted_from_main",
+    "underlying_credential_owner": "unknown",
+    "underlying_credential_revocation": "unverified",
+    "risk_accepted_by": "Raimi",
+    "risk_acceptance_scope": "source_snapshot_import",
+    "follow_up": {
+      "gate_id": "rotate-subtree-token",
+      "status": "open_non_blocking",
+      "action": "revoke_or_rotate_and_verify_if_owner_is_identified"
+    }
+  },
+  "source_import": {
+    "allowed": true,
+    "authoritative_observation": true,
+    "authorization_basis": "explicit_requester_risk_acceptance",
+    "blocking_gate_ids": [],
+    "accepted_risk_gate_ids": [
+      "rotate-subtree-token"
+    ],
+    "follow_up_gate_ids": [
+      "rotate-subtree-token"
+    ],
+    "next_action": "import_the_pinned_source_snapshot"
+  }
+}

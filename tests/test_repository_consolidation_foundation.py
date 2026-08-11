@@ -8,6 +8,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _ADR = _REPO_ROOT / "docs" / "architecture" / "0001-consolidate-synthefy-source-tree.md"
 _MANIFEST = _ADR.with_suffix(".json")
 _PHASE_0 = _ADR.with_name("0001-consolidate-synthefy-source-tree-phase-0.json")
+_PHASE_0_RISK_ACCEPTANCE = _ADR.with_name("0001-consolidate-synthefy-source-tree-phase-0-risk-acceptance.json")
 _FULL_SHA = re.compile(r"[0-9a-f]{40}")
 
 
@@ -17,6 +18,10 @@ def _load_manifest():
 
 def _load_phase_0_status():
     return json.loads(_PHASE_0.read_text())
+
+
+def _load_phase_0_risk_acceptance():
+    return json.loads(_PHASE_0_RISK_ACCEPTANCE.read_text())
 
 
 def test_integration_base_is_pinned_to_the_internal_main_tree():
@@ -144,6 +149,56 @@ def test_phase_0_containment_keeps_source_import_blocked_on_token_revocation():
     }
 
 
+def test_latest_phase_0_observation_accepts_token_risk_for_source_import():
+    initial = _load_phase_0_status()
+    latest = _load_phase_0_risk_acceptance()
+    risk = latest["credential_risk"]
+
+    assert initial["source_import"]["allowed"] is False
+    assert latest["record_kind"] == "phase_0_status_observation"
+    assert latest["observed_at"] == "2026-08-11"
+    assert latest["observation_policy"] == "immutable_new_record_required_for_status_changes"
+    assert latest["supersedes_for_source_import"] == str(_PHASE_0.relative_to(_REPO_ROOT))
+    assert latest["supersession_scope"] == "source_import_authorization_only"
+    assert latest["requester_direction"] == {
+        "kind": "explicit_requester_direction",
+        "decided_by": "Raimi",
+        "recorded_at": "2026-08-11",
+        "instruction": "skip_underlying_pat_revocation_and_continue",
+        "planning_issue": "https://github.com/Synthefy/nori-monorepo/issues/216",
+    }
+    assert latest["prior_observation_preserved"] == {
+        "path": str(_PHASE_0.relative_to(_REPO_ROOT)),
+        "source_import_allowed": False,
+        "blocking_gate_ids": ["rotate-subtree-token"],
+    }
+    assert latest["observed_gate_status"]["rotate-subtree-token"] == ("risk_accepted_open_follow_up")
+    assert risk == {
+        "repository": "Synthefy/synthefy-package",
+        "secret_name": "SYNTHEFY_PUBLIC_REPO_TOKEN",
+        "actions_secret_status": "deleted",
+        "subtree_writer_workflow_status": "deleted_from_main",
+        "underlying_credential_owner": "unknown",
+        "underlying_credential_revocation": "unverified",
+        "risk_accepted_by": "Raimi",
+        "risk_acceptance_scope": "source_snapshot_import",
+        "follow_up": {
+            "gate_id": "rotate-subtree-token",
+            "status": "open_non_blocking",
+            "action": "revoke_or_rotate_and_verify_if_owner_is_identified",
+        },
+    }
+    assert latest["source_import"] == {
+        "allowed": True,
+        "authoritative_observation": True,
+        "authorization_basis": "explicit_requester_risk_acceptance",
+        "blocking_gate_ids": [],
+        "accepted_risk_gate_ids": ["rotate-subtree-token"],
+        "follow_up_gate_ids": ["rotate-subtree-token"],
+        "next_action": "import_the_pinned_source_snapshot",
+    }
+
+
 def test_phase_0_records_the_exact_frozen_overlapping_pull_requests():
     frozen = _load_phase_0_status()["frozen_pull_requests"]
     expected = {
@@ -235,6 +290,7 @@ def test_external_gates_were_owned_bounded_and_open_at_acceptance():
 def test_adr_and_manifest_cross_reference_each_other():
     manifest = _load_manifest()
     phase_0 = _load_phase_0_status()
+    risk_acceptance = _load_phase_0_risk_acceptance()
     adr = _ADR.read_text()
 
     assert manifest["decision"] == str(_ADR.relative_to(_REPO_ROOT))
@@ -242,4 +298,8 @@ def test_adr_and_manifest_cross_reference_each_other():
     assert phase_0["decision"] == str(_ADR.relative_to(_REPO_ROOT))
     assert phase_0["accepted_decision_snapshot"] == str(_MANIFEST.relative_to(_REPO_ROOT))
     assert _PHASE_0.name in adr
+    assert risk_acceptance["decision"] == str(_ADR.relative_to(_REPO_ROOT))
+    assert risk_acceptance["accepted_decision_snapshot"] == str(_MANIFEST.relative_to(_REPO_ROOT))
+    assert risk_acceptance["supersedes_for_source_import"] == str(_PHASE_0.relative_to(_REPO_ROOT))
+    assert _PHASE_0_RISK_ACCEPTANCE.name in adr
     assert manifest["issue"] in adr

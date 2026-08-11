@@ -4,7 +4,9 @@
 - **Date:** 2026-08-11
 - **Issue:** [Synthefy/nori-monorepo#216](https://github.com/Synthefy/nori-monorepo/issues/216)
 - **Inputs:** [`0001-consolidate-synthefy-source-tree.json`](0001-consolidate-synthefy-source-tree.json)
-- **Phase 0 evidence:** [`0001-consolidate-synthefy-source-tree-phase-0.json`](0001-consolidate-synthefy-source-tree-phase-0.json)
+- **Phase 0 observations:** [initial containment status](0001-consolidate-synthefy-source-tree-phase-0.json);
+  [later explicit risk acceptance](0001-consolidate-synthefy-source-tree-phase-0-risk-acceptance.json)
+  (authoritative for source-import authorization)
 
 ## Context
 
@@ -154,19 +156,23 @@ Before the source snapshot is imported:
 2. Disable and delete the `synthefy-package` subtree-sync workflow.
 3. Quarantine its stale vendored client source so it cannot sync, publish, or be
    treated as an editable source of the public SDK.
-4. Revoke or rotate `SYNTHEFY_PUBLIC_REPO_TOKEN` after removing the workflow.
+4. Revoke or rotate `SYNTHEFY_PUBLIC_REPO_TOKEN` after removing the workflow,
+   unless the requester explicitly accepts the unresolved credential risk in a
+   later immutable observation. That acceptance may unblock source import, but
+   it does not record the underlying credential as revoked.
 5. Approve the source and license treatment before copying files; do not infer a
    license from package metadata. Artifact publication remains blocked until the
    per-distribution grants and notices are complete.
 
-Phase 0 evidence is captured in the adjacent point-in-time observation; the
-original manifest's `status_at_acceptance` fields remain the historical accepted
-snapshot. A later gate change requires a new observation rather than editing this
-one. As of 2026-08-11, the subtree writer is deleted, the vendored copy is
-quarantined, overlapping pull requests are frozen, the repository Actions secret
-is deleted, and the import license treatment is approved. Revocation or rotation
-of the underlying credential has not been verified, so source import remains
-blocked.
+Phase 0 evidence is captured in adjacent immutable point-in-time observations;
+the original manifest's `status_at_acceptance` fields remain the historical
+accepted snapshot. The initial observation still records that source import was
+blocked while credential revocation was unverified. On 2026-08-11, Raimi
+explicitly directed the project to skip that revocation gate and continue. The
+later risk-acceptance observation supersedes the initial observation only for
+source-import authorization: import is now allowed, while revocation of the
+underlying credential remains unverified and tracked as a non-blocking follow-up.
+Artifact publication remains subject to its separate gates.
 
 Before production cutover:
 
