@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Probe the lifecycle of cleanly installed ``synthefy`` distribution wheels.
+"""Probe cleanly installed ``synthefy`` distributions and their extras.
 
 This script runs under the isolated interpreter receiving the built wheels.  It
 rejects accidental workspace imports, exercises both import orders, and verifies
-that uninstalling either distribution leaves the other namespace intact.
+that uninstalling either distribution leaves the other namespace intact.  Its
+extra probes verify dependency ownership without claiming that feature source has
+already moved from ``synthefy_nori`` into the lightweight client.
 """
 
 from __future__ import annotations
@@ -19,9 +21,17 @@ from pathlib import Path
 
 
 _DISTRIBUTIONS = {
-    "synthefy": ("synthefy", "7.0.0"),
-    "synthefy_nori": ("synthefy-nori", "0.16.0"),
+    "synthefy": "synthefy",
+    "synthefy_nori": "synthefy-nori",
 }
+
+_EXTRA_CASES = (
+    "client-aws",
+    "client-forecasting",
+    "client-text",
+    "nori-forecasting",
+    "nori-text",
+)
 
 
 def _site_packages() -> Path:
@@ -33,7 +43,7 @@ def _assert_absent(module_name: str) -> None:
         raise AssertionError(
             f"{module_name} is still importable after its distribution was removed"
         )
-    distribution, _ = _DISTRIBUTIONS[module_name]
+    distribution = _DISTRIBUTIONS[module_name]
     try:
         importlib.metadata.version(distribution)
     except importlib.metadata.PackageNotFoundError:
@@ -42,7 +52,7 @@ def _assert_absent(module_name: str) -> None:
 
 
 def _import_installed(module_name: str):
-    distribution, expected_version = _DISTRIBUTIONS[module_name]
+    distribution = _DISTRIBUTIONS[module_name]
     module = importlib.import_module(module_name)
     module_file = Path(module.__file__).resolve()
     site_packages = _site_packages()
@@ -51,13 +61,99 @@ def _import_installed(module_name: str):
             f"{module_name} imported from {module_file}, outside clean environment {site_packages}"
         )
     actual_version = importlib.metadata.version(distribution)
-    if actual_version != expected_version:
-        raise AssertionError(
-            f"{distribution} version is {actual_version!r}, expected {expected_version!r}"
-        )
-    if getattr(module, "__version__", expected_version) != expected_version:
-        raise AssertionError(f"{module_name}.__version__ does not match {expected_version}")
+    if getattr(module, "__version__", actual_version) != actual_version:
+        raise AssertionError(f"{module_name}.__version__ does not match {actual_version}")
     return module
+
+
+def _assert_not_loaded(*module_names: str) -> None:
+    loaded = sorted(
+        name
+        for name in sys.modules
+        if any(name == root or name.startswith(f"{root}.") for root in module_names)
+    )
+    if loaded:
+        raise AssertionError(f"optional modules loaded eagerly: {loaded}")
+
+
+def _assert_not_importable(*module_names: str) -> None:
+    importable = sorted(
+        module_name
+        for module_name in module_names
+        if importlib.util.find_spec(module_name) is not None
+    )
+    if importable:
+        raise AssertionError(f"unrelated optional modules are installed: {importable}")
+
+
+def _import_required(*module_names: str) -> None:
+    for module_name in module_names:
+        importlib.import_module(module_name)
+
+
+def _probe_client_extra(extra: str) -> None:
+    _assert_absent("synthefy_nori")
+    _import_installed("synthefy")
+
+    optional_modules = {
+        "aws": ("boto3", "botocore"),
+        "forecasting": ("datasets", "gluonts", "statsmodels"),
+        "text": ("sentence_transformers", "torch"),
+    }
+    all_optional = {name for names in optional_modules.values() for name in names}
+    _assert_not_loaded(*sorted(all_optional))
+    _assert_not_importable(*sorted(all_optional.difference(optional_modules[extra])))
+
+    if extra == "aws":
+        from synthefy.nori_client import _load_aws_sdk
+
+        boto3, config = _load_aws_sdk()
+        if boto3.__name__ != "boto3" or config.__name__ != "Config":
+            raise AssertionError("the AWS extra did not load boto3 and botocore.Config")
+    elif extra == "forecasting":
+        _import_required("datasets", "gluonts", "statsmodels")
+    else:
+        from sentence_transformers import SentenceTransformer
+
+        if not callable(SentenceTransformer):
+            raise AssertionError("SentenceTransformer is not callable")
+
+    print(f"synthefy[{extra}] owns its dependencies without installing synthefy-nori")
+
+
+def _probe_nori_extra(extra: str) -> None:
+    _assert_not_loaded("synthefy")
+    _import_installed("synthefy_nori")
+    _assert_not_loaded("synthefy")
+
+    unrelated = {
+        "forecasting": ("boto3", "botocore", "sentence_transformers"),
+        "text": ("boto3", "botocore", "datasets", "gluonts", "statsmodels"),
+    }
+    _assert_not_importable(*unrelated[extra])
+
+    if extra == "forecasting":
+        _import_required("datasets", "gluonts", "statsmodels")
+        from synthefy_nori.nori_ts import NoriTSForecaster
+
+        if not callable(NoriTSForecaster):
+            raise AssertionError("NoriTSForecaster is not callable")
+    else:
+        from sentence_transformers import SentenceTransformer
+        from synthefy_nori.text_features import MultimodalPreprocessor
+
+        if not callable(SentenceTransformer) or not callable(MultimodalPreprocessor):
+            raise AssertionError("the text feature entry points are not callable")
+
+    print(f"synthefy-nori[{extra}] forwards to the current feature entry point")
+
+
+def probe_extra(case: str) -> None:
+    owner, extra = case.split("-", 1)
+    if owner == "client":
+        _probe_client_extra(extra)
+    else:
+        _probe_nori_extra(extra)
 
 
 def _assert_import_cause(loader_name: str, expected_name: str) -> None:
@@ -148,6 +244,8 @@ def _parser() -> argparse.ArgumentParser:
     both.add_argument("--order", choices=("client-first", "nori-first"), required=True)
     subparsers.add_parser("client-only", help="probe after synthefy-nori is uninstalled")
     subparsers.add_parser("nori-only", help="probe after synthefy is uninstalled")
+    extra = subparsers.add_parser("extra", help="probe one isolated optional extra")
+    extra.add_argument("--case", choices=_EXTRA_CASES, required=True)
     return parser
 
 
@@ -157,8 +255,10 @@ def main() -> int:
         probe_both(args.order)
     elif args.state == "client-only":
         probe_client_only()
-    else:
+    elif args.state == "nori-only":
         probe_nori_only()
+    else:
+        probe_extra(args.case)
     return 0
 
 

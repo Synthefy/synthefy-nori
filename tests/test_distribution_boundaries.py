@@ -80,11 +80,17 @@ def _valid_artifacts(tmp_path: Path):
     client_requirements = (
         "httpx<0.28.0,>=0.24.0",
         'boto3<2.0.0,>=1.34.0; extra == "aws"',
+        'datasets>=2.0; extra == "forecasting"',
+        'gluonts>=0.16; extra == "forecasting"',
+        'statsmodels>=0.14; extra == "forecasting"',
+        'sentence-transformers; extra == "text"',
     )
     nori_requirements = (
         "numpy>=2.0",
         "synthefy<8,>=7",
         'synthefy[text]<8,>=7; extra == "text"',
+        'synthefy[forecasting]<8,>=7; extra == "forecasting"',
+        'synthefy[forecasting]<8,>=7; extra == "timeseries"',
     )
     values = {}
     for build in ("direct", "rebuilt"):
@@ -103,7 +109,7 @@ def _valid_artifacts(tmp_path: Path):
             version="0.16.0",
             namespace="synthefy_nori",
             requirements=nori_requirements,
-            extras=("text",),
+            extras=("forecasting", "text", "timeseries"),
             extra_runtime_files=("synthefy_nori/api.py",),
         )
     return values
@@ -155,6 +161,48 @@ def test_client_reverse_dependency_is_rejected(tmp_path):
     )
 
     with pytest.raises(validator.BoundaryError, match="must not depend"):
+        validator.validate_artifacts(**artifacts)
+
+
+def test_misassigned_client_extra_requirement_is_rejected(tmp_path):
+    validator = _load_validator()
+    artifacts = _valid_artifacts(tmp_path)
+    wrong_requirements = (
+        "httpx<0.28.0,>=0.24.0",
+        'boto3<2.0.0,>=1.34.0; extra == "aws"',
+        'datasets>=2.0; extra == "forecasting"',
+        'gluonts>=0.16; extra == "forecasting"',
+        'statsmodels>=0.14; extra == "forecasting"',
+        'sentence-transformers; extra == "forecasting"',
+    )
+    for build in ("direct", "rebuilt"):
+        artifacts[f"client_{build}"] = _write_wheel(
+            tmp_path / f"synthefy-wrong-extra-{build}.whl",
+            distribution="synthefy",
+            version="7.0.0",
+            namespace="synthefy",
+            requirements=wrong_requirements,
+            extras=("aws", "forecasting", "text"),
+        )
+
+    with pytest.raises(validator.BoundaryError, match=r"synthefy\[forecasting\]"):
+        validator.validate_artifacts(**artifacts)
+
+
+def test_wrong_nori_forwarding_extra_is_rejected(tmp_path):
+    validator = _load_validator()
+    artifacts = _valid_artifacts(tmp_path)
+    for build in ("direct", "rebuilt"):
+        artifacts[f"nori_{build}"] = _write_wheel(
+            tmp_path / f"synthefy-nori-wrong-extra-{build}.whl",
+            distribution="synthefy-nori",
+            version="0.16.0",
+            namespace="synthefy_nori",
+            requirements=("synthefy<8,>=7", 'synthefy[text]<8,>=7; extra == "text"'),
+            extras=("forecasting", "text", "timeseries"),
+        )
+
+    with pytest.raises(validator.BoundaryError, match=r"synthefy-nori\[forecasting\]"):
         validator.validate_artifacts(**artifacts)
 
 

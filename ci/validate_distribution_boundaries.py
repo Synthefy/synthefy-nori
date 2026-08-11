@@ -48,6 +48,25 @@ def _requirement_name(value: str) -> str:
     return _canonicalize_name(match.group(1))
 
 
+def _canonical_requirement(value: str) -> str:
+    requirement = value.partition(";")[0].strip()
+    match = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", requirement)
+    if match is None:
+        raise BoundaryError(f"cannot parse Requires-Dist value {value!r}")
+    name = _canonicalize_name(match.group(1))
+    suffix = re.sub(r"\s+", "", requirement[match.end() :]).lower()
+    return f"{name}{suffix}"
+
+
+def _requirement_extra(value: str) -> str | None:
+    marker = value.partition(";")[2]
+    matches = re.findall(r"\bextra\s*==\s*(['\"])([A-Za-z0-9._-]+)\1", marker)
+    extras = {_canonicalize_name(extra) for _, extra in matches}
+    if len(extras) > 1:
+        raise BoundaryError(f"Requires-Dist has ambiguous extra markers: {value!r}")
+    return next(iter(extras), None)
+
+
 def _record_digest(payload: bytes) -> str:
     digest = hashlib.sha256(payload).digest()
     encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
@@ -163,6 +182,26 @@ def inspect_wheel(path: Path, *, distribution: str, namespace: str) -> WheelInfo
         )
 
 
+def _validate_extra_requirements(
+    wheel: WheelInfo,
+    expected: dict[str, tuple[str, ...]],
+) -> None:
+    for extra, expected_requirements in expected.items():
+        actual = tuple(
+            sorted(
+                _canonical_requirement(value)
+                for value in wheel.requirements
+                if _requirement_extra(value) == extra
+            )
+        )
+        wanted = tuple(sorted(expected_requirements))
+        if actual != wanted:
+            raise BoundaryError(
+                f"{wheel.distribution}[{extra}] requirements changed: "
+                f"{list(actual)} != {list(wanted)}"
+            )
+
+
 def _validate_dependency_direction(client: WheelInfo, nori: WheelInfo) -> None:
     client_requirement_names = {_requirement_name(value) for value in client.requirements}
     if "synthefy-nori" in client_requirement_names:
@@ -171,6 +210,21 @@ def _validate_dependency_direction(client: WheelInfo, nori: WheelInfo) -> None:
         raise BoundaryError(
             f"synthefy extras changed: {sorted(client.extras)} != ['aws', 'forecasting', 'text']"
         )
+    _validate_extra_requirements(
+        client,
+        {
+            "aws": ("boto3<2.0.0,>=1.34.0",),
+            "forecasting": ("datasets>=2.0", "gluonts>=0.16", "statsmodels>=0.14"),
+            "text": ("sentence-transformers",),
+        },
+    )
+    _validate_extra_requirements(
+        nori,
+        {
+            "forecasting": ("synthefy[forecasting]<8,>=7",),
+            "text": ("synthefy[text]<8,>=7",),
+        },
+    )
 
     nori_edges = [
         value for value in nori.requirements if _requirement_name(value) == "synthefy"

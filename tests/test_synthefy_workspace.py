@@ -136,7 +136,17 @@ def test_namespaces_and_imports_do_not_create_a_base_runtime_cycle():
     assert not (_ROOT / "src" / "synthefy").exists()
     assert not (_CLIENT / "src" / "synthefy_nori").exists()
 
-    offenders = []
+    client_forbidden = {
+        "boto3",
+        "botocore",
+        "datasets",
+        "gluonts",
+        "sentence_transformers",
+        "statsmodels",
+        "synthefy_nori",
+        "torch",
+    }
+    client_offenders = []
     for path in (_CLIENT / "src" / "synthefy").rglob("*.py"):
         for node in ast.parse(path.read_text()).body:
             if isinstance(node, ast.Import):
@@ -145,9 +155,27 @@ def test_namespaces_and_imports_do_not_create_a_base_runtime_cycle():
                 modules = [node.module or ""]
             else:
                 continue
-            if any(name == "synthefy_nori" or name.startswith("synthefy_nori.") for name in modules):
-                offenders.append(str(path.relative_to(_ROOT)))
-    assert not offenders, f"base synthefy imports synthefy_nori at module scope: {offenders}"
+            if any(name.split(".", 1)[0] in client_forbidden for name in modules):
+                client_offenders.append(str(path.relative_to(_ROOT)))
+    assert not client_offenders, (
+        "base synthefy imports a heavy or optional dependency at module scope: "
+        f"{client_offenders}"
+    )
+
+    facade_offenders = []
+    for path in (_ROOT / "src" / "synthefy_nori").rglob("*.py"):
+        for node in ast.parse(path.read_text()).body:
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                modules = [node.module or ""]
+            else:
+                continue
+            if any(name == "synthefy" or name.startswith("synthefy.nori_client") for name in modules):
+                facade_offenders.append(str(path.relative_to(_ROOT)))
+    assert not facade_offenders, (
+        f"synthefy_nori imports the lightweight client facade at module scope: {facade_offenders}"
+    )
 
 
 def test_the_root_lock_is_the_only_lock_and_contains_both_editable_projects():

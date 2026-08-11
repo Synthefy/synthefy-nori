@@ -101,6 +101,15 @@ jobs:
             --out-dir "$RUNNER_TEMP/artifacts/synthefy-nori/direct"
           uv build --package synthefy-nori --sdist --no-sources \
             --out-dir "$RUNNER_TEMP/artifacts/synthefy-nori/sdist"
+
+          CLIENT_WHEELS=("$RUNNER_TEMP/artifacts/synthefy/direct/"*.whl)
+          NORI_WHEELS=("$RUNNER_TEMP/artifacts/synthefy-nori/direct/"*.whl)
+          test "${#CLIENT_WHEELS[@]}" -eq 1
+          test "${#NORI_WHEELS[@]}" -eq 1
+          test -f "${CLIENT_WHEELS[0]}"
+          test -f "${NORI_WHEELS[0]}"
+          printf 'CLIENT_WHEEL=%s\n' "${CLIENT_WHEELS[0]}" >> "$GITHUB_ENV"
+          printf 'NORI_WHEEL=%s\n' "${NORI_WHEELS[0]}" >> "$GITHUB_ENV"
       - name: Rebuild both wheels from their source distributions
         run: |
           uv build --wheel --no-sources \
@@ -114,17 +123,15 @@ jobs:
       - name: Validate wheel RECORDs and namespace ownership
         run: |
           uv run --no-project --python 3.11 python ci/validate_distribution_boundaries.py \
-            --client-direct "$RUNNER_TEMP/artifacts/synthefy/direct/"*.whl \
+            --client-direct "$CLIENT_WHEEL" \
             --client-rebuilt "$RUNNER_TEMP/artifacts/synthefy/rebuilt/"*.whl \
-            --nori-direct "$RUNNER_TEMP/artifacts/synthefy-nori/direct/"*.whl \
+            --nori-direct "$NORI_WHEEL" \
             --nori-rebuilt "$RUNNER_TEMP/artifacts/synthefy-nori/rebuilt/"*.whl
 
       - name: Install the direct wheels outside the workspace
         run: |
           INSTALLED_TEST_ENV="$RUNNER_TEMP/installed-distributions"
           INSTALLED_TEST_PY="$INSTALLED_TEST_ENV/bin/python"
-          CLIENT_WHEEL="$RUNNER_TEMP/artifacts/synthefy/direct/synthefy-7.0.0-py3-none-any.whl"
-          NORI_WHEEL="$RUNNER_TEMP/artifacts/synthefy-nori/direct/synthefy_nori-0.16.0-py3-none-any.whl"
           uv venv --no-project --python 3.11 "$INSTALLED_TEST_ENV"
           uv pip install --python "$INSTALLED_TEST_PY" --strict --no-sources \
             --torch-backend cpu \
@@ -146,12 +153,42 @@ jobs:
       - name: Reinstall Nori, then prove it survives a client uninstall
         run: |
           INSTALLED_TEST_PY="$RUNNER_TEMP/installed-distributions/bin/python"
-          NORI_WHEEL="$RUNNER_TEMP/artifacts/synthefy-nori/direct/synthefy_nori-0.16.0-py3-none-any.whl"
           uv pip install --python "$INSTALLED_TEST_PY" --strict --no-deps "$NORI_WHEEL"
           uv pip check --python "$INSTALLED_TEST_PY"
           uv pip uninstall --python "$INSTALLED_TEST_PY" synthefy
           cd "$RUNNER_TEMP"
           "$INSTALLED_TEST_PY" "$GITHUB_WORKSPACE/ci/probe_installed_distributions.py" nori-only
+      - name: Validate client extra dependency ownership on Python 3.9
+        run: |
+          for EXTRA in aws forecasting text; do
+            printf 'Probing synthefy[%s] in a clean environment\n' "$EXTRA"
+            EXTRA_ENV="$RUNNER_TEMP/client-extra-$EXTRA"
+            EXTRA_PY="$EXTRA_ENV/bin/python"
+            uv venv --no-project --python 3.9 "$EXTRA_ENV"
+            uv pip install --python "$EXTRA_PY" --strict --no-sources \
+              --torch-backend cpu \
+              "synthefy[$EXTRA] @ file://$CLIENT_WHEEL"
+            uv pip check --python "$EXTRA_PY"
+            cd "$RUNNER_TEMP"
+            "$EXTRA_PY" "$GITHUB_WORKSPACE/ci/probe_installed_distributions.py" \
+              extra --case "client-$EXTRA"
+          done
+      - name: Validate current Nori feature extras on Python 3.10
+        run: |
+          for EXTRA in forecasting text; do
+            printf 'Probing synthefy-nori[%s] in a clean environment\n' "$EXTRA"
+            EXTRA_ENV="$RUNNER_TEMP/nori-extra-$EXTRA"
+            EXTRA_PY="$EXTRA_ENV/bin/python"
+            uv venv --no-project --python 3.10 "$EXTRA_ENV"
+            uv pip install --python "$EXTRA_PY" --strict --no-sources \
+              --torch-backend cpu \
+              "$CLIENT_WHEEL" \
+              "synthefy-nori[$EXTRA] @ file://$NORI_WHEEL"
+            uv pip check --python "$EXTRA_PY"
+            cd "$RUNNER_TEMP"
+            "$EXTRA_PY" "$GITHUB_WORKSPACE/ci/probe_installed_distributions.py" \
+              extra --case "nori-$EXTRA"
+          done
 
   # Merge gate (part 1): a real inference forward pass on CPU. Downloads the
   # public Synthefy/Nori checkpoint. Mark this job as a required status check in
