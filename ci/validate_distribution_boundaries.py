@@ -186,14 +186,30 @@ def _validate_extra_requirements(
     wheel: WheelInfo,
     expected: dict[str, tuple[str, ...]],
 ) -> None:
-    for extra, expected_requirements in expected.items():
-        actual = tuple(
-            sorted(
-                _canonical_requirement(value)
-                for value in wheel.requirements
-                if _requirement_extra(value) == extra
-            )
+    available_extras = {_canonicalize_name(extra) for extra in wheel.extras}
+    missing_extras = sorted(set(expected).difference(available_extras))
+    if missing_extras:
+        raise BoundaryError(
+            f"{wheel.distribution} does not provide expected extras: {missing_extras}"
         )
+
+    for extra, expected_requirements in expected.items():
+        actual_requirements = []
+        for value in wheel.requirements:
+            if _requirement_extra(value) != extra:
+                continue
+            marker = value.partition(";")[2]
+            standalone = re.fullmatch(
+                r"\s*extra\s*==\s*(['\"])([A-Za-z0-9._-]+)\1\s*",
+                marker,
+            )
+            if standalone is None:
+                raise BoundaryError(
+                    f"{wheel.distribution}[{extra}] dependency must use a standalone "
+                    f"extra marker, found {value!r}"
+                )
+            actual_requirements.append(_canonical_requirement(value))
+        actual = tuple(sorted(actual_requirements))
         wanted = tuple(sorted(expected_requirements))
         if actual != wanted:
             raise BoundaryError(
@@ -223,6 +239,7 @@ def _validate_dependency_direction(client: WheelInfo, nori: WheelInfo) -> None:
         {
             "forecasting": ("synthefy[forecasting]<8,>=7",),
             "text": ("synthefy[text]<8,>=7",),
+            "timeseries": ("synthefy[forecasting]<8,>=7",),
         },
     )
 

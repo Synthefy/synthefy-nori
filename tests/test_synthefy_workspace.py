@@ -50,6 +50,57 @@ def _declared_version() -> str:
     raise AssertionError("synthefy.__version__ is not declared")
 
 
+def _is_type_checking_guard(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Name)
+        and node.id == "TYPE_CHECKING"
+        or isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "typing"
+        and node.attr == "TYPE_CHECKING"
+    )
+
+
+class _ImportTimeVisitor(ast.NodeVisitor):
+    """Collect imports executed while a module is imported."""
+
+    def __init__(self) -> None:
+        self.modules: list[str] = []
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self.modules.extend(alias.name for alias in node.names)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        self.modules.append(node.module or "")
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        pass
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        pass
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        pass
+
+    def visit_If(self, node: ast.If) -> None:
+        if _is_type_checking_guard(node.test):
+            for statement in node.orelse:
+                self.visit(statement)
+            return
+        if isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not):
+            if _is_type_checking_guard(node.test.operand):
+                for statement in node.body:
+                    self.visit(statement)
+                return
+        self.generic_visit(node)
+
+
+def _import_time_modules(path: Path) -> list[str]:
+    visitor = _ImportTimeVisitor()
+    visitor.visit(ast.parse(path.read_text()))
+    return visitor.modules
+
+
 def test_project_identities_versions_and_build_backends_are_disjoint():
     root = _toml(_ROOT / "pyproject.toml")
     client = _toml(_CLIENT / "pyproject.toml")
@@ -148,15 +199,8 @@ def test_namespaces_and_imports_do_not_create_a_base_runtime_cycle():
     }
     client_offenders = []
     for path in (_CLIENT / "src" / "synthefy").rglob("*.py"):
-        for node in ast.parse(path.read_text()).body:
-            if isinstance(node, ast.Import):
-                modules = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                modules = [node.module or ""]
-            else:
-                continue
-            if any(name.split(".", 1)[0] in client_forbidden for name in modules):
-                client_offenders.append(str(path.relative_to(_ROOT)))
+        if any(name.split(".", 1)[0] in client_forbidden for name in _import_time_modules(path)):
+            client_offenders.append(str(path.relative_to(_ROOT)))
     assert not client_offenders, (
         "base synthefy imports a heavy or optional dependency at module scope: "
         f"{client_offenders}"
@@ -164,18 +208,36 @@ def test_namespaces_and_imports_do_not_create_a_base_runtime_cycle():
 
     facade_offenders = []
     for path in (_ROOT / "src" / "synthefy_nori").rglob("*.py"):
-        for node in ast.parse(path.read_text()).body:
-            if isinstance(node, ast.Import):
-                modules = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                modules = [node.module or ""]
-            else:
-                continue
-            if any(name == "synthefy" or name.startswith("synthefy.nori_client") for name in modules):
-                facade_offenders.append(str(path.relative_to(_ROOT)))
+        modules = _import_time_modules(path)
+        if any(
+            name == "synthefy" or name.startswith("synthefy.nori_client") for name in modules
+        ):
+            facade_offenders.append(str(path.relative_to(_ROOT)))
     assert not facade_offenders, (
         f"synthefy_nori imports the lightweight client facade at module scope: {facade_offenders}"
     )
+
+
+def test_import_time_scan_descends_guards_but_skips_deferred_imports(tmp_path):
+    module = tmp_path / "guarded_imports.py"
+    module.write_text(
+        "from typing import TYPE_CHECKING\n"
+        "try:\n"
+        "    import guarded_dependency\n"
+        "except ImportError:\n"
+        "    pass\n"
+        "if TYPE_CHECKING:\n"
+        "    import type_only_dependency\n"
+        "if not TYPE_CHECKING:\n"
+        "    import runtime_dependency\n"
+        "def deferred():\n"
+        "    import deferred_dependency\n"
+    )
+
+    modules = set(_import_time_modules(module))
+
+    assert {"typing", "guarded_dependency", "runtime_dependency"} <= modules
+    assert {"type_only_dependency", "deferred_dependency"}.isdisjoint(modules)
 
 
 def test_the_root_lock_is_the_only_lock_and_contains_both_editable_projects():

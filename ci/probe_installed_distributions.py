@@ -33,6 +33,17 @@ _EXTRA_CASES = (
     "nori-text",
 )
 
+_CLIENT_LAZY_MODULES = (
+    "boto3",
+    "botocore",
+    "datasets",
+    "gluonts",
+    "sentence_transformers",
+    "statsmodels",
+    "synthefy_nori",
+    "torch",
+)
+
 
 def _site_packages() -> Path:
     return Path(sysconfig.get_path("purelib")).resolve()
@@ -122,9 +133,12 @@ def _probe_client_extra(extra: str) -> None:
 
 
 def _probe_nori_extra(extra: str) -> None:
-    _assert_not_loaded("synthefy")
     _import_installed("synthefy_nori")
-    _assert_not_loaded("synthefy")
+    selected_modules = {
+        "forecasting": ("datasets", "gluonts", "statsmodels"),
+        "text": ("sentence_transformers",),
+    }
+    _assert_not_loaded(*selected_modules[extra])
 
     unrelated = {
         "forecasting": ("boto3", "botocore", "sentence_transformers"),
@@ -215,12 +229,13 @@ def _probe_missing_import_causes() -> None:
 
 
 def probe_both(order: str) -> None:
-    module_order = {
-        "client-first": ("synthefy", "synthefy_nori"),
-        "nori-first": ("synthefy_nori", "synthefy"),
-    }[order]
-    for module_name in module_order:
-        _import_installed(module_name)
+    if order == "client-first":
+        _import_installed("synthefy")
+        _assert_not_loaded(*_CLIENT_LAZY_MODULES)
+        _import_installed("synthefy_nori")
+    else:
+        _import_installed("synthefy_nori")
+        _import_installed("synthefy")
     print(f"installed distributions import cleanly in {order} order")
 
 

@@ -206,6 +206,55 @@ def test_wrong_nori_forwarding_extra_is_rejected(tmp_path):
         validator.validate_artifacts(**artifacts)
 
 
+def test_extra_requirement_with_an_additional_environment_marker_is_rejected(tmp_path):
+    validator = _load_validator()
+    artifacts = _valid_artifacts(tmp_path)
+    conditional_requirements = (
+        "httpx<0.28.0,>=0.24.0",
+        'boto3<2.0.0,>=1.34.0; python_version < "3.10" or extra == "aws"',
+        'datasets>=2.0; extra == "forecasting"',
+        'gluonts>=0.16; extra == "forecasting"',
+        'statsmodels>=0.14; extra == "forecasting"',
+        'sentence-transformers; extra == "text"',
+    )
+    for build in ("direct", "rebuilt"):
+        artifacts[f"client_{build}"] = _write_wheel(
+            tmp_path / f"synthefy-conditional-extra-{build}.whl",
+            distribution="synthefy",
+            version="7.0.0",
+            namespace="synthefy",
+            requirements=conditional_requirements,
+            extras=("aws", "forecasting", "text"),
+        )
+
+    with pytest.raises(validator.BoundaryError, match="standalone extra marker"):
+        validator.validate_artifacts(**artifacts)
+
+
+def test_forwarded_requirement_must_also_be_a_provided_extra(tmp_path):
+    validator = _load_validator()
+    artifacts = _valid_artifacts(tmp_path)
+    requirements = (
+        "numpy>=2.0",
+        "synthefy<8,>=7",
+        'synthefy[text]<8,>=7; extra == "text"',
+        'synthefy[forecasting]<8,>=7; extra == "forecasting"',
+        'synthefy[forecasting]<8,>=7; extra == "timeseries"',
+    )
+    for build in ("direct", "rebuilt"):
+        artifacts[f"nori_{build}"] = _write_wheel(
+            tmp_path / f"synthefy-nori-missing-extra-{build}.whl",
+            distribution="synthefy-nori",
+            version="0.16.0",
+            namespace="synthefy_nori",
+            requirements=requirements,
+            extras=("text", "timeseries"),
+        )
+
+    with pytest.raises(validator.BoundaryError, match="does not provide expected extras"):
+        validator.validate_artifacts(**artifacts)
+
+
 def test_sdist_rebuild_with_different_runtime_files_is_rejected(tmp_path):
     validator = _load_validator()
     artifacts = _valid_artifacts(tmp_path)
