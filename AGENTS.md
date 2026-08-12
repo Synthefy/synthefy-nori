@@ -19,7 +19,7 @@ task-specific training. It is trained entirely on synthetic data.
 
 ## Setup
 
-- Both published distributions retain Python **≥ 3.9** in staging. The locked
+- Both published distributions retain Python **≥ 3.9**. The locked
   development graph holds Torch below 2.9; isolated compatibility jobs cover
   newer Torch versions on Python 3.10+. The interpreter and dependencies are
   managed by **uv** (`uv.lock` is committed). There may be no bare `python` on PATH — use `uv run`.
