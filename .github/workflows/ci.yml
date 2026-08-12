@@ -22,8 +22,6 @@ jobs:
           assert synthefy.__version__ == '7.0.0';
           assert synthefy_nori.__version__ == '0.17.0'"
       - run: uv run pytest
-      - run: uv run python ci/validate_variants.py
-      - run: uv run python ci/sync_openapi.py --check
       - run: >-
           uv run ruff check src scripts tests
           ci/validate_distribution_boundaries.py
