@@ -133,6 +133,16 @@ def test_required_test_context_fails_closed_over_every_offline_package_gate():
     assert "exit 1" in step["run"]
 
 
+def test_modal_prewarm_includes_the_consolidated_workspace_member():
+    body = (_ROOT / "ci" / "modal_gpu_smoke.py").read_text()
+    member = '.add_local_dir(\n        "libs/synthefy",'
+
+    assert member in body
+    assert body.index(member) < body.index(".run_commands")
+    assert '"/build/libs/synthefy"' in body
+    assert "copy=True" in body[body.index(member):body.index(".run_commands")]
+
+
 def test_ordinary_pr_ci_never_receives_live_validation_credentials():
     workflow = json.dumps(_workflow())
 
