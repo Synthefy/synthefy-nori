@@ -529,4 +529,34 @@ def test_deliberately_excluded_snapshot_paths_are_pinned_and_absent():
         for relative_path in recorded
         if relative_path not in replacement_paths
     )
-    assert excluded["dogfood_and_live_tests"]["status"] == ("omitted_pending_rehome_review")
+    dogfood = excluded["dogfood_and_live_tests"]
+    assert dogfood["status"] == "reviewed"
+    assert dogfood["decision_record"] == (
+        "../../docs/architecture/0001-consolidate-synthefy-source-tree.md"
+    )
+    assert dogfood["dispositions"] == {
+        "dogfood/DOGFOOD.md": "retired_pre_consolidation_dogfood",
+        "dogfood/dogfood_local.py": "retired_pre_consolidation_dogfood",
+        "dogfood/dogfood_remote.py": "retired_pre_consolidation_dogfood",
+        "dogfood/dogfood_remote_realdata.py": "retired_pre_consolidation_dogfood",
+        "dogfood/modal_t4.py": "retired_pre_consolidation_dogfood",
+        "tests/online_tests/__init__.py": (
+            "retired_with_legacy_forecast_v2_online_suite"
+        ),
+        "tests/online_tests/test_core_forecast_backtest_api.py": (
+            "retired_legacy_forecast_v2_online_test"
+        ),
+        "tests/online_tests/test_hotel_demand.py": (
+            "retired_legacy_forecast_v2_online_test"
+        ),
+        "tests/online_tests/test_inventory_forecasting.py": (
+            "retired_legacy_forecast_v2_online_test"
+        ),
+        "tests/online_tests/test_nori_memory_rungs.py": (
+            "deferred_to_final_serving_handoff"
+        ),
+        "tests/online_tests/test_pricing_simulation.py": (
+            "retired_legacy_forecast_v2_online_test"
+        ),
+    }
+    assert set(dogfood["dispositions"]) == set(dogfood["blobs"])

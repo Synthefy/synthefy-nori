@@ -92,12 +92,30 @@ ForecastV2-only fixtures. Raimi approved this Phase 9 retirement in issue #216
 on 2026-08-12. As with all implementation in this ADR, it lands in internal
 first and does not itself authorize staging, public, or production promotion.
 
+### Review excluded dogfood and live tests
+
+The snapshot's version-pinned dogfood runbook and scripts are retired rather
+than copied into the consolidated tree. They describe pre-consolidation install
+paths, client defaults, and credentials. Their supported intent is covered by
+the in-tree local inference, candidate/released client compatibility, live
+gateway, and packaged-container gates.
+
+The omitted online forecasting tests are ForecastV2-only and retire with that
+surface. The one exception is `test_nori_memory_rungs.py`: its live-deployment
+rung parity remains useful, but local forced-rung coverage already lives in
+`tests/test_memory_policy_e2e.py`. Rehoming the live check is therefore deferred
+to the final serving validation and Minkyu handoff, alongside the deliberately
+deferred AWS end-to-end work. The source manifest records the disposition of
+every excluded path; this review does not authorize live or production testing.
+
 ### Packaging and compatibility
 
-The target Python floor for both distributions is 3.9. Before either project
-declares that floor, the combined dependency graph, builds, clean installs,
-imports, and core tests must pass on Python 3.9. A concrete blocker must be
-recorded and explicitly approved before raising either floor.
+The lightweight `synthefy` distribution retains Python 3.9 support, proven
+from clean wheel and sdist installs outside the shared workspace. The
+heavyweight workspace and `synthefy-nori` distribution require Python 3.10:
+the pinned `torch==2.10.0` publishes no CPython 3.9 wheel. This concrete blocker
+resolves the earlier "keep 3.9 if easy" target without a dependency downgrade;
+the accepted split floors are recorded in the Phase 2 observation.
 
 `pip install synthefy` must remain Torch-free. Optional text dependencies may
 bring Torch transitively, but base dependencies and base imports may not. Local

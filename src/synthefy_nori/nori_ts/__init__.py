@@ -10,7 +10,7 @@ try:
         NoriTSForecaster,
     )
 except ModuleNotFoundError as exc:
-    # The client-sync compatibility lane deliberately installs released
+    # The client-compatibility lane deliberately installs released
     # Synthefy 6.3 without dependencies. It has no canonical forecaster yet,
     # but the historical tsfeatures fallback must remain importable there.
     if exc.name not in {"synthefy.nori_ts", "synthefy.nori_ts.core"}:

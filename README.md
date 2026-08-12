@@ -80,11 +80,50 @@ https://github.com/Synthefy/synthefy-nori/tree/main/.claude/skills/nori-regressi
 
 ## Install
 
+This source tree builds two independently versioned distributions with disjoint
+namespaces:
+
+| Use case | Install | Public entry point |
+|---|---|---|
+| Hosted regression | `pip install synthefy` | `SynthefyNoriClient(mode="remote", model=...)` |
+| SageMaker regression | `pip install "synthefy[aws]"` | `SynthefyNoriClient(mode="sagemaker", model=..., endpoint_name=...)` |
+| Local regression | `pip install synthefy-nori` | `NoriRegressor(model=...)` or `SynthefyNoriClient(mode="local", model=...)` |
+| Hosted forecasting | `pip install "synthefy[forecasting]"` | `synthefy.nori_ts.NoriTSForecaster(mode="remote", model=...)` |
+| Local forecasting | `pip install "synthefy-nori[forecasting]"` | `synthefy.nori_ts.NoriTSForecaster(mode="local", model=...)` |
+
+Hosted users receive the lightweight client and workflow code without Torch or
+model weights. Local users install `synthefy-nori`, which supplies the model
+runtime and depends on the lightweight `synthefy` package. The dependency never
+points in the other direction.
+
+For local regression:
+
 ```bash
 pip install synthefy-nori
 ```
 
-Optional extras:
+For hosted regression, the client reads `SYNTHEFY_NORI_API_KEY` unless
+`api_key=` is supplied:
+
+```bash
+pip install synthefy
+export SYNTHEFY_NORI_API_KEY="<your key>"
+```
+
+```python
+from synthefy import SynthefyNoriClient
+
+client = SynthefyNoriClient(mode="remote", model="nori-30m")
+predictions = client.predict([[0.0], [1.0]], [0.0, 1.0], [[0.5]])
+client.close()
+```
+
+Execution modes are limited to `remote`, `sagemaker`, and `local`; `auto` is
+not supported. The Nori client retains `remote` when `mode=` is omitted for
+backwards compatibility, while the forecaster requires an explicit mode. Both
+require an explicit `model=`; there is no default model.
+
+Optional heavyweight extras:
 
 ```bash
 pip install "synthefy-nori[train]"   # training-only deps (wandb, xgboost)
@@ -476,7 +515,7 @@ the common cases:
 ```python
 from synthefy_nori import NoriRegressor, MemoryPolicy
 
-NoriRegressor(model="nori-6m")                                   # the defaults
+NoriRegressor(model="nori-6m")                                  # default memory policy
 NoriRegressor(model="nori-6m", memory_policy="exact")                   # never quantize
 NoriRegressor(model="nori-6m", memory_policy="max_context")             # fit the biggest table
 NoriRegressor(model="nori-6m", memory_policy="off")                     # no cache at all
@@ -545,7 +584,7 @@ subsample your context, which otherwise looks like an unexplained accuracy loss.
 take effect raises rather than silently doing nothing:
 
 ```python
-model = NoriRegressor(memory_policy={"cache": False, "context_row_chunk": 2048})
+model = NoriRegressor(model="nori-6m", memory_policy={"cache": False, "context_row_chunk": 2048})
 model.fit(X, y)
 # ValidationError: ... 'row chunking without KV caching' is not a reachable
 # configuration.  (the chunk caps the K/V *build*; with no cache there is no build)
@@ -756,17 +795,22 @@ See [docs/huggingface.md](docs/huggingface.md).
 ## Repository layout
 
 ```
-src/synthefy_nori/
-  api.py            Public API (NoriRegressor, infer, predict)
-  model/            FeaturesTransformer architecture
-  training/         Data generation, trainer, loss, config, CLI
-  inference/        Sklearn-compatible predictor + preprocessing
-  evaluation/       Benchmark runner over public benchmark suites
-  hf.py             Hugging Face download / upload
-scripts/            Training, precompile, and evaluation launchers
-benchmarks/         Reproducible performance and compiler harnesses
-docs/               training, inference, evaluation, huggingface guides
-examples/           Runnable inference / upload scripts
+libs/synthefy/             Lightweight `synthefy` distribution
+  src/synthefy/
+    nori_client.py         Explicit remote, SageMaker, and local gateway
+    nori_ts/               Backend-neutral forecasting workflow and preparation
+src/synthefy_nori/         Heavy `synthefy-nori` distribution
+  api.py                   Local NoriRegressor, infer, and predict
+  model/                   FeaturesTransformer architecture
+  training/                Data generation, trainer, loss, config, CLI
+  inference/               Local predictor and preprocessing
+  evaluation/              Benchmark runner over public benchmark suites
+  hf.py                    Hugging Face download / upload
+serving/                   Shared serving core and host-specific packaging
+scripts/                   Training, precompile, and evaluation launchers
+benchmarks/                Reproducible performance and compiler harnesses
+docs/                      Training, inference, evaluation, and release design
+examples/                  Runnable local inference and upload scripts
 ```
 
 ## Citation

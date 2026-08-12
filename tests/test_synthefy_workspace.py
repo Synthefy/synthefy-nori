@@ -423,11 +423,12 @@ def test_python_floors_distinguish_workspace_development_from_the_client_artifac
     assert "Programming Language :: Python :: 3.8" not in client["classifiers"]
     assert observation["workspace"]["development_python_floor"] == ">=3.10"
     compatibility = observation["python_compatibility"]
-    assert compatibility["accepted_target"] == ">=3.9"
+    assert compatibility["accepted_target"] == "synthefy>=3.9; synthefy-nori>=3.10"
     assert compatibility["lightweight_distribution"]["declared_floor"] == ">=3.9"
     heavy = compatibility["heavy_distribution"]
     assert heavy["declared_floor"] == ">=3.10"
-    assert heavy["target_status"] == "blocked_pending_explicit_decision"
+    assert heavy["target_status"] == "accepted_dependency_blocker"
+    assert heavy["decision"]["status"] == "accepted"
     assert heavy["blocker"]["dependency"] == "torch==2.10.0"
     aws = compatibility["optional_backend_follow_ups"][0]
     assert aws["extra"] == "aws"
@@ -438,5 +439,35 @@ def test_python_floors_distinguish_workspace_development_from_the_client_artifac
         "optional-extra-artifact-validation",
         "text-source-relocation",
     }
+    assert {gap["status"] for gap in gaps.values()} == {
+        "resolved_on_internal_integration_branch"
+    }
     assert observation["publication"]["status"] == "blocked"
 
+
+
+def test_living_docs_name_supported_install_paths(monkeypatch):
+    readme = (_ROOT / "README.md").read_text()
+    assert "pip install synthefy" in readme
+    assert 'pip install "synthefy[aws]"' in readme
+    assert "pip install synthefy-nori" in readme
+    assert 'pip install "synthefy[forecasting]"' in readme
+    assert 'pip install "synthefy-nori[forecasting]"' in readme
+    assert 'SynthefyNoriClient(mode="remote", model="nori-30m")' in readme
+    assert "`auto` is\nnot supported." in readme
+    assert "require an explicit `model=`; there is no default model." in readme
+    assert "NoriRegressor(memory_policy=" not in readme
+
+    monkeypatch.setenv("SYNTHEFY_NORI_API_KEY", "test")
+    from synthefy import SynthefyNoriClient
+
+    client = SynthefyNoriClient(model="nori-30m")
+    assert client.mode == "remote"
+    client.close()
+
+    living_paths = (
+        _ROOT / "README.md",
+        _ROOT / "AGENTS.md",
+        _ROOT / "src" / "synthefy_nori" / "nori_ts" / "__init__.py",
+    )
+    assert not [path for path in living_paths if "client-sync" in path.read_text()]

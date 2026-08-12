@@ -17,7 +17,7 @@
     "purpose": "one reproducible internal development graph for both distributions"
   },
   "python_compatibility": {
-    "accepted_target": ">=3.9",
+    "accepted_target": "synthefy>=3.9; synthefy-nori>=3.10",
     "lightweight_distribution": {
       "name": "synthefy",
       "declared_floor": ">=3.9",
@@ -26,13 +26,18 @@
     "heavy_distribution": {
       "name": "synthefy-nori",
       "declared_floor": ">=3.10",
-      "target_status": "blocked_pending_explicit_decision",
+      "target_status": "accepted_dependency_blocker",
       "blocker": {
         "dependency": "torch==2.10.0",
         "probe_interpreter": "CPython 3.9.25",
         "probe_platform": "x86_64-manylinux_2_28",
         "command": "uv pip install --dry-run --python-version 3.9 --python-platform x86_64-manylinux_2_28 --torch-backend cpu 'torch==2.10.0'",
         "result": "no compatible CPython 3.9 wheel; the available torch 2.10.0 wheels begin at cp310"
+      },
+      "decision": {
+        "status": "accepted",
+        "date": "2026-08-12",
+        "basis": "retain Python 3.9 where easy; accept Python 3.10 for the heavy package because the pinned torch 2.10.0 has no CPython 3.9 wheel"
       }
     },
     "optional_backend_follow_ups": [
@@ -53,19 +58,19 @@
     },
     {
       "id": "client-api-cleanup",
-      "status": "open",
+      "status": "resolved_on_internal_integration_branch",
       "required_before": "staging_promotion",
-      "detail": "the imported client still contains mode=auto and stale standalone install guidance until the next client-refactor PR"
+      "detail": "synthefy 7 removes mode=auto and requires an explicit model while retaining remote as the omitted-mode compatibility default"
     },
     {
       "id": "optional-extra-artifact-validation",
-      "status": "partially_resolved_on_internal_integration_branch",
+      "status": "resolved_on_internal_integration_branch",
       "required_before": "public_release",
-      "detail": "clean Python 3.9 artifact coverage proves the base, mocked AWS, and isolated text extra paths; forecasting still needs its isolated gate after the source move"
+      "detail": "clean Python 3.9 artifact coverage proves the base, mocked AWS, isolated text, and forecasting paths"
     }
   ],
   "publication": {
     "status": "blocked",
-    "reason": "this internal integration layer still precedes the client API cleanup, serving validation, artifact license gate, and internal-to-staging-to-public promotion"
+    "reason": "this internal integration layer still precedes serving validation, the artifact license gate, and internal-to-staging-to-public promotion"
   }
 }

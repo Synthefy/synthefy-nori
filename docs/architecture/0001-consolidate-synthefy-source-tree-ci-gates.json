@@ -84,9 +84,9 @@
         "src/synthefy_nori/text_features.py",
         "tests/test_text_features.py",
         "tests/test_client_matches_api.py",
-        ".github/workflows/client-sync.yml"
+        ".github/workflows/client-compatibility.yml"
       ],
-      "retirement_event": "The released-client compatibility floor and client-sync lane are deliberately advanced to synthefy >=7.0.0 after the consolidated client release.",
+      "retirement_event": "The released-client compatibility floor and client-compatibility lane are deliberately advanced to synthefy >=7.0.0 after the consolidated client release.",
       "retirement_action": "Delete the private duplicate implementation and exact-submodule fallback, then retain the canonical synthefy.text_features identity, pickle, and optional-extra coverage."
     },
     {
@@ -98,9 +98,9 @@
         "src/synthefy_nori/featurize.py",
         "tests/test_featurize.py",
         "tests/test_client_matches_api.py",
-        ".github/workflows/client-sync.yml"
+        ".github/workflows/client-compatibility.yml"
       ],
-      "retirement_event": "The released-client compatibility floor and client-sync lane are deliberately advanced to synthefy >=7.0.0 after the consolidated client release.",
+      "retirement_event": "The released-client compatibility floor and client-compatibility lane are deliberately advanced to synthefy >=7.0.0 after the consolidated client release.",
       "retirement_action": "Delete the private duplicate implementation and exact-submodule fallback, then retain canonical synthefy.featurize identity, behavior, and client-only artifact coverage."
     },
     {
@@ -117,9 +117,9 @@
         "src/synthefy_nori/nori_ts/tsfeatures/ts_dataframe.py",
         "tests/test_nori_ts_ownership.py",
         "tests/test_client_matches_api.py",
-        ".github/workflows/client-sync.yml"
+        ".github/workflows/client-compatibility.yml"
       ],
-      "retirement_event": "The released-client compatibility floor and client-sync lane are deliberately advanced to synthefy >=7.0.0 after the consolidated client release.",
+      "retirement_event": "The released-client compatibility floor and client-compatibility lane are deliberately advanced to synthefy >=7.0.0 after the consolidated client release.",
       "retirement_action": "Delete the six heavy duplicate implementation modules and the exact-missing-canonical fallback branch. Preserve the old-path canonical aliases plus canonical identity, historical-pickle, forecasting-extra, and offline artifact coverage while those import contracts remain supported."
     },
     {
