@@ -41,7 +41,7 @@ from synthefy.featurize import (
 )
 from synthefy.data_models import NoriPredictRequest, NoriPredictResponse
 from synthefy.nori_data_models import MemoryPolicyInput
-from synthefy.api_client import (
+from synthefy.errors import (
     APIConnectionError,
     APITimeoutError,
     _raise_for_status,

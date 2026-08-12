@@ -20,6 +20,8 @@ import pandas as pd
 import synthefy.nori_client as nori_client_module
 from synthefy import NoriPredictRequest, NoriPredictResponse, SynthefyNoriClient
 from synthefy.api_client import BadRequestError
+from synthefy import api_client as legacy_api_client
+from synthefy import errors as shared_errors
 
 _ROOT = Path(__file__).resolve().parents[1]
 _GOLDEN_PATH = _ROOT / "tests" / "compat" / "synthefy_6_3_nori_goldens.json"
@@ -34,6 +36,24 @@ _ORACLE = {
     "nori_client_blob": "a6fb1d1d91677ff9aa8c99186088bf63fd24eea7",
     "data_models_blob": "725e79d92c73313da6ab1c4154b73701e61458f6",
 }
+
+
+def test_legacy_error_imports_reexport_the_shared_types():
+    for name in (
+        "SynthefyError",
+        "APITimeoutError",
+        "APIConnectionError",
+        "APIStatusError",
+        "BadRequestError",
+        "AuthenticationError",
+        "PermissionDeniedError",
+        "NotFoundError",
+        "RateLimitError",
+        "InternalServerError",
+        "_extract_error_details",
+        "_raise_for_status",
+    ):
+        assert getattr(legacy_api_client, name) is getattr(shared_errors, name)
 
 
 def _normalized(value: Any) -> Any:

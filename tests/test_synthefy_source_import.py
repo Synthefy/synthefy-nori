@@ -50,6 +50,19 @@ _EXCLUDED_BLOBS = {
 }
 
 _RELOCATED_SOURCES = {
+    "src/synthefy/errors.py": {
+        "source_project_path": "src/synthefy/api_client.py",
+        "source_commit": "6438cfc0ca5a685842a5fe86b4fe9cfa8b10d07d",
+        "source_blob": "e108b75e10942c51a8af17cf8e4e34b930d838e3",
+        "result_blob": "22f24f027a8e312eb19bb3a8c67635e9f887f599",
+        "sha256": "ada35c2bfe8b707c1bad46b864363021be6fd80b12efbab6864d9370b39a15f4",
+        "phase": "shared_error_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
+        "changes": [
+            "extract the existing exception hierarchy and HTTP status mapping from the legacy ForecastV2 client",
+            "preserve every class name, constructor, response field, and status mapping",
+        ],
+    },
     "tests/test_featurize.py": {
         "source_project_path": "../../tests/test_featurize.py",
         "source_commit": "85c083c8f3fca791c9959ca5fd0d4a83eeb2492a",
@@ -405,7 +418,7 @@ def test_post_import_transformations_preserve_phase_two_and_form_continuous_chai
 def test_imported_project_has_the_exact_reviewed_file_boundary():
     tracked = _tracked_project_entries()
 
-    assert len(_TARGET_FILES) == 32
+    assert len(_TARGET_FILES) == 33
     assert set(tracked) == _TARGET_FILES
     assert set(tracked.values()) == {"100644"}
 
@@ -422,8 +435,8 @@ def test_built_artifacts_match_reviewed_file_boundaries(tmp_path):
     )
 
     version = manifest["post_import_history"]["current_version"]
-    assert len(manifest["build_treatment"]["artifact_files"]["sdist"]) == 24
-    assert len(manifest["build_treatment"]["artifact_files"]["wheel"]) == 22
+    assert len(manifest["build_treatment"]["artifact_files"]["sdist"]) == 25
+    assert len(manifest["build_treatment"]["artifact_files"]["wheel"]) == 23
     sdist_prefix = f"synthefy-{version}/"
     with tarfile.open(tmp_path / f"synthefy-{version}.tar.gz") as archive:
         files = {member.name.removeprefix(sdist_prefix) for member in archive.getmembers() if member.isfile()}
