@@ -52,11 +52,19 @@ def test_v7_legacy_exports_and_deep_modules_are_canonical():
         assert historical_module is canonical_module
 
 
-def test_heavy_forecaster_core_still_consumes_the_historical_facade():
-    from synthefy_nori.nori_ts import core
+def test_forecaster_has_one_lightweight_owner_and_a_legacy_identity_alias():
+    from synthefy.nori_ts import NoriTSForecaster as canonical_forecaster
+    from synthefy.nori_ts import core
+    from synthefy_nori.nori_ts import NoriTSForecaster as legacy_forecaster
+    from synthefy_nori.nori_ts.core import NoriTSForecaster as legacy_core_forecaster
+    from synthefy_nori.nori_ts import core as legacy_core
 
-    assert core.TimeSeriesDataFrame is legacy.TimeSeriesDataFrame
-    assert core.FeatureTransformer is legacy.FeatureTransformer
+    assert canonical_forecaster is legacy_forecaster is legacy_core_forecaster
+    assert core.TimeSeriesDataFrame is canonical.TimeSeriesDataFrame
+    assert core.FeatureTransformer is canonical.FeatureTransformer
+    assert legacy_core._default_features is core._default_features
+    assert legacy_core.TimeSeriesDataFrame is canonical.TimeSeriesDataFrame
+    assert legacy_core.FeatureTransformer is canonical.FeatureTransformer
 
 
 def test_facade_falls_back_only_when_the_canonical_owner_is_missing(monkeypatch):

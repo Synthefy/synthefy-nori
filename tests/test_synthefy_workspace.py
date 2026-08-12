@@ -154,13 +154,30 @@ def test_published_dependencies_point_only_from_heavy_to_light():
 
     forbidden_base = {
         "boto3",
+        "datasets",
+        "gluonts",
+        "joblib",
+        "scipy",
         "scikit-learn",
         "sentence-transformers",
+        "statsmodels",
         "synthefy-nori",
         "torch",
     }
     base_names = {canonicalize_name(req.name) for req in _requirements(client["dependencies"])}
     assert base_names.isdisjoint(forbidden_base)
+
+    forecasting = _requirements(client_optionals["forecasting"])
+    assert {
+        canonicalize_name(requirement.name): str(requirement.specifier)
+        for requirement in forecasting
+    } == {
+        "datasets": ">=2.0",
+        "gluonts": ">=0.16",
+        "joblib": ">=1.1",
+        "scipy": ">=1.13",
+        "statsmodels": ">=0.14",
+    }
 
     root_optionals = root["optional-dependencies"]
     forwarded_extras = {
@@ -194,6 +211,8 @@ def test_namespaces_and_imports_do_not_create_a_base_runtime_cycle():
         "botocore",
         "datasets",
         "gluonts",
+        "joblib",
+        "scipy",
         "sentence_transformers",
         "statsmodels",
         "synthefy_nori",
@@ -201,12 +220,37 @@ def test_namespaces_and_imports_do_not_create_a_base_runtime_cycle():
     }
     client_offenders = []
     for path in (_CLIENT / "src" / "synthefy").rglob("*.py"):
+        if path.is_relative_to(_CLIENT_TSFEATURES):
+            continue
         if any(name.split(".", 1)[0] in client_forbidden for name in _import_time_modules(path)):
             client_offenders.append(str(path.relative_to(_ROOT)))
     assert not client_offenders, (
-        "base synthefy imports a heavy or optional dependency at module scope: "
+        "base synthefy imports a heavy or forecasting-only dependency at module scope: "
         f"{client_offenders}"
     )
+
+    tsfeature_forbidden = {
+        "boto3",
+        "botocore",
+        "sentence_transformers",
+        "sklearn",
+        "synthefy_nori",
+        "torch",
+    }
+    tsfeature_offenders = []
+    for path in _CLIENT_TSFEATURES.rglob("*.py"):
+        if any(
+            name.split(".", 1)[0] in tsfeature_forbidden
+            for name in _import_time_modules(path)
+        ):
+            tsfeature_offenders.append(str(path.relative_to(_ROOT)))
+    assert not tsfeature_offenders, (
+        "model-free time-series preparation imports a heavy/client backend: "
+        f"{tsfeature_offenders}"
+    )
+    assert _import_time_modules(
+        _CLIENT / "src" / "synthefy" / "nori_ts" / "__init__.py"
+    ) == ["synthefy.nori_ts.core"]
 
     facade_offenders = []
     for path in (_ROOT / "src" / "synthefy_nori").rglob("*.py"):
@@ -266,6 +310,45 @@ def test_tabular_preparation_has_one_v7_implementation_owner():
     assert isinstance(stacklevel, ast.Constant) and stacklevel.value == 5
 
 
+def test_time_series_forecaster_has_one_lightweight_implementation_owner():
+    canonical = _CLIENT_TSFEATURES
+    canonical_core = _CLIENT / "src" / "synthefy" / "nori_ts" / "core.py"
+    legacy = _ROOT / "src" / "synthefy_nori" / "nori_ts" / "tsfeatures"
+    legacy_core = _ROOT / "src" / "synthefy_nori" / "nori_ts" / "core.py"
+
+    assert {path.name for path in canonical.glob("*.py")} == {
+        "__init__.py",
+        "auto_features.py",
+        "basic_features.py",
+        "data_preparation.py",
+        "feature_generator_base.py",
+        "feature_transformer.py",
+        "ts_dataframe.py",
+    }
+    assert {path.name for path in legacy.glob("*.py")} == {
+        "__init__.py",
+        "auto_features.py",
+        "basic_features.py",
+        "data_preparation.py",
+        "feature_generator_base.py",
+        "feature_transformer.py",
+        "ts_dataframe.py",
+    }
+    core_modules = set(_import_time_modules(canonical_core))
+    assert "synthefy.nori_client" in core_modules
+    assert "synthefy.nori_ts.tsfeatures" in core_modules
+    assert not any(name.startswith("synthefy_nori") for name in core_modules)
+    legacy_tree = ast.parse(legacy_core.read_text())
+    assert not any(
+        isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        for node in legacy_tree.body
+    )
+    assert _import_time_modules(legacy_core) == ["synthefy.nori_ts.core"]
+    facade = (legacy / "__init__.py").read_text()
+    assert '_CANONICAL_PACKAGE = "synthefy.nori_ts.tsfeatures"' in facade
+    assert 'exc.name not in {"synthefy.nori_ts", _CANONICAL_PACKAGE}' in facade
+
+
 def test_import_time_scan_descends_guards_but_skips_deferred_imports(tmp_path):
     module = tmp_path / "guarded_imports.py"
     module.write_text(
@@ -307,6 +390,28 @@ def test_the_root_lock_is_the_only_lock_and_contains_both_editable_projects():
     assert len(hatchling) == 1
     assert hatchling[0]["version"] == "1.27.0"
 
+    forecasting = client_entries[0]["optional-dependencies"]["forecasting"]
+    assert {dependency["name"] for dependency in forecasting} == {
+        "datasets",
+        "gluonts",
+        "joblib",
+        "scipy",
+        "statsmodels",
+    }
+    metadata = client_entries[0]["metadata"]["requires-dist"]
+    assert any(
+        requirement["name"] == "joblib"
+        and requirement["marker"] == "extra == 'forecasting'"
+        and requirement["specifier"] == ">=1.1"
+        for requirement in metadata
+    )
+    assert any(
+        requirement["name"] == "scipy"
+        and requirement["marker"] == "extra == 'forecasting'"
+        and requirement["specifier"] == ">=1.13"
+        for requirement in metadata
+    )
+
 
 def test_python_floors_distinguish_workspace_development_from_the_client_artifact():
     root = _toml(_ROOT / "pyproject.toml")["project"]
@@ -334,3 +439,4 @@ def test_python_floors_distinguish_workspace_development_from_the_client_artifac
         "text-source-relocation",
     }
     assert observation["publication"]["status"] == "blocked"
+

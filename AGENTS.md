@@ -65,22 +65,22 @@ uv build
 
 ```
 src/synthefy_nori/
+  api.py          Public local-model API (sklearn-style NoriRegressor).
+  nori_ts/        Compatibility facade for the lightweight forecaster.
+  model/          FeaturesTransformer architecture.
+  inference/      NoriPredictor + preprocessing.
+  training/       Data generation, trainer, loss, config, and CLI.
+  evaluation/     Benchmark runner + CLI.
 libs/synthefy/src/synthefy/
-  nori_ts/tsfeatures/  Canonical model-free time-series feature preparation.
-  api.py          Public API (sklearn-style NoriRegressor + one-shot helpers).
-  discretize.py   Categorical-target lattice math (cell masses, snap, strategies).
-  hf.py           HF download/upload + console-script entry points
-  model/          FeaturesTransformer architecture
-  inference/      NoriPredictor + preprocessing
-  embedding/      NoriEmbedding (sklearn transformer for row embeddings)
-  nori_ts/core.py Heavy Nori time-series forecaster.
-  training/       data generation, trainer, loss, config, CLI (GPU / DDP)
-  evaluation/     benchmark runner + CLI
-  configs/*.json  bundled inference configs (shipped via package-data)
-scripts/          train.sh, continue_training.sh, evaluate.sh
-docs/             training / inference / evaluation / huggingface guides
-examples/         runnable inference + upload scripts
-tests/            fast unit/smoke tests + slow e2e tests (marked `slow`)
+  nori_client.py  Lightweight explicit-backend client.
+  featurize.py    Canonical model-free tabular preparation.
+  text_features.py Canonical text preparation.
+  nori_ts/core.py Canonical backend-configurable NoriTSForecaster.
+  nori_ts/tsfeatures/ Canonical model-free time-series preparation.
+scripts/          Training and evaluation helpers.
+docs/             Training, inference, evaluation, and Hugging Face guides.
+examples/         Runnable inference and upload scripts.
+tests/            Fast tests plus opt-in slow end-to-end tests.
 ```
 
 ## Conventions & gotchas

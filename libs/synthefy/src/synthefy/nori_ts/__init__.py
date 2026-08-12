@@ -1,5 +1,5 @@
-"""Model-agnostic time-series feature preparation for Synthefy.
+"""Nori time-series forecasting and shared feature preparation."""
 
-The Nori-backed forecaster remains in ``synthefy_nori.nori_ts``; this namespace
-owns only dependency-light feature preparation shared by forecasting clients.
-"""
+from synthefy.nori_ts.core import DEFAULT_QUANTILES, NoriTSForecaster
+
+__all__ = ["NoriTSForecaster", "DEFAULT_QUANTILES"]

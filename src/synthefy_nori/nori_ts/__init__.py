@@ -1,14 +1,21 @@
-"""Nori for time series — TabPFN-TS-style tabular-regression forecasting with Nori.
+"""Compatibility exports for Nori time-series forecasting.
 
-Frames univariate forecasting as tabular regression (after PriorLabs'
-tabpfn-time-series): turn each series into a table, add time features
-(running index, calendar sin/cos, auto-detected seasonal sin/cos), and regress
-the target with Nori — using Nori's quantile head for probabilistic forecasts.
+The implementation is owned by :mod:`synthefy.nori_ts`. This historical path
+remains import-compatible during the package migration.
 """
 
-from synthefy_nori.nori_ts.core import (
-    DEFAULT_QUANTILES,
-    NoriTSForecaster,
-)
+try:
+    from synthefy_nori.nori_ts.core import (
+        DEFAULT_QUANTILES,
+        NoriTSForecaster,
+    )
+except ModuleNotFoundError as exc:
+    # The client-sync compatibility lane deliberately installs released
+    # Synthefy 6.3 without dependencies. It has no canonical forecaster yet,
+    # but the historical tsfeatures fallback must remain importable there.
+    if exc.name not in {"synthefy.nori_ts", "synthefy.nori_ts.core"}:
+        raise
 
-__all__ = ["NoriTSForecaster", "DEFAULT_QUANTILES"]
+    __all__ = []
+else:
+    __all__ = ["NoriTSForecaster", "DEFAULT_QUANTILES"]

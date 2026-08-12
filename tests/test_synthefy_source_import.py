@@ -95,13 +95,27 @@ _RELOCATED_SOURCES = {
         "source_project_path": "../../src/synthefy_nori/nori_ts/__init__.py",
         "source_commit": "de7704303b5ea5725323ae20d8fe738409a198e7",
         "source_blob": "ca46d88167837c3a4ba3bb02b398a6f343fec2c3",
-        "result_blob": "65861fadc7f2c3f44a835d68d47df124e419c33c",
-        "sha256": "b477511bf2415f34141fb3767114f968fb066cdf0a707e4861f3adf650945b9c",
+        "result_blob": "68e98f9d2cc004c53a4fb5aaa9f2a6d0ad4b9496",
+        "sha256": "6666ba4a1138be97faf9b08079ea47bc8a3dd1caa9765ef44e61394f47ea0691",
         "phase": "time_series_feature_ownership",
         "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
         "changes": [
-            "move the lightweight nori_ts namespace into synthefy without importing optional dependencies",
-            "leave NoriTSForecaster and DEFAULT_QUANTILES owned by the heavy synthefy-nori distribution",
+            "export NoriTSForecaster and DEFAULT_QUANTILES from the canonical lightweight namespace",
+            "keep optional forecasting imports confined to synthefy.nori_ts rather than the base synthefy import",
+        ],
+    },
+    "src/synthefy/nori_ts/core.py": {
+        "source_project_path": "../../src/synthefy_nori/nori_ts/core.py",
+        "source_commit": "304dc445bddf00271e9227aae88727b735da1cee",
+        "source_blob": "89ddcd29913f809d3c82d36f4cb70a02a7ef1994",
+        "result_blob": "90a0da5f81617bf02a41bed24edc9eaec81f58a2",
+        "sha256": "09151778367c99c0206fcb9ec8c8dc58840f35fd02ec2ef79c0e6c48621a5244",
+        "phase": "time_series_forecaster_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
+        "changes": [
+            "move NoriTSForecaster into the lightweight package without renaming its public class or request types",
+            "construct or accept SynthefyNoriClient for every backend instead of owning a second local estimator path",
+            "require explicit mode and model configuration and reject auto mode without selecting a default model",
         ],
     },
     "src/synthefy/nori_ts/tsfeatures/__init__.py": {
@@ -389,7 +403,7 @@ def test_post_import_transformations_preserve_phase_two_and_form_continuous_chai
 def test_imported_project_has_the_exact_reviewed_file_boundary():
     tracked = _tracked_project_entries()
 
-    assert len(_TARGET_FILES) == 31
+    assert len(_TARGET_FILES) == 32
     assert set(tracked) == _TARGET_FILES
     assert set(tracked.values()) == {"100644"}
 
@@ -406,8 +420,8 @@ def test_built_artifacts_match_reviewed_file_boundaries(tmp_path):
     )
 
     version = manifest["post_import_history"]["current_version"]
-    assert len(manifest["build_treatment"]["artifact_files"]["sdist"]) == 23
-    assert len(manifest["build_treatment"]["artifact_files"]["wheel"]) == 21
+    assert len(manifest["build_treatment"]["artifact_files"]["sdist"]) == 24
+    assert len(manifest["build_treatment"]["artifact_files"]["wheel"]) == 22
     sdist_prefix = f"synthefy-{version}/"
     with tarfile.open(tmp_path / f"synthefy-{version}.tar.gz") as archive:
         files = {member.name.removeprefix(sdist_prefix) for member in archive.getmembers() if member.isfile()}

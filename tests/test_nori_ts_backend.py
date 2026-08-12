@@ -1,4 +1,4 @@
-"""Backend-neutral request and model ownership for the transitional forecaster."""
+"""Explicit backend, model, and request ownership for NoriTSForecaster."""
 
 from types import SimpleNamespace
 
@@ -10,8 +10,8 @@ pytest.importorskip("gluonts")
 pytest.importorskip("statsmodels")
 pytest.importorskip("datasets")
 
-from synthefy_nori.nori_ts import NoriTSForecaster
-from synthefy_nori.nori_ts.tsfeatures import TimeSeriesDataFrame, generate_test_X
+from synthefy.nori_ts import NoriTSForecaster
+from synthefy.nori_ts.tsfeatures import TimeSeriesDataFrame, generate_test_X
 
 
 class _RecordingClient:
@@ -34,31 +34,6 @@ class _RecordingClient:
         )
 
 
-class _RecordingEstimator:
-    def __init__(self):
-        self.calls = []
-        self._X_train = None
-        self._y_train = None
-
-    def fit(self, X_train, y_train):
-        self._X_train = X_train.copy()
-        self._y_train = y_train.copy()
-        return self
-
-    def predict(self, X_test, **kwargs):
-        self.calls.append(
-            {
-                "X_train": self._X_train,
-                "y_train": self._y_train,
-                "X_test": X_test.copy(),
-                "kwargs": kwargs,
-            }
-        )
-        return np.vstack(
-            [np.full(len(X_test), level * 10.0) for level in kwargs["quantiles"]]
-        )
-
-
 def _multi_series_frame():
     frames = []
     for item in (0, 1):
@@ -72,30 +47,90 @@ def _multi_series_frame():
     return TimeSeriesDataFrame.from_data_frame(pd.concat(frames, ignore_index=True))
 
 
-@pytest.mark.parametrize("kwargs", [{}, {"model": None}])
-def test_transitional_local_path_has_no_model_default(kwargs):
-    with pytest.raises(ValueError, match="model= or model_path= is required"):
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"mode": "local"},
+        {"model": "nori-30m"},
+        {"mode": "local", "model": None},
+    ],
+)
+def test_mode_and_model_have_no_defaults(kwargs):
+    with pytest.raises(ValueError, match="required when client= is not provided"):
         NoriTSForecaster(**kwargs)
 
 
-@pytest.mark.parametrize("model", ["nori-6m", "nori-30m"])
-def test_transitional_local_path_preserves_explicit_model(model):
-    forecaster = NoriTSForecaster(model=model)
-    assert forecaster.model == model
+def test_auto_mode_is_rejected():
+    with pytest.raises(ValueError, match="mode must be one of"):
+        NoriTSForecaster(mode="auto", model="nori-30m")
 
 
-def test_explicit_model_path_satisfies_local_model_requirement():
-    forecaster = NoriTSForecaster(model_path="/tmp/custom-nori.pt")
-    assert forecaster.model is None
-    assert forecaster.model_path == "/tmp/custom-nori.pt"
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        (
+            {"mode": "local", "model": "nori-6m"},
+            {
+                "api_key": None,
+                "mode": "local",
+                "model": "nori-6m",
+                "endpoint_name": None,
+                "region_name": None,
+            },
+        ),
+        (
+            {"mode": "remote", "model": "nori-30m-thinking-medium", "api_key": "key"},
+            {
+                "api_key": "key",
+                "mode": "remote",
+                "model": "nori-30m-thinking-medium",
+                "endpoint_name": None,
+                "region_name": None,
+            },
+        ),
+        (
+            {
+                "mode": "sagemaker",
+                "model": "nori-30m",
+                "endpoint_name": "ep",
+                "region_name": "us-east-1",
+            },
+            {
+                "api_key": None,
+                "mode": "sagemaker",
+                "model": "nori-30m",
+                "endpoint_name": "ep",
+                "region_name": "us-east-1",
+            },
+        ),
+    ],
+)
+def test_forecaster_constructs_the_client_with_exact_configuration(
+    monkeypatch, kwargs, expected
+):
+    class RecordingConstructor:
+        def __init__(self, **received):
+            self.received = received
+
+    monkeypatch.setattr(
+        "synthefy.nori_ts.core.SynthefyNoriClient", RecordingConstructor
+    )
+
+    forecaster = NoriTSForecaster(**kwargs)
+
+    assert isinstance(forecaster.client, RecordingConstructor)
+    assert forecaster.client.received == expected
 
 
 def test_injected_client_owns_backend_configuration():
     client = _RecordingClient(model="synthefy/nori-30m-thinking-medium")
     for kwargs in (
-        {"device": "cpu"},
+        {"mode": "remote"},
         {"model": "nori-30m"},
-        {"model_path": "/tmp/nori.pt"},
+        {"api_key": "key"},
+        {"endpoint_name": "ep"},
+        {"region_name": "us-east-1"},
     ):
         with pytest.raises(ValueError, match="client= already owns"):
             NoriTSForecaster(client=client, **kwargs)
@@ -113,7 +148,7 @@ def test_injected_client_must_be_fully_configured(client, message):
         NoriTSForecaster(client=client)
 
 
-def test_injected_client_receives_same_prepared_requests_as_local_path():
+def test_injected_client_receives_prepared_requests_and_returns_forecasts():
     train = _multi_series_frame()
     test = generate_test_X(train, prediction_length=6, freq="h")
     client = _RecordingClient()
@@ -123,20 +158,8 @@ def test_injected_client_receives_same_prepared_requests_as_local_path():
         quantiles=[0.9, 0.1, 0.5],
     ).predict(train, test)
 
-    estimator = _RecordingEstimator()
-    local_forecaster = NoriTSForecaster(
-        model="nori-30m",
-        quantiles=[0.9, 0.1, 0.5],
-    )
-    local_forecaster._model = estimator
-    local_result = local_forecaster.predict(train, test)
-
-    assert len(client.calls) == len(estimator.calls) == 2
-    for call, local_call in zip(client.calls, estimator.calls):
-        np.testing.assert_array_equal(call["X_train"], local_call["X_train"])
-        np.testing.assert_array_equal(call["y_train"], local_call["y_train"])
-        np.testing.assert_array_equal(call["X_test"], local_call["X_test"])
-        assert call["kwargs"] == local_call["kwargs"]
+    assert len(client.calls) == 2
+    for call in client.calls:
         assert call["X_train"].shape[0] == 48
         assert call["X_test"].shape[0] == 6
         assert call["X_train"].shape[1] == call["X_test"].shape[1]
@@ -148,7 +171,6 @@ def test_injected_client_receives_same_prepared_requests_as_local_path():
             "quantiles": [0.1, 0.5, 0.9],
         }
 
-    pd.testing.assert_frame_equal(pd.DataFrame(result), pd.DataFrame(local_result))
     assert list(result.columns) == ["target", "0.1", "0.5", "0.9"]
     np.testing.assert_allclose(result["target"], 5.0)
     np.testing.assert_allclose(result["0.1"], 1.0)

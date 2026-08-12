@@ -1,7 +1,7 @@
 """Tests for nori_ts forecasting.
 
 Offline unit tests exercise the feature engineering / horizon construction with
-no checkpoint (they need the `timeseries` extra: gluonts, statsmodels, datasets).
+no checkpoint (they need the `forecasting` extra: gluonts, statsmodels, datasets).
 The end-to-end forecast is marked `slow` — it downloads a checkpoint and runs
 real inference.
 """
@@ -13,9 +13,9 @@ pytest.importorskip("gluonts")
 pytest.importorskip("statsmodels")
 pytest.importorskip("datasets")
 
-from synthefy_nori.nori_ts import NoriTSForecaster
-from synthefy_nori.nori_ts.core import _default_features, _TARGET
-from synthefy_nori.nori_ts.tsfeatures import (
+from synthefy.nori_ts import NoriTSForecaster
+from synthefy.nori_ts.core import _TARGET, _default_features
+from synthefy.nori_ts.tsfeatures import (
     FeatureTransformer,
     TimeSeriesDataFrame,
     generate_test_X,
@@ -37,7 +37,7 @@ def test_quantiles_sorted_in_ctor():
     # Non-ascending input must be sorted so column labels stay aligned with the
     # value-sorted forecast rows.
     assert NoriTSForecaster(
-        model="nori-30m", quantiles=[0.9, 0.1, 0.5]
+        mode="local", model="nori-30m", quantiles=[0.9, 0.1, 0.5]
     ).quantiles == [0.1, 0.5, 0.9]
 
 
@@ -92,7 +92,7 @@ def test_predict_rejects_horizon_series_without_history():
     orphan = generate_test_X(_tsdf(n=30, freq="h", item_id=1), prediction_length=5, freq="h")
     combined = TimeSeriesDataFrame(pd.concat([pd.DataFrame(test), pd.DataFrame(orphan)]))
     with pytest.raises(ValueError, match="no history rows"):
-        NoriTSForecaster(model="nori-30m").predict(train, combined)
+        NoriTSForecaster(mode="local", model="nori-30m").predict(train, combined)
 
 
 def test_generators_group_per_series_on_a_multi_series_frame():
@@ -169,7 +169,7 @@ def test_predict_df_end_to_end():
         {"timestamp": pd.date_range("2021-01-01", periods=n, freq="h"), "target": series}
     )
     out = NoriTSForecaster(
-        model="nori-6m", quantiles=[0.1, 0.5, 0.9]
+        mode="local", model="nori-6m", quantiles=[0.1, 0.5, 0.9]
     ).predict_df(hist, prediction_length=24)
     assert len(out) == 24
     assert {"0.1", "0.5", "0.9"}.issubset(set(out.columns))
