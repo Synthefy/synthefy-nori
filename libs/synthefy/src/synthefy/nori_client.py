@@ -7,10 +7,8 @@ training step. The same forward pass also carries a full predictive distribution
 so ``predict(output_type="quantiles", quantiles=[...])`` returns calibrated
 prediction intervals at no extra cost.
 
-This module is self-contained and does not depend on the forecasting client
-(:class:`synthefy.api_client.SynthefyAPIClient`). It does, however, reuse the
-package-wide exception types and HTTP error handling from
-:mod:`synthefy.api_client` so that errors behave consistently across the SDK.
+This module uses the package-wide exception types and HTTP error handling from
+:mod:`synthefy.errors` so errors behave consistently across transports.
 
 A single :class:`SynthefyNoriClient` runs predictions in one of three modes,
 selected with the ``mode`` constructor argument:
@@ -19,7 +17,7 @@ selected with the ``mode`` constructor argument:
 - ``"sagemaker"`` -- invokes a named Amazon SageMaker endpoint with AWS Signature V4,
   using boto3's standard credential chain.
 - ``"local"`` -- runs the same prediction in-process via the optional
-  ``synthefy-nori`` package (``pip install "synthefy[local]"``), no network and
+  ``synthefy-nori`` package (``pip install synthefy-nori``), no network and
   no API key.
 """
 
@@ -51,8 +49,7 @@ from synthefy.errors import (
 GATEWAY_BASE_URL = "https://inference.baseten.co"
 GATEWAY_ENDPOINT = "/predict"
 
-# Environment variable holding the hosted-Nori API key. Matches SYNTHEFY_API_KEY
-# used by SynthefyAPIClient, so the whole package reads one naming scheme.
+# Environment variable holding the hosted-Nori API key.
 NORI_API_KEY_ENV = "SYNTHEFY_NORI_API_KEY"
 
 # Sentinel for a required ``model=`` (there is no default -- every caller names a size).
@@ -429,7 +426,7 @@ def _load_local_predict() -> Any:
     except ImportError as exc:
         raise ImportError(
             "Local nori inference requires the optional 'synthefy-nori' "
-            'package. Install it with: pip install "synthefy[local]".'
+            'package. Install it with: pip install synthefy-nori.'
         ) from exc
     return local_predict
 
@@ -499,7 +496,7 @@ def _load_local_regressor() -> Any:
     except ImportError as exc:
         raise ImportError(
             "Local nori inference requires the optional 'synthefy-nori' "
-            'package. Install it with: pip install "synthefy[local]".'
+            'package. Install it with: pip install synthefy-nori.'
         ) from exc
     return NoriRegressor
 
@@ -553,7 +550,7 @@ def _resolve_remote_levels(
             "distribution — the hosted endpoint returns only point "
             'predictions. Pass discretize="snap-mean" explicitly (nearest '
             "level to the point prediction), or use local mode "
-            '(pip install "synthefy[local]") for the full strategy set.'
+            '(pip install synthefy-nori) for the full strategy set.'
         )
     if discretize != _REMOTE_DISCRETIZE_METHOD:
         raise ValueError(
@@ -561,7 +558,7 @@ def _resolve_remote_levels(
             "distribution, which the hosted endpoint does not return; "
             'remote mode supports discretize="snap-mean" (nearest level to '
             "the returned point prediction). For the full strategy set, use "
-            'local mode (pip install "synthefy[local]").'
+            'local mode (pip install synthefy-nori).'
         )
     if categorical_levels is None:
         levels = np.unique(np.asarray(y_train, dtype=float))
@@ -798,7 +795,7 @@ class SynthefyNoriClient:
       ``SYNTHEFY_NORI_API_KEY`` environment variable), sent as
       ``Authorization: <auth_scheme> <key>`` (``Bearer`` by default).
     - ``"local"``: run in-process via the optional ``synthefy-nori`` package
-      (``pip install "synthefy[local]"``). No network and no API key.
+      (``pip install synthefy-nori``). No network and no API key.
     - ``"sagemaker"``: invoke a named Amazon SageMaker endpoint
       through boto3. Requests are SigV4-signed using boto3's standard credential
       chain; install the optional dependency with ``pip install "synthefy[aws]"``.
@@ -887,7 +884,7 @@ class SynthefyNoriClient:
     ...     output_type="quantiles", quantiles=[0.1, 0.5, 0.9],
     ... )
 
-    Run the same prediction locally (no API key, needs ``synthefy[local]``):
+    Run the same prediction locally (no API key, needs ``synthefy-nori``):
 
     >>> client = SynthefyNoriClient(mode="local", model="nori-30m")  # doctest: +SKIP
 
@@ -1277,7 +1274,7 @@ class SynthefyNoriClient:
             with a warning for SageMaker.
         ImportError
             In local mode, if the optional ``synthefy-nori`` package is not
-            installed (with guidance to ``pip install "synthefy[local]"``), or
+            installed (with guidance to ``pip install synthefy-nori``), or
             if it is too old for ``discretize=``/``categorical_levels=`` or for
             a non-default ``output_type`` (with an upgrade hint).
         NotImplementedError
@@ -1436,7 +1433,7 @@ class SynthefyNoriClient:
             raise ImportError(
                 f"output_type={output_type!r} requires a newer synthefy-nori (with "
                 "output_type= on NoriRegressor.predict, added in 0.6.0). Upgrade "
-                'with: pip install -U "synthefy[local]".'
+                'with: pip install -U synthefy-nori.'
             )
         init_kwargs: Dict[str, Any] = {}
         if self._local_variant is not None:
@@ -1446,14 +1443,14 @@ class SynthefyNoriClient:
                 raise ImportError(
                     f"Local Nori variant {self._local_variant!r} requires a newer "
                     "synthefy-nori (with the model= selector). Upgrade with: "
-                    'pip install -U "synthefy[local]".'
+                    'pip install -U synthefy-nori.'
                 )
             init_kwargs["model"] = self._local_variant
         if request.memory_policy is not None:
             if not _local_memory_policy_available():
                 raise ImportError(
                     "memory_policy= requires synthefy-nori >= 0.13.0 (the serving-memory policy). "
-                    'Upgrade with: pip install -U "synthefy[local]".'
+                    'Upgrade with: pip install -U synthefy-nori.'
                 )
             # NoriRegressor belongs to another package and expects its own MemoryPolicy
             # class (or a plain input), not this client's equivalent pydantic class.
@@ -1530,7 +1527,7 @@ class SynthefyNoriClient:
                 raise ImportError(
                     "Categorical-target discretization (discretize=/"
                     "categorical_levels=) requires a newer synthefy-nori. "
-                    'Upgrade with: pip install -U "synthefy[local]".'
+                    'Upgrade with: pip install -U synthefy-nori.'
                 )
             if discretize is not None:
                 extra["discretize"] = discretize
@@ -1540,7 +1537,7 @@ class SynthefyNoriClient:
             if not _local_memory_policy_available():
                 raise ImportError(
                     "memory_policy= requires synthefy-nori >= 0.13.0 (the serving-memory policy). "
-                    'Upgrade with: pip install -U "synthefy[local]".'
+                    'Upgrade with: pip install -U synthefy-nori.'
                 )
             # A dict, not our MemoryPolicy instance: the library's coerce() accepts its OWN
             # class, a dict, a preset name or None -- a same-named class from this package is
@@ -1559,7 +1556,7 @@ class SynthefyNoriClient:
             if "model" not in inspect.signature(local_predict).parameters:
                 raise ImportError(
                     f"Local Nori variant {self._local_variant!r} requires a newer synthefy-nori "
-                    '(with the model= selector). Upgrade with: pip install -U "synthefy[local]".'
+                    '(with the model= selector). Upgrade with: pip install -U synthefy-nori.'
                 )
             extra["model"] = self._local_variant
         result = local_predict(
@@ -1613,7 +1610,7 @@ class SynthefyNoriClient:
                 f"mean, which is indistinguishable from a real {output_type!r} "
                 "result, so this is raised rather than returning means as if they "
                 'were what you asked for. Use local mode (pip install '
-                '"synthefy[local]", then mode="local"), or point at a deployment '
+                'synthefy-nori, then mode="local"), or point at a deployment '
                 "that serves distribution output."
             )
         return parsed
@@ -1869,7 +1866,7 @@ class SynthefyNoriClient:
             raise ValueError(
                 f"The hosted deployment echoed output_type={output_type!r} but "
                 "returned no quantile block; it cannot serve distribution output. "
-                'Use local mode (pip install "synthefy[local]", then mode="local").'
+                'Use local mode (pip install synthefy-nori, then mode="local").'
             )
         q_by_row = _nullable_rows_to_array(parsed.quantiles)
         taus = np.asarray(parsed.taus, dtype=float)

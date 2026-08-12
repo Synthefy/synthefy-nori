@@ -23,7 +23,7 @@ import pytest
 from synthefy import (
     SynthefyNoriClient,
 )
-from synthefy.api_client import (
+from synthefy.errors import (
     AuthenticationError,
     BadRequestError,
     InternalServerError,
@@ -1380,7 +1380,7 @@ def test_local_predict_raises_helpful_error_without_package(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
     client = SynthefyNoriClient(mode="local", model="nori-30m")
-    with pytest.raises(ImportError, match=r"synthefy\[local\]"):
+    with pytest.raises(ImportError, match=r"synthefy-nori"):
         client.predict(
             X_train=[[1.0, 2.0]], y_train=[3.0], X_test=[[4.0, 5.0]]
         )
@@ -1758,7 +1758,7 @@ def test_local_discretize_needs_newer_synthefy_nori(monkeypatch):
     )
     monkeypatch.setattr("synthefy.nori_client._local_discretize_available", lambda: False)
     client = SynthefyNoriClient(mode="local", model="nori-30m")
-    with pytest.raises(ImportError, match=r"synthefy\[local\]"):
+    with pytest.raises(ImportError, match=r"synthefy-nori"):
         client.predict(X_train=_XTR, y_train=_YTR, X_test=_XTE, discretize="map-cell")
 
 
@@ -2778,7 +2778,7 @@ def test_local_quantiles_missing_package_raises_install_hint(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
     client = SynthefyNoriClient(mode="local", model="nori-30m")
-    with pytest.raises(ImportError, match=r"synthefy\[local\]"):
+    with pytest.raises(ImportError, match=r"synthefy-nori"):
         client.predict(
             _XTR, _YTR, _XTE, output_type="quantiles", quantiles=_LEVELS
         )

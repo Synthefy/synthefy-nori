@@ -75,6 +75,23 @@ and `local`. `mode="auto"` is removed in the `synthefy` 7.0 cutover rather than
 retained as an alias. The initial consolidated client remains one-shot; bound
 sessions, context reuse, and their warning semantics require a separate design.
 
+### Retire the legacy ForecastV2 surface
+
+For the 7.0 consolidation, the legacy `SynthefyAPIClient`,
+`SynthefyAsyncAPIClient`, `/v2/forecast` transport, and ForecastV2-only
+request, response, payload, tests, fixtures, and examples are deliberately
+removed. There is no customer compatibility obligation for this retired
+product. Nori regression remains available through `SynthefyNoriClient`, and
+Nori-backed forecasting uses `synthefy.nori_ts.NoriTSForecaster`.
+
+The shared exception hierarchy remains in `synthefy.errors`; removing the
+legacy transport must not rename or change `NoriPredictRequest`,
+`NoriPredictResponse`, or the Nori client contract. Surviving test
+configuration, including the opt-in `slow` marker, moves out of deleted
+ForecastV2-only fixtures. Raimi approved this Phase 9 retirement in issue #216
+on 2026-08-12. As with all implementation in this ADR, it lands in internal
+first and does not itself authorize staging, public, or production promotion.
+
 ### Packaging and compatibility
 
 The target Python floor for both distributions is 3.9. Before either project

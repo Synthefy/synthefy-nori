@@ -83,6 +83,16 @@
           "changes": [
             "record the 7.0.0 explicit-backend migration guidance"
           ]
+        },
+        {
+          "input_blob": "e4ba5057472addf842ede47872a57b8fe0d185ac",
+          "result_blob": "0b82eb970f07024e7f7f2af4f9d3e20ff7902a19",
+          "phase": "legacy_forecast_v2_retirement",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree.md",
+          "changes": [
+            "record the deliberate removal of the retired ForecastV2 client, types, tests, and examples",
+            "document synthefy-nori as the local runtime installation path"
+          ]
         }
       ],
       "README.md": [
@@ -94,6 +104,17 @@
           "changes": [
             "remove auto backend routing examples and API references",
             "document remote, sagemaker, and local as the explicit execution modes"
+          ]
+        },
+        {
+          "input_blob": "23c18bab09f7374e60ee101c8c94192a92c4a2b2",
+          "result_blob": "0d2b4d15a9c5428d09a4cac2d0eed7b56fa6af36",
+          "phase": "legacy_forecast_v2_retirement",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree.md",
+          "changes": [
+            "delete the obsolete ForecastV2 quickstart, backtesting, async, and API-reference sections",
+            "describe the supported hosted, SageMaker, local, and forecasting install paths",
+            "replace retired synthefy[local] guidance with the consolidated synthefy-nori runtime"
           ]
         }
       ],
@@ -131,6 +152,24 @@
             "retain datasets, gluonts, and statsmodels in the same optional forecasting extra",
             "keep every forecasting dependency outside the lightweight base install"
           ]
+        },
+        {
+          "input_blob": "2d8894864a5288758ee737a380d03e346ae8868f",
+          "result_blob": "980ba560e2d4ceb2f752bd42db9b5db2427ccb2e",
+          "phase": "legacy_forecast_v2_retirement",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree.md",
+          "changes": [
+            "describe the distribution as the lightweight Nori client and workflow SDK instead of the retired dual-product client"
+          ]
+        },
+        {
+          "input_blob": "980ba560e2d4ceb2f752bd42db9b5db2427ccb2e",
+          "result_blob": "88909bb757b0a4a41e7cb7fecff15218188d195e",
+          "phase": "legacy_forecast_v2_retirement",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree.md",
+          "changes": [
+            "remove the unused pytest-asyncio development dependency with the retired asynchronous ForecastV2 client"
+          ]
         }
       ],
       "pytest.ini": [
@@ -143,6 +182,16 @@
             "use pytest.ini syntax rather than setup.cfg syntax",
             "exclude opt-in slow tests by default"
           ]
+        },
+        {
+          "input_blob": "a15b1a9438668b6f3558ea2f8a29d2aacbc86e86",
+          "result_blob": "bcc8fd41c79ccd74df67f010db143953673b67e5",
+          "phase": "legacy_forecast_v2_retirement",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree.md",
+          "changes": [
+            "register the surviving opt-in slow marker outside the retired ForecastV2 conftest",
+            "remove the unused pytest-asyncio configuration with the retired asynchronous client tests"
+          ]
         }
       ],
       "src/synthefy/__init__.py": [
@@ -153,6 +202,16 @@
           "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
           "changes": [
             "match the public package version to the 7.0.0 integration candidate"
+          ]
+        },
+        {
+          "input_blob": "35e85d9327d37c798c40ddda25087075ea60af0c",
+          "result_blob": "6b313550a599741dbbb8579e4e207de0e7162e50",
+          "phase": "legacy_forecast_v2_retirement",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree.md",
+          "changes": [
+            "remove the retired SynthefyAPIClient and SynthefyAsyncAPIClient top-level exports",
+            "preserve every Nori request, response, client, and memory-policy export"
           ]
         }
       ],
@@ -216,6 +275,17 @@
           "changes": [
             "import shared exceptions and HTTP status mapping without loading the legacy ForecastV2 client"
           ]
+        },
+        {
+          "input_blob": "73db4cb6436f7a83d69cca0204a9848cf93c01c7",
+          "result_blob": "9205618e37903d4407936a614a472250d94563c3",
+          "phase": "legacy_forecast_v2_retirement",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree.md",
+          "changes": [
+            "remove documentation references to the retired ForecastV2 module",
+            "point local runtime install and upgrade errors at synthefy-nori",
+            "preserve execution, request, response, and transport behavior"
+          ]
         }
       ],
       "tests/conftest.py": [
@@ -266,6 +336,28 @@
           "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
           "changes": [
             "replace auto-routing tests with an early fail-closed migration contract"
+          ]
+        },
+        {
+          "input_blob": "5c42009fa40a93881cfc30ec34332d5eff817dc6",
+          "result_blob": "7ea054a48a412b3fee1d5b84283afa4e09e9d2a5",
+          "phase": "legacy_forecast_v2_retirement",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree.md",
+          "changes": [
+            "import Nori error types from their permanent shared module",
+            "assert local install errors name synthefy-nori instead of the retired local extra"
+          ]
+        }
+      ],
+      "src/synthefy/data_models.py": [
+        {
+          "input_blob": "725e79d92c73313da6ab1c4154b73701e61458f6",
+          "result_blob": "10577e264ffaf2171b8691a52a62f5a861c947cb",
+          "phase": "legacy_forecast_v2_retirement",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree.md",
+          "changes": [
+            "delete ForecastV2 request, response, payload, subscription, and model-metadata types",
+            "preserve NoriPredictRequest and NoriPredictResponse without renaming or changing fields"
           ]
         }
       ]
@@ -461,6 +553,33 @@
           "cover explicit-frequency gappy inputs, generated float32 columns without target downcasting, and static-feature preservation"
         ]
       }
+    },
+    "source_retirements": {
+      "src/synthefy/api_client.py": {
+        "last_blob": "0765ce2a1c1df3d168ea09793ceb2424ebfab921",
+        "phase": "legacy_forecast_v2_retirement",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree.md",
+        "changes": [
+          "delete SynthefyAPIClient, SynthefyAsyncAPIClient, and the /v2/forecast transport",
+          "retain the extracted shared exception hierarchy in synthefy.errors"
+        ]
+      },
+      "tests/conftest.py": {
+        "last_blob": "e8f50cb2d1303bb2405596412f89fa4bc8eb60fb",
+        "phase": "legacy_forecast_v2_retirement",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree.md",
+        "changes": [
+          "delete ForecastV2-only fixtures and CLI options after moving the surviving slow marker registration to pytest.ini"
+        ]
+      },
+      "tests/test_data_models.py": {
+        "last_blob": "c15648965d81080db88e230c08cba86400829ca3",
+        "phase": "legacy_forecast_v2_retirement",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree.md",
+        "changes": [
+          "delete tests dedicated to ForecastV2 dataframe splitting and backtesting payloads"
+        ]
+      }
     }
   },
   "build_treatment": {
@@ -484,7 +603,6 @@
         "licenses/Apache-2.0.txt",
         "pyproject.toml",
         "src/synthefy/__init__.py",
-        "src/synthefy/api_client.py",
         "src/synthefy/data_models.py",
         "src/synthefy/errors.py",
         "src/synthefy/featurize.py",
@@ -503,7 +621,6 @@
       ],
       "wheel": [
         "synthefy/__init__.py",
-        "synthefy/api_client.py",
         "synthefy/data_models.py",
         "synthefy/errors.py",
         "synthefy/featurize.py",

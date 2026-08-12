@@ -7,11 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [7.0.0] - Unreleased
 
+### Removed
+
+- Removed the retired `SynthefyAPIClient` and `SynthefyAsyncAPIClient`, the
+  `ForecastV2Request` and `ForecastV2Response` types, their top-level exports,
+  and the obsolete `/v2/forecast` examples and tests. This product has no
+  customer-compatibility migration requirement; Nori forecasting uses
+  `synthefy.nori_ts.NoriTSForecaster`.
+
 ### Changed
 
 - Removed execution `mode="auto"` from `SynthefyNoriClient`. Callers must select
   `"remote"`, `"sagemaker"`, or `"local"` explicitly; installed packages and
   ambient credentials never change request routing.
+- Local execution is installed with `synthefy-nori` rather than the retired
+  `synthefy[local]` extra; runtime error messages and README commands now name
+  the consolidated package relationship.
 
 
 ## [6.3.0]

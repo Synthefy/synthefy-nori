@@ -6,6 +6,7 @@ regenerates it from the migrated implementation.
 """
 
 import hashlib
+import importlib.util
 import importlib.machinery
 import json
 import math
@@ -19,9 +20,7 @@ import pandas as pd
 
 import synthefy.nori_client as nori_client_module
 from synthefy import NoriPredictRequest, NoriPredictResponse, SynthefyNoriClient
-from synthefy.api_client import BadRequestError
-from synthefy import api_client as legacy_api_client
-from synthefy import errors as shared_errors
+from synthefy.errors import BadRequestError
 
 _ROOT = Path(__file__).resolve().parents[1]
 _GOLDEN_PATH = _ROOT / "tests" / "compat" / "synthefy_6_3_nori_goldens.json"
@@ -38,22 +37,15 @@ _ORACLE = {
 }
 
 
-def test_legacy_error_imports_reexport_the_shared_types():
-    for name in (
-        "SynthefyError",
-        "APITimeoutError",
-        "APIConnectionError",
-        "APIStatusError",
-        "BadRequestError",
-        "AuthenticationError",
-        "PermissionDeniedError",
-        "NotFoundError",
-        "RateLimitError",
-        "InternalServerError",
-        "_extract_error_details",
-        "_raise_for_status",
-    ):
-        assert getattr(legacy_api_client, name) is getattr(shared_errors, name)
+def test_retired_forecast_v2_surface_is_absent():
+    import synthefy
+    import synthefy.data_models as data_models
+
+    assert importlib.util.find_spec("synthefy.api_client") is None
+    for name in ("SynthefyAPIClient", "SynthefyAsyncAPIClient"):
+        assert not hasattr(synthefy, name)
+    for name in ("ForecastV2Request", "ForecastV2Response"):
+        assert not hasattr(data_models, name)
 
 
 def _normalized(value: Any) -> Any:

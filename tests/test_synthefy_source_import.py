@@ -30,6 +30,34 @@ _IMPORTED_BLOBS = {
     "tests/test_nori_data_models.py": "cafc0ab4d1dc55e2345ed65a3d2f6555dc18807d",
 }
 
+_RETIRED_SOURCES = {
+    "src/synthefy/api_client.py": {
+        "last_blob": "0765ce2a1c1df3d168ea09793ceb2424ebfab921",
+        "phase": "legacy_forecast_v2_retirement",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree.md",
+        "changes": [
+            "delete SynthefyAPIClient, SynthefyAsyncAPIClient, and the /v2/forecast transport",
+            "retain the extracted shared exception hierarchy in synthefy.errors",
+        ],
+    },
+    "tests/conftest.py": {
+        "last_blob": "e8f50cb2d1303bb2405596412f89fa4bc8eb60fb",
+        "phase": "legacy_forecast_v2_retirement",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree.md",
+        "changes": [
+            "delete ForecastV2-only fixtures and CLI options after moving the surviving slow marker registration to pytest.ini",
+        ],
+    },
+    "tests/test_data_models.py": {
+        "last_blob": "c15648965d81080db88e230c08cba86400829ca3",
+        "phase": "legacy_forecast_v2_retirement",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree.md",
+        "changes": [
+            "delete tests dedicated to ForecastV2 dataframe splitting and backtesting payloads",
+        ],
+    },
+}
+
 _EXCLUDED_BLOBS = {
     ".github/workflows/publish.yaml": "37ec020d5cf1d529988e9cbb8ce4ffe56f25e046",
     ".github/workflows/tests.yaml": "5e2b53558884cfc4db053adbf46003beabea9e5a",
@@ -242,7 +270,9 @@ _RELOCATED_SOURCES = {
     },
 }
 
-_TARGET_FILES = set(_IMPORTED_BLOBS) | set(_RELOCATED_SOURCES) | {
+_TARGET_FILES = (set(_IMPORTED_BLOBS) - set(_RETIRED_SOURCES)) | set(
+    _RELOCATED_SOURCES
+) | {
     ".gitignore",
     "LICENSE",
     "NOTICE",
@@ -339,11 +369,13 @@ def test_snapshot_manifest_pins_the_source_and_selected_boundary():
 
 
 def test_byte_identical_imports_match_the_pinned_git_blobs():
-    imported = _load_manifest()["import"]
+    manifest = _load_manifest()
+    imported = manifest["import"]
     evolved = set(_post_import_transformations())
+    retired = set(manifest["post_import_history"]["source_retirements"])
 
     for relative_path in imported["byte_identical_paths"]:
-        if relative_path not in evolved:
+        if relative_path not in evolved and relative_path not in retired:
             assert _git_blob(_PROJECT_ROOT / relative_path) == _IMPORTED_BLOBS[relative_path]
 
 
@@ -381,7 +413,9 @@ def test_reviewed_transformations_and_license_files_are_pinned():
 def test_post_import_transformations_preserve_phase_two_and_form_continuous_chains():
     manifest = _load_manifest()
     imported = manifest["import"]
-    chains = manifest["post_import_history"]["transformations"]
+    history = manifest["post_import_history"]
+    chains = history["transformations"]
+    retired = history["source_retirements"]
 
     assert set(chains) == {
         "CHANGELOG.md",
@@ -390,6 +424,7 @@ def test_post_import_transformations_preserve_phase_two_and_form_continuous_chai
         "pytest.ini",
         "src/synthefy/__init__.py",
         "src/synthefy/api_client.py",
+        "src/synthefy/data_models.py",
         "src/synthefy/nori_client.py",
         "tests/conftest.py",
         "tests/test_nori_client.py",
@@ -412,13 +447,40 @@ def test_post_import_transformations_preserve_phase_two_and_form_continuous_chai
             decision = (_PROJECT_ROOT / transformation["decision_record"]).resolve()
             assert decision.is_file()
             expected_input = transformation["result_blob"]
-        assert expected_input == _git_blob(_PROJECT_ROOT / relative_path)
+        expected_final = (
+            retired[relative_path]["last_blob"]
+            if relative_path in retired
+            else _git_blob(_PROJECT_ROOT / relative_path)
+        )
+        assert expected_input == expected_final
+
+
+def test_retired_sources_are_pinned_and_absent():
+    manifest = _load_manifest()
+    imported = manifest["import"]
+    history = manifest["post_import_history"]
+    retirements = history["source_retirements"]
+    chains = history["transformations"]
+
+    assert retirements == _RETIRED_SOURCES
+    for relative_path, retirement in retirements.items():
+        transformations = chains.get(relative_path, [])
+        expected_last_blob = (
+            transformations[-1]["result_blob"]
+            if transformations
+            else imported["included_blobs"][relative_path]
+        )
+        assert retirement["last_blob"] == expected_last_blob
+        assert retirement["changes"]
+        assert not (_PROJECT_ROOT / relative_path).exists()
+        decision = (_PROJECT_ROOT / retirement["decision_record"]).resolve()
+        assert decision.is_file()
 
 
 def test_imported_project_has_the_exact_reviewed_file_boundary():
     tracked = _tracked_project_entries()
 
-    assert len(_TARGET_FILES) == 33
+    assert len(_TARGET_FILES) == 30
     assert set(tracked) == _TARGET_FILES
     assert set(tracked.values()) == {"100644"}
 
@@ -435,8 +497,8 @@ def test_built_artifacts_match_reviewed_file_boundaries(tmp_path):
     )
 
     version = manifest["post_import_history"]["current_version"]
-    assert len(manifest["build_treatment"]["artifact_files"]["sdist"]) == 25
-    assert len(manifest["build_treatment"]["artifact_files"]["wheel"]) == 23
+    assert len(manifest["build_treatment"]["artifact_files"]["sdist"]) == 24
+    assert len(manifest["build_treatment"]["artifact_files"]["wheel"]) == 22
     sdist_prefix = f"synthefy-{version}/"
     with tarfile.open(tmp_path / f"synthefy-{version}.tar.gz") as archive:
         files = {member.name.removeprefix(sdist_prefix) for member in archive.getmembers() if member.isfile()}

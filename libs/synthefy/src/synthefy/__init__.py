@@ -1,4 +1,3 @@
-from synthefy.api_client import SynthefyAPIClient, SynthefyAsyncAPIClient
 from synthefy.nori_data_models import (
     MEMORY_PRESETS,
     MEMORY_RUNGS,
@@ -18,8 +17,6 @@ __all__ = [
     "MEMORY_RUNGS",
     "MemoryPolicy",
     "MemoryReport",
-    "SynthefyAPIClient",
-    "SynthefyAsyncAPIClient",
     "SynthefyNoriClient",
     "NoriPredictRequest",
     "NoriPredictResponse",
