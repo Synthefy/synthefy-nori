@@ -20,7 +20,11 @@ jobs:
       - run: uv run pytest
       - run: uv run python ci/validate_variants.py
       - run: uv run python ci/sync_openapi.py --check
-      - run: uv run ruff check src scripts tests ci/validate_distribution_boundaries.py ci/probe_installed_distributions.py
+      - run: >-
+          uv run ruff check src scripts tests
+          ci/validate_distribution_boundaries.py
+          ci/probe_installed_distributions.py
+          ci/probe_cutover_matrix.py
       - run: uv run pytest -m slow tests/test_synthefy_source_import.py::test_built_artifacts_match_reviewed_file_boundaries
       - run: uv build
 
@@ -209,13 +213,83 @@ jobs:
               extra --case "nori-$EXTRA"
           done
 
+  cutover-rehearsal:
+    name: CI rehearse package cutover matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v8.2.0
+      - name: Build both candidate wheels
+        run: |
+          set -euo pipefail
+          uv build --package synthefy --wheel --no-sources \
+            --out-dir "$RUNNER_TEMP/cutover/client"
+          uv build --package synthefy-nori --wheel --no-sources \
+            --out-dir "$RUNNER_TEMP/cutover/nori"
+          CLIENT_WHEELS=("$RUNNER_TEMP/cutover/client/"*.whl)
+          NORI_WHEELS=("$RUNNER_TEMP/cutover/nori/"*.whl)
+          test "${#CLIENT_WHEELS[@]}" -eq 1
+          test "${#NORI_WHEELS[@]}" -eq 1
+          printf 'CLIENT_WHEEL=%s\n' "${CLIENT_WHEELS[0]}" >> "$GITHUB_ENV"
+          printf 'NORI_WHEEL=%s\n' "${NORI_WHEELS[0]}" >> "$GITHUB_ENV"
+          python -c 'import pathlib, tomllib; print("CLIENT_VERSION=" + tomllib.loads(pathlib.Path("libs/synthefy/pyproject.toml").read_text())["project"]["version"])' >> "$GITHUB_ENV"
+          python -c 'import pathlib, tomllib; print("NORI_VERSION=" + tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])' >> "$GITHUB_ENV"
+
+      - name: Rehearse candidate lightweight wheel by itself
+        run: |
+          set -euo pipefail
+          release_env="$RUNNER_TEMP/cutover/client-only-env"
+          uv venv --no-project --python 3.11 "$release_env"
+          release_python="$release_env/bin/python"
+          uv pip install --python "$release_python" --strict --no-sources "$CLIENT_WHEEL"
+          uv pip check --python "$release_python"
+          cd "$RUNNER_TEMP"
+          "$release_python" -c 'import importlib.util, sys; from importlib.metadata import version; import synthefy; assert version("synthefy") == sys.argv[1]; assert synthefy.__version__ == sys.argv[1]; assert importlib.util.find_spec("synthefy_nori") is None; assert importlib.util.find_spec("torch") is None' "$CLIENT_VERSION"
+
+      - name: Rehearse candidate SDK with released synthefy-nori 0.16.0
+        run: |
+          set -euo pipefail
+          release_env="$RUNNER_TEMP/cutover/released-heavy-env"
+          uv venv --no-project --python 3.10 "$release_env"
+          release_python="$release_env/bin/python"
+          uv pip install --python "$release_python" --strict --no-sources \
+            --torch-backend cpu "$CLIENT_WHEEL" "synthefy-nori==0.16.0"
+          uv pip check --python "$release_python"
+          cd "$RUNNER_TEMP"
+          for order in client-first nori-first; do
+            "$release_python" "$GITHUB_WORKSPACE/ci/probe_cutover_matrix.py" \
+              --expected-client "$CLIENT_VERSION" \
+              --expected-nori 0.16.0 \
+              --order "$order"
+          done
+
+      - name: Rehearse both candidate wheels together
+        run: |
+          set -euo pipefail
+          release_env="$RUNNER_TEMP/cutover/candidate-pair-env"
+          uv venv --no-project --python 3.10 "$release_env"
+          release_python="$release_env/bin/python"
+          uv pip install --python "$release_python" --strict --no-sources \
+            --torch-backend cpu "$CLIENT_WHEEL" "$NORI_WHEEL"
+          uv pip check --python "$release_python"
+          cd "$RUNNER_TEMP"
+          for order in client-first nori-first; do
+            "$release_python" "$GITHUB_WORKSPACE/ci/probe_cutover_matrix.py" \
+              --expected-client "$CLIENT_VERSION" \
+              --expected-nori "$NORI_VERSION" \
+              --order "$order"
+          done
+
   # "test" is an existing required status context on main. Keep that stable,
   # but make it fail closed over every ordinary offline package gate: otherwise
   # the artifact or namespace jobs can be red while the protected context is
   # green. always() makes this job report even when a dependency fails.
   test:
     name: test
-    needs: [unit, synthefy-artifact, distribution-boundaries]
+    needs: [unit, synthefy-artifact, distribution-boundaries, cutover-rehearsal]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -224,13 +298,16 @@ jobs:
           UNIT_RESULT: ${{ needs.unit.result }}
           SYNTHEFY_ARTIFACT_RESULT: ${{ needs['synthefy-artifact'].result }}
           DISTRIBUTION_BOUNDARIES_RESULT: ${{ needs['distribution-boundaries'].result }}
+          CUTOVER_REHEARSAL_RESULT: ${{ needs['cutover-rehearsal'].result }}
         run: |
           set -euo pipefail
           printf 'unit=%s synthefy-artifact=%s distribution-boundaries=%s\n' \
             "$UNIT_RESULT" "$SYNTHEFY_ARTIFACT_RESULT" "$DISTRIBUTION_BOUNDARIES_RESULT"
+          printf 'cutover-rehearsal=%s\n' "$CUTOVER_REHEARSAL_RESULT"
           if [ "$UNIT_RESULT" != "success" ] || \
              [ "$SYNTHEFY_ARTIFACT_RESULT" != "success" ] || \
-             [ "$DISTRIBUTION_BOUNDARIES_RESULT" != "success" ]; then
+             [ "$DISTRIBUTION_BOUNDARIES_RESULT" != "success" ] || \
+             [ "$CUTOVER_REHEARSAL_RESULT" != "success" ]; then
             echo "One or more required offline package gates failed." >&2
             exit 1
           fi

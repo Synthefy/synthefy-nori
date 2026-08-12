@@ -76,6 +76,32 @@ def test_client_artifact_tests_keep_their_explicit_offline_route():
     assert not [value for value in forbidden_sources if value in scripts.lower()]
 
 
+def test_cutover_rehearsal_covers_all_three_clean_package_combinations():
+    workflow = _workflow()
+    job = workflow["jobs"]["cutover-rehearsal"]
+    scripts = "\n".join(_run_steps(job))
+    names = {
+        step.get("name")
+        for step in job["steps"]
+        if isinstance(step, dict)
+    }
+
+    assert {
+        "Build both candidate wheels",
+        "Rehearse candidate lightweight wheel by itself",
+        "Rehearse candidate SDK with released synthefy-nori 0.16.0",
+        "Rehearse both candidate wheels together",
+    }.issubset(names)
+    assert "uv build --package synthefy --wheel --no-sources" in scripts
+    assert "uv build --package synthefy-nori --wheel --no-sources" in scripts
+    assert '"synthefy-nori==0.16.0"' in scripts
+    assert "ci/probe_cutover_matrix.py" in scripts
+    assert "--expected-client" in scripts
+    assert "--expected-nori" in scripts
+    assert "client-first nori-first" in scripts
+    assert scripts.count("uv pip check") == 3
+
+
 def test_required_test_context_fails_closed_over_every_offline_package_gate():
     workflow = _workflow()
     aggregate = workflow["jobs"]["test"]
@@ -85,6 +111,7 @@ def test_required_test_context_fails_closed_over_every_offline_package_gate():
         "distribution-boundaries",
         "synthefy-artifact",
         "unit",
+        "cutover-rehearsal",
     }
     assert aggregate["if"] == "always()"
     assert "continue-on-error" not in aggregate
@@ -98,7 +125,11 @@ def test_required_test_context_fails_closed_over_every_offline_package_gate():
         "DISTRIBUTION_BOUNDARIES_RESULT": (
             "${{ needs['distribution-boundaries'].result }}"
         ),
+        "CUTOVER_REHEARSAL_RESULT": (
+            "${{ needs['cutover-rehearsal'].result }}"
+        ),
     }
+    assert "CUTOVER_REHEARSAL_RESULT" in step["run"]
     assert "exit 1" in step["run"]
 
 
