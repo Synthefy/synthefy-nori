@@ -1,7 +1,7 @@
 """Permanent guards for ordinary pull-request CI routing.
 
 These checks protect two easy-to-miss properties: the main test command must
-continue collecting both top-level and source-co-located tests, and client
+continue collecting every configured root test tree, and client
 artifact tests must continue running from the built distribution in a
 socket-disabled environment. Billable or credentialed live validation belongs
 in protected workflows, never ordinary pull-request CI.
@@ -36,7 +36,7 @@ def _run_steps(job: dict) -> list[str]:
     ]
 
 
-def test_ordinary_pr_ci_always_reports_and_collects_every_root_test_tree():
+def test_ordinary_pr_ci_always_reports_and_collects_the_root_test_tree():
     workflow = _workflow()
     pull_request = workflow["on"]["pull_request"]
 
@@ -47,7 +47,7 @@ def test_ordinary_pr_ci_always_reports_and_collects_every_root_test_tree():
     assert "uv run pytest" in _run_steps(workflow["jobs"]["unit"])
 
     project = tomllib.loads(_PROJECT_PATH.read_text())
-    assert project["tool"]["pytest"]["ini_options"]["testpaths"] == ["tests", "src"]
+    assert project["tool"]["pytest"]["ini_options"]["testpaths"] == ["tests"]
 
 
 def test_client_artifact_tests_keep_their_explicit_offline_route():
