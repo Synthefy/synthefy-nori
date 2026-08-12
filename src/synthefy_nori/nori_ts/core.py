@@ -34,11 +34,15 @@ headroom is in the data, not the attention — the synthetic training prior has 
 temporal structure (nothing makes row t depend on row t-1), so this checkpoint
 has never seen a time series during pretraining.
 
-Note this is a *local* fit: one fit/predict per `item_id`, no cross-series
-pooling, faithful to TabPFN-TS. Synthefy's `nori-demand-forecasting` skill takes
-the opposite bet (pool the whole panel into one table, lag features) and finds
-that pooling is the bigger win on short-history and cold-start series. Neither has
-been run against the other; see the pooled-vs-local follow-up issue.
+Each series remains a separate one-shot regression request: one context and one
+horizon per `item_id`, with no cross-series pooling, faithful to TabPFN-TS. An
+injected Synthefy client executes remote or SageMaker requests. Until the
+forecaster moves into the lightweight package, its legacy local path remains but
+requires an explicit model selector or checkpoint; it never chooses a default
+model. Synthefy's `nori-demand-forecasting` skill takes the opposite bet (pool the
+whole panel into one table, lag features) and finds that pooling is the bigger win
+on short-history and cold-start series. Neither has been run against the other;
+see the pooled-vs-local follow-up issue.
 """
 
 from __future__ import annotations
@@ -61,6 +65,8 @@ from synthefy_nori.nori_ts.tsfeatures import (
 DEFAULT_QUANTILES: List[float] = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 
 _TARGET = "target"
+_REQUIRED = object()
+_SUPPORTED_MODES = frozenset({"local", "remote", "sagemaker"})
 
 
 def _default_features():
@@ -74,7 +80,7 @@ class NoriTSForecaster:
     Parameters
     ----------
     device : str | None
-        Torch device for Nori (e.g. "cuda:0"); None auto-selects.
+        Torch device for the transitional local path; None auto-selects.
     context_length : int
         Cap on history rows per series (last-N kept), matching TabPFN-TS's 4096.
     quantiles : list[float]
@@ -82,10 +88,15 @@ class NoriTSForecaster:
     features : list | None
         Feature generators; defaults to the TabPFN-TS default set.
     model : str
-        Nori variant to use when ``model_path`` is None ("nori-6m" base default,
-        or "nori-30m"). Ignored when ``model_path`` is set.
+        Explicit Nori selector for the transitional local path. Required unless
+        ``model_path`` or ``client`` is provided; there is no default model.
     model_path : str | None
-        Explicit Nori checkpoint; overrides ``model``. None -> resolve ``model``.
+        Explicit local checkpoint. Satisfies the local model requirement and
+        overrides ``model`` when both are supplied.
+    client : object | None
+        A fully configured ``SynthefyNoriClient``-compatible client. It must
+        expose explicit ``mode`` and ``model`` attributes and is mutually
+        exclusive with ``device``, ``model``, and ``model_path``.
     """
 
     def __init__(
@@ -94,9 +105,40 @@ class NoriTSForecaster:
         context_length: int = 4096,
         quantiles: Optional[List[float]] = None,
         features=None,
-        model: str = "nori-6m",
+        model=_REQUIRED,
         model_path: Optional[str] = None,
+        client=None,
     ):
+        if client is not None:
+            conflicting = []
+            if device is not None:
+                conflicting.append("device")
+            if model is not _REQUIRED:
+                conflicting.append("model")
+            if model_path is not None:
+                conflicting.append("model_path")
+            if conflicting:
+                names = ", ".join(f"{name}=" for name in conflicting)
+                raise ValueError(
+                    "client= already owns backend configuration; do not also pass "
+                    f"{names}"
+                )
+            if getattr(client, "mode", None) not in _SUPPORTED_MODES:
+                raise ValueError(
+                    "client= must carry an explicit mode: 'local', 'remote', or "
+                    "'sagemaker'"
+                )
+            if getattr(client, "model", None) is None:
+                raise ValueError("client= must carry an explicit model")
+            resolved_model = None
+        else:
+            if (model is _REQUIRED or model is None) and model_path is None:
+                raise ValueError(
+                    "model= or model_path= is required when client= is not provided; "
+                    "there is no default model"
+                )
+            resolved_model = None if model is _REQUIRED else model
+
         self.device = device
         self.context_length = context_length
         # Sorted ascending so the quantile column labels (q_names) stay aligned
@@ -105,8 +147,9 @@ class NoriTSForecaster:
         # by value.
         self.quantiles = sorted(list(quantiles) if quantiles is not None else DEFAULT_QUANTILES)
         self.features = features if features is not None else _default_features()
-        self.model = model
+        self.model = resolved_model
         self.model_path = model_path
+        self.client = client
         self._model = None  # lazily built, reused across series (context model)
 
     # ------------------------------------------------------------------ model
@@ -120,6 +163,21 @@ class NoriTSForecaster:
                 device=self.device,
             )
         return self._model
+
+    def _predict_quantiles(self, X_train, y_train, X_test, quantiles):
+        if self.client is not None:
+            return self.client.predict(
+                X_train,
+                y_train,
+                X_test,
+                output_type="quantiles",
+                quantiles=quantiles,
+            )
+        return self._get_model().fit(X_train, y_train).predict(
+            X_test,
+            output_type="quantiles",
+            quantiles=quantiles,
+        )
 
     # -------------------------------------------------------------- inference
     def predict(
@@ -150,7 +208,6 @@ class NoriTSForecaster:
         train_feat, test_feat = FeatureTransformer(self.features).transform(
             train_tsdf, test_tsdf, target_column=_TARGET
         )
-        model = self._get_model()
         q_levels = self.quantiles
         q_names = [str(q) for q in q_levels]
         median_idx = q_levels.index(0.5) if 0.5 in q_levels else None
@@ -173,9 +230,7 @@ class NoriTSForecaster:
 
             # (K, n_horizon) quantile forecasts from Nori's quantile head.
             q_pred = np.asarray(
-                model.fit(X_tr, y_tr).predict(
-                    X_te, output_type="quantiles", quantiles=q_levels
-                ),
+                self._predict_quantiles(X_tr, y_tr, X_te, q_levels),
                 dtype=np.float64,
             )
             # Redundant safety: predict() already returns monotone quantiles per

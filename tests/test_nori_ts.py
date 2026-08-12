@@ -36,7 +36,9 @@ def _tsdf(n=60, freq="h", item_id=0, start="2020-01-01", gappy=False):
 def test_quantiles_sorted_in_ctor():
     # Non-ascending input must be sorted so column labels stay aligned with the
     # value-sorted forecast rows.
-    assert NoriTSForecaster(quantiles=[0.9, 0.1, 0.5]).quantiles == [0.1, 0.5, 0.9]
+    assert NoriTSForecaster(
+        model="nori-30m", quantiles=[0.9, 0.1, 0.5]
+    ).quantiles == [0.1, 0.5, 0.9]
 
 
 def test_generate_test_X_horizon():
@@ -90,7 +92,7 @@ def test_predict_rejects_horizon_series_without_history():
     orphan = generate_test_X(_tsdf(n=30, freq="h", item_id=1), prediction_length=5, freq="h")
     combined = TimeSeriesDataFrame(pd.concat([pd.DataFrame(test), pd.DataFrame(orphan)]))
     with pytest.raises(ValueError, match="no history rows"):
-        NoriTSForecaster().predict(train, combined)
+        NoriTSForecaster(model="nori-30m").predict(train, combined)
 
 
 def test_generators_group_per_series_on_a_multi_series_frame():
@@ -166,7 +168,9 @@ def test_predict_df_end_to_end():
     hist = pd.DataFrame(
         {"timestamp": pd.date_range("2021-01-01", periods=n, freq="h"), "target": series}
     )
-    out = NoriTSForecaster(quantiles=[0.1, 0.5, 0.9]).predict_df(hist, prediction_length=24)
+    out = NoriTSForecaster(
+        model="nori-6m", quantiles=[0.1, 0.5, 0.9]
+    ).predict_df(hist, prediction_length=24)
     assert len(out) == 24
     assert {"0.1", "0.5", "0.9"}.issubset(set(out.columns))
     assert np.isfinite(out["0.5"].to_numpy()).all()
