@@ -1156,21 +1156,24 @@ def test_invalid_auth_scheme_raises():
         SynthefyNoriClient(api_key="test-key", auth_scheme="Token")
 
 
-def test_auto_mode_falls_back_to_remote_when_package_absent(monkeypatch):
-    # synthefy-nori is not installed in the test environment, so auto -> remote.
-    monkeypatch.setattr(
-        "synthefy.nori_client._local_available", lambda: False
-    )
-    client = SynthefyNoriClient(api_key="test-key", mode="auto", model="nori-30m")
-    assert client.mode == "remote"
+def test_auto_mode_is_rejected_before_credentials_model_or_transport(monkeypatch):
+    def unexpected_transport(*args, **kwargs):
+        raise AssertionError("transport setup must not run for mode='auto'")
 
-
-def test_auto_mode_uses_local_when_package_present(monkeypatch):
+    monkeypatch.delenv("SYNTHEFY_NORI_API_KEY", raising=False)
+    monkeypatch.setattr(httpx, "Client", unexpected_transport)
     monkeypatch.setattr(
-        "synthefy.nori_client._local_available", lambda: True
+        "synthefy.nori_client._create_sagemaker_runtime_client",
+        unexpected_transport,
     )
-    client = SynthefyNoriClient(mode="auto", model="nori-30m")  # no key needed once local
-    assert client.mode == "local"
+    monkeypatch.setattr("synthefy.nori_client._load_local_predict", unexpected_transport)
+    monkeypatch.setattr("synthefy.nori_client._load_local_regressor", unexpected_transport)
+
+    with pytest.raises(
+        ValueError,
+        match=r"mode='auto'.*removed.*'remote'.*'sagemaker'.*'local'",
+    ):
+        SynthefyNoriClient(mode="auto")
 
 
 def test_context_manager_closes_client():
@@ -1522,7 +1525,6 @@ def test_is_thinking_model_matches_released_medium_selector():
         assert not _is_thinking_model(name)
 
 
-@pytest.mark.parametrize("mode", ["local", "auto"])
 @pytest.mark.parametrize(
     "model",
     [
@@ -1530,11 +1532,11 @@ def test_is_thinking_model_matches_released_medium_selector():
         "nori-30m-thinking-medium",
     ],
 )
-def test_thinking_model_raises_in_local_and_auto_modes(mode, model):
-    # Thinking has no local checkpoint: constructing for local/auto inference must raise a clear
+def test_thinking_model_raises_in_local_mode(model):
+    # Thinking has no local checkpoint: constructing for local inference must raise a clear
     # error (pointing at mode="remote"), never silently run the base ~6M model.
     with pytest.raises(ValueError, match=r"Thinking.*hosted Synthefy API"):
-        SynthefyNoriClient(mode=mode, model=model)
+        SynthefyNoriClient(mode="local", model=model)
 
 
 def test_thinking_friendly_name_resolves_to_gateway_slug_remote():
@@ -2137,7 +2139,6 @@ def test_local_mode_refuses_memory_on_an_old_synthefy_nori(monkeypatch):
     from synthefy import nori_client as module
 
     monkeypatch.setattr(module, "_local_memory_policy_available", lambda: False)
-    monkeypatch.setattr(module, "_local_available", lambda: True)
     monkeypatch.setattr(module, "_load_local_predict", lambda: (lambda *a, **k: [0.0, 0.0]))
     client = SynthefyNoriClient(model="nori-30m", mode="local")
     with pytest.raises(ImportError, match="0.13.0"):
@@ -2157,7 +2158,6 @@ def test_local_mode_forwards_the_policy_when_supported(monkeypatch):
         return [0.1, 0.2]
 
     monkeypatch.setattr(module, "_local_memory_policy_available", lambda: True)
-    monkeypatch.setattr(module, "_local_available", lambda: True)
     monkeypatch.setattr(module, "_load_local_predict", lambda: fake_predict)
     client = SynthefyNoriClient(model="nori-30m", mode="local")
     client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST, memory_policy={"cache_dtype": "int8"})

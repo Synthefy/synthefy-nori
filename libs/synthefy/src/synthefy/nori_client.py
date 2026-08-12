@@ -12,7 +12,7 @@ This module is self-contained and does not depend on the forecasting client
 package-wide exception types and HTTP error handling from
 :mod:`synthefy.api_client` so that errors behave consistently across the SDK.
 
-A single :class:`SynthefyNoriClient` runs predictions in one of four modes,
+A single :class:`SynthefyNoriClient` runs predictions in one of three modes,
 selected with the ``mode`` constructor argument:
 
 - ``"remote"`` (default) -- calls the hosted Baseten endpoint over HTTPS.
@@ -21,8 +21,6 @@ selected with the ``mode`` constructor argument:
 - ``"local"`` -- runs the same prediction in-process via the optional
   ``synthefy-nori`` package (``pip install "synthefy[local]"``), no network and
   no API key.
-- ``"auto"`` -- use ``"local"`` if the ``synthefy-nori`` package is installed,
-  otherwise fall back to ``"remote"``.
 """
 
 import importlib.util
@@ -71,7 +69,7 @@ _MODEL_REQUIRED: Any = object()
 # right checkpoint locally instead of being treated as a raw HF repo.
 # The "nori-30m-thinking-medium" entries are the test-time-compute variant: hosted-API only,
 # so they map a remote gateway slug but have NO local variant -- the thinking guard in __init__
-# refuses it in mode="local"/"auto" (its ``local_variant`` below is therefore never consulted).
+# refuses it in mode="local" (its ``local_variant`` below is therefore never consulted).
 # A friendly name/slug absent here that reaches local mode has no local checkpoint and is refused
 # rather than silently running a different model (see ``_resolve_local_variant``).
 NORI_VARIANTS = {
@@ -79,7 +77,7 @@ NORI_VARIANTS = {
     "nori-30m": ("synthefy/nori-30m", "nori-30m"),
     "synthefy/nori-6m": ("synthefy/nori-6m", "nori-6m"),
     "synthefy/nori-30m": ("synthefy/nori-30m", "nori-30m"),
-    # Thinking (test-time compute) -- hosted deployments only; local/auto is refused by the
+    # Thinking (test-time compute) -- hosted deployments only; local is refused by the
     # thinking guard. Medium is the only released Thinking budget.
     "nori-30m-thinking-medium": ("synthefy/nori-30m-thinking-medium", None),
     "synthefy/nori-30m-thinking-medium": ("synthefy/nori-30m-thinking-medium", None),
@@ -167,8 +165,8 @@ _DISTRIBUTION_OUTPUT_TYPES = ("quantiles", "full")
 _OUTPUT_TYPES = _POINT_OUTPUT_TYPES + _DISTRIBUTION_OUTPUT_TYPES
 DEFAULT_OUTPUT_TYPE = "mean"
 
-Mode = Literal["remote", "local", "auto", "sagemaker"]
-_VALID_MODES = ("remote", "local", "auto", "sagemaker")
+Mode = Literal["remote", "local", "sagemaker"]
+_VALID_MODES = ("remote", "local", "sagemaker")
 
 # AWS Marketplace's SageMaker endpoint request-body limit. The live runtime accepts exactly
 # 25,000,000 bytes and returns HTTP 413 at 25,000,001 for response-stream invocations; the
@@ -422,14 +420,6 @@ def _nullable_matrix(
 ) -> List[List[Optional[float]]]:
     """Encode non-finite feature cells as JSON-compatible nulls."""
     return np.where(np.isfinite(values), values, None).tolist()
-
-
-def _local_available() -> bool:
-    """Return ``True`` if the optional ``synthefy-nori`` package is installed.
-
-    Uses ``find_spec`` so it does not import (and thus does not load) the package.
-    """
-    return importlib.util.find_spec("synthefy_nori") is not None
 
 
 def _load_local_predict() -> Any:
@@ -809,8 +799,6 @@ class SynthefyNoriClient:
       ``Authorization: <auth_scheme> <key>`` (``Bearer`` by default).
     - ``"local"``: run in-process via the optional ``synthefy-nori`` package
       (``pip install "synthefy[local]"``). No network and no API key.
-    - ``"auto"``: use ``"local"`` if ``synthefy-nori`` is installed, otherwise
-      fall back to ``"remote"`` (which then requires an API key).
     - ``"sagemaker"``: invoke a named Amazon SageMaker endpoint
       through boto3. Requests are SigV4-signed using boto3's standard credential
       chain; install the optional dependency with ``pip install "synthefy[aws]"``.
@@ -830,7 +818,7 @@ class SynthefyNoriClient:
         the ``SYNTHEFY_NORI_API_KEY`` environment variable. A
         :class:`ValueError` is raised if neither is set when remote mode is in
         effect.
-    mode : {"remote", "local", "auto", "sagemaker"}, default "remote"
+    mode : {"remote", "local", "sagemaker"}, default "remote"
         How predictions run. See above.
     timeout : float, default 300.0
         Per-request timeout in seconds for remote HTTP. SageMaker uses it as botocore's
@@ -854,7 +842,7 @@ class SynthefyNoriClient:
         explicit model identity. Selecting a variant in local mode requires a
         synthefy-nori build with the ``model=`` selector.
         Nori Thinking Medium — ``"nori-30m-thinking-medium"`` — runs only on hosted
-        deployments: passing it with ``mode="local"`` or ``mode="auto"`` raises
+        deployments: passing it with ``mode="local"`` raises
         :class:`ValueError` rather
         than silently running the base model — use ``mode="remote"``. Likewise a selector with no
         local checkpoint (an unknown/custom slug) raises in local mode instead of falling back to
@@ -877,8 +865,7 @@ class SynthefyNoriClient:
     Attributes
     ----------
     mode : str
-        The resolved mode (``"auto"`` is resolved to ``"local"`` or ``"remote"``
-        at construction).
+        The explicitly selected execution mode.
 
     Examples
     --------
@@ -927,6 +914,11 @@ class SynthefyNoriClient:
         endpoint_name: Optional[str] = None,
         region_name: Optional[str] = None,
     ) -> None:
+        if mode == "auto":
+            raise ValueError(
+                "mode='auto' has been removed; choose one explicit execution "
+                "mode: 'remote', 'sagemaker', or 'local'"
+            )
         if mode not in _VALID_MODES:
             raise ValueError(
                 f"mode must be one of {_VALID_MODES}; got {mode!r}"
@@ -956,9 +948,6 @@ class SynthefyNoriClient:
                 "model is required -- there is no default; every request names a size. "
                 f"Choose one of: {', '.join(_MODEL_NAMES)} (a raw gateway slug is also accepted)."
             )
-        requested_mode = mode
-        if mode == "auto":
-            mode = "local" if _local_available() else "remote"
         self.mode: str = mode
 
         canonical_model = _canonical_model_name(model)
@@ -969,19 +958,12 @@ class SynthefyNoriClient:
             )
         self._sagemaker_model = canonical_model
 
-        # Nori Thinking runs only on the hosted API; refuse it in any non-remote mode (mode="local"
-        # or mode="auto") instead of silently running the base model. Checked against the *requested*
-        # mode so the guard is deterministic (it does not depend on whether synthefy-nori happens to
-        # be installed, which is what mode="auto" resolves on).
-        if (
-            _is_thinking_model(model)
-            and requested_mode not in ("remote", "sagemaker")
-        ):
+        # Nori Thinking runs only on hosted backends; never silently substitute a local model.
+        if _is_thinking_model(model) and mode == "local":
             raise ValueError(
                 f"model={model!r} is a Nori Thinking (test-time-compute) variant, which runs only "
                 f"on the hosted Synthefy API. Set mode='remote' with a Baseten API key to use it "
-                f"(mode={requested_mode!r} resolves to local inference, which has no Thinking "
-                f"checkpoint)."
+                "(mode='local' has no Thinking checkpoint)."
             )
 
         self.timeout = timeout

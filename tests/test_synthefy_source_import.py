@@ -371,6 +371,8 @@ def test_post_import_transformations_preserve_phase_two_and_form_continuous_chai
     chains = manifest["post_import_history"]["transformations"]
 
     assert set(chains) == {
+        "CHANGELOG.md",
+        "README.md",
         "pyproject.toml",
         "pytest.ini",
         "src/synthefy/__init__.py",

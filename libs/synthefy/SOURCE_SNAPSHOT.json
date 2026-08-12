@@ -74,6 +74,29 @@
   "post_import_history": {
     "current_version": "7.0.0",
     "transformations": {
+      "CHANGELOG.md": [
+        {
+          "input_blob": "7b69d85855e255bc5af57239fa4256862ff9994f",
+          "result_blob": "e4ba5057472addf842ede47872a57b8fe0d185ac",
+          "phase": "explicit_execution_modes",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
+          "changes": [
+            "record the 7.0.0 explicit-backend migration guidance"
+          ]
+        }
+      ],
+      "README.md": [
+        {
+          "input_blob": "e5d3c256f4a579ec880ece9b1eca0eeb6016d6b0",
+          "result_blob": "23c18bab09f7374e60ee101c8c94192a92c4a2b2",
+          "phase": "explicit_execution_modes",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
+          "changes": [
+            "remove auto backend routing examples and API references",
+            "document remote, sagemaker, and local as the explicit execution modes"
+          ]
+        }
+      ],
       "pyproject.toml": [
         {
           "input_blob": "0f9e10c5b6175b496176c717083cf3cf72862cda",
@@ -165,6 +188,16 @@
             "remove the duplicate client constants, dtype helpers, encoder, and alignment path",
             "preserve the public predict warning callsite through the canonical helper"
           ]
+        },
+        {
+          "input_blob": "b919aef5770069a7fa0d385db0daa3ed12fa400d",
+          "result_blob": "4834f552c280ac6dca7f2b03e4c6665c9cf68066",
+          "phase": "explicit_execution_modes",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
+          "changes": [
+            "remove auto from the supported execution mode type and resolver",
+            "reject the retired value before credentials, model selection, or transport setup"
+          ]
         }
       ],
       "tests/conftest.py": [
@@ -206,6 +239,15 @@
           "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
           "changes": [
             "assert the canonical featurizer preserves the warning category, message, count, and public predict callsite"
+          ]
+        },
+        {
+          "input_blob": "47a19b2bca2088ce939cbf75981217c9a1f4424a",
+          "result_blob": "5c42009fa40a93881cfc30ec34332d5eff817dc6",
+          "phase": "explicit_execution_modes",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
+          "changes": [
+            "replace auto-routing tests with an early fail-closed migration contract"
           ]
         }
       ]

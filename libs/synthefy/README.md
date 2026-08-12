@@ -261,7 +261,7 @@ It is independent of the forecasting client above (different model, different
 endpoint, different credential) but is exported from the same package. A single
 `SynthefyNoriClient` runs predictions against the hosted endpoint, a named AWS
 SageMaker endpoint, or locally, selected with the `mode` argument (`"remote"`
-(default), `"aws"`, `"local"`, or `"auto"`).
+(default), `"sagemaker"`, or `"local"`).
 
 ### Use it from your AI coding assistant
 
@@ -454,8 +454,8 @@ boto3's standard credential chain: environment/shared config, web identity
 (including GitHub OIDC), container or instance roles, and SSO profiles. It does
 not accept AWS access keys. `model=` and `endpoint_name=` are required: the
 endpoint selects the deployed model specification, while the request model is
-checked against it so a routing mistake fails closed. `auto` mode never selects
-SageMaker.
+checked against it so a routing mistake fails closed. Backend selection is always
+explicit; installing another package never changes where a request runs.
 
 SageMaker's request is the same Nori JSON contract used by the hosted transport,
 sent through `InvokeEndpointWithResponseStream` with `application/json` for all three
@@ -518,14 +518,9 @@ with strict_pipeline(SvdFallbackWarning):
     predictions = client.predict(X_train, y_train, X_test)
 ```
 
-Use `mode="auto"` to prefer local when `synthefy-nori` is installed and
-transparently fall back to the hosted endpoint (which then requires an API key)
-otherwise:
-
-```python
-client = SynthefyNoriClient(api_key="your_api_key", mode="auto", model="nori-30m")
-print(client.mode)  # "local" if synthefy-nori is installed, else "remote"
-```
+Backend selection is explicit. Use `mode="local"` for in-process execution or
+`mode="remote"` for the hosted endpoint; installing `synthefy-nori` never changes
+an existing client's routing.
 
 ### Large Tables and Memory (`memory_policy=`)
 
@@ -695,8 +690,8 @@ continuous mean is already optimal for those metrics.
 
 - `SynthefyNoriClient(api_key=None, *, mode="remote", timeout=300.0, max_retries=2, base_url=..., endpoint=..., model, user_agent=None, endpoint_name=None, region_name=None)` — `model` is **required everywhere** and accepts the three released Nori variants (`nori-6m`, `nori-30m`, and `nori-30m-thinking-medium`) or an explicit custom HTTP slug; there is no `None`/default model path. SageMaker uses response streaming for all three so large 30M requests can run beyond the regular-response limit while `predict()` still returns one normal result.
   - `mode`: `"remote"` (hosted, default), `"local"` (in-process via
-    `synthefy-nori`), `"auto"` (local if installed, else remote), or
-    `"sagemaker"` (a named SageMaker endpoint using the AWS credential chain).
+    `synthefy-nori`), or `"sagemaker"` (a named SageMaker endpoint using the AWS
+    credential chain).
   - `api_key` (remote mode) falls back to the `SYNTHEFY_NORI_API_KEY`
     environment variable. Not required in local mode.
   - Hosted Nori is reached by gateway slug — that is the path Synthefy meters,
@@ -733,8 +728,7 @@ continuous mean is already optimal for those metrics.
     [Categorical / Ordinal Targets](#categorical--ordinal-targets-discretize--categorical_levels));
     remote mode supports `discretize="snap-mean"`, local mode the full
     strategy set of the installed `synthefy-nori`.
-- `mode`: the resolved mode (`"auto"` becomes `"local"`/`"remote"` at
-  construction).
+- `mode`: the explicitly selected execution mode.
 - `close()` / context manager support (`with SynthefyNoriClient(...) as client:`).
 
 ### SynthefyAPIClient (Synchronous)

@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.0.0] - Unreleased
+
+### Changed
+
+- Removed execution `mode="auto"` from `SynthefyNoriClient`. Callers must select
+  `"remote"`, `"sagemaker"`, or `"local"` explicitly; installed packages and
+  ambient credentials never change request routing.
+
+
 ## [6.3.0]
 
 ### Added
