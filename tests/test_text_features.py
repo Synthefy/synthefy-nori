@@ -6,12 +6,22 @@ the standalone zero-shot script's R² through NoriRegressor — is exercised
 separately against a real split.
 """
 
+import builtins
 import hashlib
+import importlib
+import importlib.util
+import pickle
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from synthefy.text_features import (
+    MultimodalPreprocessor as CanonicalMultimodalPreprocessor,
+    build_paragraphs as canonical_build_paragraphs,
+)
+import synthefy_nori.text_features as legacy_text_features_module
 from synthefy_nori.text_features import MultimodalPreprocessor, build_paragraphs
 
 
@@ -30,6 +40,162 @@ def _frame(n_rows):
         "brand": (["A", "B"] * n_rows)[:n_rows],
         "review": [f"row {i} some free text here" for i in range(n_rows)],
     })
+
+
+def test_lightweight_module_owns_legacy_entry_points():
+    assert MultimodalPreprocessor is CanonicalMultimodalPreprocessor
+    assert build_paragraphs is canonical_build_paragraphs
+
+    train = _frame(6)
+    legacy = MultimodalPreprocessor(["review"], svd_dim=3, embedder=_fake_embed)
+    canonical = CanonicalMultimodalPreprocessor(
+        ["review"], svd_dim=3, embedder=_fake_embed
+    )
+    np.testing.assert_array_equal(
+        legacy.fit_transform(train), canonical.fit_transform(train)
+    )
+
+
+def test_legacy_wrapper_falls_back_when_only_the_canonical_submodule_is_missing(
+    monkeypatch,
+):
+    original = CanonicalMultimodalPreprocessor(
+        ["review"], svd_dim=3, embedder="minilm"
+    )
+    old_pickle = pickle.dumps(original, protocol=0).replace(
+        b"csynthefy.text_features\nMultimodalPreprocessor\n",
+        b"csynthefy_nori.text_features\nMultimodalPreprocessor\n",
+        1,
+    )
+    real_import = builtins.__import__
+
+    def missing_canonical(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "synthefy.text_features":
+            raise ModuleNotFoundError(
+                "No module named 'synthefy.text_features'",
+                name="synthefy.text_features",
+            )
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", missing_canonical)
+    try:
+        fallback = importlib.reload(legacy_text_features_module)
+        assert fallback.MultimodalPreprocessor.__module__ == (
+            "synthefy_nori._legacy_text_features"
+        )
+        train = _frame(6)
+        migrated = fallback.MultimodalPreprocessor(
+            ["review"], svd_dim=3, embedder=_fake_embed
+        )
+        canonical = CanonicalMultimodalPreprocessor(
+            ["review"], svd_dim=3, embedder=_fake_embed
+        )
+        np.testing.assert_array_equal(
+            migrated.fit_transform(train), canonical.fit_transform(train)
+        )
+        restored = pickle.loads(old_pickle)
+        assert type(restored) is fallback.MultimodalPreprocessor
+        assert restored.text_columns == ["review"]
+        assert restored.svd_dim == 3
+    finally:
+        monkeypatch.undo()
+        importlib.reload(legacy_text_features_module)
+
+    assert (
+        legacy_text_features_module.MultimodalPreprocessor
+        is CanonicalMultimodalPreprocessor
+    )
+
+
+def test_legacy_wrapper_does_not_mask_a_transitive_import_failure(monkeypatch):
+    real_import = builtins.__import__
+
+    def broken_canonical_dependency(
+        name, globals=None, locals=None, fromlist=(), level=0
+    ):
+        if name == "synthefy.text_features":
+            raise ModuleNotFoundError("No module named 'sklearn'", name="sklearn")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", broken_canonical_dependency)
+    try:
+        with pytest.raises(ModuleNotFoundError) as caught:
+            importlib.reload(legacy_text_features_module)
+        assert caught.value.name == "sklearn"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(legacy_text_features_module)
+
+
+def test_direct_text_import_explains_how_to_install_the_text_extra(monkeypatch):
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "libs"
+        / "synthefy"
+        / "src"
+        / "synthefy"
+        / "text_features.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_synthefy_text_features_without_sklearn", source
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    real_import = builtins.__import__
+
+    def missing_sklearn(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "sklearn.decomposition":
+            raise ModuleNotFoundError("No module named 'sklearn'", name="sklearn")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", missing_sklearn)
+    with pytest.raises(ImportError) as caught:
+        spec.loader.exec_module(module)
+    assert 'pip install "synthefy[text]"' in str(caught.value)
+
+
+def test_optional_encoder_guidance_covers_both_public_install_paths(monkeypatch):
+    import synthefy.text_features as canonical_text_features
+    from synthefy_nori import _legacy_text_features
+
+    real_import = builtins.__import__
+
+    def missing_sentence_transformers(
+        name, globals=None, locals=None, fromlist=(), level=0
+    ):
+        if name == "sentence_transformers":
+            raise ModuleNotFoundError(
+                "No module named 'sentence_transformers'",
+                name="sentence_transformers",
+            )
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", missing_sentence_transformers)
+    with pytest.raises(ImportError) as canonical_error:
+        canonical_text_features._make_encoder("minilm")
+    assert "synthefy[text]" in str(canonical_error.value)
+    assert "synthefy-nori[text]" in str(canonical_error.value)
+
+    with pytest.raises(ImportError) as legacy_error:
+        _legacy_text_features._make_encoder("minilm")
+    assert "synthefy-nori[text]" in str(legacy_error.value)
+
+
+def test_old_legacy_qualified_preprocessor_pickle_still_unpickles():
+    original = CanonicalMultimodalPreprocessor(
+        ["review"], svd_dim=3, embedder="minilm"
+    )
+    payload = pickle.dumps(original, protocol=0)
+    canonical_global = b"csynthefy.text_features\nMultimodalPreprocessor\n"
+    legacy_global = b"csynthefy_nori.text_features\nMultimodalPreprocessor\n"
+    assert canonical_global in payload
+
+    old_payload = payload.replace(canonical_global, legacy_global, 1)
+    restored = pickle.loads(old_payload)
+
+    assert isinstance(restored, CanonicalMultimodalPreprocessor)
+    assert restored.text_columns == ["review"]
+    assert restored.svd_dim == 3
 
 
 def test_build_paragraphs_prefixes_and_missing():

@@ -6,7 +6,8 @@ on:
   pull_request:
 
 jobs:
-  test:
+  unit:
+    name: CI unit, source, and build tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -14,11 +15,304 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v8.2.0
-      - run: uv sync --extra dev
-      - run: uv run python -c "import synthefy_nori"
-      - run: uv run pytest tests
-      - run: uv run ruff check src scripts tests
+      - run: uv sync --locked --extra dev
+      - run: >-
+          uv run python -c
+          "import synthefy, synthefy_nori;
+          assert synthefy.__version__ == '7.0.0';
+          assert synthefy_nori.__version__ == '0.17.0'"
+      - run: uv run pytest
+      - run: >-
+          uv run ruff check src scripts tests
+          ci/validate_distribution_boundaries.py
+          ci/probe_installed_distributions.py
+          ci/probe_cutover_matrix.py
       - run: uv build
+
+  synthefy-artifact:
+    name: CI test synthefy ${{ matrix.kind }} on Python ${{ matrix.python_version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python_version: "3.9"
+            kind: wheel
+            artifact_file: dist/synthefy/synthefy-7.0.0-py3-none-any.whl
+          - python_version: "3.9"
+            kind: sdist
+            artifact_file: dist/synthefy/synthefy-7.0.0.tar.gz
+          - python_version: "3.11"
+            kind: wheel
+            artifact_file: dist/synthefy/synthefy-7.0.0-py3-none-any.whl
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v8.2.0
+      - name: Build the locked client artifacts
+        run: |
+          uv sync --locked --package synthefy --no-default-groups --group package
+          uv build --package synthefy --no-build-isolation --no-sources --out-dir dist/synthefy
+          uv run --locked --package synthefy --no-sync twine check dist/synthefy/*
+      - name: Test the installed artifact outside the workspace
+        env:
+          CLIENT_TEST_ARTIFACT: ${{ matrix.artifact_file }}
+          CLIENT_TEST_KIND: ${{ matrix.kind }}
+          CLIENT_TEST_PYTHON: ${{ matrix.python_version }}
+        run: |
+          CLIENT_TEST_ENV="$RUNNER_TEMP/synthefy-$CLIENT_TEST_PYTHON-$CLIENT_TEST_KIND"
+          uv venv --no-project --python "$CLIENT_TEST_PYTHON" "$CLIENT_TEST_ENV"
+          CLIENT_TEST_PY="$CLIENT_TEST_ENV/bin/python"
+
+          uv pip install --python "$CLIENT_TEST_PY" --strict "$CLIENT_TEST_ARTIFACT"
+          uv pip check --python "$CLIENT_TEST_PY"
+          "$CLIENT_TEST_PY" -c 'import importlib.util; import synthefy; from importlib.metadata import metadata; assert "site-packages" in synthefy.__file__; assert synthefy.__version__ == "7.0.0"; assert metadata("synthefy")["Requires-Python"] == ">=3.9"; assert all(importlib.util.find_spec(name) is None for name in ("boto3", "joblib", "scipy", "sentence_transformers", "sklearn", "synthefy_nori", "torch"))'
+
+          uv pip install --python "$CLIENT_TEST_PY" --strict \
+            "boto3>=1.34,<2" \
+            "pytest>=7.4,<9" \
+            "pytest-socket>=0.7"
+          uv pip check --python "$CLIENT_TEST_PY"
+          "$CLIENT_TEST_PY" -c 'import importlib.util; assert all(importlib.util.find_spec(name) is None for name in ("joblib", "scipy", "sklearn", "synthefy_nori", "torch"))'
+
+          cd "$RUNNER_TEMP"
+          "$CLIENT_TEST_PY" -B -m pytest \
+            --disable-socket \
+            --import-mode=importlib \
+            -p no:cacheprovider \
+            -c "$GITHUB_WORKSPACE/libs/synthefy/pytest.ini" \
+            -m "not slow" \
+            "$GITHUB_WORKSPACE/libs/synthefy/tests" \
+            "$GITHUB_WORKSPACE/tests/test_synthefy_client_compat.py"
+
+      - name: Exercise forecasting parity from the Python 3.9 artifact
+        if: matrix.python_version == '3.9'
+        env:
+          CLIENT_TEST_ARTIFACT: ${{ matrix.artifact_file }}
+          CLIENT_TEST_KIND: ${{ matrix.kind }}
+        run: |
+          CLIENT_TEST_ENV="$RUNNER_TEMP/synthefy-3.9-$CLIENT_TEST_KIND"
+          CLIENT_TEST_PY="$CLIENT_TEST_ENV/bin/python"
+          ARTIFACT_PATH=$(realpath "$CLIENT_TEST_ARTIFACT")
+          uv pip install --python "$CLIENT_TEST_PY" --strict --no-sources \
+            "synthefy[forecasting] @ file://$ARTIFACT_PATH"
+          uv pip check --python "$CLIENT_TEST_PY"
+          cd "$RUNNER_TEMP"
+          "$CLIENT_TEST_PY" -B -m pytest \
+            --disable-socket \
+            --import-mode=importlib -p no:cacheprovider \
+            -c "$GITHUB_WORKSPACE/libs/synthefy/pytest.ini" \
+            "$GITHUB_WORKSPACE/libs/synthefy/tests/test_tsfeatures.py" \
+            "$GITHUB_WORKSPACE/tests/test_nori_ts_parity.py" \
+            "$GITHUB_WORKSPACE/tests/test_nori_ts_backend.py"
+  distribution-boundaries:
+    name: CI validate distribution boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v8.2.0
+      - name: Build direct wheels and source distributions
+        run: |
+          uv build --package synthefy --wheel --no-sources \
+            --out-dir "$RUNNER_TEMP/artifacts/synthefy/direct"
+          uv build --package synthefy --sdist --no-sources \
+            --out-dir "$RUNNER_TEMP/artifacts/synthefy/sdist"
+          uv build --package synthefy-nori --wheel --no-sources \
+            --out-dir "$RUNNER_TEMP/artifacts/synthefy-nori/direct"
+          uv build --package synthefy-nori --sdist --no-sources \
+            --out-dir "$RUNNER_TEMP/artifacts/synthefy-nori/sdist"
+
+          CLIENT_WHEELS=("$RUNNER_TEMP/artifacts/synthefy/direct/"*.whl)
+          NORI_WHEELS=("$RUNNER_TEMP/artifacts/synthefy-nori/direct/"*.whl)
+          test "${#CLIENT_WHEELS[@]}" -eq 1
+          test "${#NORI_WHEELS[@]}" -eq 1
+          test -f "${CLIENT_WHEELS[0]}"
+          test -f "${NORI_WHEELS[0]}"
+          printf 'CLIENT_WHEEL=%s\n' "${CLIENT_WHEELS[0]}" >> "$GITHUB_ENV"
+          printf 'NORI_WHEEL=%s\n' "${NORI_WHEELS[0]}" >> "$GITHUB_ENV"
+      - name: Rebuild both wheels from their source distributions
+        run: |
+          uv build --wheel --no-sources \
+            "$RUNNER_TEMP/artifacts/synthefy/sdist/"*.tar.gz \
+            --out-dir "$RUNNER_TEMP/artifacts/synthefy/rebuilt"
+          uv build --wheel --no-sources \
+            "$RUNNER_TEMP/artifacts/synthefy-nori/sdist/"*.tar.gz \
+            --out-dir "$RUNNER_TEMP/artifacts/synthefy-nori/rebuilt"
+      - name: Check every publishable artifact strictly
+        run: uvx --from 'twine>=6.1,<7' twine check --strict "$RUNNER_TEMP/artifacts/"*/*/*
+      - name: Validate wheel RECORDs and namespace ownership
+        run: |
+          uv run --no-project --python 3.11 python ci/validate_distribution_boundaries.py \
+            --client-direct "$CLIENT_WHEEL" \
+            --client-rebuilt "$RUNNER_TEMP/artifacts/synthefy/rebuilt/"*.whl \
+            --nori-direct "$NORI_WHEEL" \
+            --nori-rebuilt "$RUNNER_TEMP/artifacts/synthefy-nori/rebuilt/"*.whl
+
+      - name: Install the direct wheels outside the workspace
+        run: |
+          INSTALLED_TEST_ENV="$RUNNER_TEMP/installed-distributions"
+          INSTALLED_TEST_PY="$INSTALLED_TEST_ENV/bin/python"
+          uv venv --no-project --python 3.11 "$INSTALLED_TEST_ENV"
+          uv pip install --python "$INSTALLED_TEST_PY" --strict --no-sources \
+            --torch-backend cpu \
+            "synthefy[forecasting] @ file://$CLIENT_WHEEL" "$NORI_WHEEL"
+          uv pip check --python "$INSTALLED_TEST_PY"
+      - name: Import both distributions in either order
+        run: |
+          INSTALLED_TEST_PY="$RUNNER_TEMP/installed-distributions/bin/python"
+          cd "$RUNNER_TEMP"
+          "$INSTALLED_TEST_PY" "$GITHUB_WORKSPACE/ci/probe_installed_distributions.py" both --order client-first
+          "$INSTALLED_TEST_PY" "$GITHUB_WORKSPACE/ci/probe_installed_distributions.py" both --order nori-first
+      - name: Uninstall Nori and prove the client remains intact
+        run: |
+          INSTALLED_TEST_PY="$RUNNER_TEMP/installed-distributions/bin/python"
+          uv pip uninstall --python "$INSTALLED_TEST_PY" synthefy-nori
+          uv pip check --python "$INSTALLED_TEST_PY"
+          cd "$RUNNER_TEMP"
+          "$INSTALLED_TEST_PY" "$GITHUB_WORKSPACE/ci/probe_installed_distributions.py" client-only
+      - name: Reinstall Nori, then prove its files survive a client uninstall
+        run: |
+          INSTALLED_TEST_PY="$RUNNER_TEMP/installed-distributions/bin/python"
+          uv pip install --python "$INSTALLED_TEST_PY" --strict --no-deps "$NORI_WHEEL"
+          uv pip check --python "$INSTALLED_TEST_PY"
+          uv pip uninstall --python "$INSTALLED_TEST_PY" synthefy
+          cd "$RUNNER_TEMP"
+          "$INSTALLED_TEST_PY" "$GITHUB_WORKSPACE/ci/probe_installed_distributions.py" nori-only
+      - name: Validate client extra dependency ownership on Python 3.9
+        run: |
+          for EXTRA in aws forecasting text; do
+            printf 'Probing synthefy[%s] in a clean environment\n' "$EXTRA"
+            EXTRA_ENV="$RUNNER_TEMP/client-extra-$EXTRA"
+            EXTRA_PY="$EXTRA_ENV/bin/python"
+            uv venv --no-project --python 3.9 "$EXTRA_ENV"
+            uv pip install --python "$EXTRA_PY" --strict --no-sources \
+              --torch-backend cpu \
+              "synthefy[$EXTRA] @ file://$CLIENT_WHEEL"
+            uv pip check --python "$EXTRA_PY"
+            cd "$RUNNER_TEMP"
+            "$EXTRA_PY" "$GITHUB_WORKSPACE/ci/probe_installed_distributions.py" \
+              extra --case "client-$EXTRA"
+          done
+      - name: Validate current Nori feature extras on Python 3.10
+        run: |
+          for EXTRA in forecasting text; do
+            printf 'Probing synthefy-nori[%s] in a clean environment\n' "$EXTRA"
+            EXTRA_ENV="$RUNNER_TEMP/nori-extra-$EXTRA"
+            EXTRA_PY="$EXTRA_ENV/bin/python"
+            uv venv --no-project --python 3.10 "$EXTRA_ENV"
+            uv pip install --python "$EXTRA_PY" --strict --no-sources \
+              --torch-backend cpu \
+              "$CLIENT_WHEEL" \
+              "synthefy-nori[$EXTRA] @ file://$NORI_WHEEL"
+            uv pip check --python "$EXTRA_PY"
+            cd "$RUNNER_TEMP"
+            "$EXTRA_PY" "$GITHUB_WORKSPACE/ci/probe_installed_distributions.py" \
+              extra --case "nori-$EXTRA"
+          done
+
+  cutover-rehearsal:
+    name: CI rehearse package cutover matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v8.2.0
+      - name: Build both candidate wheels
+        run: |
+          set -euo pipefail
+          uv build --package synthefy --wheel --no-sources \
+            --out-dir "$RUNNER_TEMP/cutover/client"
+          uv build --package synthefy-nori --wheel --no-sources \
+            --out-dir "$RUNNER_TEMP/cutover/nori"
+          CLIENT_WHEELS=("$RUNNER_TEMP/cutover/client/"*.whl)
+          NORI_WHEELS=("$RUNNER_TEMP/cutover/nori/"*.whl)
+          test "${#CLIENT_WHEELS[@]}" -eq 1
+          test "${#NORI_WHEELS[@]}" -eq 1
+          printf 'CLIENT_WHEEL=%s\n' "${CLIENT_WHEELS[0]}" >> "$GITHUB_ENV"
+          printf 'NORI_WHEEL=%s\n' "${NORI_WHEELS[0]}" >> "$GITHUB_ENV"
+          python -c 'import pathlib, tomllib; print("CLIENT_VERSION=" + tomllib.loads(pathlib.Path("libs/synthefy/pyproject.toml").read_text())["project"]["version"])' >> "$GITHUB_ENV"
+          python -c 'import pathlib, tomllib; print("NORI_VERSION=" + tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])' >> "$GITHUB_ENV"
+
+      - name: Rehearse candidate lightweight wheel by itself
+        run: |
+          set -euo pipefail
+          release_env="$RUNNER_TEMP/cutover/client-only-env"
+          uv venv --no-project --python 3.11 "$release_env"
+          release_python="$release_env/bin/python"
+          uv pip install --python "$release_python" --strict --no-sources "$CLIENT_WHEEL"
+          uv pip check --python "$release_python"
+          cd "$RUNNER_TEMP"
+          "$release_python" -c 'import importlib.util, sys; from importlib.metadata import version; import synthefy; assert version("synthefy") == sys.argv[1]; assert synthefy.__version__ == sys.argv[1]; assert importlib.util.find_spec("synthefy_nori") is None; assert importlib.util.find_spec("torch") is None' "$CLIENT_VERSION"
+
+      - name: Rehearse candidate SDK with released synthefy-nori 0.16.0
+        run: |
+          set -euo pipefail
+          release_env="$RUNNER_TEMP/cutover/released-heavy-env"
+          uv venv --no-project --python 3.10 "$release_env"
+          release_python="$release_env/bin/python"
+          uv pip install --python "$release_python" --strict --no-sources \
+            --torch-backend cpu "$CLIENT_WHEEL" "synthefy-nori==0.16.0"
+          uv pip check --python "$release_python"
+          cd "$RUNNER_TEMP"
+          for order in client-first nori-first; do
+            "$release_python" "$GITHUB_WORKSPACE/ci/probe_cutover_matrix.py" \
+              --expected-client "$CLIENT_VERSION" \
+              --expected-nori 0.16.0 \
+              --order "$order"
+          done
+
+      - name: Rehearse both candidate wheels together
+        run: |
+          set -euo pipefail
+          release_env="$RUNNER_TEMP/cutover/candidate-pair-env"
+          uv venv --no-project --python 3.10 "$release_env"
+          release_python="$release_env/bin/python"
+          uv pip install --python "$release_python" --strict --no-sources \
+            --torch-backend cpu "$CLIENT_WHEEL" "$NORI_WHEEL"
+          uv pip check --python "$release_python"
+          cd "$RUNNER_TEMP"
+          for order in client-first nori-first; do
+            "$release_python" "$GITHUB_WORKSPACE/ci/probe_cutover_matrix.py" \
+              --expected-client "$CLIENT_VERSION" \
+              --expected-nori "$NORI_VERSION" \
+              --order "$order"
+          done
+
+  # "test" is an existing required status context on main. Keep that stable,
+  # but make it fail closed over every ordinary offline package gate: otherwise
+  # the artifact or namespace jobs can be red while the protected context is
+  # green. always() makes this job report even when a dependency fails.
+  test:
+    name: test
+    needs: [unit, synthefy-artifact, distribution-boundaries, cutover-rehearsal]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every offline package gate
+        env:
+          UNIT_RESULT: ${{ needs.unit.result }}
+          SYNTHEFY_ARTIFACT_RESULT: ${{ needs['synthefy-artifact'].result }}
+          DISTRIBUTION_BOUNDARIES_RESULT: ${{ needs['distribution-boundaries'].result }}
+          CUTOVER_REHEARSAL_RESULT: ${{ needs['cutover-rehearsal'].result }}
+        run: |
+          set -euo pipefail
+          printf 'unit=%s synthefy-artifact=%s distribution-boundaries=%s\n' \
+            "$UNIT_RESULT" "$SYNTHEFY_ARTIFACT_RESULT" "$DISTRIBUTION_BOUNDARIES_RESULT"
+          printf 'cutover-rehearsal=%s\n' "$CUTOVER_REHEARSAL_RESULT"
+          if [ "$UNIT_RESULT" != "success" ] || \
+             [ "$SYNTHEFY_ARTIFACT_RESULT" != "success" ] || \
+             [ "$DISTRIBUTION_BOUNDARIES_RESULT" != "success" ] || \
+             [ "$CUTOVER_REHEARSAL_RESULT" != "success" ]; then
+            echo "One or more required offline package gates failed." >&2
+            exit 1
+          fi
 
   # Merge gate (part 1): a real inference forward pass on CPU. Downloads the
   # public Synthefy/Nori checkpoint. Mark this job as a required status check in
@@ -32,7 +326,7 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v8.2.0
-      - run: uv sync --extra dev
+      - run: uv sync --locked --extra dev
       - run: uv run pytest -m slow tests/test_inference_e2e.py tests/test_memory_policy_e2e.py
 
   # Merge gate (part 2): one real training step from scratch on CPU (data-gen ->
@@ -46,7 +340,7 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v8.2.0
-      - run: uv sync --extra dev
+      - run: uv sync --locked --extra dev
       - run: uv run pytest -m slow tests/test_training_smoke.py
 
   # Merge gate (part 3): the embedding feature end-to-end — NoriEmbedding, the
@@ -64,7 +358,7 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v8.2.0
-      - run: uv sync --extra dev --extra eval
+      - run: uv sync --locked --extra dev --extra eval
       - run: uv run pytest -m slow tests/embedding/
 
   # torch/CUDA-range guard: the published range is `torch>=2.8,<2.14`, so verify

@@ -1,0 +1,85 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "synthefy"
+version = "7.0.0"
+description = "Lightweight client and workflow SDK for Synthefy Nori regression and forecasting"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "licenses/*"]
+authors = [
+    {name = "Synthefy", email = "contact@synthefy.com"}
+]
+maintainers = [
+    {name = "Synthefy", email = "contact@synthefy.com"}
+]
+keywords = ["forecasting", "api", "machine-learning", "time-series", "tabular", "regression", "nori"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "httpx>=0.24.0,<0.28.0",
+    "pandas>=1.3.0",
+    "pydantic>=2.0.0",
+    "numpy>=1.20.0",
+    "typing-extensions>=4.10.0",
+]
+
+[project.optional-dependencies]
+# Optional feature dependencies remain outside the lightweight base install.
+forecasting = [
+    "datasets>=2.0",
+    "gluonts>=0.16",
+    "joblib>=1.1",
+    "scipy>=1.13",
+    "statsmodels>=0.14",
+]
+text = ["scikit-learn>=1.4", "sentence-transformers"]
+# Signed Amazon SageMaker endpoint invocation. boto3 resolves credentials from
+# its standard chain; the public client deliberately accepts no raw AWS keys.
+aws = ["boto3>=1.34.0,<2.0.0"]
+
+[project.urls]
+Homepage = "https://synthefy.com"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/synthefy"]
+
+[tool.hatch.build.targets.sdist]
+ignore-vcs = true
+include = [
+    "/src",
+    "/docs",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+]
+exclude = [
+    "INTERNAL_README.md",
+]
+
+[dependency-groups]
+dev = [
+    "boto3>=1.34.0,<2.0.0",
+    "pytest>=7.4.0,<9.0.0",
+    "pytest-socket>=0.7.0",
+]
+package = [
+    "build>=1.3.0,<2.0.0",
+    "hatchling==1.27.0",
+    "twine>=6.1.0,<7.0.0",
+]

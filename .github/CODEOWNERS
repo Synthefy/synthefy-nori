@@ -11,3 +11,28 @@
 # silently ignores their entries here.
 
 *	@sagarwal-atg @d31003 @yogabbagabb @raimishah @adityanarayanan03 @PohanLi-Synthefy
+# protection's "Require review from Code Owners" enabled on the default branch,
+# a pull request cannot be merged until at least one of them approves it.
+#
+# See `.github/branch-protection.md` for the one-time branch-protection
+# settings that make this actually block the merge button.
+#
+# NOTE: code owners must have write access to this repository, otherwise GitHub
+# silently ignores their entries here.
+
+*	@sagarwal-atg @raimishah @adityanarayanan03 @PohanLi-Synthefy
+
+# Public package and execution boundaries are listed explicitly so changes at
+# these high-coupling seams always request the same review even if the repository
+# default changes later.
+/libs/synthefy/	@sagarwal-atg @raimishah @adityanarayanan03 @PohanLi-Synthefy
+/src/synthefy_nori/	@sagarwal-atg @raimishah @adityanarayanan03 @PohanLi-Synthefy
+
+# Packaging, compatibility automation, and release workflows define what users
+# install and which source checkout is authoritative.
+/pyproject.toml	@sagarwal-atg @raimishah @adityanarayanan03 @PohanLi-Synthefy
+/libs/synthefy/pyproject.toml	@sagarwal-atg @raimishah @adityanarayanan03 @PohanLi-Synthefy
+/uv.lock	@sagarwal-atg @raimishah @adityanarayanan03 @PohanLi-Synthefy
+/ci/	@sagarwal-atg @raimishah @adityanarayanan03 @PohanLi-Synthefy
+/tests/	@sagarwal-atg @raimishah @adityanarayanan03 @PohanLi-Synthefy
+/.github/workflows/	@sagarwal-atg @raimishah @adityanarayanan03 @PohanLi-Synthefy
