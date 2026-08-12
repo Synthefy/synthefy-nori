@@ -1,0 +1,193 @@
+name: publish-synthefy
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      distribution:
+        description: "Distribution to publish (must be synthefy)"
+        required: true
+        type: choice
+        options: [synthefy]
+      version:
+        description: "Exact package version, for example 7.0.0"
+        required: true
+        type: string
+      target:
+        description: "Package index"
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+      tag:
+        description: "Exact existing tag, for example synthefy-v7.0.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-synthefy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and validate synthefy
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.event.release.tag_name, 'synthefy-v')
+    runs-on: ubuntu-latest
+    outputs:
+      artifact: ${{ steps.coordinates.outputs.artifact }}
+      target: ${{ steps.coordinates.outputs.target }}
+      version: ${{ steps.coordinates.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v8.2.0
+
+      - name: Resolve and validate release coordinates
+        id: coordinates
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_DISTRIBUTION: ${{ inputs.distribution }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_TARGET: ${{ inputs.target }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = release ]; then
+            distribution=synthefy
+            tag="$RELEASE_TAG"
+            version="${tag#synthefy-v}"
+            target=pypi
+          else
+            distribution="$INPUT_DISTRIBUTION"
+            version="$INPUT_VERSION"
+            target="$INPUT_TARGET"
+            tag="$INPUT_TAG"
+          fi
+
+          if [ "$distribution" != synthefy ]; then
+            echo "distribution must be synthefy" >&2
+            exit 1
+          fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([A-Za-z0-9.+-]+)?$ ]]; then
+            echo "invalid version: $version" >&2
+            exit 1
+          fi
+          expected_tag="synthefy-v$version"
+          if [ "$tag" != "$expected_tag" ]; then
+            echo "tag $tag does not match $expected_tag" >&2
+            exit 1
+          fi
+          if [ "$EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != "refs/tags/$tag" ]; then
+            echo "manual dispatch must run from refs/tags/$tag; got $GITHUB_REF" >&2
+            exit 1
+          fi
+
+          git fetch origin main --no-tags
+          tag_commit=$(git rev-parse "refs/tags/$tag^{}")
+          main_commit=$(git rev-parse origin/main)
+          if ! git merge-base --is-ancestor "$tag_commit" "$main_commit"; then
+            echo "tag $tag is not on promoted public main" >&2
+            exit 1
+          fi
+
+          artifact="synthefy-dist-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build only the lightweight distribution
+        run: |
+          uv build --package synthefy --no-sources --out-dir dist/synthefy
+          uvx --from 'twine>=6.1,<7' twine check --strict dist/synthefy/*
+
+      - name: Verify source, tag, and artifact versions
+        env:
+          EXPECTED_VERSION: ${{ steps.coordinates.outputs.version }}
+        run: |
+          set -euo pipefail
+          project_version=$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("libs/synthefy/pyproject.toml").read_text())["project"]["version"])')
+          module_version=$(python -c 'import ast, pathlib; tree=ast.parse(pathlib.Path("libs/synthefy/src/synthefy/__init__.py").read_text()); print(next(node.value.value for node in tree.body if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__version__" for t in node.targets)))')
+          wheel=(dist/synthefy/synthefy-*.whl)
+          sdist=(dist/synthefy/synthefy-*.tar.gz)
+          test "${#wheel[@]}" -eq 1
+          test "${#sdist[@]}" -eq 1
+          wheel_version=$(basename "${wheel[0]}")
+          wheel_version="${wheel_version#synthefy-}"
+          wheel_version="${wheel_version%%-*}"
+          printf 'expected=%s project=%s module=%s wheel=%s\n' "$EXPECTED_VERSION" "$project_version" "$module_version" "$wheel_version"
+          test "$project_version" = "$EXPECTED_VERSION"
+          test "$module_version" = "$EXPECTED_VERSION"
+          test "$wheel_version" = "$EXPECTED_VERSION"
+
+      - name: Clean-install and check the lightweight wheel
+        env:
+          EXPECTED_VERSION: ${{ steps.coordinates.outputs.version }}
+        run: |
+          set -euo pipefail
+          release_env="$RUNNER_TEMP/synthefy-release"
+          uv venv --no-project --python 3.11 "$release_env"
+          release_python="$release_env/bin/python"
+          wheel=(dist/synthefy/synthefy-*.whl)
+          uv pip install --python "$release_python" --strict --no-sources "${wheel[0]}"
+          uv pip check --python "$release_python"
+          cd "$RUNNER_TEMP"
+          "$release_python" -c 'import importlib.util, sys; from importlib.metadata import version; import synthefy; assert version("synthefy") == sys.argv[1]; assert synthefy.__version__ == sys.argv[1]; assert all(importlib.util.find_spec(name) is None for name in ("synthefy_nori", "torch"))' "$EXPECTED_VERSION"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.coordinates.outputs.artifact }}
+          path: dist/synthefy/
+          if-no-files-found: error
+
+  publish-testpypi:
+    name: Publish synthefy to TestPyPI
+    needs: build
+    if: >-
+      needs.build.outputs.target == 'testpypi' &&
+      github.repository == 'Synthefy/synthefy-nori'
+    runs-on: ubuntu-latest
+    environment:
+      name: synthefy-testpypi
+      url: https://test.pypi.org/project/synthefy/${{ needs.build.outputs.version }}/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    name: Publish synthefy to PyPI
+    needs: build
+    if: >-
+      needs.build.outputs.target == 'pypi' &&
+      github.repository == 'Synthefy/synthefy-nori'
+    runs-on: ubuntu-latest
+    environment:
+      name: synthefy-pypi
+      url: https://pypi.org/project/synthefy/${{ needs.build.outputs.version }}/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

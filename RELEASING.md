@@ -1,97 +1,204 @@
-# Releasing `synthefy-nori` to PyPI
+# Releasing `synthefy` and `synthefy-nori`
 
-This package can be published either through the automated GitHub Actions
-workflow (recommended) or manually from a developer machine.
+This repository builds two independently versioned Python distributions. Source
+work is completed in `Synthefy/synthefy-nori-internal` first, then the same
+public-ready patch is promoted through staging to public:
 
-## TL;DR — ship version `X.Y.Z`
-
-1. Set the same `X.Y.Z` in three places: `pyproject.toml` (`version =`), `src/synthefy_nori/__init__.py` (`__version__ =`), and the git tag you're about to cut.
-2. Commit and push to `main`, then wait for the `ci` workflow to go green on that commit.
-3. (Optional) Rehearse on TestPyPI: `gh workflow run publish.yml --ref main -f target=testpypi`, then `pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ synthefy-nori==X.Y.Z` in a clean venv.
-4. Cut the release: `gh release create vX.Y.Z --target main --title "vX.Y.Z" --generate-notes`.
-5. This triggers `publish.yml`, which builds the sdist + wheel, runs `twine check --strict`, and verifies the wheel version matches the `vX.Y.Z` tag.
-6. The upload step parks at the `pypi` environment's reviewer gate — go to Actions → the running `publish` run → **Review deployments** → check `pypi` → **Approve**.
-7. After approval, `pypa/gh-action-pypi-publish` uploads to PyPI over OIDC (no tokens) in ~30 seconds.
-8. Sanity-check: `pip install synthefy-nori==X.Y.Z` in a fresh venv and run `python -c "import synthefy_nori; print(synthefy_nori.__version__)"`.
-9. If the build fails on version mismatch, fix the version files locally, push, then delete + recreate the release with `gh release delete vX.Y.Z --cleanup-tag --yes && gh release create vX.Y.Z ...`.
-10. PyPI never allows re-uploading the same version — if an upload itself partially fails, bump to `X.Y.Z+1` and start over rather than reusing the tag.
-
-## One-time setup
-
-### 1. Reserve the name on PyPI
-
-Make sure `synthefy-nori` is available (or already owned by Synthefy):
-<https://pypi.org/project/synthefy-nori/>. If taken by someone else, pick a
-different `name =` in `pyproject.toml` before going further.
-
-### 2. Configure PyPI trusted publishing (no API tokens needed)
-
-Trusted publishing lets GitHub Actions upload to PyPI over OIDC, with no
-long-lived secrets stored in the repo.
-
-Do this **twice** — once for TestPyPI, once for PyPI — once the project page
-exists. For brand-new project names, use the "pending publisher" form on each
-site to authorize the first upload.
-
-For each of <https://pypi.org/manage/account/publishing/> and
-<https://test.pypi.org/manage/account/publishing/>, add a publisher with:
-
-- **PyPI Project Name:** `synthefy-nori`
-- **Owner:** `Synthefy`
-- **Repository name:** `synthefy-nori`
-- **Workflow name:** `publish.yml`
-- **Environment name:** `pypi` (for PyPI) or `testpypi` (for TestPyPI)
-
-### 3. Create matching GitHub environments
-
-In the GitHub repo settings → Environments, create two environments named
-`pypi` and `testpypi`. Optionally require a manual approval reviewer on `pypi`
-so a real human has to click through every production release.
-
-## Automated release (recommended)
-
-1. Bump the version in **both** places (keep them in sync):
-   - `pyproject.toml` → `version = "X.Y.Z"`
-   - `src/synthefy_nori/__init__.py` → `__version__ = "X.Y.Z"`
-2. Commit and merge to `main`.
-3. Optional rehearsal on TestPyPI:
-   - GitHub Actions → **publish** → "Run workflow" → target `testpypi`.
-   - Install from TestPyPI to sanity-check:
-     ```bash
-     uv pip install --index-url https://test.pypi.org/simple/ \
-         --extra-index-url https://pypi.org/simple/ synthefy-nori==X.Y.Z
-     ```
-4. Cut a GitHub Release with tag `vX.Y.Z`. The `publish` workflow builds,
-   verifies the tag matches the wheel version, and uploads to PyPI.
-
-## Manual release (fallback)
-
-```bash
-# Clean previous builds
-rm -rf dist/
-
-# Build sdist + wheel
-uv build
-
-# Validate the README renders on PyPI and metadata is sane
-uvx twine check --strict dist/*
-
-# Upload to TestPyPI first
-uvx twine upload --repository testpypi dist/*
-
-# Then the real thing
-uvx twine upload dist/*
+```text
+internal  ->  staging  ->  public
 ```
 
-Credentials for manual uploads come from a PyPI API token. Put it in
-`~/.pypirc` or export `TWINE_USERNAME=__token__` and
-`TWINE_PASSWORD=pypi-…`. Scope the token to the `synthefy-nori` project
-after the first upload so the blast radius is limited.
+Internal and staging build and test both artifacts, but cannot upload either one.
+Only `Synthefy/synthefy-nori` is a release authority.
 
-## Version policy
+## Release streams
 
-- Pre-1.0, breaking changes are allowed on minor bumps (`0.X.0`).
-- `__version__` in code and `version` in `pyproject.toml` MUST match the git
-  tag (`vX.Y.Z`). The publish workflow enforces this.
-- Once a version is uploaded to PyPI it cannot be re-uploaded — bump the
-  version and try again rather than deleting.
+| Distribution | Project root | Version files | Tag | Workflow |
+|---|---|---|---|---|
+| `synthefy` | `libs/synthefy/` | `libs/synthefy/pyproject.toml`, `libs/synthefy/src/synthefy/__init__.py`, changelog | `synthefy-vX.Y.Z` | `publish-synthefy.yml` |
+| `synthefy-nori` | repository root | `pyproject.toml`, `src/synthefy_nori/__init__.py` | `synthefy-nori-vX.Y.Z` | `publish-synthefy-nori.yml` |
+
+A GitHub Release for one namespaced tag starts both workflows, but only the
+matching workflow builds. The old unnamespaced `vX.Y.Z` publisher is removed.
+Neither workflow consults the repository-wide "latest release."
+
+## Required order
+
+Publish the lightweight SDK first. The heavy package declares
+`synthefy>=7,<8`, so publishing it before a compatible SDK exists on PyPI would
+create an unresolvable release.
+
+1. Publish and verify `synthefy 7.0.0` (or the selected fix-forward version).
+2. Publish and verify `synthefy-nori 0.17.0`.
+3. Merge customer documentation only after both documented install commands
+   resolve from PyPI.
+
+Do not upload new Hugging Face weights, change gateway slugs, pricing, billing,
+limits, or entitlements for this package-source cutover.
+
+## Before promotion
+
+- Complete and validate the candidate in internal.
+- Run the offline package, namespace, candidate/released-client, OpenAPI, and
+  packaged-container gates.
+- Complete the explicitly assigned final Baseten-dev and SageMaker validation;
+  record any human handoff rather than treating a skipped live test as passed.
+- Confirm the existing gateway binding, billing allowlist, and unchanged
+  `usage` response remain valid.
+- Keep the customer docs PR staged, not merged.
+
+Then promote the identical public-ready patch to staging, run every gate there,
+and promote to public last. Wait for rebase-sync/drop-check before tagging.
+Defects found in staging or public are fixed in internal and re-promoted.
+
+## Prepare a version
+
+For `synthefy`:
+
+1. Set the exact version in `libs/synthefy/pyproject.toml` and
+   `libs/synthefy/src/synthefy/__init__.py`.
+2. Add the matching section to `libs/synthefy/CHANGELOG.md`.
+3. Use tag `synthefy-vX.Y.Z`.
+
+For `synthefy-nori`:
+
+1. Set the exact version in `pyproject.toml` and
+   `src/synthefy_nori/__init__.py`.
+2. Use tag `synthefy-nori-vX.Y.Z`; GitHub Release notes are its changelog.
+
+The workflows verify tag, project metadata, module `__version__`, and built wheel
+metadata agree. They also require the peeled tag commit to be an ancestor of
+public `main`, so a tag from an unpromoted branch cannot publish.
+
+## Rehearse on TestPyPI
+
+Manual dispatch is deliberately tag-bound. Supply distribution, version, target,
+and tag explicitly, and select that same existing tag as the workflow ref:
+
+```bash
+gh workflow run publish-synthefy.yml \\
+  --repo Synthefy/synthefy-nori \\
+  --ref synthefy-v7.0.0 \\
+  -f distribution=synthefy \\
+  -f version=7.0.0 \\
+  -f target=testpypi \\
+  -f tag=synthefy-v7.0.0
+
+gh workflow run publish-synthefy-nori.yml \\
+  --repo Synthefy/synthefy-nori \\
+  --ref synthefy-nori-v0.17.0 \\
+  -f distribution=synthefy-nori \\
+  -f version=0.17.0 \\
+  -f target=testpypi \\
+  -f tag=synthefy-nori-v0.17.0
+```
+
+A branch ref, mismatched tag/version, wrong distribution, or tag not contained in
+public `main` fails before building. TestPyPI uploads use distinct environments
+and trusted-publisher identities from production.
+
+Before production, rehearse three clean environments:
+
+1. the candidate `synthefy` wheel by itself;
+2. candidate `synthefy 7` with released `synthefy-nori 0.16.0`;
+3. both candidate wheels together.
+
+The mixed released-heavy/candidate-light environment must either pass its
+supported smoke test or fail immediately with explicit version guidance. These
+candidate-wheel rehearsals do not depend on either package index. Because the
+heavy wheel resolves `synthefy>=7,<8`, dispatch its TestPyPI publisher only after
+the selected lightweight SDK version has been verified on PyPI.
+
+## Publish to PyPI
+
+After public CI and the rehearsals pass, create one GitHub Release at a time:
+
+```bash
+gh release create synthefy-v7.0.0 \\
+  --repo Synthefy/synthefy-nori \\
+  --target main \\
+  --title "synthefy 7.0.0" \\
+  --generate-notes
+```
+
+Approve the `synthefy-pypi` deployment when the workflow parks at its protected
+environment. Verify in a clean environment:
+
+```bash
+uv venv --no-project /tmp/synthefy-release-check
+uv pip install --python /tmp/synthefy-release-check/bin/python \\
+  "synthefy==7.0.0"
+uv pip check --python /tmp/synthefy-release-check/bin/python
+/tmp/synthefy-release-check/bin/python -c \\
+  'import synthefy; print(synthefy.__version__)'
+```
+
+Only after that succeeds, create the heavy release:
+
+```bash
+gh release create synthefy-nori-v0.17.0 \\
+  --repo Synthefy/synthefy-nori \\
+  --target main \\
+  --title "synthefy-nori 0.17.0" \\
+  --generate-notes
+```
+
+Approve `synthefy-nori-pypi`, then verify `synthefy-nori==0.17.0` resolves
+`synthefy>=7,<8` and that local regression plus
+`synthefy-nori[forecasting]` work in clean environments.
+
+Each workflow builds only its own project root, runs strict metadata checks,
+clean-installs the wheel, and runs `uv pip check` before upload. Every TestPyPI
+and PyPI upload job is additionally gated by:
+
+```text
+github.repository == 'Synthefy/synthefy-nori'
+```
+
+That makes the same workflow files safe to validate in internal and staging.
+
+## Trusted-publisher setup
+
+Create four exact workflow/environment pairs in both GitHub and the matching
+package index:
+
+| Package | Index | Workflow | GitHub environment |
+|---|---|---|---|
+| `synthefy` | TestPyPI | `publish-synthefy.yml` | `synthefy-testpypi` |
+| `synthefy` | PyPI | `publish-synthefy.yml` | `synthefy-pypi` |
+| `synthefy-nori` | TestPyPI | `publish-synthefy-nori.yml` | `synthefy-nori-testpypi` |
+| `synthefy-nori` | PyPI | `publish-synthefy-nori.yml` | `synthefy-nori-pypi` |
+
+Require reviewers on both production environments. At cutover, revoke the
+standalone `Synthefy/synthefy` `publish.yaml` identity and the public Nori
+repository's old `publish.yml` identities. Renaming a workflow or archiving a
+repository does not revoke an OIDC publisher.
+
+Do not keep a local API-token publishing fallback. The public workflows and their
+protected OIDC environments are the only release path.
+
+## Post-publish verification
+
+- Install base `synthefy`, `synthefy[aws]`, and
+  `synthefy[forecasting]` from PyPI.
+- Run hosted regression with the released client against Baseten dev.
+- Install `synthefy-nori` and `synthefy-nori[forecasting]`; run local regression
+  and forecasting.
+- Run released-client SageMaker validation as assigned in the final serving
+  handoff.
+- Confirm prediction responses retain
+  `prompt_tokens`, `completion_tokens`, and `total_tokens` and that the event is
+  metered.
+- Merge the staged customer docs only after the install commands work.
+- Observe the released pair before archiving the standalone client repository.
+
+A production smoke test requires explicit approval. Use ephemeral dev
+credentials and delete them after testing.
+
+## Failure and rollback
+
+PyPI artifacts are immutable. If `synthefy 7.0.0` fails verification, do not
+publish `synthefy-nori 0.17.0`; fix forward with `7.0.1`. If the heavy package
+fails after publication, fix forward with `0.17.1`. Never reuse a version or
+re-enable the old publisher. Existing `synthefy 6.3.0` and
+`synthefy-nori 0.16.0` remain installable during validation.
