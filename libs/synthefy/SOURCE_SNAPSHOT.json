@@ -143,6 +143,17 @@
             "load MultimodalPreprocessor from synthefy.text_features",
             "remove the obsolete synthefy-nori text-install guidance"
           ]
+        },
+        {
+          "input_blob": "e2475072f5697e3ec48c4807b571c81ea15d73c8",
+          "result_blob": "b919aef5770069a7fa0d385db0daa3ed12fa400d",
+          "phase": "tabular_preparation_ownership",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+          "changes": [
+            "load shared tabular alignment and featurization from synthefy.featurize",
+            "remove the duplicate client constants, dtype helpers, encoder, and alignment path",
+            "preserve the public predict warning callsite through the canonical helper"
+          ]
         }
       ],
       "tests/conftest.py": [
@@ -176,10 +187,46 @@
             "probe the lightweight text runtime without requiring synthefy-nori",
             "patch the canonical synthefy.text_features entry point in client tests"
           ]
+        },
+        {
+          "input_blob": "7c6e8bc27d460e7563ad35bc8c9bf43b310f3028",
+          "result_blob": "47a19b2bca2088ce939cbf75981217c9a1f4424a",
+          "phase": "tabular_preparation_ownership",
+          "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+          "changes": [
+            "assert the canonical featurizer preserves the warning category, message, count, and public predict callsite"
+          ]
         }
       ]
     },
     "source_relocations": {
+      "tests/test_featurize.py": {
+        "source_project_path": "../../tests/test_featurize.py",
+        "source_commit": "85c083c8f3fca791c9959ca5fd0d4a83eeb2492a",
+        "source_blob": "5d915a0c18aa32fb888ce95437b0b3432ec2c253",
+        "result_blob": "5812c855f6ee3e741ad56f15b3a6bcdf5f6e13d4",
+        "sha256": "a84e883dafcda139695e6b41a8ef78604d5788506f8e30b8885ce48fa7263329",
+        "phase": "tabular_preparation_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+        "changes": [
+          "retain a small client-only contract suite for the canonical tabular featurizer",
+          "cover ordinal, one-hot, validation, and non-DataFrame behavior without synthefy-nori"
+        ]
+      },
+      "src/synthefy/featurize.py": {
+        "source_project_path": "../../src/synthefy_nori/featurize.py",
+        "source_commit": "85c083c8f3fca791c9959ca5fd0d4a83eeb2492a",
+        "source_blob": "7a0b7f6586b27fd4a5225a3317ebb2e41205b007",
+        "result_blob": "e7c6e5ed3bb7d22196fe5509f578ea08eab2a1e8",
+        "sha256": "13f7c9b3007719cd2747ddeb753ee45d9c248cd6860cde300f8a56c0bfbd4668",
+        "phase": "tabular_preparation_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+        "changes": [
+          "move the existing tabular alignment and featurization behavior into the lightweight package",
+          "update ownership-focused module guidance without changing public defaults or results",
+          "parameterize only the internal warning stacklevel so both legacy helpers and the client retain their prior callsites"
+        ]
+      },
       "src/synthefy/text_features.py": {
         "source_project_path": "../../src/synthefy_nori/text_features.py",
         "source_commit": "36d1e317e33ace2d439589b2ddd8365bd1e3ff91",
@@ -219,6 +266,7 @@
         "src/synthefy/__init__.py",
         "src/synthefy/api_client.py",
         "src/synthefy/data_models.py",
+        "src/synthefy/featurize.py",
         "src/synthefy/nori_client.py",
         "src/synthefy/nori_data_models.py",
         "src/synthefy/text_features.py"
@@ -227,6 +275,7 @@
         "synthefy/__init__.py",
         "synthefy/api_client.py",
         "synthefy/data_models.py",
+        "synthefy/featurize.py",
         "synthefy/nori_client.py",
         "synthefy/nori_data_models.py",
         "synthefy/text_features.py",

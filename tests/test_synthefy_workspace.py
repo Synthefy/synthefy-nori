@@ -219,6 +219,52 @@ def test_namespaces_and_imports_do_not_create_a_base_runtime_cycle():
     )
 
 
+def test_tabular_preparation_has_one_v7_implementation_owner():
+    canonical_path = _CLIENT / "src" / "synthefy" / "featurize.py"
+    client_path = _CLIENT / "src" / "synthefy" / "nori_client.py"
+    legacy_path = _ROOT / "src" / "synthefy_nori" / "featurize.py"
+
+    canonical_tree = ast.parse(canonical_path.read_text())
+    client_tree = ast.parse(client_path.read_text())
+    legacy_tree = ast.parse(legacy_path.read_text())
+    canonical_defs = {
+        node.name for node in canonical_tree.body if isinstance(node, ast.FunctionDef)
+    }
+    client_defs = {
+        node.name for node in client_tree.body if isinstance(node, ast.FunctionDef)
+    }
+    duplicate_helpers = {
+        "_has_encodable_columns",
+        "_numeric_categories_to_values",
+        "_featurize_frames",
+        "align_and_featurize",
+    }
+
+    assert duplicate_helpers <= canonical_defs
+    assert duplicate_helpers.isdisjoint(client_defs)
+    assert not any(isinstance(node, ast.FunctionDef) for node in legacy_tree.body)
+
+    builder = next(
+        node
+        for node in client_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_build_nori_request"
+    )
+    canonical_calls = [
+        node
+        for node in ast.walk(builder)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_align_and_featurize"
+    ]
+    assert len(canonical_calls) == 1
+    stacklevel = next(
+        keyword.value
+        for keyword in canonical_calls[0].keywords
+        if keyword.arg == "_warning_stacklevel"
+    )
+    assert isinstance(stacklevel, ast.Constant) and stacklevel.value == 5
+
+
 def test_import_time_scan_descends_guards_but_skips_deferred_imports(tmp_path):
     module = tmp_path / "guarded_imports.py"
     module.write_text(

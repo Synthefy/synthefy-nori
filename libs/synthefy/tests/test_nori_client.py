@@ -6,6 +6,7 @@ the optional ``synthefy-nori`` package is installed.
 """
 
 import builtins
+import inspect
 import importlib.util
 import json
 import math
@@ -687,6 +688,32 @@ def test_high_cardinality_column_is_dropped_with_warning():
 
     assert capture["body"]["X_train"] == [[0.0], [1.0], [2.0]]
     assert capture["body"]["X_test"] == [[3.0]]
+
+
+def test_featurization_warning_keeps_its_public_predict_callsite():
+    capture: Dict = {}
+    client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
+    _attach_mock(client, _ok_handler([1.0], capture))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        warning_line = inspect.currentframe().f_lineno + 1
+        client.predict(
+            X_train=pd.DataFrame({"a": [0.0, 1.0, 2.0], "hc": ["p", "q", "r"]}),
+            y_train=[1.0, 2.0, 3.0],
+            X_test=pd.DataFrame({"a": [3.0], "hc": ["p"]}),
+            max_categorical_cardinality=2,
+        )
+
+    assert len(caught) == 1
+    assert caught[0].category is UserWarning
+    assert str(caught[0].message) == (
+        "Nori featurization dropped non-encodable column(s): "
+        "'hc' (>2 unique values). Encode them yourself "
+        "(e.g. target/hash encoding) if you need them."
+    )
+    assert caught[0].filename == __file__
+    assert caught[0].lineno == warning_line
 
 
 def test_datetime_column_is_dropped_with_warning():

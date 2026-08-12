@@ -53,6 +53,11 @@ uv build
   snapping is opt-in only.
 - `fit()` only stores the context rows; all compute happens in `predict()`.
   Uses GPU when available, else CPU.
+- The one-shot `infer` / `predict` helpers accept lists, numpy arrays, or pandas
+  DataFrames. When both `X_train` and `X_test` are DataFrames, non-numeric
+  columns are encoded by `libs/synthefy/src/synthefy/featurize.py`;
+  `src/synthefy_nori/featurize.py` preserves the legacy import path.
+
 - Pass `model_path="…/checkpoint.pt"` to run a local checkpoint and skip the
   download entirely.
 

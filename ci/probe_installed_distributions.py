@@ -103,9 +103,21 @@ def _import_required(*module_names: str) -> None:
         importlib.import_module(module_name)
 
 
+def _canonical_featurizer():
+    from synthefy.featurize import align_and_featurize
+
+    if (
+        not callable(align_and_featurize)
+        or align_and_featurize.__module__ != "synthefy.featurize"
+    ):
+        raise AssertionError("synthefy does not own the canonical tabular featurizer")
+    return align_and_featurize
+
+
 def _probe_client_extra(extra: str) -> None:
     _assert_absent("synthefy_nori")
     _import_installed("synthefy")
+    _canonical_featurizer()
 
     optional_modules = {
         "aws": ("boto3", "botocore"),
@@ -243,12 +255,18 @@ def probe_both(order: str) -> None:
     else:
         _import_installed("synthefy_nori")
         _import_installed("synthefy")
+    canonical = _canonical_featurizer()
+    from synthefy_nori.featurize import align_and_featurize as legacy
+
+    if legacy is not canonical:
+        raise AssertionError("synthefy_nori does not re-export the canonical featurizer")
     print(f"installed distributions import cleanly in {order} order")
 
 
 def probe_client_only() -> None:
     _assert_absent("synthefy_nori")
     _import_installed("synthefy")
+    _canonical_featurizer()
     _probe_missing_import_causes()
     print("synthefy remains healthy after synthefy-nori uninstall")
 

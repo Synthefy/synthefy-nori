@@ -50,6 +50,33 @@ _EXCLUDED_BLOBS = {
 }
 
 _RELOCATED_SOURCES = {
+    "tests/test_featurize.py": {
+        "source_project_path": "../../tests/test_featurize.py",
+        "source_commit": "85c083c8f3fca791c9959ca5fd0d4a83eeb2492a",
+        "source_blob": "5d915a0c18aa32fb888ce95437b0b3432ec2c253",
+        "result_blob": "5812c855f6ee3e741ad56f15b3a6bcdf5f6e13d4",
+        "sha256": "a84e883dafcda139695e6b41a8ef78604d5788506f8e30b8885ce48fa7263329",
+        "phase": "tabular_preparation_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+        "changes": [
+            "retain a small client-only contract suite for the canonical tabular featurizer",
+            "cover ordinal, one-hot, validation, and non-DataFrame behavior without synthefy-nori",
+        ],
+    },
+    "src/synthefy/featurize.py": {
+        "source_project_path": "../../src/synthefy_nori/featurize.py",
+        "source_commit": "85c083c8f3fca791c9959ca5fd0d4a83eeb2492a",
+        "source_blob": "7a0b7f6586b27fd4a5225a3317ebb2e41205b007",
+        "result_blob": "e7c6e5ed3bb7d22196fe5509f578ea08eab2a1e8",
+        "sha256": "13f7c9b3007719cd2747ddeb753ee45d9c248cd6860cde300f8a56c0bfbd4668",
+        "phase": "tabular_preparation_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-phase-2.json",
+        "changes": [
+            "move the existing tabular alignment and featurization behavior into the lightweight package",
+            "update ownership-focused module guidance without changing public defaults or results",
+            "parameterize only the internal warning stacklevel so both legacy helpers and the client retain their prior callsites",
+        ],
+    },
     "src/synthefy/text_features.py": {
         "source_project_path": "../../src/synthefy_nori/text_features.py",
         "source_commit": "36d1e317e33ace2d439589b2ddd8365bd1e3ff91",
@@ -240,7 +267,7 @@ def test_post_import_transformations_preserve_phase_two_and_form_continuous_chai
 def test_imported_project_has_the_exact_reviewed_file_boundary():
     tracked = _tracked_project_entries()
 
-    assert len(_TARGET_FILES) == 20
+    assert len(_TARGET_FILES) == 22
     assert set(tracked) == _TARGET_FILES
     assert set(tracked.values()) == {"100644"}
 
