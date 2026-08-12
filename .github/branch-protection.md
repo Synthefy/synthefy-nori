@@ -29,15 +29,15 @@ default branch:
    pushed**, and **Do not allow bypassing the above settings** (include
    administrators), so the rule cannot be sidestepped by accounts outside any
    explicitly configured bypass list.
-4. **Require status checks to pass before merging**, and add these two jobs
+4. **Require status checks to pass before merging**, and add these three jobs
    (from [`workflows/ci.yml`](workflows/ci.yml)) to the required checks. This is
-   what actually blocks the merge button on a broken model:
+   what actually blocks the merge button on a broken package or model:
+   - **`test`** — a stable, fail-closed aggregate over unit/source tests, the
+     Python 3.9 and 3.11 `synthefy` artifact matrix, and the two-distribution
+     build/install/namespace boundary gate.
    - **`CI test inference`** — runs a real inference forward pass (downloads the
      public `Synthefy/Nori` checkpoint).
    - **`CI test train step`** — runs one real training step from scratch on CPU.
-
-   *(Add the fast `test` job too if you want lint / unit tests / build to gate
-   merges as well.)*
 
    **Optional GPU gate** — [`workflows/gpu-ci.yml`](workflows/gpu-ci.yml) adds a
    two-job matrix: **`GPU test (locked, Modal)`** exercises the benchmarked

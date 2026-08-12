@@ -1,0 +1,141 @@
+{
+  "local_default": {
+    "call": {
+      "X_test": [[2.0]],
+      "X_train": [[0.0], [1.0]],
+      "kwargs": {},
+      "model": "nori-30m",
+      "task": "regression",
+      "y_train": [0.0, 1.0]
+    },
+    "result": [7.0]
+  },
+  "oracle": {
+    "commit": "9ecc3d2fad8e37e95869379cc05f328597e258f9",
+    "data_models_blob": "725e79d92c73313da6ab1c4154b73701e61458f6",
+    "nori_client_blob": "a6fb1d1d91677ff9aa8c99186088bf63fd24eea7",
+    "repository": "Synthefy/synthefy",
+    "version": "6.3.0"
+  },
+  "remote_dataframe": {
+    "result": {
+      "index": ["row-a", "row-b"],
+      "kind": "Series",
+      "name": "score",
+      "values": [3.5, 4.5]
+    },
+    "transport": {
+      "authorization": "Bearer golden-key",
+      "body": {
+        "X_test": [[4.0, -1.0], [5.0, 1.0]],
+        "X_train": [[1.0, 1.0], [2.0, 0.0], [3.0, null]],
+        "model": "synthefy/nori-30m",
+        "task": "regression",
+        "y_train": [1.0, 2.0, 3.0]
+      },
+      "path": "/predict",
+      "raw": "{\"X_train\": [[1.0, 1.0], [2.0, 0.0], [3.0, null]], \"y_train\": [1.0, 2.0, 3.0], \"X_test\": [[4.0, -1.0], [5.0, 1.0]], \"task\": \"regression\", \"model\": \"synthefy/nori-30m\"}"
+    }
+  },
+  "remote_default": {
+    "result": [10.0, "<NaN>"],
+    "transport": {
+      "authorization": "Bearer golden-key",
+      "body": {
+        "X_test": [[2.0, 2.0], [3.0, null]],
+        "X_train": [[0.0, 1.0], [1.0, 0.0]],
+        "model": "synthefy/nori-30m",
+        "task": "regression",
+        "y_train": [1.0, 2.0]
+      },
+      "path": "/predict",
+      "raw": "{\"X_train\": [[0.0, 1.0], [1.0, 0.0]], \"y_train\": [1.0, 2.0], \"X_test\": [[2.0, 2.0], [3.0, null]], \"task\": \"regression\", \"model\": \"synthefy/nori-30m\"}"
+    }
+  },
+  "remote_error": {
+    "class": "BadRequestError",
+    "error_code": "invalid_request",
+    "message": "golden invalid",
+    "request_id": "req-error",
+    "response_body": {
+      "error": {
+        "code": "invalid_request",
+        "message": "golden invalid"
+      }
+    },
+    "status_code": 400
+  },
+  "remote_memory": {
+    "result": [2.5],
+    "transport": {
+      "authorization": "Bearer golden-key",
+      "body": {
+        "X_test": [[2.0]],
+        "X_train": [[0.0], [1.0]],
+        "memory_policy": {"cache_dtype": "int8"},
+        "model": "synthefy/nori-30m",
+        "task": "regression",
+        "y_train": [0.0, 1.0]
+      },
+      "path": "/predict",
+      "raw": "{\"X_train\": [[0.0], [1.0]], \"y_train\": [0.0, 1.0], \"X_test\": [[2.0]], \"task\": \"regression\", \"memory_policy\": {\"cache_dtype\": \"int8\"}, \"model\": \"synthefy/nori-30m\"}"
+    }
+  },
+  "remote_quantiles": {
+    "result": [[2.8, 3.8], [1.2, 2.2]],
+    "transport": {
+      "authorization": "Bearer golden-key",
+      "body": {
+        "X_test": [[2.0], [3.0]],
+        "X_train": [[0.0], [1.0]],
+        "model": "synthefy/nori-30m",
+        "output_type": "quantiles",
+        "quantiles": [0.9, 0.1],
+        "task": "regression",
+        "y_train": [0.0, 1.0]
+      },
+      "path": "/predict",
+      "raw": "{\"X_train\": [[0.0], [1.0]], \"y_train\": [0.0, 1.0], \"X_test\": [[2.0], [3.0]], \"task\": \"regression\", \"output_type\": \"quantiles\", \"quantiles\": [0.9, 0.1], \"model\": \"synthefy/nori-30m\"}"
+    }
+  },
+  "sagemaker_default": {
+    "result": [8.0],
+    "transport": {
+      "closed": true,
+      "request": {
+        "Accept": "application/json",
+        "Body": "{\"X_train\":[[0.0],[1.0]],\"y_train\":[0.0,1.0],\"X_test\":[[2.0]],\"task\":\"regression\",\"model\":\"nori-30m\"}",
+        "ContentType": "application/json",
+        "CustomAttributes": "synthefy-response-stream=v1",
+        "EndpointName": "golden-endpoint"
+      },
+      "service": "sagemaker-runtime",
+      "session": {"args": [], "kwargs": {}}
+    }
+  },
+  "wire_models": {
+    "default": {
+      "X_test": [[3.0, 4.0]],
+      "X_train": [[1.0, null]],
+      "task": "regression",
+      "y_train": [2.0]
+    },
+    "distribution": {
+      "X_test": [[3.0]],
+      "X_train": [[1.0]],
+      "output_type": "quantiles",
+      "quantiles": [0.9, 0.1],
+      "task": "regression",
+      "y_train": [2.0]
+    },
+    "response": {
+      "memory_report": null,
+      "model": null,
+      "output_type": null,
+      "predictions": [1.0, null],
+      "quantiles": null,
+      "task": "regression",
+      "taus": null
+    }
+  }
+}

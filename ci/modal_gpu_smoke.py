@@ -45,6 +45,14 @@ image = (
     .env({"UV_LINK_MODE": "copy", "UV_CACHE_DIR": "/uvcache"})
     .add_local_file("pyproject.toml", "/build/pyproject.toml", copy=True)
     .add_local_file("uv.lock", "/build/uv.lock", copy=True)
+    # The root project depends on the consolidated workspace member, so the
+    # pre-warm layer must include that member before uv parses the workspace.
+    .add_local_dir(
+        "libs/synthefy",
+        "/build/libs/synthefy",
+        copy=True,
+        ignore=["__pycache__", "*.pyc", "dist", "build"],
+    )
     .run_commands("cd /build && uv sync --no-install-project --extra dev")
     .add_local_dir(
         ".",
