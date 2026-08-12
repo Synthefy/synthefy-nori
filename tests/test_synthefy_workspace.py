@@ -17,6 +17,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by the Python 3.10 l
 
 _ROOT = Path(__file__).resolve().parents[1]
 _CLIENT = _ROOT / "libs" / "synthefy"
+_CLIENT_TSFEATURES = _CLIENT / "src" / "synthefy" / "nori_ts" / "tsfeatures"
 _OBSERVATION = (
     _ROOT
     / "docs"

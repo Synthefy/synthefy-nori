@@ -65,12 +65,15 @@ uv build
 
 ```
 src/synthefy_nori/
+libs/synthefy/src/synthefy/
+  nori_ts/tsfeatures/  Canonical model-free time-series feature preparation.
   api.py          Public API (sklearn-style NoriRegressor + one-shot helpers).
   discretize.py   Categorical-target lattice math (cell masses, snap, strategies).
   hf.py           HF download/upload + console-script entry points
   model/          FeaturesTransformer architecture
   inference/      NoriPredictor + preprocessing
   embedding/      NoriEmbedding (sklearn transformer for row embeddings)
+  nori_ts/core.py Heavy Nori time-series forecaster.
   training/       data generation, trainer, loss, config, CLI (GPU / DDP)
   evaluation/     benchmark runner + CLI
   configs/*.json  bundled inference configs (shipped via package-data)

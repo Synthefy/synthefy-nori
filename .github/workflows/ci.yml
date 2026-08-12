@@ -63,7 +63,7 @@ jobs:
 
           uv pip install --python "$CLIENT_TEST_PY" --strict "$CLIENT_TEST_ARTIFACT"
           uv pip check --python "$CLIENT_TEST_PY"
-          "$CLIENT_TEST_PY" -c 'import importlib.util; import synthefy; from importlib.metadata import metadata; assert "site-packages" in synthefy.__file__; assert synthefy.__version__ == "7.0.0"; assert metadata("synthefy")["Requires-Python"] == ">=3.9"; assert all(importlib.util.find_spec(name) is None for name in ("boto3", "sentence_transformers", "sklearn", "synthefy_nori", "torch"))'
+          "$CLIENT_TEST_PY" -c 'import importlib.util; import synthefy; from importlib.metadata import metadata; assert "site-packages" in synthefy.__file__; assert synthefy.__version__ == "7.0.0"; assert metadata("synthefy")["Requires-Python"] == ">=3.9"; assert all(importlib.util.find_spec(name) is None for name in ("boto3", "joblib", "scipy", "sentence_transformers", "sklearn", "synthefy_nori", "torch"))'
 
           uv pip install --python "$CLIENT_TEST_PY" --strict \
             "boto3>=1.34,<2" \
@@ -71,7 +71,7 @@ jobs:
             "pytest-asyncio>=0.25,<1" \
             "pytest-socket>=0.7"
           uv pip check --python "$CLIENT_TEST_PY"
-          "$CLIENT_TEST_PY" -c 'import importlib.util; assert all(importlib.util.find_spec(name) is None for name in ("sklearn", "synthefy_nori", "torch"))'
+          "$CLIENT_TEST_PY" -c 'import importlib.util; assert all(importlib.util.find_spec(name) is None for name in ("joblib", "scipy", "sklearn", "synthefy_nori", "torch"))'
 
           cd "$RUNNER_TEMP"
           "$CLIENT_TEST_PY" -B -m pytest \
@@ -83,6 +83,24 @@ jobs:
             "$GITHUB_WORKSPACE/libs/synthefy/tests" \
             "$GITHUB_WORKSPACE/tests/test_synthefy_client_compat.py"
 
+      - name: Exercise forecasting preparation from the Python 3.9 artifact
+        if: matrix.python_version == '3.9'
+        env:
+          CLIENT_TEST_ARTIFACT: ${{ matrix.artifact_file }}
+          CLIENT_TEST_KIND: ${{ matrix.kind }}
+        run: |
+          CLIENT_TEST_ENV="$RUNNER_TEMP/synthefy-3.9-$CLIENT_TEST_KIND"
+          CLIENT_TEST_PY="$CLIENT_TEST_ENV/bin/python"
+          ARTIFACT_PATH=$(realpath "$CLIENT_TEST_ARTIFACT")
+          uv pip install --python "$CLIENT_TEST_PY" --strict --no-sources \
+            "synthefy[forecasting] @ file://$ARTIFACT_PATH"
+          uv pip check --python "$CLIENT_TEST_PY"
+          cd "$RUNNER_TEMP"
+          "$CLIENT_TEST_PY" -B -m pytest \
+            --disable-socket \
+            --import-mode=importlib -p no:cacheprovider \
+            -c "$GITHUB_WORKSPACE/libs/synthefy/pytest.ini" \
+            "$GITHUB_WORKSPACE/libs/synthefy/tests/test_tsfeatures.py"
   distribution-boundaries:
     name: CI validate distribution boundaries
     runs-on: ubuntu-latest
@@ -136,7 +154,7 @@ jobs:
           uv venv --no-project --python 3.11 "$INSTALLED_TEST_ENV"
           uv pip install --python "$INSTALLED_TEST_PY" --strict --no-sources \
             --torch-backend cpu \
-            "$CLIENT_WHEEL" "$NORI_WHEEL"
+            "synthefy[forecasting] @ file://$CLIENT_WHEEL" "$NORI_WHEEL"
           uv pip check --python "$INSTALLED_TEST_PY"
       - name: Import both distributions in either order
         run: |

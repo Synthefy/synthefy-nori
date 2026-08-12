@@ -19,6 +19,8 @@ import sysconfig
 import tempfile
 from pathlib import Path
 
+import pandas as pd
+
 
 _DISTRIBUTIONS = {
     "synthefy": "synthefy",
@@ -38,6 +40,8 @@ _CLIENT_LAZY_MODULES = (
     "botocore",
     "datasets",
     "gluonts",
+    "joblib",
+    "scipy",
     "sklearn",
     "sentence_transformers",
     "statsmodels",
@@ -114,6 +118,51 @@ def _canonical_featurizer():
     return align_and_featurize
 
 
+def _canonical_tsfeatures():
+    from synthefy.nori_ts import tsfeatures
+
+    frame = tsfeatures.TimeSeriesDataFrame.from_data_frame(
+        pd.DataFrame(
+            {
+                "item_id": [0, 0],
+                "timestamp": pd.date_range("2021-01-01", periods=2, freq="h"),
+                "target": [1.0, 2.0],
+            }
+        )
+    )
+    horizon = tsfeatures.generate_test_X(frame, prediction_length=1, freq="h")
+    if len(horizon) != 1 or not horizon["target"].isna().all():
+        raise AssertionError("canonical time-series preparation did not execute")
+    return tsfeatures
+
+
+def _assert_legacy_tsfeatures_are_canonical():
+    canonical = _canonical_tsfeatures()
+    legacy = importlib.import_module("synthefy_nori.nori_ts.tsfeatures")
+    if legacy.__all__ != canonical.__all__:
+        raise AssertionError("historical and canonical time-series exports differ")
+    for public_name in canonical.__all__:
+        if getattr(legacy, public_name) is not getattr(canonical, public_name):
+            raise AssertionError(f"historical {public_name} is not canonical")
+    for module_name in (
+        "auto_features",
+        "basic_features",
+        "data_preparation",
+        "feature_generator_base",
+        "feature_transformer",
+        "ts_dataframe",
+    ):
+        canonical_module = importlib.import_module(
+            f"synthefy.nori_ts.tsfeatures.{module_name}"
+        )
+        historical_module = importlib.import_module(
+            f"synthefy_nori.nori_ts.tsfeatures.{module_name}"
+        )
+        if historical_module is not canonical_module:
+            raise AssertionError(f"historical deep module {module_name} is not canonical")
+    return canonical
+
+
 def _probe_client_extra(extra: str) -> None:
     _assert_absent("synthefy_nori")
     _import_installed("synthefy")
@@ -121,8 +170,8 @@ def _probe_client_extra(extra: str) -> None:
 
     optional_modules = {
         "aws": ("boto3", "botocore"),
-        "forecasting": ("datasets", "gluonts", "statsmodels"),
-        "text": ("sentence_transformers", "torch"),
+        "forecasting": ("datasets", "gluonts", "joblib", "scipy", "statsmodels"),
+        "text": ("joblib", "scipy", "sentence_transformers", "sklearn", "torch"),
     }
     all_optional = {name for names in optional_modules.values() for name in names}
     _assert_not_loaded(*sorted(all_optional))
@@ -135,7 +184,8 @@ def _probe_client_extra(extra: str) -> None:
         if boto3.__name__ != "boto3" or config.__name__ != "Config":
             raise AssertionError("the AWS extra did not load boto3 and botocore.Config")
     elif extra == "forecasting":
-        _import_required("datasets", "gluonts", "statsmodels")
+        _import_required("datasets", "gluonts", "joblib", "scipy", "statsmodels")
+        _canonical_tsfeatures()
     else:
         from sentence_transformers import SentenceTransformer
         from synthefy.text_features import MultimodalPreprocessor
@@ -156,16 +206,23 @@ def _probe_nori_extra(extra: str) -> None:
 
     unrelated = {
         "forecasting": ("boto3", "botocore", "sentence_transformers"),
-        "text": ("boto3", "botocore", "datasets", "gluonts", "statsmodels"),
+        "text": (
+            "boto3",
+            "botocore",
+            "datasets",
+            "gluonts",
+            "statsmodels",
+        ),
     }
     _assert_not_importable(*unrelated[extra])
 
     if extra == "forecasting":
-        _import_required("datasets", "gluonts", "statsmodels")
+        _import_required("datasets", "gluonts", "joblib", "scipy", "statsmodels")
         from synthefy_nori.nori_ts import NoriTSForecaster
 
         if not callable(NoriTSForecaster):
             raise AssertionError("NoriTSForecaster is not callable")
+        _assert_legacy_tsfeatures_are_canonical()
     else:
         from sentence_transformers import SentenceTransformer
         from synthefy.text_features import MultimodalPreprocessor as CanonicalPreprocessor
@@ -260,6 +317,7 @@ def probe_both(order: str) -> None:
 
     if legacy is not canonical:
         raise AssertionError("synthefy_nori does not re-export the canonical featurizer")
+    _assert_legacy_tsfeatures_are_canonical()
     print(f"installed distributions import cleanly in {order} order")
 
 
@@ -267,6 +325,7 @@ def probe_client_only() -> None:
     _assert_absent("synthefy_nori")
     _import_installed("synthefy")
     _canonical_featurizer()
+    _canonical_tsfeatures()
     _probe_missing_import_causes()
     print("synthefy remains healthy after synthefy-nori uninstall")
 

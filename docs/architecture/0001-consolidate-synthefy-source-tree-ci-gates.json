@@ -94,6 +94,25 @@
       "retirement_action": "Delete the private duplicate implementation and exact-submodule fallback, then retain canonical synthefy.featurize identity, behavior, and client-only artifact coverage."
     },
     {
+      "id": "legacy-6.3-time-series-feature-fallback",
+      "lifecycle": "migration_scaffolding",
+      "status": "active",
+      "paths": [
+        "src/synthefy_nori/nori_ts/tsfeatures/__init__.py",
+        "src/synthefy_nori/nori_ts/tsfeatures/auto_features.py",
+        "src/synthefy_nori/nori_ts/tsfeatures/basic_features.py",
+        "src/synthefy_nori/nori_ts/tsfeatures/data_preparation.py",
+        "src/synthefy_nori/nori_ts/tsfeatures/feature_generator_base.py",
+        "src/synthefy_nori/nori_ts/tsfeatures/feature_transformer.py",
+        "src/synthefy_nori/nori_ts/tsfeatures/ts_dataframe.py",
+        "tests/test_nori_ts_ownership.py",
+        "tests/test_client_matches_api.py",
+        ".github/workflows/client-sync.yml"
+      ],
+      "retirement_event": "The released-client compatibility floor and client-sync lane are deliberately advanced to synthefy >=7.0.0 after the consolidated client release.",
+      "retirement_action": "Delete the six heavy duplicate implementation modules and the exact-missing-canonical fallback branch. Preserve the old-path canonical aliases plus canonical identity, historical-pickle, forecasting-extra, and offline artifact coverage while those import contracts remain supported."
+    },
+    {
       "id": "phase-2-open-gap-observation",
       "lifecycle": "migration_scaffolding",
       "status": "active",

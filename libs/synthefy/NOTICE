@@ -4,3 +4,57 @@ Copyright 2026 Synthefy
 This product includes software developed by Synthefy and is licensed under
 the Apache License, Version 2.0. The full license text is in the LICENSE file
 at the root of this distribution.
+
+------------------------------------------------------------------------------
+tabpfn-time-series (PriorLabs)
+------------------------------------------------------------------------------
+  Source:   https://github.com/PriorLabs/tabpfn-time-series
+  Revision: a756ae3 (2026-07-13)
+  License:  Apache License, Version 2.0 (see licenses/Apache-2.0.txt)
+
+  Copyright 2025 Prior Labs GmbH
+
+  The model-free time-series feature engineering under
+  src/synthefy/nori_ts/tsfeatures/ is vendored from tabpfn-time-series at the
+  revision above.
+
+  Modifications by Synthefy (Apache-2.0 section 4(b)):
+    - basic_features.py, auto_features.py, and feature_generator_base.py:
+      intra-package import paths and distribution-local provenance/ownership
+      wording changed; implementation behavior is unchanged.
+    - feature_transformer.py: the same import/provenance changes, plus
+      `from __future__ import annotations` for Python 3.9. This changes
+      annotation representation, not forecasting behavior.
+    - data_preparation.py: import/provenance changes, and `generate_test_X`
+      takes an explicit `freq` because re-inferring it from a NaN-dropped index
+      yields None and fails horizon construction.
+    - ts_dataframe.py: implementation body unchanged; only the
+      distribution-local provenance/ownership wording changed.
+
+  NO TabPFN model code or weights are included; the TabPFN model carries a
+  separate, non-Apache license and is not used or redistributed here.
+
+------------------------------------------------------------------------------
+AutoGluon
+------------------------------------------------------------------------------
+  Source:   https://github.com/autogluon/autogluon
+  License:  Apache License, Version 2.0 (see licenses/Apache-2.0.txt)
+
+  Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+  src/synthefy/nori_ts/tsfeatures/ts_dataframe.py (TimeSeriesDataFrame)
+  originates in AutoGluon's timeseries dataset module. It reached this
+  distribution via PriorLabs/tabpfn-time-series, which made the modifications
+  recorded in the file header; Synthefy retained the implementation body.
+
+------------------------------------------------------------------------------
+Chronos (amazon-science)
+------------------------------------------------------------------------------
+  Source:   https://github.com/amazon-science/chronos-forecasting
+  License:  Apache License, Version 2.0 (see licenses/Apache-2.0.txt)
+
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+  to_gluonts_univariate() in
+  src/synthefy/nori_ts/tsfeatures/data_preparation.py is adapted from
+  chronos-forecasting's evaluation script.

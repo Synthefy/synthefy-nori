@@ -90,7 +90,129 @@ _RELOCATED_SOURCES = {
             "adjust package-specific install guidance without changing preprocessing behavior",
             "guard the optional scikit-learn import with actionable synthefy[text] guidance",
         ],
-    }
+    },
+    "src/synthefy/nori_ts/__init__.py": {
+        "source_project_path": "../../src/synthefy_nori/nori_ts/__init__.py",
+        "source_commit": "de7704303b5ea5725323ae20d8fe738409a198e7",
+        "source_blob": "ca46d88167837c3a4ba3bb02b398a6f343fec2c3",
+        "result_blob": "65861fadc7f2c3f44a835d68d47df124e419c33c",
+        "sha256": "b477511bf2415f34141fb3767114f968fb066cdf0a707e4861f3adf650945b9c",
+        "phase": "time_series_feature_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
+        "changes": [
+            "move the lightweight nori_ts namespace into synthefy without importing optional dependencies",
+            "leave NoriTSForecaster and DEFAULT_QUANTILES owned by the heavy synthefy-nori distribution",
+        ],
+    },
+    "src/synthefy/nori_ts/tsfeatures/__init__.py": {
+        "source_project_path": "../../src/synthefy_nori/nori_ts/tsfeatures/__init__.py",
+        "source_commit": "de7704303b5ea5725323ae20d8fe738409a198e7",
+        "source_blob": "e9b2688266d6c699f5b041806dbf7030c29541f4",
+        "result_blob": "1d86a7366ae2f45ad574a12a9a3c3a734cc79e66",
+        "sha256": "592c2ba9fe99ba7791834eb89c380f1ea888940444592ff43ba3fad209be1a50",
+        "phase": "time_series_feature_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
+        "changes": [
+            "move the public model-free time-series preparation exports into the lightweight distribution",
+            "rewrite intra-package imports and distribution-local ownership/provenance wording",
+            "record postponed annotation evaluation in feature_transformer.py separately from behavioral changes",
+        ],
+    },
+    "src/synthefy/nori_ts/tsfeatures/auto_features.py": {
+        "source_project_path": "../../src/synthefy_nori/nori_ts/tsfeatures/auto_features.py",
+        "source_commit": "de7704303b5ea5725323ae20d8fe738409a198e7",
+        "source_blob": "fc9d15dd05347ab41af1824b60ae5935d27f78a5",
+        "result_blob": "689cc202096551173a9494e6f133e22174f53f96",
+        "sha256": "de92034f719123da8e9eb4331242a6ce0553ecbc04976d98c2159b95b1b81fb8",
+        "phase": "time_series_feature_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
+        "changes": [
+            "move the existing automatic seasonal feature implementation into the lightweight distribution",
+            "rewrite only intra-package imports and distribution-local ownership/provenance wording",
+        ],
+    },
+    "src/synthefy/nori_ts/tsfeatures/basic_features.py": {
+        "source_project_path": "../../src/synthefy_nori/nori_ts/tsfeatures/basic_features.py",
+        "source_commit": "de7704303b5ea5725323ae20d8fe738409a198e7",
+        "source_blob": "79dc858ec55c78666e9c33470aaf7a284fb84cec",
+        "result_blob": "f93d7cd7ad9652cfc7e6e33488c42538dccb06ef",
+        "sha256": "57df80f6ab2746e04619ae27dc6e6580818f50ebcf8ad6e5c7e34c00bd10e204",
+        "phase": "time_series_feature_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
+        "changes": [
+            "move the existing model-free calendar and running-index generators into the lightweight distribution",
+            "rewrite only intra-package imports and distribution-local ownership/provenance wording",
+        ],
+    },
+    "src/synthefy/nori_ts/tsfeatures/data_preparation.py": {
+        "source_project_path": "../../src/synthefy_nori/nori_ts/tsfeatures/data_preparation.py",
+        "source_commit": "de7704303b5ea5725323ae20d8fe738409a198e7",
+        "source_blob": "c94d5ae672bdbf397dbfebd80073f2a4ccd9fc9b",
+        "result_blob": "c52dc4dc53a569599f51a3c57198c87f604a6301",
+        "sha256": "7016e60000a7ae6277f9b137ba8e42849bd3040741e874ba270d8df5f2574bae",
+        "phase": "time_series_feature_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
+        "changes": [
+            "move the existing model-free horizon and GluonTS conversion helpers into the lightweight distribution",
+            "rewrite only intra-package imports and distribution-local ownership/provenance wording",
+            "preserve the existing explicit-frequency horizon behavior without refactoring",
+        ],
+    },
+    "src/synthefy/nori_ts/tsfeatures/feature_generator_base.py": {
+        "source_project_path": "../../src/synthefy_nori/nori_ts/tsfeatures/feature_generator_base.py",
+        "source_commit": "de7704303b5ea5725323ae20d8fe738409a198e7",
+        "source_blob": "b4b4d39d6d04888b7869967fe7fbbe39d60a530f",
+        "result_blob": "7f529ebea97b3ae6717614251d69fc277f495834",
+        "sha256": "93090df227bede92ab575ca8c0097b76d0d8f2bccaea9e7910f17050ae3f9bf7",
+        "phase": "time_series_feature_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
+        "changes": [
+            "move the existing model-free feature-generator contract into the lightweight distribution",
+            "rewrite only intra-package imports and distribution-local ownership/provenance wording",
+        ],
+    },
+    "src/synthefy/nori_ts/tsfeatures/feature_transformer.py": {
+        "source_project_path": "../../src/synthefy_nori/nori_ts/tsfeatures/feature_transformer.py",
+        "source_commit": "de7704303b5ea5725323ae20d8fe738409a198e7",
+        "source_blob": "6ad0c7d680be505ccc93bfa49eb0d84943d7673f",
+        "result_blob": "d66d4c8c8a9920c9bd3a30cd84ba2ee464861e75",
+        "sha256": "ad789f99d77de4c15e755f202422c55702dc2ac6297e830441ac2cf0227c0ce2",
+        "phase": "time_series_feature_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
+        "changes": [
+            "move the existing model-free train/test feature transformer into the lightweight distribution",
+            "rewrite intra-package imports and distribution-local ownership/provenance wording",
+            "enable postponed annotation evaluation for Python 3.9 without changing forecasting behavior",
+        ],
+    },
+    "src/synthefy/nori_ts/tsfeatures/ts_dataframe.py": {
+        "source_project_path": "../../src/synthefy_nori/nori_ts/tsfeatures/ts_dataframe.py",
+        "source_commit": "de7704303b5ea5725323ae20d8fe738409a198e7",
+        "source_blob": "6e201d55467a932ab180c83559b1b06a2e3b1372",
+        "result_blob": "c2362a4f77389ecc28274b0c5f2ae45d2752e421",
+        "sha256": "612b9b7f020fee695d0dad1d4b5b16eb836a96d718142ca1cfa550a96ffc2e5e",
+        "phase": "time_series_feature_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
+        "changes": [
+            "move the existing TimeSeriesDataFrame implementation body into the lightweight distribution",
+            "change only distribution-local provenance and ownership wording; preserve the implementation body",
+        ],
+    },
+    "tests/test_tsfeatures.py": {
+        "source_project_path": "../../tests/test_nori_ts.py",
+        "source_commit": "de7704303b5ea5725323ae20d8fe738409a198e7",
+        "source_blob": "5d3be3e06c143dcefecdd1eb2d2fd16d875dc4ce",
+        "result_blob": "a4f353b247fa67248fa2db06b2959f18bd110935",
+        "sha256": "ea57d1b91e71b74e4535aa759b319eb1a7877df47ff0d80eff409abc25a787ff",
+        "phase": "time_series_feature_ownership",
+        "decision_record": "../../docs/architecture/0001-consolidate-synthefy-source-tree-ci-gates.json",
+        "changes": [
+            "retain only model-free horizon, schema, train/test-boundary, and multi-series generator contracts",
+            "build the feature set directly without importing heavy core._default_features",
+            "gate execution on the synthefy[forecasting] optional runtime",
+            "cover explicit-frequency gappy inputs, generated float32 columns without target downcasting, and static-feature preservation",
+        ],
+    },
 }
 
 _TARGET_FILES = set(_IMPORTED_BLOBS) | set(_RELOCATED_SOURCES) | {
@@ -267,7 +389,7 @@ def test_post_import_transformations_preserve_phase_two_and_form_continuous_chai
 def test_imported_project_has_the_exact_reviewed_file_boundary():
     tracked = _tracked_project_entries()
 
-    assert len(_TARGET_FILES) == 22
+    assert len(_TARGET_FILES) == 31
     assert set(tracked) == _TARGET_FILES
     assert set(tracked.values()) == {"100644"}
 
@@ -284,6 +406,8 @@ def test_built_artifacts_match_reviewed_file_boundaries(tmp_path):
     )
 
     version = manifest["post_import_history"]["current_version"]
+    assert len(manifest["build_treatment"]["artifact_files"]["sdist"]) == 23
+    assert len(manifest["build_treatment"]["artifact_files"]["wheel"]) == 21
     sdist_prefix = f"synthefy-{version}/"
     with tarfile.open(tmp_path / f"synthefy-{version}.tar.gz") as archive:
         files = {member.name.removeprefix(sdist_prefix) for member in archive.getmembers() if member.isfile()}

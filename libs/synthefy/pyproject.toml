@@ -41,7 +41,13 @@ dependencies = [
 
 [project.optional-dependencies]
 # Optional feature dependencies remain outside the lightweight base install.
-forecasting = ["gluonts>=0.16", "statsmodels>=0.14", "datasets>=2.0"]
+forecasting = [
+    "datasets>=2.0",
+    "gluonts>=0.16",
+    "joblib>=1.1",
+    "scipy>=1.13",
+    "statsmodels>=0.14",
+]
 text = ["scikit-learn>=1.4", "sentence-transformers"]
 # Signed Amazon SageMaker endpoint invocation. boto3 resolves credentials from
 # its standard chain; the public client deliberately accepts no raw AWS keys.

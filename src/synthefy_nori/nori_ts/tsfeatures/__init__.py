@@ -1,60 +1,58 @@
-"""Vendored time-series feature engineering from PriorLabs/tabpfn-time-series.
+"""Compatibility facade for historical Nori time-series feature imports.
 
-Vendored from PriorLabs/tabpfn-time-series @ `a756ae3` (2026-07-13), which was
-upstream `main` at vendoring time. Upstream:
-https://github.com/PriorLabs/tabpfn-time-series
-
-Five of the six vendored modules are byte-identical to that revision apart from
-having their intra-package imports rewritten to this subpackage:
-
-    basic_features.py  auto_features.py  feature_generator_base.py
-    feature_transformer.py  ts_dataframe.py
-
-`data_preparation.py` carries the one deliberate local change, named in its own
-file header: `generate_test_X` takes an explicit `freq`, because re-inferring it
-from a NaN-dropped index yields None. That is the only behavioral delta in this
-subpackage. (`ts_dataframe.py` is unmodified by Synthefy; its header records the
-AutoGluon -> Prior Labs -> here chain.)
-
-Vendoring (rather than depending on tabpfn-time-series) keeps the tabpfn /
-tabpfn_client runtime dependencies out of the tree. No TabPFN model code or
-weights are included.
-
-Re-checking the pin: normalize the import paths and diff against upstream, e.g.
-
-    sed 's#synthefy_nori.nori_ts.tsfeatures#tabpfn_time_series.features#g' \\
-        basic_features.py | diff - <(git -C <upstream> show a756ae3:\\
-        tabpfn_time_series/features/basic_features.py)
-
-Generator contract (changed by upstream #144, and the reason `tsfeatures/` must be
-re-vendored as a unit rather than file by file): `FeatureGenerator.generate`
-receives the *whole* `(item_id, timestamp)`-indexed frame with every series at
-once, and must group on the `item_id` level for any per-series computation. It is
-no longer called once per series.
-
-One consequence for callers: `PeriodicSinCosineFeature` computes its phase from a
-frame-global `np.arange(len(df))` rather than a per-series counter, so it is only
-correct on a single-series frame. It is not part of the default feature set —
-`AutoSeasonalFeature` stopped delegating to it in #144 and now derives per-series
-phase from `groupby.cumcount()` — and it is deliberately not re-exported from this
-package. Don't reach for it on a multi-series frame.
+Synthefy 7 owns the canonical implementation in
+``synthefy.nori_ts.tsfeatures``. The existing deep modules in this package
+remain only as the exact released-6.3 fallback until the compatibility floor
+moves to Synthefy 7.
 """
 
-from synthefy_nori.nori_ts.tsfeatures.ts_dataframe import TimeSeriesDataFrame
-from synthefy_nori.nori_ts.tsfeatures.data_preparation import generate_test_X
-from synthefy_nori.nori_ts.tsfeatures.feature_generator_base import FeatureGenerator
-from synthefy_nori.nori_ts.tsfeatures.feature_transformer import FeatureTransformer
-from synthefy_nori.nori_ts.tsfeatures.basic_features import (
-    RunningIndexFeature,
-    CalendarFeature,
-    AdditionalCalendarFeature,
-)
-from synthefy_nori.nori_ts.tsfeatures.auto_features import AutoSeasonalFeature
+from __future__ import annotations
 
-# PeriodicSinCosineFeature is intentionally absent: under the post-#144 whole-frame
-# generator contract its phase comes from a frame-global counter, so it is only
-# correct on a single-series frame. Import it from .basic_features explicitly if you
-# know that holds.
+import importlib
+import sys
+
+
+_CANONICAL_PACKAGE = "synthefy.nori_ts.tsfeatures"
+_DEEP_MODULES = (
+    "auto_features",
+    "basic_features",
+    "data_preparation",
+    "feature_generator_base",
+    "feature_transformer",
+    "ts_dataframe",
+)
+
+try:
+    _canonical = importlib.import_module(_CANONICAL_PACKAGE)
+except ModuleNotFoundError as exc:
+    if exc.name not in {"synthefy.nori_ts", _CANONICAL_PACKAGE}:
+        raise
+
+    from synthefy_nori.nori_ts.tsfeatures.auto_features import AutoSeasonalFeature
+    from synthefy_nori.nori_ts.tsfeatures.basic_features import (
+        AdditionalCalendarFeature,
+        CalendarFeature,
+        RunningIndexFeature,
+    )
+    from synthefy_nori.nori_ts.tsfeatures.data_preparation import generate_test_X
+    from synthefy_nori.nori_ts.tsfeatures.feature_generator_base import FeatureGenerator
+    from synthefy_nori.nori_ts.tsfeatures.feature_transformer import FeatureTransformer
+    from synthefy_nori.nori_ts.tsfeatures.ts_dataframe import TimeSeriesDataFrame
+else:
+    for _module_name in _DEEP_MODULES:
+        _module = importlib.import_module(f"{_CANONICAL_PACKAGE}.{_module_name}")
+        sys.modules[f"{__name__}.{_module_name}"] = _module
+        globals()[_module_name] = _module
+
+    TimeSeriesDataFrame = _canonical.TimeSeriesDataFrame
+    generate_test_X = _canonical.generate_test_X
+    FeatureGenerator = _canonical.FeatureGenerator
+    FeatureTransformer = _canonical.FeatureTransformer
+    RunningIndexFeature = _canonical.RunningIndexFeature
+    CalendarFeature = _canonical.CalendarFeature
+    AdditionalCalendarFeature = _canonical.AdditionalCalendarFeature
+    AutoSeasonalFeature = _canonical.AutoSeasonalFeature
+
 __all__ = [
     "TimeSeriesDataFrame",
     "generate_test_X",
