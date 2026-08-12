@@ -125,7 +125,8 @@ def test_uv_workspace_uses_the_lightweight_member_for_the_published_edge():
 
     assert uv["workspace"]["members"] == ["libs/synthefy"]
     assert uv["sources"]["synthefy"] == {"workspace": True}
-    assert uv["sources"]["torch"] == {"index": "pytorch-cu128"}
+    assert "torch" not in uv["sources"]
+    assert uv["constraint-dependencies"] == ["torch<2.9"]
     assert root["tool"]["setuptools"]["packages"]["find"] == {
         "where": ["src"],
         "include": ["synthefy_nori*"],
@@ -376,7 +377,7 @@ def test_the_root_lock_is_the_only_lock_and_contains_both_editable_projects():
     assert not (_CLIENT / "uv.lock").exists()
 
     lock = _toml(_ROOT / "uv.lock")
-    assert lock["requires-python"] == ">=3.10"
+    assert lock["requires-python"] == ">=3.9"
     packages = lock["package"]
     root_entries = [item for item in packages if item["name"] == "synthefy-nori"]
     client_entries = [item for item in packages if item["name"] == "synthefy"]
@@ -413,12 +414,12 @@ def test_the_root_lock_is_the_only_lock_and_contains_both_editable_projects():
     )
 
 
-def test_python_floors_distinguish_workspace_development_from_the_client_artifact():
+def test_python_floors_preserve_staging_compatibility_and_internal_observation():
     root = _toml(_ROOT / "pyproject.toml")["project"]
     client = _toml(_CLIENT / "pyproject.toml")["project"]
     observation = json.loads(_OBSERVATION.read_text())
 
-    assert root["requires-python"] == ">=3.10"
+    assert root["requires-python"] == ">=3.9"
     assert client["requires-python"] == ">=3.9"
     assert "Programming Language :: Python :: 3.8" not in client["classifiers"]
     assert observation["workspace"]["development_python_floor"] == ">=3.10"

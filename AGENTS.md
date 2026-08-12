@@ -19,10 +19,10 @@ task-specific training. It is trained entirely on synthetic data.
 
 ## Setup
 
-- The heavyweight workspace requires Python **≥ 3.10** because its Torch pin has
-  no CPython 3.9 wheel. The lightweight `synthefy` artifact retains Python
-  **≥ 3.9**. The interpreter and dependencies are managed by **uv** (`uv.lock`
-  is committed). There may be no bare `python` on PATH — use `uv run`.
+- Both published distributions retain Python **≥ 3.9** in staging. The locked
+  development graph holds Torch below 2.9; isolated compatibility jobs cover
+  newer Torch versions on Python 3.10+. The interpreter and dependencies are
+  managed by **uv** (`uv.lock` is committed). There may be no bare `python` on PATH — use `uv run`.
 - Install everything (incl. dev tools): `uv sync --extra dev`
 - Optional extras: `--extra train` (wandb, xgboost), `--extra eval`
   (matplotlib, openml).
