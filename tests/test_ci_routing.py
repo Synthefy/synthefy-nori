@@ -53,8 +53,13 @@ def test_ordinary_pr_ci_always_reports_and_collects_every_root_test_tree():
 def test_client_artifact_tests_keep_their_explicit_offline_route():
     workflow = _workflow()
     scripts = "\n".join(_run_steps(workflow["jobs"]["synthefy-artifact"]))
+    assert '"$GITHUB_WORKSPACE/tests/test_nori_ts_parity.py"' in scripts
 
     assert '"$GITHUB_WORKSPACE/libs/synthefy/tests"' in scripts
+    assert any(
+        step.get("name") == "Exercise forecasting parity from the Python 3.9 artifact"
+        for step in workflow["jobs"]["synthefy-artifact"]["steps"]
+    )
     assert '"$GITHUB_WORKSPACE/tests/test_synthefy_client_compat.py"' in scripts
     assert "--disable-socket" in scripts
     assert '"$RUNNER_TEMP"' in scripts

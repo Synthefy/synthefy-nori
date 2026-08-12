@@ -34,6 +34,16 @@
       "purpose": "Prove disjoint wheel ownership, clean installs, one-way dependencies, lightweight base imports, and supported Python floors."
     },
     {
+      "id": "backend-neutral-forecasting-parity",
+      "lifecycle": "permanent",
+      "paths": [
+        ".github/workflows/ci.yml",
+        "tests/test_ci_routing.py",
+        "tests/test_nori_ts_parity.py"
+      ],
+      "purpose": "Run one canonical forecast fixture through fake, mocked local, mocked Baseten HTTP, and mocked SageMaker streaming execution from both Python 3.9 lightweight artifact forms, with sockets disabled."
+    },
+    {
       "id": "snapshot-provenance",
       "lifecycle": "permanent",
       "paths": [

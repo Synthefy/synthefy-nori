@@ -83,7 +83,7 @@ jobs:
             "$GITHUB_WORKSPACE/libs/synthefy/tests" \
             "$GITHUB_WORKSPACE/tests/test_synthefy_client_compat.py"
 
-      - name: Exercise forecasting preparation from the Python 3.9 artifact
+      - name: Exercise forecasting parity from the Python 3.9 artifact
         if: matrix.python_version == '3.9'
         env:
           CLIENT_TEST_ARTIFACT: ${{ matrix.artifact_file }}
@@ -100,7 +100,8 @@ jobs:
             --disable-socket \
             --import-mode=importlib -p no:cacheprovider \
             -c "$GITHUB_WORKSPACE/libs/synthefy/pytest.ini" \
-            "$GITHUB_WORKSPACE/libs/synthefy/tests/test_tsfeatures.py"
+            "$GITHUB_WORKSPACE/libs/synthefy/tests/test_tsfeatures.py" \
+            "$GITHUB_WORKSPACE/tests/test_nori_ts_parity.py"
   distribution-boundaries:
     name: CI validate distribution boundaries
     runs-on: ubuntu-latest
