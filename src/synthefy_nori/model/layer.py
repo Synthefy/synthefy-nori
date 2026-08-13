@@ -169,8 +169,17 @@ class QASSMaxScaling(nn.Module):
         if key_len <= 1:
             return q
 
-        log_n = torch.log(
-            torch.tensor(float(max(key_len, 2)), device=q.device, dtype=q.dtype)
+        # Take the log in Python doubles and cast only the RESULT to q.dtype.
+        # Materializing `key_len` itself in q.dtype first overflows fp16 — its
+        # largest finite value is 65504, so any context of 65520+ rows becomes
+        # `inf` before log() ever runs, and inf propagates through base_scale
+        # into q, making the whole prediction non-finite. log(n) is ~11 for a
+        # 65k-row context, which every supported dtype represents exactly
+        # enough. Inference autocasts to fp16 on CUDA (the trainer uses bf16,
+        # which has the range to hide this), so the overflow only ever showed
+        # up at long-context inference. See issue #439.
+        log_n = torch.tensor(
+            math.log(float(max(key_len, 2))), device=q.device, dtype=q.dtype
         )
         base_delta = self.base_mlp(log_n.view(1, 1)).view(
             1, 1, self.num_heads, self.head_dim

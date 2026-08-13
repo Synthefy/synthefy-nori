@@ -619,6 +619,42 @@ class NoriPredictor:
                 return output["cls_output"]
         return output
 
+    def _reject_nonfinite_output(
+            self,
+            out: torch.Tensor,
+            *,
+            path: str,
+            n_train: int,
+            n_test: int,
+    ) -> torch.Tensor:
+        """Raise when the model emits NaN/inf, instead of zero-filling it.
+
+        Zero-filling was never a safe default here: the predictor works in
+        standardized target space, so a zeroed prediction denormalizes to
+        exactly ``y_mean``. A fully non-finite forward therefore became a
+        *constant* prediction that was finite, plausible-looking, and useless —
+        ROC AUC 0.5 with no error anywhere in the call. That silent conversion
+        is what made issue #439 invisible for as long as it was.
+
+        There is deliberately no opt-out. A caller who wants the old behavior
+        can only want a number that is indistinguishable from a working
+        prediction while carrying no signal, so the only honest thing this can
+        return is an exception.
+        """
+        if torch.isfinite(out).all():
+            return out
+
+        n_bad = int((~torch.isfinite(out)).sum())
+        raise RuntimeError(
+            f"Nori produced {n_bad}/{out.numel()} non-finite prediction values "
+            f"(nan={int(torch.isnan(out).sum())}, inf={int(torch.isinf(out).sum())}) "
+            f"on the {path} path: n_context={n_train}, n_query={n_test}, "
+            f"dtype={out.dtype}, mixed_precision={self.mix_precision}. "
+            "These cannot be returned: in standardized target space they would "
+            "denormalize to the context target mean, i.e. a constant prediction "
+            "that scores at chance while reporting success."
+        )
+
     def _maybe_snap_discrete_y(self, y_train: np.ndarray,
                                  preds: np.ndarray) -> np.ndarray:
         """Snap regression predictions to nearest training y value when
@@ -1907,8 +1943,9 @@ class NoriPredictor:
                                     adaptive_query_chunk=policy.adaptive_query_chunk,
                                 )
                             output = self._unwrap_model_output(output, task_type="reg").squeeze(0)
-                            if not torch.isfinite(output).all():
-                                output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
+                            output = self._reject_nonfinite_output(
+                                output, path=f"cached ({policy.rung})",
+                                n_train=n_samples_train, n_test=n_samples_test)
                             outputs.append(output)
                             cached_done = True
                             if attempt_fit_chunk is not None and pinned is None:
@@ -2005,13 +2042,9 @@ class NoriPredictor:
                         chunk_output = chunk_output['reg_output']
 
                     chunk_output = self._unwrap_model_output(chunk_output, task_type="reg").squeeze(0)
-                    if not torch.isfinite(chunk_output).all():
-                        chunk_output = torch.nan_to_num(
-                            chunk_output,
-                            nan=0.0,
-                            posinf=0.0,
-                            neginf=0.0,
-                        )
+                    chunk_output = self._reject_nonfinite_output(
+                        chunk_output, path="plain chunked loop",
+                        n_train=n_samples_train, n_test=end_idx - i)
                     all_outputs.append(chunk_output)
                     
                 # Concatenate all test chunks (cached path already appended above)

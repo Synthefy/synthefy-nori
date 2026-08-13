@@ -28,7 +28,7 @@ Publish the lightweight SDK first. The heavy package declares
 create an unresolvable release.
 
 1. Publish and verify `synthefy 7.0.0` (or the selected fix-forward version).
-2. Publish and verify `synthefy-nori 0.17.1`.
+2. Publish and verify `synthefy-nori 0.17.2`.
 3. Merge customer documentation only after both documented install commands
    resolve from PyPI.
 
@@ -85,11 +85,11 @@ gh workflow run publish-synthefy.yml \\
 
 gh workflow run publish-synthefy-nori.yml \\
   --repo Synthefy/synthefy-nori \\
-  --ref synthefy-nori-v0.17.1 \\
+  --ref synthefy-nori-v0.17.2 \\
   -f distribution=synthefy-nori \\
-  -f version=0.17.1 \\
+  -f version=0.17.2 \\
   -f target=testpypi \\
-  -f tag=synthefy-nori-v0.17.1
+  -f tag=synthefy-nori-v0.17.2
 ```
 
 A branch ref, mismatched tag/version, wrong distribution, or tag not contained in
@@ -135,14 +135,14 @@ uv pip check --python /tmp/synthefy-release-check/bin/python
 Only after that succeeds, create the heavy release:
 
 ```bash
-gh release create synthefy-nori-v0.17.1 \\
+gh release create synthefy-nori-v0.17.2 \\
   --repo Synthefy/synthefy-nori \\
   --target main \\
-  --title "synthefy-nori 0.17.1" \\
+  --title "synthefy-nori 0.17.2" \\
   --generate-notes
 ```
 
-Approve `synthefy-nori-pypi`, then verify `synthefy-nori==0.17.1` resolves
+Approve `synthefy-nori-pypi`, then verify `synthefy-nori==0.17.2` resolves
 `synthefy>=7,<8` and that local regression plus
 `synthefy-nori[forecasting]` work in clean environments.
 
@@ -197,7 +197,7 @@ credentials and delete them after testing.
 ## Failure and rollback
 
 PyPI artifacts are immutable. If `synthefy 7.0.0` fails verification, do not
-publish `synthefy-nori 0.17.1`; fix forward with `7.0.1`. If the heavy package
-fails after publication, fix forward with `0.17.2`. Never reuse a version or
+publish `synthefy-nori 0.17.2`; fix forward with `7.0.1`. If the heavy package
+fails after publication, fix forward with `0.17.3`. Never reuse a version or
 re-enable the old publisher. Existing `synthefy 6.3.0` and
 `synthefy-nori 0.16.0` remain installable during validation.
