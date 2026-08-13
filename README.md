@@ -545,7 +545,7 @@ an H200:
 | `gpu_budget_frac` | `0.4` | share of total VRAM the resident cache may use |
 | `host_budget_frac` | `0.25` | share of total RAM an offloaded cache may use |
 | `gpu_budget_absolute_gb` / `host_budget_absolute_gb` | — | hard caps, for a shared GPU |
-| `reuse_context_cache` | `True` | retain an unchanged encoded context across separate local `predict()` calls; set `False` to rebuild each call while keeping the normal within-request K/V cache |
+| `reuse_context_cache` | `True` | retain an unchanged encoded context across separate local `predict()` calls; set `False` to rebuild each call while keeping the normal within-request K/V cache. Retention is bounded: on a CUDA device the retained contexts may use up to a quarter of total VRAM, and a single context larger than that is rebuilt each call rather than kept |
 | `cache_dtype` | `"bf16"` | precision the cache **starts** at |
 | `allow_quantization` | `True` | may bf16 drop to int8 to stay resident? |
 | `offload_to_host` | `True` | may the cache move to host RAM? |
@@ -605,6 +605,15 @@ configuration `memory_policy={"reuse_context_cache": False}`. All shared serving
 engine) enforce that value automatically, because one replica may handle multiple people
 or workloads. This does **not** disable the K/V cache within a request; it only prevents
 retaining it for a later request.
+
+Reuse is also bounded by size, which matters on wide tables. A retained context is roughly
+`nlayers × n_feature_groups × n_context` — modest on a typical table, but tens of GiB once a
+table has hundreds of columns, and the default regression path retains one per member of its
+8-member preprocessing ensemble. Retained contexts are therefore capped at a quarter of total
+VRAM, oldest evicted first, and a single context that exceeds that cap on its own is rebuilt
+each call instead of kept. Reuse is an optimization; leaving most of the device free for the
+forward pass is what keeps a large context from turning a slow prediction into a failed one.
+Devices without VRAM to exhaust (CPU) are not capped.
 
 **Known limit:** at large row counts × many columns, the first thing to run out of
 memory is the transductive preprocessing (RBF + polynomial expansion over the whole

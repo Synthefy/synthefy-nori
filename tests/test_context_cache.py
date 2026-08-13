@@ -973,3 +973,81 @@ def test_failed_build_is_not_cached():
     good = get(model, x.clone(), y.clone())
     assert _built_from(good, x, y)
     assert len(model.builds) == 1
+
+
+# ---------------------------------------------------------------------------------
+# The predictor's cross-call context cache is keyed per PREPROCESSING PIPE, and the
+# default regression path runs an 8-member ensemble. Unbounded, that retains eight
+# context caches at once -- fine when each is small, fatal when each is large.
+#
+# Measured: TALENT's topo_2_1 (7108 rows x 266 features, ~134 feature groups at
+# features_per_group=2) builds a 15.2 GiB bundle. Eight of those is 121.6 GiB, which
+# exhausted a 143 GiB H200 before any query ran; the memory ladder then OOM'd on every
+# rung, and the plain-loop fallback died too even though it needs only 14.5 GiB on its
+# own, because `torch.cuda.empty_cache()` cannot free tensors the cache dict still
+# references. It silently cost two TALENT datasets on every arm of an A/B whose model
+# did not happen to short-circuit the cached path.
+#
+# These tests pin the bound itself (pure accounting, no GPU): a bundle larger than the
+# budget is never retained, and smaller ones are evicted oldest-first to stay under it.
+# ---------------------------------------------------------------------------------
+
+class _FakePredictor:
+    """Just enough of NoriPredictor to exercise the eviction arithmetic on CPU."""
+
+    _bundle_device_bytes = staticmethod(
+        lambda bundle: int(bundle["bytes"]))          # stand in for the tensor walk
+
+    def __init__(self, budget_bytes):
+        self._budget = budget_bytes
+
+    def _context_cache_budget_bytes(self):
+        return self._budget
+
+    # the real implementations, bound to this stub
+    from synthefy_nori.inference.predictor import NoriPredictor as _NP
+    _evict_context_cache_for = _NP._evict_context_cache_for
+
+
+def _entry(nbytes):
+    return ("key", None, None, {"bytes": nbytes})
+
+
+def test_context_cache_refuses_a_bundle_larger_than_the_budget():
+    """The wide-table case: one 15.2 GiB bundle against a 0.25 x 143 GiB budget."""
+    p = _FakePredictor(budget_bytes=35 * 1024**3)
+    cache = {"pipe0": _entry(15 * 1024**3)}
+    keep = p._evict_context_cache_for(cache, {"bytes": 40 * 1024**3})
+    assert keep is False, "an over-budget bundle must not be retained"
+    assert cache == {}, "and whatever was held must be released for the forward pass"
+
+
+def test_context_cache_evicts_oldest_until_the_new_bundle_fits():
+    p = _FakePredictor(budget_bytes=10 * 1024**3)
+    cache = {f"pipe{i}": _entry(3 * 1024**3) for i in range(3)}   # 9 GiB held
+    keep = p._evict_context_cache_for(cache, {"bytes": 3 * 1024**3})
+    assert keep is True
+    # 9 + 3 > 10, so exactly one (the oldest) is dropped to make room.
+    assert "pipe0" not in cache and "pipe1" in cache and "pipe2" in cache
+
+
+def test_context_cache_keeps_a_full_small_ensemble():
+    """The common case must not regress: 8 small bundles all fit, so none is evicted."""
+    p = _FakePredictor(budget_bytes=10 * 1024**3)
+    cache = {f"pipe{i}": _entry(256 * 1024**2) for i in range(8)}  # 2 GiB total
+    keep = p._evict_context_cache_for(cache, {"bytes": 256 * 1024**2})
+    assert keep is True
+    assert len(cache) == 8, "small ensembles keep their cross-call amortization"
+
+
+def test_context_cache_is_unbounded_when_the_device_has_no_vram_to_exhaust():
+    """CPU/MPS keep the original unbounded behaviour -- the bound guards a CUDA OOM only.
+
+    Regression test for the first cut of this fix, which returned a 0 budget for a
+    non-CUDA device and read 0 as "retain nothing". That silently disabled the context
+    cache for every CPU user and turned one build into one build *per query*.
+    """
+    p = _FakePredictor(budget_bytes=None)               # None = "no device limit applies"
+    cache = {"pipe0": _entry(1)}
+    assert p._evict_context_cache_for(cache, {"bytes": 10**12}) is True
+    assert "pipe0" in cache, "nothing is evicted when there is no device limit"
