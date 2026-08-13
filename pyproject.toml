@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synthefy-nori"
-version = "0.17.0"
+version = "0.17.1"
 description = "Nori foundation model training, inference, and evaluation"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -34,6 +34,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
+    "eval-type-backport>=0.2; python_version < '3.10'",
     "einops>=0.7",
     "huggingface-hub>=1.0",
     "kditransform>=1.0",

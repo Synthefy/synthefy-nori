@@ -5516,10 +5516,11 @@ package = [
 
 [[package]]
 name = "synthefy-nori"
-version = "0.17.0"
+version = "0.17.1"
 source = { editable = "." }
 dependencies = [
     { name = "einops" },
+    { name = "eval-type-backport", marker = "python_full_version < '3.10'" },
     { name = "huggingface-hub", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "huggingface-hub", version = "1.14.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "kditransform" },
@@ -5581,6 +5582,7 @@ train = [
 requires-dist = [
     { name = "build", marker = "extra == 'dev'" },
     { name = "einops", specifier = ">=0.7" },
+    { name = "eval-type-backport", marker = "python_full_version < '3.10'", specifier = ">=0.2" },
     { name = "huggingface-hub", specifier = ">=1.0" },
     { name = "kditransform", specifier = ">=1.0" },
     { name = "matplotlib", marker = "extra == 'eval'" },
