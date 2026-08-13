@@ -1464,13 +1464,120 @@ class NoriPredictor:
         # table, so retaining the view would pin the (unbounded) query rows alive
         # too. One N_train x F copy is negligible against the per-layer K/V cache it
         # guards, which is ~nlayers x n_groups times larger.
-        cache[id_pipe] = (
-            key,
-            x_train_t.detach().clone(memory_format=torch.contiguous_format),
-            y_train_t.detach().clone(memory_format=torch.contiguous_format),
-            bundle,
-        )
+        #
+        # BOUND THE CACHE BY TOTAL BYTES. It is keyed per PIPE, and the default
+        # regression path runs an 8-member preprocessing ensemble, so an unbounded dict
+        # retains eight context caches at once. Each is ~nlayers x n_groups x n_ctx:
+        # small on a normal table, very large on a WIDE one. Measured on TALENT's
+        # topo_2_1 (7108 x 266 -> ~134 feature groups at features_per_group=2) one bundle
+        # is 15.2 GiB, so eight is 121.6 GiB and a 143 GiB H200 is exhausted before any
+        # query runs. The memory ladder then OOMs on every rung and even the plain-loop
+        # fallback dies -- though it needs only 14.5 GiB by itself -- because
+        # `torch.cuda.empty_cache()` cannot release tensors this dict still references.
+        #
+        # Evicting to a BYTE budget rather than a fixed count keeps the fit-once /
+        # serve-many amortization intact in the common case (8 small bundles all fit) and
+        # sheds bundles only when they are individually huge, which is precisely when
+        # retaining them is what breaks the run.
+        if self._evict_context_cache_for(cache, bundle):
+            cache[id_pipe] = (
+                key,
+                x_train_t.detach().clone(memory_format=torch.contiguous_format),
+                y_train_t.detach().clone(memory_format=torch.contiguous_format),
+                bundle,
+            )
         return bundle
+
+    @staticmethod
+    def _bundle_device_bytes(bundle) -> int:
+        """Best-effort GPU byte count for a context bundle.
+
+        Walks the bundle's tensors rather than trusting a declared size: the cache may
+        hold int8-quantized or host-offloaded K/V (``ScalableSeqKV``) whose real
+        footprint differs from the bf16 estimate the policy reports. Host-resident
+        tensors are excluded -- they are not what exhausts VRAM. Anything unrecognised
+        counts as 0 rather than raising: mis-measuring a bundle must never break a
+        prediction.
+        """
+        total = 0
+        seen: set[int] = set()
+
+        def walk(obj, depth: int = 0) -> None:
+            nonlocal total
+            if depth > 6 or id(obj) in seen:
+                return
+            seen.add(id(obj))
+            if isinstance(obj, torch.Tensor):
+                if obj.is_cuda:
+                    total += obj.element_size() * obj.nelement()
+                return
+            if isinstance(obj, dict):
+                for v in obj.values():
+                    walk(v, depth + 1)
+            elif isinstance(obj, (list, tuple, set)):
+                for v in obj:
+                    walk(v, depth + 1)
+            elif hasattr(obj, "__dict__"):
+                for v in vars(obj).values():
+                    walk(v, depth + 1)
+
+        try:
+            walk(bundle)
+        except Exception:                       # never let accounting break a predict
+            return 0
+        return total
+
+    def _context_cache_budget_bytes(self) -> "int | None":
+        """Bytes of retained context cache to allow, or ``None`` when no limit applies.
+
+        ``None`` means this device has no VRAM to exhaust -- CPU, MPS, or a device we cannot
+        measure. The failure this bound exists to prevent is specifically a **CUDA** OOM, so
+        on those devices the cache keeps its original unbounded fit-once / serve-many
+        behaviour rather than being silently disabled.
+
+        A CUDA device gets a share of total VRAM rather than an absolute, matching how every
+        other budget in ``memory_policy`` is expressed, so one setting ports from a 24 GB
+        laptop card to a 143 GB H200. Deliberately a MINORITY of the device: the cache is an
+        optimization, and leaving the majority free for the forward pass is what stops a
+        retained cache from turning a slow path into a fatal one.
+        """
+        frac = float(getattr(self, "_context_cache_budget_frac", 0.25))
+        try:
+            dev = self.device if isinstance(self.device, torch.device) else torch.device(self.device)
+            if dev.type != "cuda":
+                return None
+            return int(torch.cuda.get_device_properties(dev).total_memory * frac)
+        except Exception:
+            return None                         # cannot measure -> leave behaviour unchanged
+
+    def _evict_context_cache_for(self, cache: dict, incoming) -> bool:
+        """Drop cached bundles (oldest first) until ``incoming`` fits the byte budget.
+
+        Returns whether ``incoming`` should be retained. False means the bundle is still
+        built and returned to the caller -- it simply is not kept for a later call. That
+        is the wide-table case: reuse is worth nothing if holding one bundle leaves no
+        room to run the model.
+        """
+        budget = self._context_cache_budget_bytes()
+        if budget is None:
+            return True                         # no device limit -> exactly the old behaviour
+        incoming_bytes = self._bundle_device_bytes(incoming)
+        if incoming_bytes > budget:
+            # The branch that fixes topo_2_1: a 15.2 GiB bundle against a 0.25 x 143 GiB
+            # budget is kept out, so eight of them can never accumulate. Release whatever
+            # is held so the forward pass gets the whole card.
+            cache.clear()
+            return False
+        held = {k: self._bundle_device_bytes(v[3]) for k, v in cache.items()}
+        total = sum(held.values())
+        # dict preserves insertion order, so iterating keys is oldest-first (LRU enough:
+        # a hit returns early and never re-inserts, so order tracks first use).
+        for k in list(cache.keys()):
+            if total + incoming_bytes <= budget:
+                break
+            total -= held.get(k, 0)
+            cache.pop(k, None)
+        return True
 
     def _context_cache_key(self, cache_dtype, offload_kv_cache, fit_row_chunk) -> tuple:
         """The non-tensor half of the cache key: everything OUTSIDE the context table
