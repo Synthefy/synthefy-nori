@@ -17,9 +17,9 @@ on:
       target:
         description: "Package index"
         required: true
-        default: testpypi
+        default: pypi
         type: choice
-        options: [testpypi, pypi]
+        options: [pypi]
       tag:
         description: "Exact existing tag, for example synthefy-nori-v0.17.3"
         required: true
@@ -149,28 +149,6 @@ jobs:
           name: ${{ steps.coordinates.outputs.artifact }}
           path: dist/synthefy-nori/
           if-no-files-found: error
-
-  publish-testpypi:
-    name: Publish synthefy-nori to TestPyPI
-    needs: build
-    if: >-
-      needs.build.outputs.target == 'testpypi' &&
-      github.repository == 'Synthefy/synthefy-nori'
-    runs-on: ubuntu-latest
-    environment:
-      name: synthefy-nori-testpypi
-      url: https://test.pypi.org/project/synthefy-nori/${{ needs.build.outputs.version }}/
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: ${{ needs.build.outputs.artifact }}
-          path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
 
   publish-pypi:
     name: Publish synthefy-nori to PyPI

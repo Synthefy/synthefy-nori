@@ -16,6 +16,8 @@ _SPECS = {
         "tag_prefix": "synthefy-v",
         "project_root": "libs/synthefy",
         "build": "uv build --package synthefy --no-sources",
+        "targets": ["testpypi", "pypi"],
+        "publish_jobs": {"publish-testpypi", "publish-pypi"},
         "environments": {"synthefy-testpypi", "synthefy-pypi"},
     },
     "synthefy-nori": {
@@ -23,10 +25,9 @@ _SPECS = {
         "tag_prefix": "synthefy-nori-v",
         "project_root": ".",
         "build": "uv build --package synthefy-nori --no-sources",
-        "environments": {
-            "synthefy-nori-testpypi",
-            "synthefy-nori-pypi",
-        },
+        "targets": ["pypi"],
+        "publish_jobs": {"publish-pypi"},
+        "environments": {"synthefy-nori-pypi"},
     },
 }
 
@@ -63,7 +64,7 @@ def test_generic_publisher_is_removed_and_namespaced_publishers_are_complete():
         assert inputs["distribution"]["options"] == [distribution]
         assert inputs["version"]["required"] == "true"
         assert inputs["tag"]["required"] == "true"
-        assert inputs["target"]["options"] == ["testpypi", "pypi"]
+        assert inputs["target"]["options"] == spec["targets"]
 
         build = workflow["jobs"]["build"]
         assert spec["tag_prefix"] in build["if"]
@@ -83,6 +84,8 @@ def test_generic_publisher_is_removed_and_namespaced_publishers_are_complete():
         assert "releases/latest" not in body
         assert "latest release" not in body
         assert "secrets." not in body
+        if "testpypi" not in spec["targets"]:
+            assert "testpypi" not in body
 
 
 def test_only_public_namespaced_jobs_can_publish_with_oidc():
@@ -102,7 +105,7 @@ def test_only_public_namespaced_jobs_can_publish_with_oidc():
             for name, job in workflow["jobs"].items()
             if name.startswith("publish-")
         }
-        assert set(publish_jobs) == {"publish-testpypi", "publish-pypi"}
+        assert set(publish_jobs) == spec["publish_jobs"]
         assert build.get("permissions") is None
 
         for job in publish_jobs.values():
@@ -125,7 +128,9 @@ def test_only_public_namespaced_jobs_can_publish_with_oidc():
             if name not in publish_jobs:
                 assert job.get("permissions", {}).get("id-token") != "write"
 
-    assert len(environments) == 4
+    assert environments == set().union(
+        *(spec["environments"] for spec in _SPECS.values())
+    )
     assert len(artifact_names) == 2
 
 
