@@ -11,7 +11,7 @@ on:
         type: choice
         options: [synthefy-nori]
       version:
-        description: "Exact package version, for example 0.17.2"
+        description: "Exact package version, for example 0.17.3"
         required: true
         type: string
       target:
@@ -21,7 +21,7 @@ on:
         type: choice
         options: [testpypi, pypi]
       tag:
-        description: "Exact existing tag, for example synthefy-nori-v0.17.2"
+        description: "Exact existing tag, for example synthefy-nori-v0.17.3"
         required: true
         type: string
 
