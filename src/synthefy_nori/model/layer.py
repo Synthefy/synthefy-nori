@@ -142,6 +142,7 @@ class QASSMaxScaling(nn.Module):
         num_heads: int,
         head_dim: int,
         hidden_dim: int = 64,
+        qass_mode: Optional[str] = None,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
     ):
@@ -165,6 +166,38 @@ class QASSMaxScaling(nn.Module):
         nn.init.zeros_(self.gate_mlp[-1].weight)
         nn.init.zeros_(self.gate_mlp[-1].bias)
 
+        # qass_mode selects which learned components are active:
+        #   - "log_only":  q * log(n)                  (base & gate frozen/ignored)
+        #   - "base_only": q * base_scale              (gate frozen/ignored)
+        #   - "full":      q * base_scale * gate_scale
+        # Honoring it is required for older "log_only" checkpoints that still
+        # carry trained base/gate weights: running them "full" silently applies
+        # the wrong attention temperature.
+        #
+        # Precedence: explicit argument > SYNTHEFY_QASS_MODE > "full".
+        # `build_model` resolves the mode from the architecture config once and
+        # passes it down explicitly, so a model's attention temperature is a
+        # function of its own config and nothing else. The env var stays as a
+        # deliberate experiment override for callers that construct this module
+        # directly; it must NOT be able to override a config-resolved mode,
+        # because that is process-global state deciding model behaviour.
+        if qass_mode is None:
+            qass_mode = os.environ.get("SYNTHEFY_QASS_MODE", "full")
+        self.qass_mode = str(qass_mode).strip().lower()
+        if self.qass_mode not in {"full", "base_only", "log_only"}:
+            raise ValueError(
+                "qass_mode (argument or SYNTHEFY_QASS_MODE) must be one of "
+                f"full, base_only, log_only; got {self.qass_mode!r}"
+            )
+        if self.qass_mode == "log_only":
+            for p in self.base_mlp.parameters():
+                p.requires_grad_(False)
+            for p in self.gate_mlp.parameters():
+                p.requires_grad_(False)
+        elif self.qass_mode == "base_only":
+            for p in self.gate_mlp.parameters():
+                p.requires_grad_(False)
+
     def forward(self, q: torch.Tensor, key_len: int) -> torch.Tensor:
         if key_len <= 1:
             return q
@@ -181,10 +214,14 @@ class QASSMaxScaling(nn.Module):
         log_n = torch.tensor(
             math.log(float(max(key_len, 2))), device=q.device, dtype=q.dtype
         )
+        if self.qass_mode == "log_only":
+            return q * log_n.view(1, 1, 1, 1)
         base_delta = self.base_mlp(log_n.view(1, 1)).view(
             1, 1, self.num_heads, self.head_dim
         )
         base_scale = log_n.view(1, 1, 1, 1) * (1.0 + torch.tanh(base_delta))
+        if self.qass_mode == "base_only":
+            return q * base_scale
         gate_scale = 1.0 + torch.tanh(self.gate_mlp(q))
         return q * base_scale * gate_scale
 
@@ -202,6 +239,9 @@ class MultiheadAttention(torch.nn.Module):
         use_logn_attention: bool = False,
         use_learnable_attn_temperature: bool = False,
         attn_n_ref: float = 1024.0,
+        # Appended, not inserted: this signature is not keyword-only, so adding a
+        # parameter mid-list would silently shift any positional caller.
+        qass_mode: Optional[str] = None,
     ):
         super().__init__()
         assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
@@ -247,6 +287,7 @@ class MultiheadAttention(torch.nn.Module):
                 num_heads=self.num_heads,
                 head_dim=self.head_dim,
                 hidden_dim=64,
+                qass_mode=qass_mode,
                 device=device,
                 dtype=dtype,
             )
@@ -501,6 +542,8 @@ class EncoderBaseLayer(nn.Module):
                  use_logn_attention: bool = False,
                  use_learnable_attn_temperature: bool = False,
                  attn_n_ref: float = 1024.0,
+                 # Appended, not inserted — this signature is not keyword-only.
+                 qass_mode: str|None = None,
                  ):
         super().__init__()
         self.use_logn_attention = use_logn_attention
@@ -574,6 +617,7 @@ class EncoderBaseLayer(nn.Module):
                                                             dropout=self.dropout,
                                                             recompute=self.recompute_attn,
                                                             use_qassmax=use_qassmax,
+                                                            qass_mode=qass_mode,
                                                             use_logn_attention=use_logn_attention,
                                                             use_learnable_attn_temperature=use_learnable_attn_temperature,
                                                             attn_n_ref=attn_n_ref,
