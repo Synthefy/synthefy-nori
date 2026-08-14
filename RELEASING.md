@@ -69,10 +69,11 @@ The workflows verify tag, project metadata, module `__version__`, and built whee
 metadata agree. They also require the peeled tag commit to be an ancestor of
 public `main`, so a tag from an unpromoted branch cannot publish.
 
-## Rehearse on TestPyPI
+## Rehearse the lightweight SDK on TestPyPI
 
-Manual dispatch is deliberately tag-bound. Supply distribution, version, target,
-and tag explicitly, and select that same existing tag as the workflow ref:
+The lightweight `synthefy` SDK retains a TestPyPI rehearsal path. Manual
+dispatch is deliberately tag-bound: supply distribution, version, target, and
+tag explicitly, and select that same existing tag as the workflow ref:
 
 ```bash
 gh workflow run publish-synthefy.yml \\
@@ -82,19 +83,13 @@ gh workflow run publish-synthefy.yml \\
   -f version=7.0.0 \\
   -f target=testpypi \\
   -f tag=synthefy-v7.0.0
-
-gh workflow run publish-synthefy-nori.yml \\
-  --repo Synthefy/synthefy-nori \\
-  --ref synthefy-nori-v0.17.3 \\
-  -f distribution=synthefy-nori \\
-  -f version=0.17.3 \\
-  -f target=testpypi \\
-  -f tag=synthefy-nori-v0.17.3
 ```
 
 A branch ref, mismatched tag/version, wrong distribution, or tag not contained in
-public `main` fails before building. TestPyPI uploads use distinct environments
-and trusted-publisher identities from production.
+public `main` fails before building. The SDK TestPyPI upload uses a distinct
+environment and trusted-publisher identity from production. `synthefy-nori`
+publishes only to production PyPI; its workflow still performs the same strict
+artifact metadata and clean-install validation before the protected upload.
 
 Before production, rehearse three clean environments:
 
@@ -104,9 +99,9 @@ Before production, rehearse three clean environments:
 
 The mixed released-heavy/candidate-light environment must either pass its
 supported smoke test or fail immediately with explicit version guidance. These
-candidate-wheel rehearsals do not depend on either package index. Because the
-heavy wheel resolves `synthefy>=7,<8`, dispatch its TestPyPI publisher only after
-the selected lightweight SDK version has been verified on PyPI.
+candidate-wheel rehearsals do not depend on either package index. The heavy
+wheel resolves `synthefy>=7,<8`, so publish it only after the selected
+lightweight SDK version has been verified on PyPI.
 
 ## Publish to PyPI
 
@@ -147,8 +142,8 @@ Approve `synthefy-nori-pypi`, then verify `synthefy-nori==0.17.3` resolves
 `synthefy-nori[forecasting]` work in clean environments.
 
 Each workflow builds only its own project root, runs strict metadata checks,
-clean-installs the wheel, and runs `uv pip check` before upload. Every TestPyPI
-and PyPI upload job is additionally gated by:
+clean-installs the wheel, and runs `uv pip check` before upload. Every package
+index upload job is additionally gated by:
 
 ```text
 github.repository == 'Synthefy/synthefy-nori'
@@ -158,14 +153,13 @@ That makes the same workflow files safe to validate in internal and staging.
 
 ## Trusted-publisher setup
 
-Create four exact workflow/environment pairs in both GitHub and the matching
+Create three exact workflow/environment pairs in both GitHub and the matching
 package index:
 
 | Package | Index | Workflow | GitHub environment |
 |---|---|---|---|
 | `synthefy` | TestPyPI | `publish-synthefy.yml` | `synthefy-testpypi` |
 | `synthefy` | PyPI | `publish-synthefy.yml` | `synthefy-pypi` |
-| `synthefy-nori` | TestPyPI | `publish-synthefy-nori.yml` | `synthefy-nori-testpypi` |
 | `synthefy-nori` | PyPI | `publish-synthefy-nori.yml` | `synthefy-nori-pypi` |
 
 Require reviewers on both production environments. At cutover, revoke the
