@@ -284,16 +284,13 @@ class TrainingConfig:
     # in query get count=0.
     freq_count_encode_prob: float = 0.0
 
-    # logN attention scaling: pre-multiply Q by log(n_keys)/log(n_ref) so
-    # softmax stays sharp as context length grows. attn_n_ref is the
-    # reference length where the factor equals 1 (no change).
-    use_logn_attention: bool = False
-    attn_n_ref: float = 1024.0
-
-    # Learnable per-layer attention temperature: each MultiheadAttention has
-    # an nn.Parameter scalar (init 1.0, .abs() applied) multiplied into the
-    # attention scale. Lets the model learn per-layer attention sharpness.
-    use_learnable_attn_temperature: bool = False
+    # NOTE: use_logn_attention / attn_n_ref / use_learnable_attn_temperature used
+    # to be declared here. They were never read: no CLI flag set them and the
+    # trainer builds the model from `model_config`, not from this dataclass. They
+    # are architecture, so they live in `model_config` -- see
+    # loading.finalize_arch_config, which pins them into every checkpoint. Do not
+    # re-add architecture fields here: a value that looks like a record of the run
+    # but is really an unread default is worse than no field at all.
 
     # Context missingness augmentation: probability of injecting random NaN cells
     # across the full feature matrix (including context rows). Teaches the model

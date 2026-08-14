@@ -21,7 +21,7 @@ from datetime import datetime
 
 import torch
 
-from synthefy_nori.utils.loading import build_model
+from synthefy_nori.utils.loading import build_model, finalize_arch_config
 from synthefy_nori.model.layer import RMSNorm
 from synthefy_nori.training.config import TrainingConfig, package_config_path
 from synthefy_nori.training.trainer import NoriTrainer
@@ -680,6 +680,13 @@ def main():
             f"Architecture extras: QASSMax={'on' if model_config['use_qassmax'] else 'off'}, "
             f"TAE={'on' if model_config['use_target_aware_embedding'] else 'off'}"
         )
+
+    # Pin every architecture flag into model_config now that all overrides have
+    # been applied. model_config is the only architecture record the checkpoint
+    # carries, so a flag left unwritten here is a flag a later load has to guess.
+    finalize_arch_config(model_config)
+    if local_rank == 0 and 'qass_mode' in model_config:
+        print(f"QASS mode: {model_config['qass_mode']} (pinned into model_config)")
 
     # Build model from scratch (random init)
     if local_rank == 0:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import pickle
 
 import torch
@@ -32,7 +33,84 @@ def _safe_torch_load(path):
         with torch.serialization.safe_globals([TrainingConfig]):
             return torch.load(path, map_location="cpu", weights_only=True)
 
+# The attention-scale flags and their defaults. ``finalize_arch_config`` stamps
+# this table into every new checkpoint's ``model_config``; ``build_model`` falls
+# back to it for checkpoints saved before it did. One table, so the value a run
+# trains with and the value a later load assumes cannot drift apart.
+_ATTENTION_SCALE_DEFAULTS = {
+    "use_logn_attention": False,
+    "use_learnable_attn_temperature": False,
+    "attn_n_ref": 1024.0,
+}
+
+
+def resolve_qass_mode(config: dict) -> str:
+    """Return the QASS attention mode an *architecture* config describes.
+
+    ``config`` must be the architecture dict -- the same one ``build_model``
+    consumes. Never a ``TrainingConfig``: that object carries no architecture,
+    and reading it here would make the resolved mode depend on the checkpoint's
+    container format rather than on the model.
+
+    An explicit ``qass_mode`` is honored verbatim. Anything else resolves to
+    "full", because "full" is the only mode this tree has ever trained:
+    ``QASSMaxScaling`` had no mode switch until now, so every checkpoint written
+    without a ``qass_mode`` ran the full ``base * gate`` path and carries trained
+    base/gate weights. Resolving such a checkpoint to anything else would discard
+    those weights and silently apply the wrong attention temperature.
+
+    So this is a widening, not a change: nothing that loads today resolves
+    differently, and a checkpoint that *does* record a mode -- the released
+    ``Nori-30M`` already carries ``qass_mode: "full"`` -- is now honored instead
+    of ignored. Going forward ``finalize_arch_config`` pins the mode before
+    training, so new checkpoints never reach the fallback at all.
+    """
+    explicit_mode = config.get("qass_mode")
+    if explicit_mode is not None:
+        return str(explicit_mode)
+    return "full"
+
+
+def finalize_arch_config(model_config: dict) -> dict:
+    """Complete ``model_config`` in place so it fully describes the architecture.
+
+    ``model_config`` is the single source of truth for architecture: it is what
+    ``build_model`` consumes at training time and what the trainer embeds in
+    every checkpoint. So anything ``build_model`` reads has to be written here
+    explicitly -- otherwise a later load re-derives it, and a re-derivation is
+    only ever as good as the guess behind it.
+
+    Call this once, after every architecture override has been applied and
+    before ``build_model``.
+
+    ``qass_mode`` is pinned before the attention-scale keys are defaulted. The
+    order does not change the outcome here, but it keeps this function honest:
+    the mode is derived from the config the caller actually assembled, never
+    from a value this function just invented.
+
+    ``SYNTHEFY_QASS_MODE`` is honoured here and *only* here: this is the single
+    point where the environment can influence the architecture, and it does so
+    by being written into ``model_config``. Everything downstream --
+    ``build_model`` and the ``QASSMaxScaling`` modules it constructs -- reads the
+    config, never the environment. So an override still works end to end, the
+    checkpoint records the mode the run actually trained with, and there is no
+    second channel that can disagree with the first.
+    """
+    if bool(model_config.get("use_qassmax", False)):
+        env_mode = os.environ.get("SYNTHEFY_QASS_MODE")
+        model_config["qass_mode"] = (
+            env_mode.strip().lower() if env_mode else resolve_qass_mode(model_config)
+        )
+    for key, default in _ATTENTION_SCALE_DEFAULTS.items():
+        model_config.setdefault(key, default)
+    return model_config
+
+
 def build_model(config:dict):
+    # Pre-``finalize_arch_config`` checkpoints omit these; fall back to the same
+    # table finalize stamps in, so old and new checkpoints agree.
+    attn_scale = {k: config.get(k, v) for k, v in _ATTENTION_SCALE_DEFAULTS.items()}
+    use_qassmax = bool(config.get('use_qassmax', False))
     model = FeaturesTransformer(
         preprocess_config_x=config['preprocess_config_x'],
         encoder_config_x=config['encoder_config_x'],
@@ -60,12 +138,15 @@ def build_model(config:dict):
         cross_share_all_kv_heads=config.get('cross_share_all_kv_heads', True),
         seq_attn_isolated=config.get('seq_attn_isolated', False),
         seq_attn_serial=config.get('seq_attn_serial', False),
-        use_qassmax=config.get('use_qassmax', False),
+        use_qassmax=use_qassmax,
+        # Resolved here, once, from this config — not read back out of the
+        # environment inside QASSMaxScaling.
+        qass_mode=resolve_qass_mode(config) if use_qassmax else None,
         use_target_aware_embedding=config.get('use_target_aware_embedding', False),
         use_column_specific_y_aware=config.get('use_column_specific_y_aware', False),
-        use_logn_attention=config.get('use_logn_attention', False),
-        use_learnable_attn_temperature=config.get('use_learnable_attn_temperature', False),
-        attn_n_ref=float(config.get('attn_n_ref', 1024.0)),
+        use_logn_attention=bool(attn_scale['use_logn_attention']),
+        use_learnable_attn_temperature=bool(attn_scale['use_learnable_attn_temperature']),
+        attn_n_ref=float(attn_scale['attn_n_ref']),
     )
     return model
 
@@ -87,7 +168,11 @@ def load_model(model_path, mask_prediction:bool=False, base_config_path:str=None
 
     # Support both pretrained (.ckpt) and training checkpoint (.pt) formats
     if 'model_config' in state_dict:
-        # Training checkpoint format (new): has architecture config embedded
+        # Training checkpoint format (new): has architecture config embedded.
+        # `model_config` is the architecture record -- read it and nothing else.
+        # `state_dict['config']` is the TrainingConfig (hyperparameters, no
+        # architecture); merging it in here would make the resolved QASS mode a
+        # function of the container format instead of the model.
         config = state_dict['model_config']
         weights = state_dict.get('ema_state_dict') or state_dict['model_state_dict']
     elif 'model_state_dict' in state_dict:
@@ -107,6 +192,9 @@ def load_model(model_path, mask_prediction:bool=False, base_config_path:str=None
         config = state_dict['config']
         weights = state_dict['state_dict']
 
+    # Copy before mutating: `config` is a dict embedded in the loaded checkpoint,
+    # and callers (e.g. the eval harness) reuse that object.
+    config = dict(config)
     config['mask_prediction'] = mask_prediction
 
     # Strip torch.compile "_orig_mod." prefix if present
