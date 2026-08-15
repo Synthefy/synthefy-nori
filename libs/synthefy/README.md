@@ -50,6 +50,57 @@ pip install "synthefy[text]"
 pip install "synthefy[aws]"
 ```
 
+## Nori — DataFrame Forecasting
+
+`NoriTSForecaster` turns time-series DataFrames into regression requests and
+runs every request through a configured `SynthefyNoriClient`. That keeps the
+forecasting workflow identical across hosted Baseten, SageMaker, and local
+execution.
+
+Use `future_df=` when the forecast horizon includes values known in advance.
+The target may use a domain-specific name such as `sales`:
+
+```python
+import os
+
+import pandas as pd
+
+from synthefy import SynthefyNoriClient
+from synthefy.nori_ts import NoriTSForecaster
+
+history = pd.DataFrame({
+    "timestamp": pd.date_range("2026-01-01", periods=48, freq="h"),
+    "sales": [100.0 + hour for hour in range(48)],
+    "promotion": [0.0] * 48,
+})
+future = pd.DataFrame({
+    "timestamp": pd.date_range("2026-01-03", periods=12, freq="h"),
+    "promotion": [0.0] * 6 + [1.0] * 6,
+})
+
+client = SynthefyNoriClient(
+    mode="remote",
+    model="nori-6m",
+    api_key=os.environ["SYNTHEFY_NORI_API_KEY"],
+)
+forecaster = NoriTSForecaster(
+    client=client,
+    quantiles=[0.1, 0.5, 0.9],
+)
+forecast = forecaster.predict_df(
+    history,
+    future_df=future,
+    target_column="sales",
+)
+```
+
+`future_df` must contain future timestamps and every numeric covariate used in
+history. Its target must be absent or entirely missing; observed future targets
+would leak the answer. When there are no future covariates, pass
+`prediction_length=` instead and the forecaster generates the horizon.
+`target_column` accepts one column name per call; multiple target columns are
+not supported yet.
+
 ## Nori — Tabular In-Context Regression
 
 `SynthefyNoriClient` is the lightweight client for **Synthefy Nori**, an

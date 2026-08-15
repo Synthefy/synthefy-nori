@@ -250,28 +250,189 @@ class NoriTSForecaster:
     def predict_df(
         self,
         context_df: pd.DataFrame,
-        prediction_length: int,
+        prediction_length: Optional[int] = None,
+        future_df: Optional[pd.DataFrame] = None,
+        target_column: str = _TARGET,
         *,
         freq=None,
     ) -> pd.DataFrame:
-        """Forecast from a plain DataFrame.
+        """Forecast from plain DataFrames — the high-level, TabPFN-TS-style entry point.
 
-        `context_df` needs columns `timestamp`, `target`, and optionally
-        `item_id` (defaults to a single series with id 0). Returns a plain
-        DataFrame indexed by (item_id, timestamp) with `target` + quantile cols.
-        Pass ``freq=`` when the history is gappy and its cadence cannot be
-        inferred reliably (for example, ``freq="h"`` for hourly data).
+        Pass **exactly one** of:
+
+        * ``prediction_length`` — forecast this many steps past the end of history,
+          extrapolating the calendar (no future covariates), or
+        * ``future_df`` — an explicit horizon frame carrying the future timestamps
+          (and any known-future covariates). Its target must be absent or all-NaN.
+
+        Parameters
+        ----------
+        context_df : DataFrame
+            History. Needs a ``timestamp`` column and the target column; ``item_id``
+            is optional (defaults to a single series with id ``0``). Extra **numeric**
+            columns are treated as covariates.
+        prediction_length : int, optional
+            Horizon length. Mutually exclusive with ``future_df``.
+        future_df : DataFrame, optional
+            Explicit horizon: one row per future ``(item_id, timestamp)``, plus any
+            known-future covariates. Its ``item_id`` set must match history exactly,
+            and every numeric covariate used in history must be present here. Mutually
+            exclusive with ``prediction_length``. Rows are ordered by item and
+            timestamp before feature generation, and every horizon timestamp must
+            follow that item's history.
+        target_column : str, default "target"
+            Name of the single target column in ``context_df``. Multiple target
+            columns are not supported. The selected column is normalised to
+            ``"target"`` internally and restored under its original name in the
+            output.
+        freq : optional
+            Explicit frequency used with ``prediction_length`` when the history cadence
+            cannot be inferred (for example, ``freq="h"``).
+
+        Returns
+        -------
+        DataFrame indexed by ``(item_id, timestamp)`` with the point forecast under
+        ``target_column`` and one column per quantile level (``"0.1"`` … ``"0.9"``).
         """
-        df = context_df.copy()
-        if "item_id" not in df.columns:
-            df["item_id"] = 0
-        train_tsdf = TimeSeriesDataFrame.from_data_frame(df)
-        if self.context_length and self.context_length > 0:
-            train_tsdf = train_tsdf.slice_by_timestep(-self.context_length, None)
-        test_tsdf = generate_test_X(
-            train_tsdf,
-            prediction_length=prediction_length,
-            freq=freq,
+        train_tsdf, test_tsdf = self._build_forecast_frames(
+            context_df, prediction_length, future_df, target_column, freq=freq
         )
         pred = self.predict(train_tsdf, test_tsdf)
-        return pd.DataFrame(pred)
+        out = pd.DataFrame(pred)
+        if target_column != _TARGET:  # restore the caller's target name
+            out = out.rename(columns={_TARGET: target_column})
+        return out
+
+    def _build_forecast_frames(
+        self,
+        context_df: pd.DataFrame,
+        prediction_length: Optional[int],
+        future_df: Optional[pd.DataFrame],
+        target_column: str,
+        *,
+        freq=None,
+    ):
+        """Validate inputs and build (train_tsdf, test_tsdf) for :meth:`predict`.
+
+        Kept separate from ``predict_df`` so the whole DataFrame contract — the
+        one-of check, target normalisation, no-leakage guard and covariate
+        selection — is unit-testable without a checkpoint. Returns two
+        ``TimeSeriesDataFrame``s whose target is named ``"target"`` and which carry
+        an identical set of used covariates.
+        """
+        if not isinstance(target_column, str):
+            raise ValueError(
+                "`target_column` must be one column name; multiple target columns "
+                "are not supported yet"
+            )
+        if (prediction_length is None) == (future_df is None):
+            raise ValueError(
+                "provide exactly one of `prediction_length` or `future_df` "
+                "(got both or neither)"
+            )
+
+        history = context_df.copy()
+        if "timestamp" not in history.columns:
+            raise ValueError("`context_df` must have a `timestamp` column")
+        if target_column not in history.columns:
+            raise ValueError(
+                f"target column {target_column!r} not found in `context_df` "
+                f"(columns: {list(history.columns)})"
+            )
+        if "item_id" not in history.columns:
+            history["item_id"] = 0
+        history["timestamp"] = pd.to_datetime(history["timestamp"])
+        history = history.sort_values(["item_id", "timestamp"], kind="stable")
+
+        # Normalise the target name to the internal "target" the rest of the
+        # pipeline expects. Guard the corner case where a *different* column is
+        # already literally called "target" (it would be silently clobbered).
+        if target_column != _TARGET:
+            if _TARGET in history.columns:
+                raise ValueError(
+                    f"`context_df` already has a {_TARGET!r} column while "
+                    f"target_column={target_column!r}; rename it to avoid a collision"
+                )
+            history = history.rename(columns={target_column: _TARGET})
+        if history[_TARGET].isna().any():
+            raise ValueError("the history target has missing values; fill or drop them first")
+
+        reserved = {"item_id", "timestamp", _TARGET}
+        # Covariates are the numeric non-reserved history columns; non-numeric extras
+        # (labels, strings) are ignored rather than fed to the regressor.
+        hist_cov = [c for c in history.columns
+                    if c not in reserved and pd.api.types.is_numeric_dtype(history[c])]
+
+        if future_df is not None:
+            future = future_df.copy()
+            if "timestamp" not in future.columns:
+                raise ValueError("`future_df` must have a `timestamp` column")
+            if len(future) == 0:
+                raise ValueError("`future_df` is empty; nothing to forecast")
+            if "item_id" not in future.columns:
+                future["item_id"] = 0
+            future["timestamp"] = pd.to_datetime(future["timestamp"])
+            if future.duplicated(["item_id", "timestamp"]).any():
+                raise ValueError(
+                    "`future_df` must contain at most one row per "
+                    "(`item_id`, `timestamp`)"
+                )
+            # No leakage: a target in the horizon must be absent or entirely NaN.
+            for tcol in {target_column, _TARGET} & set(future.columns):
+                if not future[tcol].isna().all():
+                    raise ValueError(
+                        f"`future_df` column {tcol!r} carries target values; the "
+                        "horizon target must be absent or all-NaN (no leakage)"
+                    )
+            future = future.drop(columns=[c for c in {target_column, _TARGET} if c in future.columns])
+            # item_ids must line up exactly with history.
+            h_ids, f_ids = set(history["item_id"]), set(future["item_id"])
+            if h_ids != f_ids:
+                raise ValueError(
+                    f"`future_df` item_ids {sorted(f_ids)} do not match "
+                    f"history item_ids {sorted(h_ids)}"
+                )
+            history_end = history.groupby("item_id", sort=False)["timestamp"].max()
+            future_start = future.groupby("item_id", sort=False)["timestamp"].min()
+            overlapping = [
+                item_id
+                for item_id in history_end.index
+                if future_start.loc[item_id] <= history_end.loc[item_id]
+            ]
+            if overlapping:
+                raise ValueError(
+                    "every `future_df` timestamp must be later than its item's "
+                    f"history (violations for item_ids {overlapping[:5]})"
+                )
+            future = future.sort_values(["item_id", "timestamp"], kind="stable")
+            # Every numeric covariate used in history must be supplied (and numeric)
+            # for the whole horizon; use exactly that shared set.
+            used_cov = []
+            for c in hist_cov:
+                if c not in future.columns:
+                    raise ValueError(
+                        f"covariate {c!r} is in history but missing from `future_df`; "
+                        "known-future covariates must be supplied across the whole horizon"
+                    )
+                if not pd.api.types.is_numeric_dtype(future[c]):
+                    raise ValueError(f"covariate {c!r} in `future_df` is not numeric")
+                used_cov.append(c)
+            future[_TARGET] = np.nan
+            test_df = future[["item_id", "timestamp", _TARGET] + used_cov]
+            test_tsdf = TimeSeriesDataFrame.from_data_frame(test_df)
+        else:
+            if not isinstance(prediction_length, (int, np.integer)) or prediction_length <= 0:
+                raise ValueError(
+                    f"`prediction_length` must be a positive integer, got {prediction_length!r}"
+                )
+            used_cov = []  # no way to know future covariates without an explicit horizon
+            test_tsdf = None  # built from the (capped) history below
+
+        # History carries only the target + the covariates we'll actually use.
+        train_df = history[["item_id", "timestamp", _TARGET] + used_cov]
+        train_tsdf = TimeSeriesDataFrame.from_data_frame(train_df)
+        if self.context_length and self.context_length > 0:
+            train_tsdf = train_tsdf.slice_by_timestep(-self.context_length, None)
+        if test_tsdf is None:
+            test_tsdf = generate_test_X(train_tsdf, prediction_length=prediction_length, freq=freq)
+        return train_tsdf, test_tsdf

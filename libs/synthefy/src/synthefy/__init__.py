@@ -10,7 +10,7 @@ from synthefy.data_models import (
 )
 from synthefy.nori_client import SynthefyNoriClient
 
-__version__ = "7.0.0"
+__version__ = "7.0.1"
 
 __all__ = [
     "MEMORY_PRESETS",
