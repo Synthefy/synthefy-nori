@@ -61,7 +61,7 @@ class MemoryPolicy(BaseModel):
     fields are rejected here rather than silently dropped, matching the server.
 
     Note that ``NoriPredictRequest.memory_policy`` is deliberately NOT typed as this class.
-    Pydantic would coerce a caller's partial dict into a full instance and send all twelve
+    Pydantic would coerce a caller's partial dict into a full instance and send all thirteen
     fields — semantically identical today, but it would make the CLIENT pin the server's
     defaults, so a later change to a default would be silently overridden by every older
     client. Only the fields you actually set go on the wire; the server applies its own
@@ -77,6 +77,17 @@ class MemoryPolicy(BaseModel):
             "whole context for every batch of query rows instead: correct, but several "
             "times slower on a large query set, and it may have to drop context rows to "
             "fit. "
+        ),
+    )
+
+    reuse_context_cache: bool = Field(
+        True,
+        description=(
+            "Retain and reuse the encoded context across separate predict() calls "
+            "on this estimator when the context and cache parameters are exactly "
+            "unchanged. False still uses the K/V cache within each prediction, but "
+            "does not retain context-derived state afterwards. Shared serving "
+            "processes force this off; local fit-once/predict-many use keeps it on."
         ),
     )
 

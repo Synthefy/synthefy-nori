@@ -5,7 +5,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [7.0.0] - Unreleased
+## [7.0.1] - Unreleased
+
+### Added
+
+- Added `future_df=` to `NoriTSForecaster.predict_df` for explicit forecast
+  horizons with numeric known-future covariates, such as planned promotions,
+  holidays, weather, or scheduled prices. The horizon must contain exactly the
+  same series and covariates as history, and future target values are rejected
+  to prevent leakage.
+- Added `target_column=` to the same DataFrame workflow so callers can preserve
+  domain names such as `sales` instead of renaming the target to `target`.
+  It accepts one target column per call and clearly rejects multiple targets.
+  Forecasts continue to execute through the configured
+  `SynthefyNoriClient`, including remote, SageMaker, and local modes.
+- Added `reuse_context_cache` to the public `MemoryPolicy` mirror, keeping the
+  lightweight client aligned with the `synthefy-nori 0.17.3` hosted and local
+  contract and allowing retained context reuse to be disabled explicitly.
+
+### Changed
+
+- `predict_df` now accepts exactly one of `prediction_length=` or `future_df=`.
+  The existing generated-horizon behavior remains available through
+  `prediction_length=`.
+
+
+## [7.0.0] - 2026-08-12
 
 ### Removed
 

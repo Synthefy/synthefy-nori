@@ -177,3 +177,61 @@ def test_predict_df_end_to_end():
     # quantiles are monotone (no crossing) at every horizon step
     q = out[["0.1", "0.5", "0.9"]].to_numpy()
     assert (np.diff(q, axis=1) >= -1e-6).all()
+
+
+@pytest.mark.slow
+def test_predict_df_end_to_end_custom_target_multiseries():
+    rng = np.random.default_rng(1)
+    n = 200
+    frames = []
+    for item in (0, 1):
+        t = np.arange(n)
+        series = 5 + item + 3 * np.sin(2 * np.pi * t / 24) + rng.normal(0, 0.2, n)
+        frames.append(
+            pd.DataFrame(
+                {
+                    "item_id": item,
+                    "timestamp": pd.date_range("2021-01-01", periods=n, freq="h"),
+                    "sales": series,
+                }
+            )
+        )
+    history = pd.concat(frames, ignore_index=True)
+
+    output = NoriTSForecaster(
+        mode="local", model="nori-6m", quantiles=[0.1, 0.5, 0.9]
+    ).predict_df(history, prediction_length=12, target_column="sales")
+
+    assert set(output.index.get_level_values("item_id")) == {0, 1}
+    assert len(output) == 24
+    assert "sales" in output.columns
+    assert np.isfinite(output["sales"].to_numpy()).all()
+
+
+@pytest.mark.slow
+def test_predict_df_end_to_end_future_known_covariate():
+    rng = np.random.default_rng(2)
+    n, horizon = 240, 24
+    t = np.arange(n)
+    temperature = 15 + 10 * np.sin(2 * np.pi * t / 24)
+    history = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2021-01-01", periods=n, freq="h"),
+            "target": 2 * temperature + rng.normal(0, 0.5, n),
+            "temperature": temperature,
+        }
+    )
+    future_t = np.arange(n, n + horizon)
+    future = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2021-01-11", periods=horizon, freq="h"),
+            "temperature": 15 + 10 * np.sin(2 * np.pi * future_t / 24),
+        }
+    )
+
+    output = NoriTSForecaster(
+        mode="local", model="nori-6m", quantiles=[0.1, 0.5, 0.9]
+    ).predict_df(history, future_df=future)
+
+    assert len(output) == horizon
+    assert np.isfinite(output["0.5"].to_numpy()).all()

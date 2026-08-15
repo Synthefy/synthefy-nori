@@ -83,7 +83,8 @@ def test_the_report_keeps_fields_this_version_does_not_know():
 
 def test_defaults_match_the_documented_behaviour():
     policy = MemoryPolicy()
-    assert policy.cache is True and policy.cache_dtype == "bf16"
+    assert policy.cache is True and policy.reuse_context_cache is True
+    assert policy.cache_dtype == "bf16"
     assert policy.allow_quantization is True and policy.offload_to_host is True
     assert policy.gpu_budget_frac == 0.4 and policy.host_budget_frac == 0.25
     assert policy.allow_subsample is True
