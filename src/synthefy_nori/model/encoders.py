@@ -127,13 +127,13 @@ class RBFembedding(nn.Module):
 
         min_val, max_val = center_range
         if n_kernels <= 1:
-            centers = torch.tensor([(min_val + max_val) / 2.0], dtype=torch.float64)
+            centers = torch.tensor([(min_val + max_val) / 2.0], dtype=torch.float32)
         else:
             if use_random_kernels:
-                centers = (max_val - min_val) * torch.rand(n_kernels, dtype=torch.float64) + min_val
+                centers = (max_val - min_val) * torch.rand(n_kernels, dtype=torch.float32) + min_val
                 centers = torch.sort(centers).values
             else:
-                centers = torch.linspace(min_val, max_val, steps=n_kernels, dtype=torch.float64)
+                centers = torch.linspace(min_val, max_val, steps=n_kernels, dtype=torch.float32)
         self.register_buffer("centers", centers, persistent=False)
         if use_learn_sigma:
             self.sigma = nn.Parameter(torch.tensor(sigma, dtype=dtype))
@@ -168,19 +168,19 @@ class RBFembedding(nn.Module):
             self.out_layer = nn.Linear(n_kernels, embedding_size, dtype=dtype)
 
     @torch.compiler.disable
-    def _rbf_scientific_decompose(self, x64):
+    def _rbf_scientific_decompose(self, x_work):
         """Decompose x into (mantissa, exponent) in scientific notation.
 
-        Isolated from torch.compile because float64 log10 + integer power
+        Isolated from torch.compile because log10 + integer power
         causes Inductor CantSplit in the backward pass.
         """
-        abs_x = torch.abs(x64)
+        abs_x = torch.abs(x_work)
         is_zero = (abs_x == 0)
         safe = torch.where(is_zero, torch.ones_like(abs_x), abs_x)
         exp_f = torch.floor(torch.log10(safe))
         max_exp = 10**self.exponent_digits - 1
         exp_i = torch.clamp(exp_f, -max_exp, max_exp).to(torch.int64)
-        x_scaled = abs_x / (10.0 ** exp_i.double())
+        x_scaled = abs_x / (10.0 ** exp_i.to(x_work.dtype))
         x_scaled = torch.where(is_zero, torch.zeros_like(x_scaled), x_scaled)
         return x_scaled, exp_i
 
@@ -188,18 +188,22 @@ class RBFembedding(nn.Module):
         # x: shape (batch_size, n_features)
         x = x.squeeze(-1)
         S, F = x.shape[0], (x.shape[1] if x.ndim > 1 else 1)
-        x64 = x.to(torch.float64)
+        # MPS does not implement float64. Keep the higher-precision path on
+        # CPU/CUDA and use float32 for the same calculation on Apple GPUs.
+        work_dtype = torch.float32 if x.device.type == "mps" else torch.float64
+        x_work = x.to(work_dtype)
         if self.gate_mlp is not None:
-            x_scaled, exp_i = self._rbf_scientific_decompose(x64)
+            x_scaled, exp_i = self._rbf_scientific_decompose(x_work)
         else:
             exp_i = None
-            x_scaled = x64
+            x_scaled = x_work
 
-        diff = x_scaled.unsqueeze(-1) - self.centers.view((1,)*x_scaled.dim() + (self.n_kernels,))
+        centers = self.centers.to(work_dtype)
+        diff = x_scaled.unsqueeze(-1) - centers.view((1,)*x_scaled.dim() + (self.n_kernels,))
         rbf = torch.exp(-(diff ** 2) / (2 * (self.sigma ** 2))).to(self.dtype)
 
         if self.gate_mlp is not None:
-            sign_idx = (x64 < 0).to(torch.long)
+            sign_idx = (x_work < 0).to(torch.long)
             exp_sign_idx = (exp_i < 0).to(torch.long)
             abs_exp = exp_i.abs()
             sign_emb = self.sign_embedding(sign_idx)            # (S, F, D)
