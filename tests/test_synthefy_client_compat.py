@@ -5,6 +5,7 @@ compatibility oracle. CI compares against it and never regenerates it from the
 current implementation.
 """
 
+import copy
 import hashlib
 import importlib.util
 import importlib.machinery
@@ -295,5 +296,21 @@ def test_fixture_is_pinned_to_the_public_client_snapshot():
     assert json.loads(golden_bytes)["oracle"] == _ORACLE
 
 
-def test_migrated_client_matches_the_frozen_6_3_behavior(monkeypatch):
-    assert _public_trace(monkeypatch) == json.loads(_GOLDEN_PATH.read_text())
+def test_migrated_client_matches_frozen_6_3_except_the_v7_categorical_contract(monkeypatch):
+    current = _public_trace(monkeypatch)
+    golden = json.loads(_GOLDEN_PATH.read_text())
+
+    # Issue #246 intentionally replaces 6.3's out-of-range -1 sentinel with the
+    # bounded K "other" code shared by the estimator and one-shot helper. Keep
+    # the 6.3 fixture immutable as an oracle and isolate that one reviewed public
+    # difference; every other transport, result, model, and error stays frozen.
+    current_dataframe = current.pop("remote_dataframe")
+    golden_dataframe = golden.pop("remote_dataframe")
+    assert current == golden
+    assert golden_dataframe["transport"]["body"]["X_test"][0] == [4.0, -1.0]
+    expected_dataframe = copy.deepcopy(golden_dataframe)
+    expected_dataframe["transport"]["body"]["X_test"][0] = [4.0, 2.0]
+    expected_dataframe["transport"]["raw"] = expected_dataframe["transport"][
+        "raw"
+    ].replace("[4.0, -1.0]", "[4.0, 2.0]")
+    assert current_dataframe == expected_dataframe

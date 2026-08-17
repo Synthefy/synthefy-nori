@@ -100,13 +100,13 @@ def test_legacy_module_does_not_mask_a_transitive_import_failure(monkeypatch):
 def test_non_numeric_columns_are_ordinal_encoded_by_default():
     Xtr, Xte = align_and_featurize(
         pd.DataFrame({"a": [0.0, 1.0, 2.0], "cat": ["y", "x", "y"]}),
-        # 'z' is unseen in training -> code -1 (the server's unknown_value).
+        # 'z' is unseen in training -> bounded other code K=2.
         pd.DataFrame({"a": [3.0, 4.0], "cat": ["x", "z"]}),
     )
     # one column per categorical, codes in sorted-category order: x=0, y=1
     assert list(Xtr.columns) == ["a", "cat"]
     assert _rows(Xtr) == [[0.0, 1.0], [1.0, 0.0], [2.0, 1.0]]
-    assert _rows(Xte) == [[3.0, 0.0], [4.0, -1.0]]
+    assert _rows(Xte) == [[3.0, 0.0], [4.0, 2.0]]
 
 
 def test_ordinal_missing_categorical_is_nan():
@@ -169,26 +169,23 @@ def test_column_order_in_test_need_not_match_train():
     assert _rows(Xte) == [[3.0, 2.0]]
 
 
-def test_high_cardinality_column_is_dropped_with_warning():
-    with pytest.warns(UserWarning, match="unique values"):
-        Xtr, Xte = align_and_featurize(
+def test_auto_high_cardinality_column_requires_explicit_role():
+    with pytest.raises(ValueError, match="Automatic handling is ambiguous"):
+        align_and_featurize(
             pd.DataFrame({"a": [0.0, 1.0, 2.0], "hc": ["p", "q", "r"]}),
             pd.DataFrame({"a": [3.0], "hc": ["p"]}),
-            max_categorical_cardinality=2,  # 'hc' has 3 uniques -> dropped
+            max_categorical_cardinality=2,
         )
-    assert _rows(Xtr) == [[0.0], [1.0], [2.0]]
-    assert _rows(Xte) == [[3.0]]
 
 
-def test_datetime_column_is_dropped_with_warning():
-    with pytest.warns(UserWarning, match="datetime"):
-        Xtr, _ = align_and_featurize(
+def test_datetime_column_requires_explicit_conversion():
+    with pytest.raises(ValueError, match="unsupported dtype"):
+        align_and_featurize(
             pd.DataFrame(
                 {"a": [0.0, 1.0], "d": pd.to_datetime(["2024-01-01", "2024-01-02"])}
             ),
             pd.DataFrame({"a": [2.0], "d": pd.to_datetime(["2024-01-03"])}),
         )
-    assert _rows(Xtr) == [[0.0], [1.0]]
 
 
 def test_bool_columns_pass_through_as_numeric():
@@ -238,7 +235,7 @@ def test_column_numeric_in_train_but_not_test_raises_clearly():
         )
 
 
-def test_numeric_category_dtype_is_treated_as_numeric_not_one_hot():
+def test_numeric_category_dtype_is_respected_as_categorical():
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # must NOT warn / drop / explode
         Xtr, Xte = align_and_featurize(
@@ -247,18 +244,18 @@ def test_numeric_category_dtype_is_treated_as_numeric_not_one_hot():
             ),
             pd.DataFrame({"a": [5.0], "r": pd.Categorical([2], categories=[1, 2, 3])}),
         )
-    # 'r' kept as a single numeric column (its values), not exploded to r_1/r_2/r_3
-    assert _rows(Xtr) == [[0.0, 1.0], [1.0, 2.0], [2.0, 3.0]]
-    assert _rows(Xte) == [[5.0, 2.0]]
+    # Pandas categorical dtype is a semantic declaration even when levels are numbers.
+    assert _rows(Xtr) == [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]
+    assert _rows(Xte) == [[5.0, 1.0]]
 
 
-def test_all_missing_categorical_column_dropped_with_warning():
-    with pytest.warns(UserWarning, match="no non-missing"):
-        Xtr, _ = align_and_featurize(
-            pd.DataFrame({"a": [0.0, 1.0], "cat": [None, None]}),
-            pd.DataFrame({"a": [2.0], "cat": [None]}),
-        )
-    assert _rows(Xtr) == [[0.0], [1.0]]
+def test_all_missing_categorical_column_preserves_schema_and_nan():
+    Xtr, Xte = align_and_featurize(
+        pd.DataFrame({"a": [0.0, 1.0], "cat": [None, None]}),
+        pd.DataFrame({"a": [2.0], "cat": [None]}),
+    )
+    assert list(Xtr.columns) == list(Xte.columns) == ["a", "cat"]
+    assert Xtr["cat"].isna().all() and Xte["cat"].isna().all()
 
 
 def test_timedelta_column_raises_unsupported():
@@ -309,8 +306,8 @@ def test_non_positive_cardinality_cap_raises():
         )
 
 
-def test_only_droppable_columns_leaves_no_features_raises():
-    with pytest.warns(UserWarning), pytest.raises(ValueError, match="No usable feature"):
+def test_only_temporal_columns_raise_actionable_error():
+    with pytest.raises(ValueError, match="unsupported dtype"):
         align_and_featurize(
             pd.DataFrame({"d": pd.to_datetime(["2024-01-01", "2024-01-02"])}),
             pd.DataFrame({"d": pd.to_datetime(["2024-01-03"])}),

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Literal
 
 import numpy as np
+import pandas as pd
 import torch
 from sklearn.base import BaseEstimator, RegressorMixin
+from synthefy.featurize import CATEGORICAL_AUTO, DataFramePreprocessor
 
 # Re-exported: `synthefy_nori.config_path` and `from synthefy_nori.api import config_path`
 # are both long-standing entry points. The implementation lives in one place.
@@ -22,9 +25,7 @@ from synthefy_nori.discretize import (
 from synthefy_nori.featurize import (
     DEFAULT_CATEGORICAL_ENCODING,
     DEFAULT_MAX_CARDINALITY,
-    align_and_featurize,
 )
-from synthefy_nori.text_features import MultimodalPreprocessor
 
 
 Task = Literal["regression", "reg"]
@@ -84,6 +85,41 @@ def _resolve_model_path(model_path: str | None, token: str | bool | None = None,
     return download_checkpoint(model=model, token=token)
 
 
+def _coerce_numeric_feature_matrix(X, *, name: str) -> np.ndarray:
+    """Coerce a positional feature matrix with actionable non-numeric errors."""
+    try:
+        matrix = np.asarray(X, dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        try:
+            raw = np.asarray(X, dtype=object)
+        except ValueError:
+            raw = None
+        offending: list[int] = []
+        if raw is not None and raw.ndim == 2:
+            for index in range(raw.shape[1]):
+                try:
+                    np.asarray(raw[:, index], dtype=np.float32)
+                except (TypeError, ValueError):
+                    offending.append(index)
+        detail = f"; non-numeric column indices={offending}" if offending else ""
+        raise ValueError(
+            f"{name} must be a numeric 2D array/list{detail}. For named categorical or text "
+            "features, pass a pandas DataFrame and use categorical_columns=[...] or text_columns=[...]."
+        ) from exc
+    if matrix.ndim != 2:
+        raise ValueError(f"{name} must be 2D with shape (n_rows, n_features); got shape {matrix.shape}.")
+    return matrix
+
+
+def _has_explicit_columns(value) -> bool:
+    if value is None or (isinstance(value, str) and value == CATEGORICAL_AUTO):
+        return False
+    try:
+        return bool(len(value))
+    except TypeError:
+        return True
+
+
 class NoriRegressor(RegressorMixin, BaseEstimator):
     """Scikit-learn regression estimator wrapping the Synthefy checkpoint.
 
@@ -131,11 +167,14 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         discrete_y_snap_max_unique: int = 0,
         discretize: str | None = None,
         categorical_levels=None,
+        categorical_columns=CATEGORICAL_AUTO,
+        categorical_encoding: str = DEFAULT_CATEGORICAL_ENCODING,
+        max_categorical_cardinality: int = DEFAULT_MAX_CARDINALITY,
         text_columns=None,
         memory_policy: "MemoryPolicy | dict | str | None" = None,
         svd_dim: int | None = 128,
         embedder="minilm",
-        text_max_cardinality: int = 128,
+        text_max_cardinality: int | None = None,
         text_normalize: bool | None = None,
     ) -> None:
         """Configure the estimator (arguments are stored verbatim; see class docs).
@@ -179,12 +218,18 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 declares a categorical target with the default strategy
                 (``DEFAULT_DISCRETIZE_METHOD``); ``None`` (default) uses the
                 distinct values of the fitted ``y`` when a strategy is set.
+            categorical_columns: DataFrame feature-column policy. ``"auto"``
+                (default) encodes remaining non-numeric columns; a sequence
+                encodes exactly those columns and rejects undeclared strings;
+                ``None`` disables categorical inference.
+            categorical_encoding: ``"ordinal"`` (default) or ``"onehot"``.
+            max_categorical_cardinality: maximum retained levels per explicitly
+                declared categorical. Automatically inferred columns above this
+                limit raise an ambiguity error instead of being dropped.
             text_columns: enables the zero-shot text path when set (requires ``X``
                 to be a :class:`pandas.DataFrame`). A list of column names embeds
-                those columns; ``[]`` is a valid numeric+categorical-only fit (no
-                embedder loaded). ``None`` (default) treats ``X`` as a plain numeric
-                array — behavior unchanged from before. Columns must be named
-                explicitly; the estimator does not infer which columns are text.
+                those columns. ``None`` and ``[]`` both mean no text columns;
+                neither imports or loads the text dependency.
             svd_dim: width of the TruncatedSVD text block appended to the numeric
                 features (fit on train only). Default 128; ``None`` appends the full
                 raw embedding without reduction. Ignored when ``text_columns`` names
@@ -193,10 +238,8 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 id string (e.g. ``"minilm"``; needs the optional
                 ``sentence-transformers`` extra), a preloaded encoder object, or a
                 callable ``texts -> ndarray``.
-            text_max_cardinality: a non-numeric text-eligible column with more than
-                this many distinct values is embedded rather than label-encoded;
-                categorical encoding also keeps at most this many values (rarer /
-                unseen map to a single "other" code). Default 128.
+            text_max_cardinality: deprecated alias for
+                ``max_categorical_cardinality``. Prefer the latter.
             text_normalize: cosine-normalize the text embeddings. ``None`` (default)
                 auto-enables it for known LLM encoders and disables it otherwise;
                 set ``True``/``False`` to override (needed for a preloaded encoder
@@ -224,17 +267,21 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # GridSearchCV/cross_val_score); predict() kwargs override per call.
         self.discretize = discretize
         self.categorical_levels = categorical_levels
+        self.categorical_columns = categorical_columns
+        self.categorical_encoding = categorical_encoding
+        self.max_categorical_cardinality = max_categorical_cardinality
         # Zero-shot text config — constructor params (not fit kwargs) so the
         # feature round-trips through clone/get_params/GridSearchCV/cross_val_score
         # and pickle, exactly like discretize/categorical_levels above.
-        #   text_columns: None -> numeric-array path; [] -> DataFrame numeric+
-        #     categorical only; list of names -> embed those columns.
+        #   text_columns: None / [] -> no text columns; list of names -> embed
+        #     those columns. DataFrames always use the unified numeric and
+        #     categorical preprocessing contract.
         #   svd_dim: SVD width of the appended text block (None = raw embedding).
         #   embedder: short name / preloaded encoder / callable.
         self.text_columns = text_columns
         self.svd_dim = svd_dim
         self.embedder = embedder
-        self.text_max_cardinality = int(text_max_cardinality)
+        self.text_max_cardinality = text_max_cardinality
         self.text_normalize = text_normalize
         # Serving-memory policy: a preset name ("exact", "max_context", "off"), a
         # dict, or a MemoryPolicy. Stored VERBATIM and coerced lazily in
@@ -242,8 +289,9 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # identity check requires the stored attribute to be the object handed in.
         self.memory_policy = memory_policy
         self._predictor = None
-        # Fitted text preprocessor (embed -> SVD -> extra columns), built by fit()
-        # when text_columns is not None; None = numeric-only.
+        self._feature_preprocessor = None
+        # Legacy fitted-text slot retained for old pickles; new fits use the
+        # unified _feature_preprocessor above.
         self._text_preprocessor = None
 
     @property
@@ -266,11 +314,11 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
     def fit(self, X, y):
         """Fit the in-context regressor on ``(X, y)``.
 
-        Numeric-only (default, ``text_columns=None``): ``X`` is any array-like
-        coerced to a float32 matrix — behavior unchanged from before.
+        DataFrames are resolved into numeric, categorical, and explicitly named
+        text columns by a fitted schema. Positional arrays/lists must already be
+        numeric.
 
-        Zero-shot text features: set ``text_columns`` in the constructor and give
-        ``X`` as a :class:`pandas.DataFrame`. The named columns are embedded by a
+        Set ``text_columns`` in the constructor to embed named DataFrame columns by a
         frozen sentence encoder, reduced to ``svd_dim`` columns via TruncatedSVD
         (fit on this training split only), and appended to the numeric/categorical
         block; Nori then consumes the widened matrix like any other features. No
@@ -288,25 +336,64 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # inference cannot independently choose different devices. Keep the raw
         # constructor parameter unchanged for sklearn clone/get_params semantics.
         self.device_ = _as_device(self.device)
-        if self.text_columns is not None:
-            # DataFrame path: MultimodalPreprocessor handles numeric passthrough,
-            # categorical label-encoding, and (if any text_columns) text -> SVD.
-            # text_columns=[] is a valid numeric+categorical-only DataFrame fit
-            # (no embedder loaded); only text_columns=None uses the raw-array path.
-            self._text_preprocessor = MultimodalPreprocessor(
-                self.text_columns, svd_dim=self.svd_dim, embedder=self.embedder,
-                device=self.device_, max_cardinality=self.text_max_cardinality,
-                normalize=self.text_normalize)
-            X_mat = self._text_preprocessor.fit_transform(X)
-            # sklearn contract: n_features_in_ counts INPUT features, not the
-            # widened SVD block; record the column names when we have them.
+        max_cardinality = self.max_categorical_cardinality
+        if self.text_max_cardinality is not None:
+            if (
+                self.max_categorical_cardinality != DEFAULT_MAX_CARDINALITY
+                and self.max_categorical_cardinality != self.text_max_cardinality
+            ):
+                raise ValueError(
+                    "text_max_cardinality and max_categorical_cardinality disagree; "
+                    "remove the deprecated text_max_cardinality argument."
+                )
+            warnings.warn(
+                "text_max_cardinality is deprecated; use max_categorical_cardinality instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            max_cardinality = self.text_max_cardinality
+
+        # Validate feature-policy knobs even for positional numeric inputs so a
+        # misspelled encoding or invalid cap never becomes a silently ignored
+        # constructor argument.
+        feature_parameters = DataFramePreprocessor(
+            categorical_encoding=self.categorical_encoding,
+            max_categorical_cardinality=max_cardinality,
+        )
+        feature_parameters._validate_parameters()
+
+        if isinstance(X, pd.DataFrame):
+            self._feature_preprocessor = DataFramePreprocessor(
+                categorical_columns=self.categorical_columns,
+                categorical_encoding=self.categorical_encoding,
+                max_categorical_cardinality=max_cardinality,
+                text_columns=self.text_columns,
+                svd_dim=self.svd_dim,
+                embedder=self.embedder,
+                text_device=self.device_,
+                text_normalize=self.text_normalize,
+            )
+            X_frame = self._feature_preprocessor.fit_transform(X)
+            X_mat = X_frame.to_numpy(dtype=np.float32)
             self.n_features_in_ = X.shape[1]
-            if hasattr(X, "columns"):
-                self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+            self.feature_names_in_ = np.asarray(X.columns, dtype=object)
         else:
-            self._text_preprocessor = None
-            X_mat = np.asarray(X, dtype=np.float32)
+            if _has_explicit_columns(self.categorical_columns):
+                raise ValueError(
+                    "Explicit categorical_columns requires a pandas DataFrame with named columns; "
+                    "positional arrays/lists must already be numeric."
+                )
+            if _has_explicit_columns(self.text_columns):
+                raise ValueError(
+                    "text_columns requires a pandas DataFrame with named columns; "
+                    "positional arrays/lists must already be numeric."
+                )
+            self._feature_preprocessor = None
+            X_mat = _coerce_numeric_feature_matrix(X, name="X")
             self.n_features_in_ = X_mat.shape[1]
+            if hasattr(self, "feature_names_in_"):
+                del self.feature_names_in_
+        self._text_preprocessor = None
         self.X_train_ = X_mat.astype(np.float32)
         self.y_train_ = np.asarray(y, dtype=np.float64)
         self.y_mean_ = float(self.y_train_.mean())
@@ -317,12 +404,16 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
     def _prepare_query_features(self, X) -> np.ndarray:
         """Coerce query rows to the model's float32 matrix.
 
-        Applies the fitted text transform (embed -> SVD -> append columns) when
-        ``fit`` configured one; otherwise a plain numeric coercion (unchanged).
+        Applies the fitted DataFrame schema when configured; otherwise validates
+        a positional numeric matrix.
         """
+        if getattr(self, "_feature_preprocessor", None) is not None:
+            return self._feature_preprocessor.transform(X).to_numpy(dtype=np.float32)
+        # Pickles fitted before the unified DataFrame preprocessor stored the old
+        # multimodal object here. Keep those artifacts usable.
         if getattr(self, "_text_preprocessor", None) is not None:
             return self._text_preprocessor.transform(X).astype(np.float32)
-        return np.asarray(X, dtype=np.float32)
+        return _coerce_numeric_feature_matrix(X, name="X")
 
     def _get_predictor(self):
         """The cached predictor, with ``memory_policy=`` re-read from this estimator.
@@ -630,29 +721,28 @@ def infer(
     model_path: str | None = None,
     model: str | None = None,
     token: str | bool | None = None,
+    categorical_columns=CATEGORICAL_AUTO,
     max_categorical_cardinality: int = DEFAULT_MAX_CARDINALITY,
     categorical_encoding: str = DEFAULT_CATEGORICAL_ENCODING,
+    text_columns=None,
+    svd_dim: int | None = 128,
+    embedder="minilm",
+    text_normalize: bool | None = None,
     discretize: str | None = None,
     categorical_levels=None,
     **kwargs,
 ):
     """Fit on context rows and infer labels for query rows.
 
-    Accepts Python lists, numpy arrays, or pandas DataFrames. When both
-    ``X_train`` and ``X_test`` are DataFrames, ``X_test`` is aligned to
-    ``X_train``'s columns *by name* (column order is irrelevant) and any
-    non-numeric columns are **encoded** for you — fit on ``X_train`` and applied
-    to ``X_test`` — into a fully numeric matrix. By default each categorical
-    column becomes a single column of ordinal codes (categories from ``X_train``
-    in sorted order; a value seen only in ``X_test`` maps to ``-1``, missing to
-    ``NaN`` — the model's own server-side convention); pass
-    ``categorical_encoding="onehot"`` for indicator columns instead. Datetime
-    columns and categorical columns with more than ``max_categorical_cardinality``
-    (default 100) distinct training values are dropped with a ``UserWarning``;
-    ``timedelta`` columns are unsupported and raise (convert them to a number or
-    string first). Numeric columns (including ``bool``) pass through unchanged.
-    Non-DataFrame inputs must already be numeric — alignment needs column names
-    on both sides.
+    Accepts Python lists, numpy arrays, or pandas DataFrames. DataFrames use the
+    same fitted schema as :class:`NoriRegressor`: ``categorical_columns="auto"``
+    encodes remaining non-numeric columns, a sequence encodes exactly those
+    columns, and ``None`` disables categorical inference. Named ``text_columns``
+    are embedded separately. Ordinal categories are learned from ``X_train`` in
+    deterministic order; missing values remain ``NaN`` and rare/unseen values
+    use one bounded ``other`` code. Query columns are aligned by name without
+    changing the fitted schema. Positional list/array inputs must already be
+    numeric.
 
     ``model`` selects a variant (e.g. ``"nori-30m"``); ``model_path`` still takes
     an explicit local checkpoint and wins over ``model`` when both are given.
@@ -660,12 +750,18 @@ def infer(
     target's levels — see ``NoriRegressor.predict``.
     """
     if task in ("regression", "reg"):
-        X_train, X_test = align_and_featurize(
-            X_train, X_test, max_categorical_cardinality,
-            categorical_encoding=categorical_encoding,
-        )
         estimator = NoriRegressor(
-            model_path=model_path, model=model, token=token, **kwargs
+            model_path=model_path,
+            model=model,
+            token=token,
+            categorical_columns=categorical_columns,
+            categorical_encoding=categorical_encoding,
+            max_categorical_cardinality=max_categorical_cardinality,
+            text_columns=text_columns,
+            svd_dim=svd_dim,
+            embedder=embedder,
+            text_normalize=text_normalize,
+            **kwargs,
         ).fit(X_train, y_train)
         return estimator.predict(
             X_test,
@@ -684,8 +780,13 @@ def predict(
     model_path: str | None = None,
     model: str | None = None,
     token: str | bool | None = None,
+    categorical_columns=CATEGORICAL_AUTO,
     max_categorical_cardinality: int = DEFAULT_MAX_CARDINALITY,
     categorical_encoding: str = DEFAULT_CATEGORICAL_ENCODING,
+    text_columns=None,
+    svd_dim: int | None = 128,
+    embedder="minilm",
+    text_normalize: bool | None = None,
     **kwargs,
 ):
     """Alias for infer()."""
@@ -697,7 +798,12 @@ def predict(
         model_path=model_path,
         model=model,
         token=token,
+        categorical_columns=categorical_columns,
         max_categorical_cardinality=max_categorical_cardinality,
         categorical_encoding=categorical_encoding,
+        text_columns=text_columns,
+        svd_dim=svd_dim,
+        embedder=embedder,
+        text_normalize=text_normalize,
         **kwargs,
     )

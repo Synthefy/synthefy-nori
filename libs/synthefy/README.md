@@ -192,16 +192,20 @@ X_test  = pd.DataFrame({"region": ["SE"], "price": [5.00]})  # order need not ma
 predictions = client.predict(X_train, y_train, X_test)  # 'region' is encoded
 ```
 
-By default each categorical column becomes a single column of **ordinal codes**
-(categories from `X_train` in sorted order — the model's own server-side
-convention): a value seen only in `X_test` maps to `-1`, and a missing value
-(NaN) stays NaN for server-side imputation. Pass
+By default (`categorical_columns="auto"`) each remaining non-numeric column
+becomes a single column of **ordinal codes** learned from `X_train`: retained
+categories receive deterministic `0..K-1` codes, a rare or unseen value maps to
+the bounded `K` `other` code, and a missing value stays NaN for server-side
+imputation. Pass `categorical_columns=["region"]` to encode exactly named
+columns and reject other strings, or `categorical_columns=None` to disable
+categorical inference. Text and categorical declarations may not overlap. Pass
 `categorical_encoding="onehot"` for the previous one-hot behavior (indicator
 columns per category; missing values get their own indicator; unseen values map
-to an all-zeros group). Datetime columns and categorical columns with more than
-`max_categorical_cardinality` (default 100) distinct training values are dropped
-with a warning; `timedelta` columns are unsupported and raise (convert them to a
-number or string first). Numeric columns (including `bool`) pass through unchanged,
+to an all-zeros group). An automatically inferred column above
+`max_categorical_cardinality` (default 100) raises an ambiguity error instead of
+being silently dropped or embedded. Explicit categoricals use top-K plus
+`other`. Temporal columns require explicit conversion. Numeric columns
+(including `bool`) pass through unchanged,
 with NaN imputed server-side. Any **object-dtype** column is treated as categorical
 (including numeric-looking strings such as IDs or zip codes, and object date
 values) — cast genuine numeric columns to a numeric dtype if you want them kept as
@@ -545,7 +549,7 @@ continuous mean is already optimal for those metrics.
   - Hosted Nori is reached by gateway slug — that is the path Synthefy meters,
     rate-limits and grants per key. To target a single-model endpoint you host
     yourself, pass your own `base_url`/`endpoint` and an explicit custom model slug.
-- `predict(X_train, y_train, X_test, task="regression", *, output_type="mean", quantiles=None, text_columns=None, svd_dim=128, embedder="minilm", text_device="auto", timeout=None, extra_headers=None) -> List[float]`
+- `predict(X_train, y_train, X_test, task="regression", *, output_type="mean", quantiles=None, categorical_columns="auto", max_categorical_cardinality=100, categorical_encoding="ordinal", text_columns=None, svd_dim=128, embedder="minilm", text_device="auto", timeout=None, extra_headers=None) -> List[float]`
   - Returns one predicted value per row of `X_test`. `timeout`/`extra_headers`
     apply to remote mode only.
   - `output_type=` picks what comes back from the predictive distribution:
@@ -556,13 +560,14 @@ continuous mean is already optimal for those metrics.
     Everything other than `"mean"` needs local mode or a hosted deployment that
     serves distribution output.
   - Inputs accept Python lists, numpy arrays, or pandas DataFrames/Series.
-    Feature columns must be numeric; DataFrame `X_test` is aligned to `X_train`
-    by column name; non-numeric columns are encoded (fit on `X_train`;
-    `categorical_encoding="ordinal"` by default, `"onehot"` available);
+    Lists/arrays must be numeric. DataFrame `X_test` is aligned to `X_train`
+    by column name and named categorical/text roles are replayed from training;
+    `categorical_encoding="ordinal"` is the default and `"onehot"` is available;
     missing values (NaN) are imputed server-side.
-  - `max_categorical_cardinality` (default 100): non-numeric columns with more
-    distinct training values than this — and datetime columns — are dropped with
-    a warning instead of encoded.
+  - `categorical_columns` is `"auto"`, an exact sequence of names, or `None` to
+    disable inference. `max_categorical_cardinality` (default 100) bounds
+    retained levels; ambiguous auto columns above it raise, while explicitly
+    named categoricals use top-K plus `other`.
   - `text_columns` embeds named raw-text DataFrame columns client-side. The
     default `text_device="auto"` prefers CUDA/ROCm, then Apple MPS, then CPU;
     install the `text` extra and pass `text_device="cpu"` or another PyTorch

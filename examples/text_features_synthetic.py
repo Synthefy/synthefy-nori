@@ -66,10 +66,12 @@ def run(n_train: int = 800, n_test: int = 200, svd_dim: int = 64,
     cols = ["x1", "x2", "brand", "review"]
 
     tab_cols = ["x1", "x2", "brand"]
-    # Tabular-only baseline: review dropped, text_columns=[] -> numeric passthrough
-    # + categorical label-encoding, no embedder. Same estimator as the +text run
-    # below, just without the text column. Text config lives in the constructor.
-    tab = NoriRegressor(device=device, model="nori-6m", text_columns=[]).fit(df_train[tab_cols], y_train)
+    # Tabular-only baseline: the DataFrame automatically resolves brand as a
+    # categorical and never loads the text embedder. Same estimator as the +text
+    # run below, just without the review column.
+    tab = NoriRegressor(device=device, model="nori-6m").fit(
+        df_train[tab_cols], y_train
+    )
     r_tab = float(r2_score(y_test, tab.predict(df_test[tab_cols])))
 
     # + text: same columns plus the review, embedded -> SVD -> appended columns.

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `categorical_columns=` to `SynthefyNoriClient.predict`: `"auto"`
+  resolves remaining non-numeric DataFrame columns, a sequence declares an
+  exact categorical schema, and `None` disables inference. The same fitted
+  schema contract is shared with `NoriRegressor` and the one-shot helpers.
 - Added `future_df=` to `NoriTSForecaster.predict_df` for explicit forecast
   horizons with numeric known-future covariates, such as planned promotions,
   holidays, weather, or scheduled prices. The horizon must contain exactly the
@@ -25,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Ordinal categorical query values that were absent from context now use the
+  bounded `K` `other` code instead of `-1`; missing values remain null/NaN.
+  Automatically inferred high-cardinality and temporal columns now raise with
+  an explicit categorical/text/numeric choice instead of being dropped with a
+  warning. Explicit high-cardinality categoricals retain top-K levels plus
+  `other`.
 - `predict_df` now accepts exactly one of `prediction_length=` or `future_df=`.
   The existing generated-horizon behavior remains available through
   `prediction_length=`.

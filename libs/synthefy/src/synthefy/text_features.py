@@ -11,10 +11,8 @@ numeric columns that a frozen, pretrained Nori can consume like any other featur
       -> appended to the numeric / categorical block
 
 :class:`MultimodalPreprocessor` owns the whole train-only transform so a fitted
-instance reproduces it exactly at predict time. Non-text columns are handled the
-same way the standalone zero-shot script does — numeric columns pass through,
-categorical (string) columns are label-encoded — except the label maps are fit on
-train only and unseen categories at transform time map to a reserved code.
+instance reproduces it exactly at predict time. Non-text columns use the shared
+DataFrame categorical contract.
 
 ``sentence-transformers`` is an optional dependency; it is imported lazily only
 when a string / model embedder is used. A plain callable embedder avoids that
@@ -27,6 +25,8 @@ from typing import Callable
 
 import numpy as np
 import pandas as pd
+
+from synthefy.featurize import DataFramePreprocessor
 
 try:
     from sklearn.decomposition import TruncatedSVD
@@ -49,24 +49,20 @@ MODELS = {
     "bge-large": "BAAI/bge-large-en-v1.5",               # 1024-d
 }
 
+# Kept for compatibility with the legacy ``synthefy_nori.text_features``
+# facade. New categorical handling lives in ``DataFramePreprocessor``.
 _MISSING = "__MISSING__"
 
 
-def _canon_cat(s: pd.Series) -> pd.Series:
-    """Canonical string keys for a categorical column, stable across train/test.
-
-    NaN/None -> the _MISSING sentinel; an int-valued float renders like the int
-    ("5.0" -> "5"), so a column read as int in one split and float in another
-    (e.g. a NaN promoted it) still maps to the same code; everything else via str.
-    """
-    def one(v):
-        if v is None or (isinstance(v, float) and np.isnan(v)):
+def _canon_cat(series: pd.Series) -> pd.Series:
+    def canonicalize(value):
+        if value is None or (isinstance(value, float) and np.isnan(value)):
             return _MISSING
-        if isinstance(v, float) and v.is_integer():
-            return str(int(v))
-        return str(v)
-    return s.astype(object).map(one)
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value)
 
+    return series.astype(object).map(canonicalize)
 
 def build_paragraphs(df: pd.DataFrame, text_columns) -> list[str]:
     """One column-prefixed paragraph per row: ``"col: value. col2: value2."``.
@@ -148,17 +144,20 @@ class MultimodalPreprocessor:
             object, or a callable ``texts -> ndarray``.
         device: torch device string for a string embedder (ignored otherwise).
         seed: TruncatedSVD ``random_state``.
-        max_cardinality: keep only the ``max_cardinality`` most frequent values of
-            each categorical column; rarer values AND any value unseen at fit map
-            to a single in-range "other" code. This bounds the encoded range so an
-            unseen test value can't become an out-of-distribution outlier (which
-            otherwise wrecks high-cardinality columns under Nori's context
-            normalization). Very high-cardinality columns are better passed as text.
+        max_cardinality: maximum retained category count. Automatically inferred
+            categoricals above this limit raise an ambiguity error; explicitly
+            declared categoricals retain their most frequent values and map rare
+            or unseen values to one bounded ``other`` code.
+        categorical_columns: ``"auto"`` to infer non-numeric columns, an exact
+            sequence of categorical column names, or ``None`` to disable
+            categorical inference.
+        categorical_encoding: ``"ordinal"`` (default) or ``"onehot"``.
     """
 
     def __init__(self, text_columns, svd_dim: int | None = 128, embedder="minilm",
-                 device=None, seed: int = 0, max_cardinality: int = 128,
-                 normalize: bool | None = None):
+                 device=None, seed: int = 0, max_cardinality: int = 100,
+                 normalize: bool | None = None, categorical_columns="auto",
+                 categorical_encoding: str = "ordinal"):
         # kept raw (None / str / list / Index); resolved to self.text_columns_ at fit
         self.text_columns = text_columns
         self.svd_dim = None if svd_dim is None else int(svd_dim)
@@ -166,6 +165,8 @@ class MultimodalPreprocessor:
         self.device = device
         self.seed = int(seed)
         self.max_cardinality = int(max_cardinality)
+        self.categorical_columns = categorical_columns
+        self.categorical_encoding = categorical_encoding
         # cosine-normalize embeddings: None = auto (on for LLM encoders keyed by a
         # known model id, off otherwise). Set True/False to override — needed for a
         # preloaded encoder OBJECT, whose model id can't be inspected.
@@ -181,40 +182,28 @@ class MultimodalPreprocessor:
     # -- non-text (numeric passthrough + train-only categorical label maps) --
     def _fit_tabular(self, df: pd.DataFrame) -> None:
         self.nontext_columns_ = [c for c in df.columns if c not in set(self.text_columns_)]
+        self._tabular_preprocessor = None
         self.numeric_columns_ = []
         self.categorical_columns_ = []
-        # col -> {value: code}; codes are 0..k-1 for the k<=max_cardinality most
-        # frequent train values. Rare train values and any unseen value map to the
-        # single "other" code len(map) at transform, so the encoded range stays
-        # bounded (no out-of-distribution sentinel).
         self.category_maps_ = {}
-        for c in self.nontext_columns_:
-            s = df[c]
-            if pd.api.types.is_numeric_dtype(s):
-                self.numeric_columns_.append(c)
-            else:
-                self.categorical_columns_.append(c)
-                vals = _canon_cat(s)
-                vc = vals.value_counts()
-                # keep the max_cardinality most frequent, breaking count ties by
-                # key so the surviving set and their codes are deterministic across
-                # runs / pandas versions (value_counts tie order is not stable).
-                top = sorted(vc.index, key=lambda k: (-int(vc[k]), k))[: self.max_cardinality]
-                self.category_maps_[c] = {v: i for i, v in enumerate(top)}
+        if not self.nontext_columns_:
+            return
+        self._tabular_preprocessor = DataFramePreprocessor(
+            categorical_columns=self.categorical_columns,
+            max_categorical_cardinality=self.max_cardinality,
+            categorical_encoding=self.categorical_encoding,
+        )
+        self._tabular_preprocessor.fit(df[self.nontext_columns_])
+        self.numeric_columns_ = list(self._tabular_preprocessor.numeric_columns_)
+        self.categorical_columns_ = list(self._tabular_preprocessor.categorical_columns_)
+        self.category_maps_ = self._tabular_preprocessor.category_maps_
 
     def _transform_tabular(self, df: pd.DataFrame) -> np.ndarray:
-        # build columns in the original non-text order for a stable feature layout
-        out = np.empty((len(df), len(self.nontext_columns_)), dtype=np.float32)
-        for j, c in enumerate(self.nontext_columns_):
-            if c in self.category_maps_:
-                m = self.category_maps_[c]
-                other = len(m)  # in-range code for rare/unseen values
-                # vectorized dict lookup; unseen -> NaN -> the bounded "other" code
-                out[:, j] = _canon_cat(df[c]).map(m).fillna(other).to_numpy(dtype=np.float32)
-            else:
-                col = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
-                out[:, j] = col.to_numpy(dtype=np.float32)
-        return out
+        if self._tabular_preprocessor is None:
+            return np.empty((len(df), 0), dtype=np.float32)
+        return self._tabular_preprocessor.transform(
+            df[self.nontext_columns_]
+        ).to_numpy(dtype=np.float32)
 
     # -- text (embed + train-fit SVD) --
     def _embed(self, df: pd.DataFrame) -> np.ndarray:
