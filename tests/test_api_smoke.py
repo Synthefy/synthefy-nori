@@ -7,6 +7,8 @@ import torch
 
 from synthefy_nori import NoriRegressor, config_path
 from synthefy_nori import api
+from synthefy_nori.inference import preprocess as inference_preprocess
+from synthefy_nori.inference.predictor import NoriPredictor
 
 
 def _set_accelerators(monkeypatch, *, cuda=False, mps=False):
@@ -55,6 +57,19 @@ def test_fit_resolves_and_reuses_device_for_named_text_encoder(monkeypatch):
     assert model.device_ == torch.device("mps")
     assert model.text_device_ == torch.device("mps")
     assert captured["device"] == torch.device("mps")
+
+
+def test_mps_inference_disables_mixed_precision(monkeypatch):
+    monkeypatch.setattr(NoriPredictor, "build_preprocess_pipeline", lambda self: None)
+    monkeypatch.setattr(inference_preprocess, "_GPU_SVD_DEVICE", None)
+
+    predictor = NoriPredictor(
+        device=torch.device("mps"),
+        inference_config=[{"retrieval_config": {"use_retrieval": False}}],
+        model=torch.nn.Identity(),
+    )
+
+    assert predictor.mix_precision is False
 
 
 def test_config_path_points_to_bundled_file():

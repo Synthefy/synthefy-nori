@@ -216,6 +216,12 @@ class NoriPredictor:
                 raise ValueError("Retrieval is not supported for CPU inference! Please use the noretrieval configuration when running on a CPU device!")
             self.mix_precision = False
             print("Mixed precision is not supported for CPU inference, so it has been automatically disabled")
+        elif device_type == 'mps' and self.mix_precision:
+            # MPS autocast uses float16, while Nori's CPU path and checkpoint
+            # weights use float32. The reduced precision can materially change
+            # regression quality even when every output remains finite.
+            self.mix_precision = False
+            logger.info("Mixed precision is disabled on MPS to preserve inference quality")
 
         if model is not None:
             self.model = model
