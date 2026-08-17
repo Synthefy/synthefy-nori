@@ -192,9 +192,8 @@ pred = model.predict(X_test)          # predictions in a single forward pass, no
 ```
 
 With ``device=None`` (the default), it prefers CUDA, then Apple MPS, and otherwise
-uses CPU. After ``fit``, ``model.device_`` records the selected model device and
-``model.text_device_`` records the device used by a named text encoder. A one-shot
-helper skips the object entirely:
+uses CPU. After ``fit``, ``model.device_`` records the selected device; named text
+encoders use that same device. A one-shot helper skips the object entirely:
 
 ```python
 from synthefy_nori import predict

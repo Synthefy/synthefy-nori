@@ -74,7 +74,6 @@ def test_default_devices_run_nori_and_minilm_on_mps():
     predictions = model.predict(X_test)
 
     assert model.device_ == torch.device("mps")
-    assert model.text_device_ == torch.device("mps")
     assert predictions.shape == (2,)
     assert np.all(np.isfinite(predictions))
     assert model._predictor.mix_precision is False

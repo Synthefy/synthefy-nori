@@ -275,10 +275,6 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # inference cannot independently choose different devices. Keep the raw
         # constructor parameter unchanged for sklearn clone/get_params semantics.
         self.device_ = _as_device(self.device)
-        requested_text_device = (
-            self.device_ if self.text_columns is not None and isinstance(self.embedder, str)
-            else None
-        )
         if self.text_columns is not None:
             # DataFrame path: MultimodalPreprocessor handles numeric passthrough,
             # categorical label-encoding, and (if any text_columns) text -> SVD.
@@ -286,16 +282,9 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
             # (no embedder loaded); only text_columns=None uses the raw-array path.
             self._text_preprocessor = MultimodalPreprocessor(
                 self.text_columns, svd_dim=self.svd_dim, embedder=self.embedder,
-                device=requested_text_device, max_cardinality=self.text_max_cardinality,
+                device=self.device_, max_cardinality=self.text_max_cardinality,
                 normalize=self.text_normalize)
             X_mat = self._text_preprocessor.fit_transform(X)
-            # A named encoder uses the resolved Torch device. Empty text_columns or
-            # a caller-owned callable/preloaded encoder does not place an encoder.
-            self.text_device_ = (
-                requested_text_device
-                if getattr(self._text_preprocessor, "text_columns_", ())
-                else None
-            )
             # sklearn contract: n_features_in_ counts INPUT features, not the
             # widened SVD block; record the column names when we have them.
             self.n_features_in_ = X.shape[1]
@@ -303,7 +292,6 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 self.feature_names_in_ = np.asarray(X.columns, dtype=object)
         else:
             self._text_preprocessor = None
-            self.text_device_ = None
             X_mat = np.asarray(X, dtype=np.float32)
             self.n_features_in_ = X_mat.shape[1]
         self.X_train_ = X_mat.astype(np.float32)

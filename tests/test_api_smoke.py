@@ -55,7 +55,6 @@ def test_fit_resolves_and_reuses_device_for_named_text_encoder(monkeypatch):
     model.fit(pd.DataFrame({"review": ["good", "bad"]}), [1.0, 0.0])
 
     assert model.device_ == torch.device("mps")
-    assert model.text_device_ == torch.device("mps")
     assert captured["device"] == torch.device("mps")
 
 
