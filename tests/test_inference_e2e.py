@@ -22,7 +22,9 @@ from __future__ import annotations
 import os
 
 import numpy as np
+import pandas as pd
 import pytest
+import torch
 
 
 pytestmark = pytest.mark.slow
@@ -36,6 +38,54 @@ def _checkpoint_kwargs():
     # the public HF repo, so anonymous download works. Any HF token in the
     # environment is picked up automatically (it only affects rate limits).
     return {"model": "nori-6m"}
+
+
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(), reason="requires an MPS-capable macOS host"
+)
+def test_default_device_runs_finite_inference_on_mps():
+    """The no-argument path must select and execute on MPS, not just detect it."""
+    from synthefy_nori import NoriRegressor
+
+    X_train = np.arange(48, dtype=np.float32).reshape(16, 3)
+    y_train = np.linspace(-1.0, 1.0, 16, dtype=np.float32)
+    X_test = np.arange(12, dtype=np.float32).reshape(4, 3)
+
+    model = NoriRegressor(**_checkpoint_kwargs()).fit(X_train, y_train)
+    predictions = model.predict(X_test)
+
+    assert model.device_ == torch.device("mps")
+    assert predictions.shape == (4,)
+    assert np.all(np.isfinite(predictions))
+
+
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(), reason="requires an MPS-capable macOS host"
+)
+def test_default_text_device_runs_minilm_on_mps():
+    """Named text encoders must follow automatic MPS placement end to end."""
+    from synthefy_nori import NoriRegressor
+
+    X_train = pd.DataFrame(
+        {
+            "amount": np.linspace(1.0, 8.0, 8, dtype=np.float32),
+            "description": [f"customer transaction {i}" for i in range(8)],
+        }
+    )
+    y_train = np.linspace(-1.0, 1.0, 8, dtype=np.float32)
+    X_test = pd.DataFrame(
+        {"amount": [2.5, 7.5], "description": ["small order", "large order"]}
+    )
+
+    model = NoriRegressor(
+        **_checkpoint_kwargs(), text_columns=["description"], svd_dim=4
+    ).fit(X_train, y_train)
+    predictions = model.predict(X_test)
+
+    assert model.device_ == torch.device("mps")
+    assert model.text_device_ == torch.device("mps")
+    assert predictions.shape == (2,)
+    assert np.all(np.isfinite(predictions))
 
 
 def test_regressor_recovers_linear_signal():

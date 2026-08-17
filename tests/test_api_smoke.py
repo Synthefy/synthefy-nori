@@ -1,8 +1,89 @@
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
+import torch
 
 from synthefy_nori import NoriRegressor, config_path
+from synthefy_nori import api
+from synthefy.nori_client import _resolve_text_device
+
+
+def _set_accelerators(monkeypatch, *, cuda=False, mps=False):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: mps)
+
+
+def test_default_device_prefers_cuda_over_mps(monkeypatch):
+    _set_accelerators(monkeypatch, cuda=True, mps=True)
+    assert api._default_device() == torch.device("cuda:0")
+
+
+def test_default_device_uses_mps_when_cuda_is_unavailable(monkeypatch):
+    _set_accelerators(monkeypatch, mps=True)
+    assert api._default_device() == torch.device("mps")
+
+
+def test_default_device_falls_back_to_cpu(monkeypatch):
+    _set_accelerators(monkeypatch)
+    assert api._default_device() == torch.device("cpu")
+
+
+@pytest.mark.parametrize(
+    ("cuda", "mps", "expected"),
+    [(True, True, "cuda"), (False, True, "mps"), (False, False, "cpu")],
+)
+def test_local_and_client_auto_device_policies_match(
+    monkeypatch, cuda, mps, expected
+):
+    _set_accelerators(monkeypatch, cuda=cuda, mps=mps)
+    assert api._default_device().type == expected
+    assert _resolve_text_device(None) == expected
+
+
+def test_explicit_device_does_not_probe_auto_detection(monkeypatch):
+    monkeypatch.setattr(
+        api,
+        "_default_device",
+        lambda: pytest.fail("an explicit device must skip automatic detection"),
+    )
+    assert api._as_device("cpu") == torch.device("cpu")
+
+
+def test_explicit_mps_fails_early_when_pytorch_lacks_support(monkeypatch):
+    _set_accelerators(monkeypatch)
+    monkeypatch.setattr(torch.backends.mps, "is_built", lambda: False)
+
+    with pytest.raises(RuntimeError, match="PyTorch build does not include MPS"):
+        api._as_device("mps")
+
+
+def test_explicit_mps_is_accepted_when_available(monkeypatch):
+    _set_accelerators(monkeypatch, mps=True)
+    assert api._as_device("mps") == torch.device("mps")
+
+
+def test_fit_resolves_and_reuses_device_for_named_text_encoder(monkeypatch):
+    captured = {}
+
+    class FakePreprocessor:
+        def __init__(self, text_columns, **kwargs):
+            captured.update(kwargs)
+            self.text_columns_ = list(text_columns)
+
+        def fit_transform(self, frame):
+            return np.zeros((len(frame), 2), dtype=np.float32)
+
+    monkeypatch.setattr(api, "_as_device", lambda device: torch.device("mps"))
+    monkeypatch.setattr(api, "MultimodalPreprocessor", FakePreprocessor)
+
+    model = NoriRegressor(model_path="local.pt", text_columns=["review"])
+    model.fit(pd.DataFrame({"review": ["good", "bad"]}), [1.0, 0.0])
+
+    assert model.device_ == torch.device("mps")
+    assert model.text_device_ == torch.device("mps")
+    assert captured["device"] == torch.device("mps")
 
 
 def test_config_path_points_to_bundled_file():

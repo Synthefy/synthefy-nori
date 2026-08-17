@@ -80,7 +80,7 @@ synthefy-nori-eval = "synthefy_nori.evaluation.cli:main"
 synthefy-nori-download = "synthefy_nori.hf:download_cli"
 synthefy-nori-upload = "synthefy_nori.hf:upload_cli"
 
-# Resolve/lock only for CUDA-capable platforms; macOS/CPU are not supported here.
+# Resolve and lock every supported runtime platform, including macOS for MPS.
 #
 # torch is intentionally NOT pinned to a PyTorch wheel index here. It resolves
 # from PyPI, whose default wheel is a CUDA 12.8 build on Linux (CPU on Windows),
@@ -92,7 +92,11 @@ synthefy-nori-upload = "synthefy_nori.hf:upload_cli"
 # choose the torch build. See the README for an isolated CUDA 13 environment;
 # its `uv pip --no-config` commands bypass the development-only constraint below.
 [tool.uv]
-environments = ["sys_platform == 'linux'", "sys_platform == 'win32'"]
+environments = [
+    "sys_platform == 'linux'",
+    "sys_platform == 'win32'",
+    "sys_platform == 'darwin'",
+]
 # Dev/CI lock pin (this repo only — constraints are NOT read from a git/path
 # dependency, unlike sources, so this does not constrain consumers): hold the
 # locked torch at the CUDA-12.8 build the benchmarks were run on. The published

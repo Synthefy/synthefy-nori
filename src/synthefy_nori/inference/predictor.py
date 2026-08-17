@@ -974,22 +974,19 @@ class NoriPredictor:
         return max(1, eff)
 
     def _default_max_elements_budget(self) -> int:
-        """Default per-forward element budget, scaled to the GPU's total VRAM.
+        """Default per-forward element budget, scaled to accelerator memory.
 
         Anchored at 2M elements for a ~24GB GPU (the historical conservative
         default) and linear in total VRAM, so e.g. a 140GB H200 gets ~11.7M
-        without manual tuning. Falls back to the 2M floor on CPU, when CUDA is
-        unavailable, or if the device can't be queried. Overridden by
+        without manual tuning. Apple MPS uses Metal's recommended maximum
+        working-set size. Falls back to the 2M floor on CPU or if the device
+        cannot be queried. Overridden by
         SYNTHEFY_MAX_ELEMENTS_BUDGET when that env var is set.
         """
         base = 2_000_000
-        try:
-            dev = self.device if isinstance(self.device, torch.device) else torch.device(self.device)
-            if dev.type == "cuda" and torch.cuda.is_available():
-                total_gb = torch.cuda.get_device_properties(dev).total_memory / (1024 ** 3)
-                return max(base, int(base * (total_gb / 24.0)))
-        except Exception:
-            pass
+        total_gb = self._total_vram_gb()
+        if total_gb is not None:
+            return max(base, int(base * (total_gb / 24.0)))
         return base
 
     def _resolve_max_elements_budget(self) -> int:
@@ -1073,17 +1070,22 @@ class NoriPredictor:
         return policy
 
     def _total_vram_gb(self) -> float | None:
-        """Total VRAM in GiB for this predictor's device, or None if unknowable.
+        """Accelerator memory in GiB for this predictor, or None if unknowable.
 
         None rather than a guess, so :meth:`MemoryPolicy.resolve` applies its own
         documented fallback instead of this method inventing a number.
         """
         try:
-            props = torch.cuda.get_device_properties(self.device)
+            dev = self.device if isinstance(self.device, torch.device) else torch.device(self.device)
+            if dev.type == "cuda" and torch.cuda.is_available():
+                return torch.cuda.get_device_properties(dev).total_memory / (1024 ** 3)
+            if dev.type == "mps" and torch.backends.mps.is_available():
+                recommended = getattr(torch.mps, "recommended_max_memory", None)
+                if callable(recommended):
+                    return recommended() / (1024 ** 3)
         except Exception:
-            # CPU inference, or a device string torch will not describe.
-            return None
-        return props.total_memory / (1024 ** 3)
+            pass
+        return None
 
     @staticmethod
     def _chunk_size(max_elements: int, budget_n_features: int, n_train: int) -> int:
@@ -1566,10 +1568,9 @@ class NoriPredictor:
     def _context_cache_budget_bytes(self) -> "int | None":
         """Bytes of retained context cache to allow, or ``None`` when no limit applies.
 
-        ``None`` means this device has no VRAM to exhaust -- CPU, MPS, or a device we cannot
-        measure. The failure this bound exists to prevent is specifically a **CUDA** OOM, so
-        on those devices the cache keeps its original unbounded fit-once / serve-many
-        behaviour rather than being silently disabled.
+        ``None`` means this device has no measurable accelerator memory to exhaust -- CPU or
+        an unknown backend. CUDA uses total device memory; Apple MPS uses Metal's recommended
+        maximum working-set size.
 
         A CUDA device gets a share of total VRAM rather than an absolute, matching how every
         other budget in ``memory_policy`` is expressed, so one setting ports from a 24 GB
@@ -1580,11 +1581,15 @@ class NoriPredictor:
         frac = float(getattr(self, "_context_cache_budget_frac", 0.25))
         try:
             dev = self.device if isinstance(self.device, torch.device) else torch.device(self.device)
-            if dev.type != "cuda":
-                return None
-            return int(torch.cuda.get_device_properties(dev).total_memory * frac)
+            if dev.type == "cuda" and torch.cuda.is_available():
+                return int(torch.cuda.get_device_properties(dev).total_memory * frac)
+            if dev.type == "mps" and torch.backends.mps.is_available():
+                recommended = getattr(torch.mps, "recommended_max_memory", None)
+                if callable(recommended):
+                    return int(recommended() * frac)
         except Exception:
-            return None                         # cannot measure -> leave behaviour unchanged
+            pass
+        return None                             # cannot measure -> leave behaviour unchanged
 
     def _evict_context_cache_for(self, cache: dict, incoming) -> bool:
         """Drop cached bundles (oldest first) until ``incoming`` fits the byte budget.

@@ -330,6 +330,29 @@ jobs:
       - run: uv sync --locked --extra dev
       - run: uv run pytest -m slow tests/test_inference_e2e.py tests/test_memory_policy_e2e.py
 
+  # Apple-Silicon gate: prove that the no-argument device path selects MPS and
+  # completes both numeric and MiniLM-backed text inference. macos-15 is an
+  # arm64 standard runner; keeping this as a real forward pass prevents mocked
+  # availability checks from advertising a backend that Nori cannot execute.
+  # Mark this job as a required status check alongside the CPU inference gate.
+  mps-inference:
+    name: CI test MPS inference
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v8.2.0
+      - run: uv sync --locked --extra dev --extra text
+      - name: Require an arm64 MPS runtime
+        run: >-
+          uv run python -c
+          "import platform, torch;
+          assert platform.machine() == 'arm64', platform.machine();
+          assert torch.backends.mps.is_available(), 'PyTorch MPS is unavailable'"
+      - run: uv run pytest -m slow tests/test_inference_e2e.py -k mps
+
   # Merge gate (part 2): one real training step from scratch on CPU (data-gen ->
   # loss -> optimizer step -> checkpoint write). Offline; no checkpoint download.
   train-step:

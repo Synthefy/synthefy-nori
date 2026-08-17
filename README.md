@@ -47,7 +47,7 @@ Nori into your own project:
 Look at my code/task/report here and figure out where Nori would best fit — it's
 Synthefy's tabular foundation model, a drop-in scikit-learn estimator that predicts
 a continuous target by in-context learning: no training loop, no hyperparameters,
-and it uses the GPU automatically when one's available (CPU otherwise).
+and it automatically uses CUDA or Apple MPS when available (CPU otherwise).
 
 1. Install it with this project's package manager
    (e.g. `uv add synthefy-nori`, or `pip install -U synthefy-nori`).
@@ -191,8 +191,10 @@ model.fit(X_train, y_train)           # "fit" just stores the labeled rows as co
 pred = model.predict(X_test)          # predictions in a single forward pass, no training
 ```
 
-It uses a GPU when one is available and falls back to CPU. A one-shot helper
-skips the object entirely:
+With ``device=None`` (the default), it prefers CUDA, then Apple MPS, and otherwise
+uses CPU. After ``fit``, ``model.device_`` records the selected model device and
+``model.text_device_`` records the device used by a named text encoder. A one-shot
+helper skips the object entirely:
 
 ```python
 from synthefy_nori import predict
@@ -610,10 +612,12 @@ Reuse is also bounded by size, which matters on wide tables. A retained context 
 `nlayers × n_feature_groups × n_context` — modest on a typical table, but tens of GiB once a
 table has hundreds of columns, and the default regression path retains one per member of its
 8-member preprocessing ensemble. Retained contexts are therefore capped at a quarter of total
-VRAM, oldest evicted first, and a single context that exceeds that cap on its own is rebuilt
-each call instead of kept. Reuse is an optimization; leaving most of the device free for the
-forward pass is what keeps a large context from turning a slow prediction into a failed one.
-Devices without VRAM to exhaust (CPU) are not capped.
+accelerator memory, oldest evicted first, and a single context that exceeds that cap on its
+own is rebuilt each call instead of kept. Reuse is an optimization; leaving most of the
+device free for the forward pass is what keeps a large context from turning a slow
+prediction into a failed one.
+CUDA uses total device memory for the cap; Apple MPS uses Metal's recommended maximum
+working-set size. Devices without accelerator memory to exhaust (CPU) are not capped.
 
 **Known limit:** at large row counts × many columns, the first thing to run out of
 memory is the transductive preprocessing (RBF + polynomial expansion over the whole
