@@ -37,6 +37,28 @@ def test_explicit_mps_fails_early_when_pytorch_lacks_support(monkeypatch):
         api._as_device("mps")
 
 
+def test_explicit_cuda_fails_early_when_cuda_is_unavailable(monkeypatch):
+    _set_accelerators(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="CUDA is not available to PyTorch"):
+        api._as_device("cuda")
+
+
+def test_explicit_cuda_rejects_an_out_of_range_device_index(monkeypatch):
+    _set_accelerators(monkeypatch, cuda=True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+
+    with pytest.raises(RuntimeError, match=r"device='cuda:1'.*only 1 CUDA device"):
+        api._as_device("cuda:1")
+
+
+def test_explicit_cuda_accepts_a_visible_device_index(monkeypatch):
+    _set_accelerators(monkeypatch, cuda=True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+
+    assert api._as_device("cuda:1") == torch.device("cuda:1")
+
+
 def test_fit_resolves_and_reuses_device_for_named_text_encoder(monkeypatch):
     captured = {}
 

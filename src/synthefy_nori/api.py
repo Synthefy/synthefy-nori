@@ -50,6 +50,19 @@ def _as_device(device):
     if device is None:
         return _default_device()
     resolved = torch.device(device)
+    if resolved.type == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"device={str(resolved)!r} was requested, but CUDA is not "
+                "available to PyTorch."
+            )
+        if resolved.index is not None:
+            device_count = torch.cuda.device_count()
+            if resolved.index >= device_count:
+                raise RuntimeError(
+                    f"device={str(resolved)!r} was requested, but only "
+                    f"{device_count} CUDA device(s) are visible."
+                )
     if resolved.type == "mps" and not _mps_available():
         mps = getattr(torch.backends, "mps", None)
         built = bool(mps is not None and getattr(mps, "is_built", lambda: False)())
