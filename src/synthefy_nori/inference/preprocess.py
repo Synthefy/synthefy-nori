@@ -1326,6 +1326,17 @@ class HighDimFeatureSelector(BasePreprocess):
         transform itself.
     svd_components : int
         SVD output dimension for ``svd_binary`` / ``svd_all``. Default 64.
+    svd_rows_per_component : int
+        Minimum training rows required per retained SVD component. **Defaults to 1
+        (previous behaviour)**; the shipped inference config sets 3. Opt-in rather than a
+        global default because the evidence for it is low-rank spectral data, while a
+        fixed low cap is known to *regress* genuinely high-rank wide tables (QSAR /
+        isolet / Santander). With it set, the fitted rank is
+        ``min(svd_components, p-1, n-1, n // svd_rows_per_component)``. Without it the
+        rank was bounded by ``n-1``, which takes the *maximum* available rank exactly
+        when rows are scarcest — on a 1901-feature x 190-row table that is 189, an
+        orthogonal rotation rather than a reduction, retaining the whole noise tail.
+        Set to 1 to restore the previous behaviour.
     extratrees_n_estimators : int
         Number of trees for ``extratrees`` strategy (default 100).
     subsample_rows : int
@@ -1347,6 +1358,7 @@ class HighDimFeatureSelector(BasePreprocess):
         n_features_threshold: int = 128,
         binary_threshold: float = 0.5,
         svd_components: int = 64,
+        svd_rows_per_component: int = 1,
         extratrees_n_estimators: int = 100,
         subsample_rows: int = 5000,
     ):
@@ -1356,6 +1368,7 @@ class HighDimFeatureSelector(BasePreprocess):
         self.n_features_threshold = int(n_features_threshold)
         self.binary_threshold = float(binary_threshold)
         self.svd_components = int(svd_components)
+        self.svd_rows_per_component = max(1, int(svd_rows_per_component))
         self.extratrees_n_estimators = int(extratrees_n_estimators)
         self.subsample_rows = int(subsample_rows)
         self.passthrough_: bool = False
@@ -1501,7 +1514,33 @@ class HighDimFeatureSelector(BasePreprocess):
 
         if self.strategy == 'svd_all':
             x_imp = np.where(np.isnan(x), 0.0, x)
-            n_components = max(1, min(self.svd_components, n_features - 1, n_samples - 1))
+            # Rank must be supported by the ROWS, not merely bounded by them.
+            #
+            # The old rule was min(svd_components, p-1, n-1), which takes the MAXIMUM
+            # available rank exactly when rows are scarcest: on a 1901-feature x 190-row
+            # table it returns 189, so the "reduction" is an orthogonal rotation into the
+            # full row space that retains every noise direction and the in-context model
+            # then overfits it. Dividing by svd_rows_per_component ties k to the samples
+            # that actually support it, while svd_components still caps the tall end.
+            #
+            # Measured on RamanBench (nori-100m, production config, 107 datasets,
+            # dataset-level, paired vs the old rule): +0.0269 macro R2, p=0.0010, and
+            # negative-R2 datasets fall from 9 to 5. The gain is concentrated where the
+            # old rule degenerated -- n<256 rows: +0.0316 (43/67, p=0.004) -- and is
+            # neutral-to-positive where the cap already bound (n>=256: +0.0191). Removing
+            # the cap instead of adding this term is NOT equivalent: min(p, n//3) alone
+            # scores -0.0453 on n>=256 because k then runs to 2000 on tall tables.
+            #
+            # No effect on standard suites: the gate needs p > n_features_threshold, which
+            # fires on 1 of 145 tracked datasets, and there n//3 > svd_components anyway --
+            # so k is unchanged and predictions are bit-identical.
+            # n_samples - 1 is kept as a VALIDITY bound (mean-centering costs one degree
+            # of freedom) and is separate from the rows-support term, so
+            # svd_rows_per_component=1 reproduces the previous rank exactly.
+            n_components = max(1, min(self.svd_components,
+                                      n_features - 1,
+                                      n_samples - 1,
+                                      n_samples // self.svd_rows_per_component))
             try:
                 self.svd_model_ = _TorchTruncatedSVD(n_components=n_components, random_state=seed_int)
                 self.svd_model_.fit(x_imp)

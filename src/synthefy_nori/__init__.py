@@ -10,6 +10,7 @@ from synthefy_nori.inference.degradation import (
     strict_pipeline,
 )
 from synthefy_nori.inference.memory_policy import ContextTooLargeError, MemoryPolicy
+from synthefy_nori.configs import DEFAULT_INFERENCE_CONFIG, DEFAULT_MODEL_CONFIG
 from synthefy_nori.api import (
     NoriRegressor,
     config_path,
@@ -32,6 +33,8 @@ __all__ = [
     "discretize",
     "NoriEmbedding",
     "billable_price",
+    "DEFAULT_INFERENCE_CONFIG",
+    "DEFAULT_MODEL_CONFIG",
     "config_path",
     "infer",
     "predict",

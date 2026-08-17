@@ -6,15 +6,15 @@ from synthefy_nori import NoriRegressor, config_path
 
 
 def test_config_path_points_to_bundled_file():
-    path = Path(config_path("reg_allordinal_poly10_adaptive_svd256.json"))
-    assert path.name == "reg_allordinal_poly10_adaptive_svd256.json"
+    path = Path(config_path("default_inference.json"))
+    assert path.name == "default_inference.json"
     assert path.exists()
 
 
 def test_regressor_uses_default_regression_config():
     model = NoriRegressor(model_path="local.pt")
     assert model.model_path == "local.pt"
-    assert model.inference_config.endswith("reg_allordinal_poly10_adaptive_svd256.json")
+    assert model.inference_config.endswith("default_inference.json")
 
 
 def test_regressor_stores_model_variant_verbatim():

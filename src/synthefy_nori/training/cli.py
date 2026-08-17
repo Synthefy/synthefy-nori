@@ -23,6 +23,7 @@ import torch
 
 from synthefy_nori.utils.loading import build_model, finalize_arch_config
 from synthefy_nori.model.layer import RMSNorm
+from synthefy_nori.configs import DEFAULT_MODEL_CONFIG
 from synthefy_nori.training.config import TrainingConfig, package_config_path
 from synthefy_nori.training.trainer import NoriTrainer
 
@@ -34,7 +35,7 @@ def load_model_config(source: str | None) -> dict:
     training can start from scratch without an external checkpoint.
     """
     if source is None:
-        with open(package_config_path("model_base.json"), "r", encoding="utf-8") as f:
+        with open(package_config_path(DEFAULT_MODEL_CONFIG), "r", encoding="utf-8") as f:
             return json.load(f)
     if source.endswith(".json"):
         with open(source, "r", encoding="utf-8") as f:
