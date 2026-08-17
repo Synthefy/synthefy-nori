@@ -22,7 +22,16 @@ def test_regressor_stores_model_variant_verbatim():
     model = NoriRegressor(model="nori-30m")
     assert model.model == "nori-30m"
     assert model.get_params()["model"] == "nori-30m"
-    assert NoriRegressor().model is None  # default: base 6M
+    # Stored verbatim (sklearn contract; no __init__ validation). There is no default:
+    # fitting/predicting without a model= (or model_path) raises at checkpoint load.
+    assert NoriRegressor().model is None
+
+
+def test_predict_without_model_or_path_raises_require_model():
+    # Neither model= nor model_path -> the require-model guard raises at checkpoint load,
+    # before any network call. Covers the public NoriRegressor.fit/predict entry point.
+    with pytest.raises(ValueError, match=r"requires model="):
+        NoriRegressor().fit([[0.0, 1.0], [1.0, 0.0]], [0.0, 1.0]).predict([[0.5, 0.5]])
 
 
 def test_resolve_model_path_threads_variant_to_download(monkeypatch):

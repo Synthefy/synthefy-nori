@@ -16,7 +16,7 @@ is set by `budget`.
 from synthefy_nori import NoriRegressor
 from synthefy_nori.interpretability.shapiq import get_nori_imputation_explainer
 
-reg = NoriRegressor().fit(X_train, y_train)
+reg = NoriRegressor(model="nori-30m").fit(X_train, y_train)
 
 # Plain first-order Shapley values:
 explainer = get_nori_imputation_explainer(reg, X_train, index="SV", max_order=1)

@@ -23,7 +23,7 @@ by `budget`).
 from synthefy_nori import NoriRegressor
 from synthefy_nori.interpretability.shapiq import get_nori_imputation_explainer
 
-model = NoriRegressor().fit(X_train, y_train)
+model = NoriRegressor(model="nori-30m").fit(X_train, y_train)
 
 # index="k-SII", max_order=2 captures pairwise interactions;
 # use index="SV", max_order=1 for plain Shapley values.

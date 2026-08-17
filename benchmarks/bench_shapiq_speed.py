@@ -94,7 +94,7 @@ def main() -> None:
 
     # Fit Nori on the reduced context and warm up the model with one predict.
     print(f"Fitting NoriRegressor on device={DEVICE} ...")
-    model = NoriRegressor(device=DEVICE).fit(X_ctx_sel, y_ctx)
+    model = NoriRegressor(device=DEVICE, model="nori-6m").fit(X_ctx_sel, y_ctx)
     t0 = time.perf_counter()
     _ = model.predict(explain_rows[:1])
     print(f"Warmup predict done in {time.perf_counter() - t0:.2f}s")

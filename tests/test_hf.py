@@ -11,11 +11,14 @@ def test_hf_defaults_are_public_strings():
 def test_model_variant_registry_resolution():
     # friendly variant names -> HF repo ids
     assert hf.resolve_model_repo("nori-30m") == "Synthefy/Nori-30M"
-    assert hf.resolve_model_repo("nori") == hf.DEFAULT_MODEL_REPO_ID       # default 6M base
-    assert hf.resolve_model_repo("nori-6m") == hf.DEFAULT_MODEL_REPO_ID    # explicit base alias
-    assert hf.resolve_model_repo(None) == hf.DEFAULT_MODEL_REPO_ID         # None -> default base
+    assert hf.resolve_model_repo("nori-6m") == hf.DEFAULT_MODEL_REPO_ID    # ~6M base
+    # A size is required -- None and a bare "nori" both raise (there is no default).
+    for missing in (None, "nori"):
+        with pytest.raises(ValueError, match=r"model is required"):
+            hf.resolve_model_repo(missing)
     assert hf.resolve_model_repo("Synthefy/Custom-Repo") == "Synthefy/Custom-Repo"  # raw id passes through
-    assert {"nori", "nori-6m", "nori-30m"} <= set(hf.NORI_MODELS)
+    assert set(hf.NORI_MODELS) == {"nori-6m", "nori-30m"}
+    assert "nori" not in hf.NORI_MODELS
 
 
 def test_thinking_variant_is_rejected_not_downloaded():
@@ -38,6 +41,12 @@ def test_download_checkpoint_rejects_thinking_variant():
     # The guard fires through the download entry point too (before any network call).
     with pytest.raises(ValueError, match=r"Thinking.*hosted Synthefy API"):
         hf.download_checkpoint(model="nori-30m-thinking-medium", token=False)
+
+
+def test_download_checkpoint_requires_a_size():
+    # No model= and no repo_id -> raise (there is no default), before any network call.
+    with pytest.raises(ValueError, match=r"requires model="):
+        hf.download_checkpoint(token=False)
 
 
 def test_download_checkpoint_model_overrides_repo(monkeypatch):

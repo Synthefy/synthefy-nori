@@ -57,7 +57,7 @@ and it uses the GPU automatically when one's available (CPU otherwise).
    ```python
    from synthefy_nori import NoriRegressor
 
-   reg = NoriRegressor(model="nori")      # "nori-30m" for the larger, stronger variant
+   reg = NoriRegressor(model="nori-6m")   # "nori-30m" for the larger, stronger variant
    reg.fit(X_train, y_train)              # stores your rows as context — no training happens
    y_pred = reg.predict(X_test)           # point predictions (predictive-distribution mean)
 
@@ -186,7 +186,7 @@ from synthefy_nori import NoriRegressor
 X, y = load_diabetes(return_X_y=True)
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=0)
 
-model = NoriRegressor()    # downloads weights from the HF Hub on first use
+model = NoriRegressor(model="nori-30m")    # downloads weights from the HF Hub on first use
 model.fit(X_train, y_train)           # "fit" just stores the labeled rows as context
 pred = model.predict(X_test)          # predictions in a single forward pass, no training
 ```
@@ -196,7 +196,7 @@ skips the object entirely:
 
 ```python
 from synthefy_nori import predict
-pred = predict(X_train, y_train, X_test, task="regression")
+pred = predict(X_train, y_train, X_test, task="regression", model="nori-30m")
 ```
 
 To run from your own checkpoint instead of the Hub default, pass a path:
@@ -218,7 +218,7 @@ whole quantile bank (handy for CRPS / interval scoring, calibration, and
 prediction intervals):
 
 ```python
-model = NoriRegressor().fit(X_train, y_train)
+model = NoriRegressor(model="nori-30m").fit(X_train, y_train)
 
 # Quantiles at chosen levels -> shape (n_levels, n_samples)
 q10, q50, q90 = model.predict(X_test, output_type="quantiles",
@@ -275,7 +275,7 @@ hf auth login
 ```python
 # Option C: pass explicitly in code
 from synthefy_nori import NoriRegressor
-model = NoriRegressor(token="hf_xxxxxxxx")
+model = NoriRegressor(token="hf_xxxxxxxx", model="nori-30m")
 ```
 
 Get a token at <https://huggingface.co/settings/tokens> (read scope is
@@ -335,7 +335,7 @@ pip install "synthefy-nori[interpretability]"
 from synthefy_nori import NoriRegressor
 from synthefy_nori.interpretability.shapiq import get_nori_imputation_explainer
 
-model = NoriRegressor().fit(X_train, y_train)
+model = NoriRegressor(model="nori-30m").fit(X_train, y_train)
 explainer = get_nori_imputation_explainer(model, X_train)   # imputation-based, model-agnostic
 sv = explainer.explain(X_test[:1], budget=128)              # SHAP/Shapley values for one prediction
 sv.plot_waterfall()                                         # additive contribution waterfall
@@ -382,7 +382,7 @@ Reproduce (prints the results table and writes `benchmarks/plots/shap_speed.png`
 ## Benchmarks
 
 Mean and median R² across 96 regression tasks from three public benchmark suites, for both
-Nori sizes — select with `model="nori"` (~6M, default) or `model="nori-30m"` (~29M):
+Nori sizes — `model=` is required; select `model="nori-6m"` (~6M) or `model="nori-30m"` (~29M):
 
 | Suite | Datasets | Nori · mean / median | Nori-30M · mean / median |
 |-------|---------:|:--------------------:|:------------------------:|

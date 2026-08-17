@@ -21,7 +21,7 @@ selection.
 ```python
 from synthefy_nori import NoriRegressor
 
-reg = NoriRegressor(device=None)   # None -> cuda:0 if available, else cpu
+reg = NoriRegressor(device=None, model="nori-30m")   # None -> cuda:0 if available, else cpu
 reg.fit(X_train, y_train)          # stores context; X -> float32 (n, d), y -> float64 (n,)
 point = reg.predict(X_test)        # (n,) distribution mean
 ```
@@ -29,14 +29,14 @@ point = reg.predict(X_test)        # (n,) distribution mean
 **Constructor (exact signature):**
 
 ```python
-NoriRegressor(model_path=None, *, device=None, inference_config=None, token=None,
+NoriRegressor(model_path=None, *, model, device=None, inference_config=None, token=None,
               augmentations=("yj",), yj_skew_threshold=10.0,
               quantile_collapse="mean", bar_temperature=1.0,
               bar_point_estimator="mean")
 ```
 
-- `model_path` — local checkpoint path; `None` downloads the default from the
-  Hugging Face Hub on first `predict`.
+- `model_path` — local checkpoint path. When `None`, `model=` is REQUIRED (a size:
+  "nori-6m"/"nori-30m") and its checkpoint downloads from the Hugging Face Hub on first `predict`.
 - `device` — `None` → `cuda:0` if available else CPU; or any torch device string.
 - `inference_config` — path to a bundled/custom inference config JSON; default
   is `default_inference.json`. Use
@@ -98,7 +98,7 @@ y_pred = infer(X_train, y_train, X_test)   # mean point predictions only
 
 ## Checkpoint & environment
 
-- Default checkpoint: HF repo `Synthefy/Nori` (override env
+- `model=` is required (no default). Base ("nori-6m") checkpoint: HF repo `Synthefy/Nori` (override env
   `SYNTHEFY_NORI_HF_REPO`), file `nori.pt` (env `SYNTHEFY_NORI_HF_FILENAME`),
   cached under `~/.cache/huggingface/hub`. The public checkpoint is ungated.
 - **Offline:** set `HF_HUB_OFFLINE=1` (a huggingface-hub feature) to serve from

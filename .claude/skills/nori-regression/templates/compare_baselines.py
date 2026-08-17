@@ -52,7 +52,7 @@ def main() -> None:
     scoring = {"r2": "r2", "mae": "neg_mean_absolute_error"}
 
     models = {
-        "nori": (NoriRegressor(device=args.device), X),
+        "nori": (NoriRegressor(device=args.device, model="nori-30m"), X),
         "ridge": (Ridge(alpha=1.0), X_sk),
         "random_forest": (RandomForestRegressor(n_estimators=300, random_state=args.seed), X_sk),
     }

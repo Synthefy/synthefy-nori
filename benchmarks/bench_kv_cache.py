@@ -113,7 +113,7 @@ def main() -> None:
         f"budget={MAX_ELEMENTS_BUDGET}"
     )
 
-    model = NoriRegressor(device=DEVICE).fit(x_train, y_train)
+    model = NoriRegressor(device=DEVICE, model="nori-6m").fit(x_train, y_train)
 
     # Warm up (downloads/compiles, allocates caches) with one throwaway predict.
     _ = model.predict(x_test_full[:128])

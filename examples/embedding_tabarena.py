@@ -59,7 +59,7 @@ def extract_embeddings(X_train, y_train, X_test):
     ``get_embeddings`` call on its final full-data model.
     """
     embedder = NoriEmbedding(n_fold=5, shuffle=True, random_state=0,
-                             model=NoriRegressor())
+                             model=NoriRegressor(model="nori-6m"))
     Z_train = embedder.fit_transform(X_train, y_train).mean(axis=0)  # OOF, no leak
     Z_test = embedder.transform(X_test).mean(axis=0)                 # full-data model
 

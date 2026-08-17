@@ -32,7 +32,7 @@ don't zero-fill). The target still must be finite.
 one estimator object:
 
 ```python
-reg = NoriRegressor(device="cpu")            # construct ONCE, refit per origin
+reg = NoriRegressor(device="cpu", model="nori-30m")            # construct ONCE, refit per origin
 for t in test_origins:                       # expanding window
     reg.fit(X[:t], y[:t])                    # context = everything before t
     point = reg.predict(X[t:t+1], output_type="median")

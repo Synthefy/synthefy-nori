@@ -34,7 +34,7 @@ pytestmark = pytest.mark.slow
 
 def _embed_test_rows(X_train, y_train, X_test):
     """Fit on the context, return mean-over-ensemble test embeddings [n, dim]."""
-    model = NoriRegressor().fit(X_train, y_train)
+    model = NoriRegressor(model="nori-6m").fit(X_train, y_train)
     emb = model.get_embeddings(X_test, data_source="test")   # (n_est, n, dim)
     return emb.mean(axis=0)
 

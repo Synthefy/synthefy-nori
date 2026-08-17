@@ -35,8 +35,8 @@ def test_public_construction_api_the_examples_use():
     default (non-slow) suite and blocks the merge before an example can ship
     with an internal-only constructor argument again.
     """
-    NoriRegressor()
-    NoriEmbedding(n_fold=5, shuffle=True, random_state=0, model=NoriRegressor())
+    NoriRegressor(model="nori-30m")
+    NoriEmbedding(n_fold=5, shuffle=True, random_state=0, model=NoriRegressor(model="nori-30m"))
 
 
 @pytest.mark.slow
