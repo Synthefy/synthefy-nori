@@ -52,22 +52,71 @@ Defects found in staging or public are fixed upstream and re-promoted.
 
 ## Prepare a version
 
+A version is written down in more places than its own project files. Three of them
+are shared by both distributions and none is next to the code it describes, so a
+bump that misses one fails CI rather than the release:
+
+| Location | Applies to | Enforced by |
+|---|---|---|
+| `pyproject.toml` / `libs/synthefy/pyproject.toml` | its own project | publish workflow |
+| `src/synthefy_nori/__init__.py` / `libs/synthefy/src/synthefy/__init__.py` | its own project | publish workflow |
+| `uv.lock` | **both** — one entry per workspace member | `uv sync --locked` in `ci.yml` |
+| `.github/workflows/ci.yml` | **both** — an inline `__version__` assertion | itself |
+| `tests/test_synthefy_workspace.py` | **both** — asserts each `project.version` | `pytest` |
+| the git tag | its own project | publish workflow |
+
+`uv.lock` is the one most often missed: `uv sync` rewrites it as a side effect of
+any local run, so it looks incidental, but `ci.yml` runs `uv sync --locked` and
+fails on a stale lock. Commit it with the bump.
+
 For `synthefy`:
 
 1. Set the exact version in `libs/synthefy/pyproject.toml` and
    `libs/synthefy/src/synthefy/__init__.py`.
 2. Add the matching section to `libs/synthefy/CHANGELOG.md`.
-3. Use tag `synthefy-vX.Y.Z`.
+3. Update the three shared locations above.
+4. Use tag `synthefy-vX.Y.Z`.
 
 For `synthefy-nori`:
 
 1. Set the exact version in `pyproject.toml` and
    `src/synthefy_nori/__init__.py`.
-2. Use tag `synthefy-nori-vX.Y.Z`; GitHub Release notes are its changelog.
+2. Update the three shared locations above.
+3. Use tag `synthefy-nori-vX.Y.Z`; GitHub Release notes are its changelog.
+
+Then confirm nothing was missed, rather than trusting the table:
+
+```bash
+grep -rn "<previous version>" --include="*.toml" --include="*.py" \
+  --include="*.yml" --include="*.lock" . | grep -v "\.venv\|CHANGELOG"
+```
+
+Historical `CHANGELOG.md` entries and `RELEASING.md` examples legitimately name old
+versions; everything else the grep finds is a miss.
 
 The workflows verify tag, project metadata, module `__version__`, and built wheel
 metadata agree. They also require the peeled tag commit to be an ancestor of
 public `main`, so a tag from an unpromoted branch cannot publish.
+
+## Expect to repair the sync chain after publishing
+
+`public` defines the version, but `synthefy-nori-internal` carries its own copies of
+every shared location above. So a release reliably conflicts on the `rebase-sync`
+internal hop, on `pyproject.toml`, `uv.lock`, `.github/workflows/ci.yml`, and
+`tests/test_synthefy_workspace.py`.
+
+That is expected, not a sign the release went wrong. The conflict aborts the hop and
+alerts; nothing is force-pushed broken, but internal `main` stays stuck and every
+later push to it re-fails until someone repairs it by hand. Resolve by taking
+`public`'s new version and keeping internal-only lines around it (its
+`requires-python`, its own comments), then force-push internal — a PR cannot land a
+rebase that rewrites `main`, because `main` requires linear history. Archive-tag the
+old head first so the force-push is reversible.
+
+Re-run `rebase-sync` and `drop-check` afterwards; an internal push does not trigger
+them. `drop-check` will then flag every PR merged before the rewrite, because
+patch-ids do not survive one — verify their content really is on `main`, then bump
+`NOT_BEFORE` in `scripts/sync/check_dropped_prs.sh` past the rewrite.
 
 ## Rehearse the lightweight SDK on TestPyPI
 
@@ -116,7 +165,21 @@ gh release create synthefy-v7.0.0 \\
 ```
 
 Approve the `synthefy-pypi` deployment when the workflow parks at its protected
-environment. Verify in a clean environment:
+environment.
+
+Nobody signs in to a package index to do this: upload is OIDC trusted publishing,
+so there are no index credentials. The only gate is the GitHub environment, and its
+reviewer list is a small set that may **not** include whoever cut the release. Check
+before you plan the timing, so the release does not sit parked waiting on a person
+who was never asked:
+
+```bash
+gh api repos/Synthefy/synthefy-nori/actions/runs/<run-id>/pending_deployments \
+  -q '.[] | {env: .environment.name, canApprove: .current_user_can_approve,
+             reviewers: [.reviewers[]?.reviewer.login]}'
+```
+
+Verify in a clean environment:
 
 ```bash
 uv venv --no-project /tmp/synthefy-release-check
