@@ -417,25 +417,6 @@ class DataFramePreprocessor:
         return self.feature_names_out_.copy()
 
 
-def _featurize_frames(
-    X_train: pd.DataFrame,
-    X_test: pd.DataFrame,
-    max_cardinality: int,
-    encoding: str = DEFAULT_CATEGORICAL_ENCODING,
-    *,
-    _warning_stacklevel: int = 4,
-    _allow_empty: bool = False,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Compatibility wrapper around the fitted DataFrame contract."""
-    del _warning_stacklevel, _allow_empty
-    preprocessor = DataFramePreprocessor(
-        categorical_columns=CATEGORICAL_AUTO,
-        max_categorical_cardinality=max_cardinality,
-        categorical_encoding=encoding,
-    )
-    return preprocessor.fit_transform(X_train), preprocessor.transform(X_test)
-
-
 def align_and_featurize(
     X_train: Any,
     X_test: Any,

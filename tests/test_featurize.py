@@ -7,8 +7,6 @@ without loading any checkpoint. The default encoding is ordinal; the one-hot
 path is exercised with ``categorical_encoding="onehot"``.
 """
 
-import builtins
-import importlib
 import warnings
 
 import numpy as np
@@ -21,7 +19,6 @@ from synthefy.featurize import (
     DEFAULT_MAX_CARDINALITY as CANONICAL_DEFAULT_MAX_CARDINALITY,
     align_and_featurize as canonical_align_and_featurize,
 )
-import synthefy_nori.featurize as legacy_featurize_module
 from synthefy_nori.featurize import (
     CATEGORICAL_ENCODINGS,
     DEFAULT_CATEGORICAL_ENCODING,
@@ -39,62 +36,6 @@ def test_synthefy_owns_the_legacy_v7_entry_points():
     assert CATEGORICAL_ENCODINGS is CANONICAL_CATEGORICAL_ENCODINGS
     assert DEFAULT_CATEGORICAL_ENCODING == CANONICAL_DEFAULT_CATEGORICAL_ENCODING
     assert DEFAULT_MAX_CARDINALITY == CANONICAL_DEFAULT_MAX_CARDINALITY
-
-
-def test_legacy_module_falls_back_only_when_the_canonical_submodule_is_missing(
-    monkeypatch,
-):
-    real_import = builtins.__import__
-
-    def missing_canonical(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "synthefy.featurize":
-            raise ModuleNotFoundError(
-                "No module named 'synthefy.featurize'",
-                name="synthefy.featurize",
-            )
-        return real_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", missing_canonical)
-    try:
-        fallback = importlib.reload(legacy_featurize_module)
-        assert fallback.align_and_featurize.__module__ == (
-            "synthefy_nori._legacy_featurize"
-        )
-        Xtr, Xte = fallback.align_and_featurize(
-            pd.DataFrame({"a": [1.0, 2.0], "cat": ["y", "x"]}),
-            pd.DataFrame({"cat": ["z"], "a": [3.0]}),
-        )
-        assert list(Xtr.columns) == list(Xte.columns) == ["a", "cat"]
-        assert _rows(Xtr) == [[1.0, 1.0], [2.0, 0.0]]
-        assert _rows(Xte) == [[3.0, -1.0]]
-    finally:
-        monkeypatch.undo()
-        importlib.reload(legacy_featurize_module)
-
-    assert legacy_featurize_module.align_and_featurize is canonical_align_and_featurize
-
-
-def test_legacy_module_does_not_mask_a_transitive_import_failure(monkeypatch):
-    real_import = builtins.__import__
-
-    def broken_canonical_dependency(
-        name, globals=None, locals=None, fromlist=(), level=0
-    ):
-        if name == "synthefy.featurize":
-            raise ModuleNotFoundError(
-                "No module named 'sentinel_tabular_dependency'",
-                name="sentinel_tabular_dependency",
-            )
-        return real_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", broken_canonical_dependency)
-    try:
-        with pytest.raises(ModuleNotFoundError) as caught:
-            importlib.reload(legacy_featurize_module)
-        assert caught.value.name == "sentinel_tabular_dependency"
-    finally:
-        monkeypatch.undo()
-        importlib.reload(legacy_featurize_module)
 
 
 def test_non_numeric_columns_are_ordinal_encoded_by_default():

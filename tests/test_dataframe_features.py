@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 from sklearn.base import clone
 
+import synthefy.text_features as text_features_module
 from synthefy.featurize import DataFramePreprocessor
 from synthefy.nori_client import _build_nori_request
 from synthefy_nori import NoriRegressor
@@ -65,6 +66,77 @@ def test_frozen_fixture_matches_preprocessor_estimator_helper_and_client(monkeyp
     )
     np.testing.assert_equal(_expected(request.X_train), expected_train)
     np.testing.assert_equal(_expected(request.X_test), expected_query)
+
+
+def test_documented_mixed_dataframe_example_runs_without_a_checkpoint(monkeypatch):
+    def make_test_encoder(*args, **kwargs):
+        del args, kwargs
+
+        def encode(texts):
+            return np.asarray(
+                [
+                    [
+                        len(value),
+                        value.count(" "),
+                        sum(map(ord, value)) % 97,
+                        sum((index + 1) * ord(char) for index, char in enumerate(value))
+                        % 101,
+                    ]
+                    for value in texts
+                ],
+                dtype=np.float32,
+            )
+
+        return encode
+
+    class PredictorStub:
+        quantile_collapse = "mean"
+        bar_point_estimator = "mean"
+
+        def predict(self, X_train, y_train, X_test):
+            assert X_train.shape[1] == X_test.shape[1]
+            assert y_train.shape == (len(X_train),)
+            return np.zeros(len(X_test), dtype=np.float32)
+
+    monkeypatch.setattr(text_features_module, "_make_encoder", make_test_encoder)
+    monkeypatch.setattr(
+        NoriRegressor, "_get_predictor", lambda self: PredictorStub()
+    )
+
+    X_train = pd.DataFrame(
+        {
+            "amount": [10.0, 20.0, 30.0, 40.0],
+            "plan": ["free", "pro", "free", "team"],
+            "region": ["us", "eu", "us", "apac"],
+            "ticket_description": [
+                "cannot sign in",
+                "invoice question",
+                "password reset",
+                "add another user",
+            ],
+        }
+    )
+    y_train = [0.0, 1.0, 0.0, 1.0]
+    X_test = pd.DataFrame(
+        {
+            "amount": [15.0, 50.0],
+            "plan": ["free", "enterprise"],
+            "region": ["eu", "us"],
+            "ticket_description": ["login help", "security review"],
+        }
+    )
+
+    reg = NoriRegressor(
+        model="nori-30m",
+        categorical_columns=["plan", "region"],
+        text_columns=["ticket_description"],
+    )
+    reg.fit(X_train, y_train)
+    y_pred = reg.predict(X_test)
+
+    assert y_pred.tolist() == [0.5, 0.5]
+    assert reg._feature_preprocessor.categorical_columns_ == ["plan", "region"]
+    assert reg._feature_preprocessor.text_columns_ == ["ticket_description"]
 
 
 def test_direct_estimator_auto_encodes_raw_strings_without_text_runtime(monkeypatch):
