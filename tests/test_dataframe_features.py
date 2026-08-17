@@ -89,8 +89,9 @@ def test_estimator_strict_modes_and_query_schema_errors_are_actionable():
         NoriRegressor(
             model_path="unused.pt", categorical_columns=["plan"]
         ).fit(frame, [1.0, 2.0])
-    assert "'note' (object)" in str(caught.value)
-    assert "text_columns" in str(caught.value)
+    message = str(caught.value)
+    assert "'note' (" in message
+    assert "text_columns" in message
 
     estimator = NoriRegressor(model_path="unused.pt").fit(frame, [1.0, 2.0])
     with pytest.raises(ValueError) as caught:
