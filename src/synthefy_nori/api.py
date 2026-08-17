@@ -30,14 +30,49 @@ from synthefy_nori.text_features import MultimodalPreprocessor
 Task = Literal["regression", "reg"]
 
 
+def _mps_available() -> bool:
+    mps = getattr(torch.backends, "mps", None)
+    try:
+        return bool(mps is not None and mps.is_available())
+    except (AttributeError, RuntimeError):
+        return False
+
+
 def _default_device():
-    return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        return torch.device("cuda:0")
+    if _mps_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
 def _as_device(device):
     if device is None:
         return _default_device()
-    return torch.device(device)
+    resolved = torch.device(device)
+    if resolved.type == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"device={str(resolved)!r} was requested, but CUDA is not "
+                "available to PyTorch."
+            )
+        if resolved.index is not None:
+            device_count = torch.cuda.device_count()
+            if resolved.index >= device_count:
+                raise RuntimeError(
+                    f"device={str(resolved)!r} was requested, but only "
+                    f"{device_count} CUDA device(s) are visible."
+                )
+    if resolved.type == "mps" and not _mps_available():
+        mps = getattr(torch.backends, "mps", None)
+        built = bool(mps is not None and getattr(mps, "is_built", lambda: False)())
+        reason = (
+            "this PyTorch build does not include MPS support"
+            if not built
+            else "MPS is not usable on this macOS version or hardware"
+        )
+        raise RuntimeError(f"device='mps' was requested, but {reason}.")
+    return resolved
 
 
 def _resolve_model_path(model_path: str | None, token: str | bool | None = None,
@@ -112,7 +147,9 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 ``"nori-6m"`` (~6M base) or ``"nori-30m"`` (~29.2M); there is no
                 default and omitting both raises. Ignored when ``model_path`` is given.
             device: torch device for inference (``"cuda:0"``, ``"cpu"``, ...).
-                ``None`` picks CUDA when available, else CPU.
+                ``None`` automatically picks CUDA, then Apple MPS when available,
+                and otherwise CPU. The fitted ``device_`` attribute records the
+                device actually selected.
             inference_config: path to an inference-config JSON. ``None`` uses
                 the bundled default config.
             token: Hugging Face token (higher rate limits / private repos);
@@ -247,6 +284,10 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # predict time, where an incoherent config would only surface minutes into a
         # job. The coerced policy is discarded: this call exists for its errors.
         MemoryPolicy.coerce(self.memory_policy)
+        # Resolve automatic placement once per fit so text preprocessing and model
+        # inference cannot independently choose different devices. Keep the raw
+        # constructor parameter unchanged for sklearn clone/get_params semantics.
+        self.device_ = _as_device(self.device)
         if self.text_columns is not None:
             # DataFrame path: MultimodalPreprocessor handles numeric passthrough,
             # categorical label-encoding, and (if any text_columns) text -> SVD.
@@ -254,7 +295,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
             # (no embedder loaded); only text_columns=None uses the raw-array path.
             self._text_preprocessor = MultimodalPreprocessor(
                 self.text_columns, svd_dim=self.svd_dim, embedder=self.embedder,
-                device=self.device, max_cardinality=self.text_max_cardinality,
+                device=self.device_, max_cardinality=self.text_max_cardinality,
                 normalize=self.text_normalize)
             X_mat = self._text_preprocessor.fit_transform(X)
             # sklearn contract: n_features_in_ counts INPUT features, not the
@@ -303,8 +344,11 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         if self._predictor is None:
             from synthefy_nori.inference.predictor import NoriPredictor
 
+            resolved_device = (
+                self.device_ if hasattr(self, "device_") else _as_device(self.device)
+            )
             self._predictor = NoriPredictor(
-                device=_as_device(self.device),
+                device=resolved_device,
                 model_path=_resolve_model_path(self.model_path, self.token, self.model),
                 inference_config=self.inference_config,
                 augmentations=self.augmentations,

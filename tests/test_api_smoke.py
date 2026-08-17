@@ -1,8 +1,96 @@
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
+import torch
 
 from synthefy_nori import NoriRegressor, config_path
+from synthefy_nori import api
+from synthefy_nori.inference import preprocess as inference_preprocess
+from synthefy_nori.inference.predictor import NoriPredictor
+
+
+def _set_accelerators(monkeypatch, *, cuda=False, mps=False):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: mps)
+
+
+@pytest.mark.parametrize(
+    ("cuda", "mps", "expected"),
+    [
+        (True, True, torch.device("cuda:0")),
+        (False, True, torch.device("mps")),
+        (False, False, torch.device("cpu")),
+    ],
+)
+def test_default_device_priority(monkeypatch, cuda, mps, expected):
+    _set_accelerators(monkeypatch, cuda=cuda, mps=mps)
+    assert api._default_device() == expected
+
+
+def test_explicit_mps_fails_early_when_pytorch_lacks_support(monkeypatch):
+    _set_accelerators(monkeypatch)
+    monkeypatch.setattr(torch.backends.mps, "is_built", lambda: False)
+
+    with pytest.raises(RuntimeError, match="PyTorch build does not include MPS"):
+        api._as_device("mps")
+
+
+def test_explicit_cuda_fails_early_when_cuda_is_unavailable(monkeypatch):
+    _set_accelerators(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="CUDA is not available to PyTorch"):
+        api._as_device("cuda")
+
+
+def test_explicit_cuda_rejects_an_out_of_range_device_index(monkeypatch):
+    _set_accelerators(monkeypatch, cuda=True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+
+    with pytest.raises(RuntimeError, match=r"device='cuda:1'.*only 1 CUDA device"):
+        api._as_device("cuda:1")
+
+
+def test_explicit_cuda_accepts_a_visible_device_index(monkeypatch):
+    _set_accelerators(monkeypatch, cuda=True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+
+    assert api._as_device("cuda:1") == torch.device("cuda:1")
+
+
+def test_fit_resolves_and_reuses_device_for_named_text_encoder(monkeypatch):
+    captured = {}
+
+    class FakePreprocessor:
+        def __init__(self, text_columns, **kwargs):
+            captured.update(kwargs)
+            self.text_columns_ = list(text_columns)
+
+        def fit_transform(self, frame):
+            return np.zeros((len(frame), 2), dtype=np.float32)
+
+    monkeypatch.setattr(api, "_as_device", lambda device: torch.device("mps"))
+    monkeypatch.setattr(api, "MultimodalPreprocessor", FakePreprocessor)
+
+    model = NoriRegressor(model_path="local.pt", text_columns=["review"])
+    model.fit(pd.DataFrame({"review": ["good", "bad"]}), [1.0, 0.0])
+
+    assert model.device_ == torch.device("mps")
+    assert captured["device"] == torch.device("mps")
+
+
+def test_mps_inference_disables_mixed_precision(monkeypatch):
+    monkeypatch.setattr(NoriPredictor, "build_preprocess_pipeline", lambda self: None)
+    monkeypatch.setattr(inference_preprocess, "_GPU_SVD_DEVICE", None)
+
+    predictor = NoriPredictor(
+        device=torch.device("mps"),
+        inference_config=[{"retrieval_config": {"use_retrieval": False}}],
+        model=torch.nn.Identity(),
+    )
+
+    assert predictor.mix_precision is False
 
 
 def test_config_path_points_to_bundled_file():

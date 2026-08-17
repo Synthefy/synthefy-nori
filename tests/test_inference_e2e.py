@@ -22,7 +22,11 @@ from __future__ import annotations
 import os
 
 import numpy as np
+import pandas as pd
 import pytest
+import torch
+
+from synthefy_nori import NoriRegressor
 
 
 pytestmark = pytest.mark.slow
@@ -38,22 +42,75 @@ def _checkpoint_kwargs():
     return {"model": "nori-6m"}
 
 
-def test_regressor_recovers_linear_signal():
-    from synthefy_nori import NoriRegressor
-
+def _linear_signal_data():
     rng = np.random.default_rng(0)
     n_train, n_test, d = 200, 50, 4
     X_train = rng.normal(size=(n_train, d)).astype(np.float32)
     true_w = rng.normal(size=d).astype(np.float32)
     y_train = (X_train @ true_w + rng.normal(scale=0.1, size=n_train)).astype(np.float32)
     X_test = rng.normal(size=(n_test, d)).astype(np.float32)
-    y_truth = X_test @ true_w
+    return X_train, y_train, X_test, X_test @ true_w
+
+
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(), reason="requires an MPS-capable macOS host"
+)
+def test_default_devices_run_nori_and_minilm_on_mps():
+    """One smoke covers automatic model and named-text placement end to end."""
+    X_train = pd.DataFrame(
+        {
+            "amount": np.linspace(1.0, 8.0, 8, dtype=np.float32),
+            "description": [f"customer transaction {i}" for i in range(8)],
+        }
+    )
+    y_train = np.linspace(-1.0, 1.0, 8, dtype=np.float32)
+    X_test = pd.DataFrame(
+        {"amount": [2.5, 7.5], "description": ["small order", "large order"]}
+    )
+
+    model = NoriRegressor(
+        **_checkpoint_kwargs(), text_columns=["description"], svd_dim=4
+    ).fit(X_train, y_train)
+    predictions = model.predict(X_test)
+
+    assert model.device_ == torch.device("mps")
+    assert predictions.shape == (2,)
+    assert np.all(np.isfinite(predictions))
+    assert model._predictor.mix_precision is False
+
+
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(), reason="requires an MPS-capable macOS host"
+)
+def test_mps_regressor_matches_cpu_quality():
+    """MPS must preserve CPU task quality, not merely return finite numbers."""
+    X_train, y_train, X_test, y_truth = _linear_signal_data()
+
+    cpu_model = NoriRegressor(**_checkpoint_kwargs(), device="cpu").fit(X_train, y_train)
+    cpu_predictions = cpu_model.predict(X_test)
+    cpu_corr = float(np.corrcoef(cpu_predictions, y_truth)[0, 1])
+    cpu_rmse = float(np.sqrt(np.mean((cpu_predictions - y_truth) ** 2)))
+
+    mps_model = NoriRegressor(**_checkpoint_kwargs()).fit(X_train, y_train)
+    mps_predictions = mps_model.predict(X_test)
+    mps_corr = float(np.corrcoef(mps_predictions, y_truth)[0, 1])
+    mps_rmse = float(np.sqrt(np.mean((mps_predictions - y_truth) ** 2)))
+
+    assert mps_model.device_ == torch.device("mps")
+    assert mps_model._predictor.mix_precision is False
+    assert mps_corr > 0.8, f"expected strong correlation with linear truth, got {mps_corr:.3f}"
+    assert mps_corr >= cpu_corr - 0.02, f"MPS correlation {mps_corr:.3f} trails CPU {cpu_corr:.3f}"
+    assert mps_rmse <= cpu_rmse * 1.1, f"MPS RMSE {mps_rmse:.3f} exceeds CPU {cpu_rmse:.3f}"
+
+
+def test_regressor_recovers_linear_signal():
+    X_train, y_train, X_test, y_truth = _linear_signal_data()
 
     model = NoriRegressor(**_checkpoint_kwargs())
     model.fit(X_train, y_train)
     pred = model.predict(X_test)
 
-    assert pred.shape == (n_test,)
+    assert pred.shape == (len(X_test),)
     assert np.all(np.isfinite(pred))
     assert pred.std() > 1e-6, "predictions are degenerate"
 
@@ -62,8 +119,6 @@ def test_regressor_recovers_linear_signal():
 
 
 def test_regressor_output_types_match_tabpfn_contract():
-    from synthefy_nori import NoriRegressor
-
     rng = np.random.default_rng(0)
     n_train, n_test, d = 200, 50, 4
     X_train = rng.normal(size=(n_train, d)).astype(np.float32)
@@ -82,8 +137,6 @@ def test_regressor_output_types_match_tabpfn_contract():
 
 
 def test_regressor_distribution_outputs():
-    from synthefy_nori import NoriRegressor
-
     rng = np.random.default_rng(0)
     n_train, n_test, d = 200, 50, 4
     X_train = rng.normal(size=(n_train, d)).astype(np.float32)

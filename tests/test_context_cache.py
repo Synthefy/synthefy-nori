@@ -1040,8 +1040,8 @@ def test_context_cache_keeps_a_full_small_ensemble():
     assert len(cache) == 8, "small ensembles keep their cross-call amortization"
 
 
-def test_context_cache_is_unbounded_when_the_device_has_no_vram_to_exhaust():
-    """CPU/MPS keep the original unbounded behaviour -- the bound guards a CUDA OOM only.
+def test_context_cache_is_unbounded_when_the_device_has_no_accelerator_memory():
+    """CPU/unknown devices keep the original unbounded cache behaviour.
 
     Regression test for the first cut of this fix, which returned a 0 budget for a
     non-CUDA device and read 0 as "retain nothing". That silently disabled the context
@@ -1051,3 +1051,19 @@ def test_context_cache_is_unbounded_when_the_device_has_no_vram_to_exhaust():
     cache = {"pipe0": _entry(1)}
     assert p._evict_context_cache_for(cache, {"bytes": 10**12}) is True
     assert "pipe0" in cache, "nothing is evicted when there is no device limit"
+
+
+def test_mps_context_cache_uses_recommended_working_set(monkeypatch):
+    """Unified memory is still finite: retain at most the configured MPS share."""
+    from synthefy_nori.inference.predictor import NoriPredictor
+
+    predictor = object.__new__(NoriPredictor)
+    predictor.device = torch.device("mps")
+    predictor._context_cache_budget_frac = 0.25
+    recommended = 16 * 1024**3
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: recommended)
+
+    assert predictor._total_vram_gb() == 16.0
+    assert predictor._context_cache_budget_bytes() == 4 * 1024**3
+    assert predictor._default_max_elements_budget() == 2_000_000
