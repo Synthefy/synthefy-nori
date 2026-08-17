@@ -11,16 +11,18 @@ import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from importlib.resources import files
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
 import torch
 
+from synthefy_nori.configs import DEFAULT_INFERENCE_CONFIG, config_path
+
 
 def package_config_path(filename: str) -> str:
-    return str(files("synthefy_nori.configs").joinpath(filename))
+    """Long-standing alias for :func:`synthefy_nori.configs.config_path`."""
+    return config_path(filename)
 
 
 # ---------------------------------------------------------------------------
@@ -74,9 +76,7 @@ class NoriWrapper(BaseModelWrapper):
         self._name = model_name
         self.model_path = model_path
         self.device = torch.device(device)
-        self.reg_config_path = reg_config_path or package_config_path(
-            "reg_allordinal_poly10_adaptive_svd256.json"
-        )
+        self.reg_config_path = reg_config_path or config_path(DEFAULT_INFERENCE_CONFIG)
         self.base_config_path = base_config_path
         self.augmentations = tuple(augmentations) if augmentations else ()
         self.yj_skew_threshold = float(yj_skew_threshold)

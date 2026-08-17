@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from importlib.resources import files
 from typing import Literal
 
 import numpy as np
 import torch
 from sklearn.base import BaseEstimator, RegressorMixin
 
+# Re-exported: `synthefy_nori.config_path` and `from synthefy_nori.api import config_path`
+# are both long-standing entry points. The implementation lives in one place.
+from synthefy_nori.configs import DEFAULT_INFERENCE_CONFIG, config_path
 from synthefy_nori.inference.memory_policy import MemoryPolicy
 from synthefy_nori.discretize import (
     DEFAULT_DISCRETIZE_METHOD,
@@ -26,11 +28,6 @@ from synthefy_nori.text_features import MultimodalPreprocessor
 
 
 Task = Literal["regression", "reg"]
-
-
-def config_path(filename: str) -> str:
-    """Return an absolute path for a bundled inference config."""
-    return str(files("synthefy_nori.configs").joinpath(filename))
 
 
 def _default_device():
@@ -178,9 +175,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         self.model = model
         self.device = device
         self.token = token
-        self.inference_config = inference_config or config_path(
-            "reg_allordinal_poly10_adaptive_svd256.json"
-        )
+        self.inference_config = inference_config or config_path(DEFAULT_INFERENCE_CONFIG)
         self.augmentations = tuple(augmentations) if augmentations else ()
         self.yj_skew_threshold = float(yj_skew_threshold)
         self.quantile_collapse = quantile_collapse

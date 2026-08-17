@@ -39,7 +39,7 @@ NoriRegressor(model_path=None, *, device=None, inference_config=None, token=None
   Hugging Face Hub on first `predict`.
 - `device` — `None` → `cuda:0` if available else CPU; or any torch device string.
 - `inference_config` — path to a bundled/custom inference config JSON; default
-  is `reg_allordinal_poly10_adaptive_svd256.json`. Use
+  is `default_inference.json`. Use
   `synthefy_nori.config_path(filename)` to resolve a bundled one.
 - `token` — Hugging Face token, only needed for gated/private checkpoints (the
   default public checkpoint is ungated).

@@ -20,7 +20,7 @@ jobs:
           uv run python -c
           "import synthefy, synthefy_nori;
           assert synthefy.__version__ == '7.0.1';
-          assert synthefy_nori.__version__ == '0.17.3'"
+          assert synthefy_nori.__version__ == '0.18.0'"
       - run: uv run pytest
       - run: >-
           uv run ruff check src scripts tests

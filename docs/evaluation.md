@@ -20,7 +20,7 @@ synthefy-nori-eval --download-benchmarks --openml-reg
   directly through the `openml` package).
 - With no `--checkpoint`, the published checkpoint is downloaded from the
   Hugging Face Hub and evaluated with the bundled default regression config
-  (`reg_allordinal_poly10_adaptive_svd256.json`).
+  (`default_inference.json`).
 - The default protocol targets large GPUs: up to `--max-train-samples` (50000)
   context rows with no memory-based cap, and an inference element budget of 8M
   (`--max-elements-budget`, exported as `SYNTHEFY_MAX_ELEMENTS_BUDGET`). On

@@ -417,7 +417,7 @@ suite on the fly. Dataset membership is pinned by lists shipped with the
 package (`synthefy_nori/evaluation/benchmark_lists/`), and train/test
 splits use a fixed seed, so the evaluation data is fully deterministic.
 Evaluation uses the bundled default inference config
-(`reg_allordinal_poly10_adaptive_svd256.json`).
+(`default_inference.json`).
 
 The benchmark uses the **large-GPU protocol**: up to 50,000 context rows per
 dataset (no memory-based row cap) and an inference element budget of 8M
