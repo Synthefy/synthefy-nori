@@ -30,8 +30,14 @@ def test_embedding_is_sklearn_estimator_and_clones():
     c = clone(e)
     assert c.get_params()["n_fold"] == 5
 
-    # default template construction is a NoriRegressor (no weights touched)
-    assert isinstance(NoriEmbedding()._resolve_template(), NoriRegressor)
+    # model is required -- there is no default template
+    with pytest.raises(ValueError, match="requires model"):
+        NoriEmbedding()._resolve_template()
+    # with an explicit model, the template is a clone of it (no weights touched)
+    assert isinstance(
+        NoriEmbedding(model=NoriRegressor(model="nori-6m"))._resolve_template(),
+        NoriRegressor,
+    )
 
 
 def test_n_fold_one_is_rejected():
@@ -76,7 +82,7 @@ def test_end_to_end_embeddings_real_checkpoint():
     y_train = (X_train[:, 0] * 2 - X_train[:, 1]).astype(np.float64)
     X_test = rng.normal(size=(8, 5)).astype(np.float32)
 
-    model = NoriRegressor().fit(X_train, y_train)
+    model = NoriRegressor(model="nori-6m").fit(X_train, y_train)
 
     test_emb = model.get_embeddings(X_test, data_source="test")
     assert test_emb.ndim == 3
@@ -88,5 +94,5 @@ def test_end_to_end_embeddings_real_checkpoint():
     assert train_emb.shape == (n_estimators, 60, embed_dim)
 
     # Same end-to-end through the sklearn transformer.
-    emb = NoriEmbedding(n_fold=0).fit_transform(X_train, y_train)
+    emb = NoriEmbedding(n_fold=0, model=NoriRegressor(model="nori-6m")).fit_transform(X_train, y_train)
     assert emb.shape[1] == 60 and emb.shape[2] == embed_dim

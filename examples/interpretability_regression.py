@@ -18,7 +18,7 @@ from synthefy_nori.interpretability.shapiq import get_nori_imputation_explainer
 X, y = load_diabetes(return_X_y=True, as_frame=True)
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=0)
 
-model = NoriRegressor()           # downloads weights from the HF Hub on first use
+model = NoriRegressor(model="nori-6m")           # downloads weights from the HF Hub on first use
 model.fit(X_train.values, y_train.values)
 
 # 1) Explain a single prediction with shapiq (Shapley values + pairwise interactions).

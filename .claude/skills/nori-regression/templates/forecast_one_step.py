@@ -47,7 +47,7 @@ def build_features(y: pd.Series, *, season: int, lags: tuple[int, ...] = (1, 2, 
 def rolling_one_step(y: np.ndarray, X: np.ndarray, origins: range, *,
                      device: str | None) -> pd.DataFrame:
     """Expanding-context backtest: refit (free) at each origin, predict one row."""
-    reg = NoriRegressor(device=device)  # construct once, refit per origin
+    reg = NoriRegressor(device=device, model="nori-30m")  # construct once, refit per origin
     rows = []
     for t in origins:
         reg.fit(X[:t], y[:t])

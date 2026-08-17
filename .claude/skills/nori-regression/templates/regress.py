@@ -57,7 +57,7 @@ def main() -> None:
     )
     print(f"rows: {len(X_train)} context / {len(X_test)} query, {X.shape[1]} features")
 
-    reg = NoriRegressor(device=args.device)
+    reg = NoriRegressor(device=args.device, model="nori-30m")
     reg.fit(X_train, y_train)
 
     mean_pred = reg.predict(X_test)                          # (n,) distribution mean

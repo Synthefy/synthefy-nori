@@ -109,7 +109,7 @@ quality scores), declare it and predictions are mapped onto the level lattice
 observed in `fit`'s `y`:
 
 ```python
-reg = NoriRegressor().fit(X_train, y_train)          # y ∈ {3, 4, 5, 6, 7, 8}
+reg = NoriRegressor(model="nori-30m").fit(X_train, y_train)          # y ∈ {3, 4, 5, 6, 7, 8}
 labels = reg.predict(X_test, discretize="map-cell")                 # accuracy-optimal
 labels = reg.predict(X_test, discretize="median-cell")              # MAE-optimal
 labels = reg.predict(X_test, categorical_levels=[3, 4, 5, 6, 7, 8]) # known lattice, map-cell
@@ -167,7 +167,7 @@ Notes:
   reach them — `predict` kwargs override per call:
 
   ```python
-  gs = GridSearchCV(NoriRegressor(),
+  gs = GridSearchCV(NoriRegressor(model="nori-30m"),
                     {"discretize": ["map-cell", "median-cell", "snap-mean"]},
                     scoring="accuracy", cv=5)
   ```

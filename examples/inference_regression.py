@@ -6,7 +6,7 @@ def main():
     y_train = [0.0, 1.0, 2.0]
     X_test = [[1.5, 0.5]]
 
-    model = NoriRegressor()
+    model = NoriRegressor(model="nori-6m")
     print(model.fit(X_train, y_train).predict(X_test))
 
 

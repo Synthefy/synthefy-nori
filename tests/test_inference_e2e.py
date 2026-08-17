@@ -32,9 +32,10 @@ def _checkpoint_kwargs():
     local = os.environ.get("SYNTHEFY_NORI_TEST_CHECKPOINT")
     if local:
         return {"model_path": local}
-    # The default repo is public, so anonymous download works. Any HF token in
-    # the environment is picked up automatically (it only affects rate limits).
-    return {}
+    # model= is now required (the bare default was retired). "nori-6m" resolves to
+    # the public HF repo, so anonymous download works. Any HF token in the
+    # environment is picked up automatically (it only affects rate limits).
+    return {"model": "nori-6m"}
 
 
 def test_regressor_recovers_linear_signal():

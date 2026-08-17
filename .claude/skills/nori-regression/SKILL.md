@@ -61,7 +61,7 @@ The exact, verified API is in `references/api.md` — read it before writing cod
 ```python
 from synthefy_nori import NoriRegressor
 
-reg = NoriRegressor(device=None)          # None -> cuda:0 if available, else CPU
+reg = NoriRegressor(device=None, model="nori-30m")          # None -> cuda:0 if available, else CPU
 reg.fit(X_train, y_train)                 # stores context; no training happens
 point = reg.predict(X_test)               # (n,) distribution mean
 lo, mid, hi = reg.predict(X_test, output_type="quantiles", quantiles=[0.1, 0.5, 0.9])

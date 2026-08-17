@@ -37,9 +37,10 @@ class NoriEmbedding(TransformerMixin, BaseEstimator):
         Number of folds for cross-validation. ``0`` disables CV — the model is
         fit once on the entire training set and used for both train and unseen
         data. Must be ``0`` or ``>= 2``.
-    model : NoriRegressor, optional
-        Pre-configured estimator. When ``None``, a default ``NoriRegressor`` is
-        constructed at ``fit`` time.
+    model : NoriRegressor
+        Pre-configured estimator to embed with. **Required** — pass a ``NoriRegressor``
+        with an explicit size (e.g. ``NoriRegressor(model="nori-30m")``); there is no
+        default, and ``None`` raises at ``fit``.
     shuffle : bool, default=False
         Whether to shuffle the K-fold split. Independent of ``random_state``.
     random_state : int, optional
@@ -58,8 +59,9 @@ class NoriEmbedding(TransformerMixin, BaseEstimator):
 
     Examples
     --------
+    >>> from synthefy_nori import NoriRegressor
     >>> from synthefy_nori.embedding import NoriEmbedding
-    >>> embedding = NoriEmbedding(n_fold=5)
+    >>> embedding = NoriEmbedding(n_fold=5, model=NoriRegressor(model="nori-30m"))
     >>> train_embeds = embedding.fit_transform(X_train, y_train)  # OOF
     >>> test_embeds = embedding.transform(X_test)                 # final model
     """
@@ -78,10 +80,14 @@ class NoriEmbedding(TransformerMixin, BaseEstimator):
         self.random_state = random_state
 
     def _resolve_template(self) -> NoriRegressor:
-        """Return a fresh model to use (a clone of ``model`` or a default)."""
-        if self.model is not None:
-            return clone(self.model)
-        return NoriRegressor()
+        """Return a fresh model to use: a clone of ``model``. ``model`` is required -- there is
+        no default; pass a NoriRegressor with an explicit size."""
+        if self.model is None:
+            raise ValueError(
+                "NoriEmbedding requires model=<a NoriRegressor with an explicit size>, e.g. "
+                "NoriEmbedding(model=NoriRegressor(model='nori-30m')). There is no default."
+            )
+        return clone(self.model)
 
     def _compute_oof(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
         """Run K-fold and return OOF embeddings aligned to original order."""

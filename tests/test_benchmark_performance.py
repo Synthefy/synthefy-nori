@@ -5,7 +5,7 @@ This mirrors the regression eval loop in the outer SynthefyPFN repo
 (``evaluation/datasets.py`` + ``evaluation/runner.py``), but driven through the
 public ``synthefy_nori`` package API (the same one used by ``test.py``):
 
-    model = NoriRegressor()
+    model = NoriRegressor(model="nori-30m")
     model.fit(X_train, y_train)
     pred = model.predict(X_test)
 

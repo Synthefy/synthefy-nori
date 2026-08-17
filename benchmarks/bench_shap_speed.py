@@ -130,7 +130,7 @@ def main():
     )
 
     print(f"Fitting NoriRegressor on {DEVICE} (first fit downloads checkpoint)...")
-    model = NoriRegressor(device=DEVICE).fit(X_train, y_train)
+    model = NoriRegressor(device=DEVICE, model="nori-6m").fit(X_train, y_train)
 
     def predict_fn(x):
         return np.asarray(model.predict(np.asarray(x)), dtype=np.float64).reshape(-1)
