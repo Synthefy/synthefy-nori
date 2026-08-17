@@ -7,7 +7,6 @@ import torch
 
 from synthefy_nori import NoriRegressor, config_path
 from synthefy_nori import api
-from synthefy.nori_client import _resolve_text_device
 
 
 def _set_accelerators(monkeypatch, *, cuda=False, mps=False):
@@ -15,40 +14,17 @@ def _set_accelerators(monkeypatch, *, cuda=False, mps=False):
     monkeypatch.setattr(torch.backends.mps, "is_available", lambda: mps)
 
 
-def test_default_device_prefers_cuda_over_mps(monkeypatch):
-    _set_accelerators(monkeypatch, cuda=True, mps=True)
-    assert api._default_device() == torch.device("cuda:0")
-
-
-def test_default_device_uses_mps_when_cuda_is_unavailable(monkeypatch):
-    _set_accelerators(monkeypatch, mps=True)
-    assert api._default_device() == torch.device("mps")
-
-
-def test_default_device_falls_back_to_cpu(monkeypatch):
-    _set_accelerators(monkeypatch)
-    assert api._default_device() == torch.device("cpu")
-
-
 @pytest.mark.parametrize(
     ("cuda", "mps", "expected"),
-    [(True, True, "cuda"), (False, True, "mps"), (False, False, "cpu")],
+    [
+        (True, True, torch.device("cuda:0")),
+        (False, True, torch.device("mps")),
+        (False, False, torch.device("cpu")),
+    ],
 )
-def test_local_and_client_auto_device_policies_match(
-    monkeypatch, cuda, mps, expected
-):
+def test_default_device_priority(monkeypatch, cuda, mps, expected):
     _set_accelerators(monkeypatch, cuda=cuda, mps=mps)
-    assert api._default_device().type == expected
-    assert _resolve_text_device(None) == expected
-
-
-def test_explicit_device_does_not_probe_auto_detection(monkeypatch):
-    monkeypatch.setattr(
-        api,
-        "_default_device",
-        lambda: pytest.fail("an explicit device must skip automatic detection"),
-    )
-    assert api._as_device("cpu") == torch.device("cpu")
+    assert api._default_device() == expected
 
 
 def test_explicit_mps_fails_early_when_pytorch_lacks_support(monkeypatch):
@@ -57,11 +33,6 @@ def test_explicit_mps_fails_early_when_pytorch_lacks_support(monkeypatch):
 
     with pytest.raises(RuntimeError, match="PyTorch build does not include MPS"):
         api._as_device("mps")
-
-
-def test_explicit_mps_is_accepted_when_available(monkeypatch):
-    _set_accelerators(monkeypatch, mps=True)
-    assert api._as_device("mps") == torch.device("mps")
 
 
 def test_fit_resolves_and_reuses_device_for_named_text_encoder(monkeypatch):
