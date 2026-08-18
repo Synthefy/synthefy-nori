@@ -18,9 +18,9 @@ The model is trained entirely on synthetic data.
 This repository contains the public training, inference, evaluation, and Hugging
 Face checkpoint tooling.
 
-Across 96 public regression tasks the base (~6M) averages **0.75 mean / 0.87 median R²**, and the
-larger **Nori-30M** variant (`model="nori-30m"`) is stronger on every suite — see
-[Benchmarks](#benchmarks) for the full breakdown and how to reproduce it.
+Three sizes ship, and `model=` is required — there is no default:
+**`"nori-6m"`** (the base), **`"nori-30m"`**, and **`"nori-100m"`** (the largest).
+See [Benchmarks](#benchmarks) for how to evaluate any of them on the public suites.
 
 ## Table of contents
 
@@ -57,7 +57,7 @@ and it automatically uses CUDA or Apple MPS when available (CPU otherwise).
    ```python
    from synthefy_nori import NoriRegressor
 
-   reg = NoriRegressor(model="nori-6m")   # "nori-30m" for the larger, stronger variant
+   reg = NoriRegressor(model="nori-6m")   # or "nori-30m" / "nori-100m" for the larger sizes
    reg.fit(X_train, y_train)              # stores your rows as context — no training happens
    y_pred = reg.predict(X_test)           # point predictions (predictive-distribution mean)
 
@@ -175,8 +175,10 @@ lacks it, the package automatically falls back to a built-in implementation.
 
 ## Quickstart
 
-Pretrained weights are hosted on the Hugging Face Hub at
-[`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori).
+Pretrained weights are hosted on the Hugging Face Hub, one repo per size:
+[`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori) (`nori-6m`),
+[`Synthefy/Nori-30M`](https://huggingface.co/Synthefy/Nori-30M) (`nori-30m`) and
+[`Synthefy/Nori-100M`](https://huggingface.co/Synthefy/Nori-100M) (`nori-100m`).
 The first call downloads and caches the checkpoint automatically, so a complete
 working example is just:
 
@@ -339,7 +341,8 @@ needed at all.
 
 ### Architecture
 
-Nori is a **FeaturesTransformer (~6M parameters)** that alternates
+Nori is a **FeaturesTransformer** — one architecture shipped at three sizes (`nori-6m`,
+`nori-30m`, `nori-100m`), differing in width and depth — that alternates
 two kinds of attention:
 
 - **Feature attention** learns relationships between columns.
@@ -434,19 +437,10 @@ Reproduce (prints the results table and writes `benchmarks/plots/shap_speed.png`
 
 ## Benchmarks
 
-Mean and median R² across 96 regression tasks from three public benchmark suites, for both
-Nori sizes — `model=` is required; select `model="nori-6m"` (~6M) or `model="nori-30m"` (~29M):
-
-| Suite | Datasets | Nori · mean / median | Nori-30M · mean / median |
-|-------|---------:|:--------------------:|:------------------------:|
-| TabArena | 13 | 0.8117 / 0.8757 | 0.8148 / 0.8834 |
-| TALENT | 72 | 0.7569 / 0.8802 | 0.7575 / 0.8844 |
-| OpenML | 11 | 0.6373 / 0.5856 | 0.6459 / 0.6212 |
-| **Overall** | **96** | **0.7506 / 0.8702** | **0.7525 / 0.8745** |
-
-Nori-30M is stronger on every suite. Both models are evaluated under the identical protocol
-below. Per-dataset numbers behind the base-model column are in
-[`benchmarks/benchmark_results.csv`](benchmarks/benchmark_results.csv).
+Nori is evaluated on 96 public regression tasks from three suites — TabArena (13),
+TALENT (72) and the OpenML regression suite (11). Rather than publish a table here that
+goes stale the moment a checkpoint or a suite changes, this section tells you how to run
+the benchmark yourself, for whichever size you care about, and get current numbers.
 
 Large-N / long-context tables (common in TabArena) are the current focus of the
 large-table training stages.
@@ -454,7 +448,7 @@ large-table training stages.
 > **Thinking** is an inference-time reasoning extension that improves these
 > numbers further. Details are forthcoming.
 
-### Reproducing these numbers
+### Running the benchmark
 
 ```bash
 pip install "synthefy-nori[eval]"
@@ -478,9 +472,9 @@ dataset (no memory-based row cap) and an inference element budget of 8M
 table was produced on a single H200. On smaller GPUs, pass `--gpu-mem-gb
 <GiB>` to enable a memory-based cap on context rows and/or lower
 `--max-elements-budget` — the run then fits in memory, but results on the
-largest tables drop below the table above (more context is genuinely better).
+largest tables drop below a full-context run (more context is genuinely better).
 
-The command prints a per-source mean R² summary matching the table above and
+The command prints a per-source mean R² summary and
 writes per-dataset metrics to `results/eval/all_results.csv`. Expect roughly
 30–40 minutes on a single large GPU (`--device cuda:0` by default).
 
@@ -508,7 +502,7 @@ uv run python tests/test_benchmark_performance.py --device cuda:0
 ```
 
 Note the script's OpenML suite uses its own 70/30 split (the packaged CLI uses
-80/20), so its OpenML numbers differ slightly from the table above.
+80/20), so its OpenML numbers differ slightly from the CLI's.
 
 ### RelBench (relational tasks)
 
