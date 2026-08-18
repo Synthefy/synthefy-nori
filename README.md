@@ -564,7 +564,8 @@ mixed-precision noise (max abs diff ~3e-3, measured below) at identical R². The
 **preprocessing speedups** are **R²-neutral**:
 toggling them shifts individual predictions by a tiny, R²-equivalent amount (below
 cross-environment noise), not bit-for-bit. For the exact un-accelerated path, set
-each to its off value (see below).
+each to its off value (see below). **Pipeline batching** likewise preserves the
+ensemble math but can reassociate mixed-precision GEMMs at the last few bits.
 
 | Env var | Default | What it does |
 |---|---|---|
@@ -573,6 +574,7 @@ each to its off value (see below).
 | `SYNTHEFY_QUANTILE_MAX` / `SYNTHEFY_QUANTILE_SUBSAMPLE` | — | Tune the cap above (max quantiles / fit-subsample size). |
 | `SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE` | `2000` | Fit preprocessing on at most this many rows, apply to all rows. Acts on large context; set `0` to fit on all rows. |
 | `SYNTHEFY_ENABLE_CACHED_INFERENCE` | `1` (on) | Reuse the train-side attention K/V across test chunks (KV cache); ~2-3x faster on large test sets that chunk. Set `0` to disable (or `SYNTHEFY_DISABLE_CACHED_INFERENCE=1`). |
+| `SYNTHEFY_DISABLE_PIPELINE_BATCHING` | `0` (batching on) | Set `1` to run preprocessing-ensemble model calls one at a time. Batching groups up to four same-shaped members when each has at most 256 processed features. |
 | `SYNTHEFY_MAX_ELEMENTS_BUDGET` | VRAM-aware | Inference element budget; raise on large GPUs for full-context inference. Prefer `memory_policy={"elements_budget": N}`. |
 
 > ⚠️ **`SYNTHEFY_CACHE_MAX_GB` has been removed** and now raises if set. It used to
@@ -820,6 +822,27 @@ mean R² unchanged (0.8087 → 0.8089). A large-scale A/B restricted to the tabl
 where they actually engage (n>5000) measured a mean ΔR² of +0.00002 (max |Δ|
 0.0004) — within run-to-run noise.
 
+### Preprocessing-ensemble batching (on by default)
+
+The default eight-member ensemble produces two natural groups of four members
+with identical model-input shapes. Nori now runs each group as one model batch,
+then restores configured member order and averages the full decoder outputs just
+as the one-at-a-time path does. It applies only to ordinary regression with a
+resident full-precision cache (or no cache), deterministic eval-mode models, and
+at most 256 processed features per member. Retrieval, imputation, DDP, dropout,
+int8/offloaded caches, wide tables, and memory-heavy requests stay on the existing
+one-at-a-time path. A CUDA OOM or unsupported output shape also retries the whole
+call there.
+
+On one H200 with the public 6M model, 512 context rows, 48 raw features, and the
+shipped eight-member config, batching reduced hot point-prediction latency from
+1.28 s to 0.80 s without a cache (1.59×), and from 0.88 s to 0.53 s with a reused
+resident cache (1.65×). The maximum point and full 999-quantile-bank differences
+versus one-at-a-time fp16 execution were both 1.90e-3. Peak VRAM rose by 0.74 GiB
+without a cache and 0.26 GiB with a
+resident cache on that workload. Set `SYNTHEFY_DISABLE_PIPELINE_BATCHING=1` for
+the legacy execution order or exact debugging comparisons.
+
 ### KV caching (on by default)
 
 The cached prediction path is **enabled by default**. It projects the train-side
@@ -855,7 +878,7 @@ Reproduce (prints the results table and writes `benchmarks/plots/kv_cache_speed.
 
 # To disable them all (e.g. for exact reproducibility / debugging):
 SYNTHEFY_GPU_SVD=0 SYNTHEFY_CAP_QUANTILES=0 SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE=0 \
-SYNTHEFY_ENABLE_CACHED_INFERENCE=0 \
+SYNTHEFY_ENABLE_CACHED_INFERENCE=0 SYNTHEFY_DISABLE_PIPELINE_BATCHING=1 \
 python your_inference_script.py
 ```
 

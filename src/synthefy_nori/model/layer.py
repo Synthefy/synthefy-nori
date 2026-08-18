@@ -24,6 +24,11 @@ _SDPA_BACKENDS_WITHOUT_CUDNN = [
     SDPBackend.MATH,
 ]
 
+# PyTorch SDPA grids one CUDA dimension over batch/head pairs. Keep each
+# launch within that dimension's portable limit; larger independent batches
+# are split in ``compute_attention_by_torch``.
+SDPA_BATCH_HEAD_LIMIT = 65_535
+
 ACTIVATION_FN: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "gelu": nn.GELU(),
     "relu": nn.ReLU(),
@@ -430,9 +435,19 @@ class MultiheadAttention(torch.nn.Module):
             # below materializes num_heads identical K/V copies and defeats
             # the memory-saving purpose of MQA.
             kv_weights = kv_proj_weight[:, :1]
+            # This head slice is strided in the packed [Q,K,V] parameter.
+            # Reshaping it for F.linear copies the weights on every cache
+            # build, which is slower than einsum for this MQA-only branch.
             kv = torch.einsum("... s, j h d s -> ... j h d", x_kv_flat, kv_weights)
         else:
-            kv = torch.einsum("... s, j h d s -> ... j h d", x_kv_flat, kv_proj_weight)
+            kv = torch.nn.functional.linear(
+                x_kv_flat,
+                kv_proj_weight.reshape(
+                    2 * self.num_heads * self.head_dim, self.embed_dim
+                ),
+            ).view(
+                *x_kv_flat.shape[:-1], 2, self.num_heads, self.head_dim
+            )
         return {"kv": kv.contiguous(), "batch": B, "groups": S}
 
     def forward_with_kv_cache(
@@ -453,7 +468,10 @@ class MultiheadAttention(torch.nn.Module):
             )
         x_flat = x.reshape(-1, *x.shape[-2:])
         q_proj_weight = self.qkv_proj_weight[0]
-        q = torch.einsum("... s, h d s -> ... h d", x_flat, q_proj_weight)
+        q = torch.nn.functional.linear(
+            x_flat,
+            q_proj_weight.reshape(self.num_heads * self.head_dim, self.embed_dim),
+        ).view(*x_flat.shape[:-1], self.num_heads, self.head_dim)
         kv = kv_cache["kv"]
         assert isinstance(kv, torch.Tensor)
         if self.use_qassmax:
@@ -502,12 +520,45 @@ class MultiheadAttention(torch.nn.Module):
         # mutating process-wide torch backend state at import time.
         backend_context = nullcontext() if _ALLOW_CUDNN_SDP else sdpa_kernel(_SDPA_BACKENDS_WITHOUT_CUDNN)
         with backend_context:
+            # q/k/v: [B, seq, num_heads, head_dim]. SDPA grids over (B * num_heads);
+            # above CUDA's 65535 grid-dimension limit it raises "invalid
+            # configuration argument". Feature/sample attention is independent
+            # across the batch dimension, so chunking B and concatenating is
+            # mathematically exact. Keep every legal launch whole: a lower 32768
+            # cutoff needlessly split production shapes such as batch=20,
+            # rows=1536, heads=2 (61440), adding a second SDPA launch and
+            # concatenation in every encoder layer.
+            #
+            # The QASS temperature is already folded into q by
+            # ``_apply_extra_attn_scale`` above, so no explicit ``scale=`` is
+            # passed here — internal instead threads an ``sdpa_scale`` argument,
+            # which is the same quantity applied one step later.
+            B = q.size(0)
+            dropout_p = self._attention_dropout_p()
+            if B * self.num_heads > SDPA_BATCH_HEAD_LIMIT:
+                chunk = max(1, SDPA_BATCH_HEAD_LIMIT // max(self.num_heads, 1))
+                mask_batched = attn_mask is not None and attn_mask.dim() >= 1 and attn_mask.size(0) == B
+                outs = []
+                for s in range(0, B, chunk):
+                    e = min(s + chunk, B)
+                    m = attn_mask[s:e] if mask_batched else attn_mask
+                    o = torch.nn.functional.scaled_dot_product_attention(
+                        q[s:e].transpose(1, 2),
+                        k[s:e].transpose(1, 2),
+                        v[s:e].transpose(1, 2),
+                        attn_mask=m,
+                        dropout_p=dropout_p,
+                        enable_gqa=enable_gqa,
+                    )
+                    outs.append(o.transpose(1, 2))
+                return torch.cat(outs, dim=0)
+
             attention_outputs = torch.nn.functional.scaled_dot_product_attention(
                 q.transpose(1, 2),
                 k.transpose(1, 2),
                 v.transpose(1, 2),
                 attn_mask=attn_mask,
-                dropout_p=self._attention_dropout_p(),
+                dropout_p=dropout_p,
                 enable_gqa=enable_gqa,
             )
         attention_outputs = attention_outputs.transpose(1, 2)

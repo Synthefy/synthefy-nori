@@ -29,3 +29,20 @@ benchmarks/plots/
 # Environment files — may contain secrets, never commit
 .env
 *.env
+
+# Logs and run output (training/eval run logs, watchdog/nohup output)
+*.log
+*.out
+*.err
+nohup.out
+runs/
+logs/
+# Local experiment run output (scaling-law sweeps, plots, CSVs)
+experiments/
+# Local autonomous optimization run output and compiler caches
+autoresearch/
+# Staged by the deploy's bake step (deploy-baseten.yml), including s3transfer
+# partials from an interrupted download; never committed.
+serving/hosts/baseten/model/weights.pt*
+# Staged by ci/bake_weights.py for the image build; never committed.
+serving/image/nori.pt*

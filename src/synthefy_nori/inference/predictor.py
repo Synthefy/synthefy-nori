@@ -42,6 +42,19 @@ import warnings
 logger = logging.getLogger(__name__)
 
 NA_PLACEHOLDER = "__MISSING__"
+# The default eight-member ensemble naturally forms two shape groups of four.
+# Cap custom configs at that measured sweet spot so batching cannot multiply
+# activation/context-cache memory without bound.
+PIPELINE_BATCH_MAX = 4
+# Batched GEMMs are launch-bound and much faster on narrow/medium tables, but
+# the gain disappears on very wide transformed tables while memory rises. The
+# H200 crossover was between 146 and 352 processed features, so keep the first
+# rollout on the conservative side and leave wide members at B=1.
+PIPELINE_BATCH_MAX_FEATURES = 256
+# Bound the extra host copies retained while pipelines wait for same-shape
+# partners. The legacy path streams one transformed table at a time; falling
+# back above this cap preserves that behavior for very large query sets.
+PIPELINE_BATCH_HOST_BUDGET_BYTES = 512 * 1024**2
 
 
 class NoriPredictor:
@@ -2028,6 +2041,327 @@ class NoriPredictor:
             )
         )
 
+    @staticmethod
+    def _group_ordinary_pipes(prepared: list[tuple]) -> list[list[tuple]]:
+        """Stable groups whose context/query tensors have identical shapes.
+
+        The group containing the final pipeline executes last. Each model call
+        reseeds first, so this preserves the legacy loop's post-call RNG state
+        when different transformed widths consume different amounts of RNG.
+        """
+        grouped = {}
+        for item in prepared:
+            _, x_train, y_train, x_test = item
+            key = (
+                x_train.shape, y_train.shape, x_test.shape,
+                x_train.dtype, y_train.dtype, x_test.dtype,
+                x_train.device, y_train.device, x_test.device,
+            )
+            grouped.setdefault(key, []).append(item)
+        result = []
+        for group in grouped.values():
+            width = group[0][1].shape[-1]
+            batch_size = (
+                PIPELINE_BATCH_MAX
+                if width <= PIPELINE_BATCH_MAX_FEATURES
+                else 1
+            )
+            result.extend(
+                group[start:start + batch_size]
+                for start in range(0, len(group), batch_size)
+            )
+        if result:
+            final_pipe_id = max(item[0] for item in prepared)
+            final_group_index = next(
+                index
+                for index, group in enumerate(result)
+                if any(item[0] == final_pipe_id for item in group)
+            )
+            result.append(result.pop(final_group_index))
+        return result
+
+    def _clear_pipeline_batch_contexts(
+            self, keep: set[tuple] | None = None) -> None:
+        """Release grouped caches that cannot serve the current execution mode."""
+        cache = getattr(self, "_context_cache", None)
+        if not isinstance(cache, dict):
+            return
+        keep = keep or set()
+        for slot in list(cache):
+            if (
+                isinstance(slot, tuple)
+                and len(slot) == 2
+                and slot[0] == "pipeline_batch"
+                and slot not in keep
+            ):
+                cache.pop(slot, None)
+
+    def _clear_pipeline_member_contexts(self, batch_slots: set[tuple]) -> None:
+        """Release B=1 caches superseded by retained grouped cache slots."""
+        cache = getattr(self, "_context_cache", None)
+        if not isinstance(cache, dict):
+            return
+        grouped_ids = {
+            id_pipe
+            for _, ids in batch_slots
+            for id_pipe in ids
+        }
+        for id_pipe in grouped_ids:
+            cache.pop(id_pipe, None)
+
+    @staticmethod
+    def _model_supports_pipeline_batching(bare_model) -> bool:
+        """Whether one RNG seed is equivalent to reseeding every B=1 member."""
+        if bool(getattr(bare_model, "training", False)):
+            return False
+        modules = bare_model.modules() if hasattr(bare_model, "modules") else (bare_model,)
+        for module in modules:
+            dropout = getattr(module, "dropout", 0.0)
+            if isinstance(dropout, (int, float)) and float(dropout) != 0.0:
+                # MultiheadAttention passes its numeric dropout directly to SDPA,
+                # which applies it even when the enclosing module is in eval mode.
+                return False
+        return True
+
+    def _try_batched_ordinary_regression(
+            self, bare_model, *, x_train_base, x_test_base, y_train,
+            categorical_idx, n_samples_train, n_samples_test,
+            budget_n_features, max_elements_budget, dropped_context_rows,
+    ) -> list[torch.Tensor] | None:
+        """Execute prepared ordinary members in bounded same-shape groups.
+
+        This deliberately covers only the two full-precision, on-device execution
+        modes: an ordinary model forward (``no_cache``) and a resident bf16 context
+        cache.
+        Retrieval, DDP, imputation, int8, host offload, pinned prefill chunking, and
+        every OOM/unsupported case use the established loop below. The environment
+        kill switch gives operators a no-code rollback while this optimization gains
+        production mileage. Batching preserves the model math, although mixed-
+        precision GEMMs may reassociate at the last few bits versus B=1 execution.
+        """
+        try:
+            device = self.device if isinstance(self.device, torch.device) else torch.device(self.device)
+        except (TypeError, RuntimeError):
+            self._clear_pipeline_batch_contexts()
+            return None
+        if (
+            device.type != "cuda"
+            or os.environ.get("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "0") == "1"
+            or len(self.preprocess_pipelines) < 2
+            or self.inference_with_DDP
+            or self.mask_prediction
+            or bool(getattr(bare_model, "mask_prediction", False))
+            or not self._model_supports_pipeline_batching(bare_model)
+            or any(config["retrieval_config"]["use_retrieval"] for config in self.inference_config)
+        ):
+            self._clear_pipeline_batch_contexts()
+            return None
+
+        chunk_size = self._chunk_size(
+            max_elements_budget, budget_n_features, n_samples_train)
+        requested = self._coerced_memory_policy()
+        cache_eligible = (
+            hasattr(bare_model, "forward_cached_regression")
+            and n_samples_test > chunk_size
+            and requested.cache
+        )
+        if cache_eligible:
+            fpg = max(int(getattr(bare_model, "features_per_group", 2)), 1)
+            embed_dim = int(getattr(bare_model, "embed_dim", 128))
+            nlayers = int(getattr(bare_model, "nlayers", 16))
+            nhead = max(int(getattr(bare_model, "nhead", 2)), 1)
+            bytes_per = 2 if self.mix_precision else 4
+            policy = requested.resolve(
+                est_cache_gb=estimate_cache_gb(
+                    n_context_rows=n_samples_train,
+                    n_groups=(budget_n_features + fpg - 1) // fpg,
+                    nlayers=nlayers,
+                    embed_dim=embed_dim,
+                    bytes_per_element=bytes_per,
+                ),
+                bytes_per_element=bytes_per,
+                head_dim=max(embed_dim // nhead, 1),
+                total_vram_gb=self._total_vram_gb(),
+                total_ram_gb=total_host_ram_gb(),
+            )
+        else:
+            policy = requested.resolve(
+                est_cache_gb=0.0, bytes_per_element=1, head_dim=1,
+                cache_eligible=False,
+            )
+        if (
+            policy.rung not in ("no_cache", "resident_bf16")
+            or policy.cache_dtype != "bf16"
+            or policy.offload_to_host
+            or policy.context_row_chunk is not None
+        ):
+            self._clear_pipeline_batch_contexts()
+            return None
+
+        prepared = []
+        retained_host_bytes = 0
+        for id_pipe, pipe in enumerate(self.preprocess_pipelines):
+            x_train_ = x_train_base.copy()
+            x_test_ = x_test_base.copy()
+            y_ = y_train.copy()
+            categorical_idx_ = categorical_idx.copy()
+            for id_step, step in enumerate(pipe):
+                if isinstance(step, (InferenceAttentionMap, SubSampleData)):
+                    self._clear_pipeline_batch_contexts()
+                    return None
+                x_train_, x_test_, categorical_idx_ = self._fit_transform_step_inductive(
+                    step, x_train_, x_test_, categorical_idx_,
+                    self.seeds[id_pipe * self.preprocess_num + self._seed_step_index(pipe, id_step)],
+                    y_train=y_,
+                )
+            prospective_host_bytes = (
+                x_train_.size + x_test_.size + y_.size
+            ) * np.dtype(np.float32).itemsize
+            if (
+                retained_host_bytes + prospective_host_bytes
+                > PIPELINE_BATCH_HOST_BUDGET_BYTES
+            ):
+                self._clear_pipeline_batch_contexts()
+                return None
+            x_all = torch.from_numpy(
+                np.concatenate([x_train_, x_test_], axis=0)
+            ).float()
+            y_tensor = torch.from_numpy(y_).float()
+            prepared.append((
+                id_pipe,
+                x_all[:len(y_)],
+                y_tensor,
+                x_all[len(y_):],
+            ))
+            retained_host_bytes += (
+                x_all.numel() * x_all.element_size()
+                + y_tensor.numel() * y_tensor.element_size()
+            )
+
+        groups = self._group_ordinary_pipes(prepared)
+        if policy.rung == "resident_bf16":
+            # Resolve again from the actual post-transform widths and the total
+            # retained ensemble cache. The earlier lower-bound resolution uses the
+            # raw/effective input width only to avoid preprocessing modes that could
+            # never stay resident; it must not under-report a wider prepared group.
+            group_cache_sizes = [
+                estimate_cache_gb(
+                    n_context_rows=n_samples_train,
+                    n_groups=(group[0][1].shape[-1] + fpg - 1) // fpg,
+                    nlayers=nlayers,
+                    embed_dim=embed_dim,
+                    bytes_per_element=bytes_per,
+                ) * len(group)
+                for group in groups
+            ]
+            batched_cache_gb = (
+                sum(group_cache_sizes)
+                if requested.reuse_context_cache
+                else max(group_cache_sizes)
+            )
+            policy = requested.resolve(
+                est_cache_gb=batched_cache_gb,
+                bytes_per_element=bytes_per,
+                head_dim=max(embed_dim // nhead, 1),
+                total_vram_gb=self._total_vram_gb(),
+                total_ram_gb=total_host_ram_gb(),
+            )
+            if policy.rung != "resident_bf16":
+                self._clear_pipeline_batch_contexts()
+                return None
+
+        active_batch_slots = {
+            ("pipeline_batch", tuple(item[0] for item in group))
+            for group in groups
+            if len(group) > 1
+        } if policy.rung == "resident_bf16" and policy.reuse_context_cache else set()
+        self._clear_pipeline_batch_contexts(keep=active_batch_slots)
+        self._clear_pipeline_member_contexts(active_batch_slots)
+
+        outputs: list[torch.Tensor | None] = [None] * len(prepared)
+        try:
+            for group in groups:
+                ids = tuple(item[0] for item in group)
+                x_train_t = torch.stack([item[1] for item in group]).to(self.device)
+                y_train_t = torch.stack([item[2] for item in group]).to(self.device)
+                x_test_t = torch.stack([item[3] for item in group]).to(self.device)
+                torch.manual_seed(self.seed)
+                torch.cuda.manual_seed_all(self.seed)
+                self.model.to(self.device)
+                with torch.autocast(device_type=device.type, enabled=self.mix_precision), torch.inference_mode():
+                    if policy.rung == "resident_bf16":
+                        slot = ids[0] if len(ids) == 1 else ("pipeline_batch", ids)
+                        context = self._get_or_build_context(
+                            bare_model, slot,
+                            x_train_t=x_train_t, y_train_t=y_train_t,
+                            cache_dtype="bf16", offload_kv_cache=False,
+                            fit_row_chunk=None,
+                            reuse_context_cache=policy.reuse_context_cache,
+                        )
+                        try:
+                            group_output = self._unwrap_model_output(
+                                bare_model.apply_context_cache(
+                                    x_test_t, context, row_chunk_size=chunk_size,
+                                    adaptive_query_chunk=policy.adaptive_query_chunk,
+                                )
+                            )
+                        finally:
+                            if not policy.reuse_context_cache:
+                                # Without reuse only one group's full K/V bundle is
+                                # budgeted. Drop it before the next group is built.
+                                del context
+                    else:
+                        chunks = []
+                        for start in range(0, n_samples_test, chunk_size):
+                            end = min(start + chunk_size, n_samples_test)
+                            x_in = torch.cat([x_train_t, x_test_t[:, start:end]], dim=1)
+                            y_in = torch.cat([
+                                y_train_t,
+                                y_train_t.new_zeros(len(group), end - start),
+                            ], dim=1)
+                            chunks.append(self._unwrap_model_output(
+                                self.model(x=x_in, y=y_in, eval_pos=n_samples_train)
+                            ))
+                        group_output = torch.cat(chunks, dim=1)
+                if (
+                    not isinstance(group_output, torch.Tensor)
+                    or group_output.ndim < 2
+                    or group_output.shape[0] != len(group)
+                    or group_output.shape[1] != n_samples_test
+                ):
+                    raise NotImplementedError(
+                        "pipeline-batched model output must be [B, n_test, ...]"
+                    )
+                group_output = self._reject_nonfinite_output(
+                    group_output, path=f"pipeline-batched ({policy.rung})",
+                    n_train=n_samples_train, n_test=n_samples_test,
+                )
+                for (id_pipe, *_), member_output in zip(group, group_output.unbind(0)):
+                    outputs[id_pipe] = member_output
+        except (NotImplementedError, torch.cuda.OutOfMemoryError):
+            cache = getattr(self, "_context_cache", None)
+            if isinstance(cache, dict):
+                # The failed attempt may already have built singleton groups.
+                # Legacy retry must start without any partial grouped-run state.
+                cache.clear()
+            torch.cuda.empty_cache()
+            return None
+
+        used = policy.escalated(
+            policy.rung,
+            dropped_context_rows=dropped_context_rows,
+            **({"query_chunk": chunk_size} if policy.rung == "resident_bf16" else {}),
+        )
+        self.memory_report_ = used.model_dump()
+        self._log_once_per_call(
+            "rung", logging.INFO,
+            f"Nori serving-memory rung: {used.describe()}",
+        )
+        if any(output is None for output in outputs):
+            raise AssertionError("pipeline batching lost an ensemble member")
+        return [output for output in outputs if output is not None]
+
+
     def _predict_reg_single(
         self,
         x_train: np.ndarray,
@@ -2148,6 +2482,31 @@ class NoriPredictor:
             x_train,
             x_test,
         )
+
+        # The batched path calls the bare model directly, so it cannot honour a
+        # DistributedInference session. Internal has no DDP inference and so no
+        # equivalent guard; skip the fast path rather than silently dropping the
+        # caller's distributed context.
+        if distributed_inference is None:
+            bare_model = self._bare_model()
+            batched_outputs = self._try_batched_ordinary_regression(
+                bare_model,
+                x_train_base=x_train_base,
+                x_test_base=x_test_base,
+                y_train=y_train,
+                categorical_idx=categorical_idx,
+                n_samples_train=n_samples_train,
+                n_samples_test=n_samples_test,
+                budget_n_features=budget_n_features,
+                max_elements_budget=MAX_ELEMENTS_BUDGET,
+                dropped_context_rows=dropped_context_rows,
+            )
+            if batched_outputs is not None:
+                output = torch.stack(batched_outputs).mean(dim=0)
+                if return_distribution:
+                    return output
+                return self._collapse_regression_output(output)
+
 
         outputs = []
         mask_predictions = []

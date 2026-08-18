@@ -14,6 +14,7 @@ from pathlib import Path
 
 import torch
 
+import synthefy_nori.model.layer as model_layer
 from synthefy_nori.model.layer import RMSNorm
 from synthefy_nori.utils.loading import _safe_torch_load, build_model
 
@@ -150,6 +151,20 @@ def main():
     parser.add_argument("--compile-cache-limit", type=int, default=1024)
     parser.add_argument("--disable-ddp-optimizer", action="store_true")
     parser.add_argument(
+        "--sdpa-batch-head-limit",
+        type=int,
+        help="Override the model's SDPA batch/head chunk limit for an A/B benchmark.",
+    )
+    parser.add_argument(
+        "--allow-distributed-compile",
+        action="store_true",
+        help=(
+            "Allow a compiled benchmark under DDP. This is unsafe for cache "
+            "warmup because ranks can reach collectives while a peer is still "
+            "compiling; use a single process to populate compiler artifacts."
+        ),
+    )
+    parser.add_argument(
         "--shapes",
         type=parse_shapes,
         default=parse_shapes("256x64@0.5"),
@@ -165,6 +180,10 @@ def main():
     parser.add_argument("--checkpointing", choices=("auto", "on", "off"), default="auto")
     parser.add_argument("--output")
     args = parser.parse_args()
+    if args.sdpa_batch_head_limit is not None:
+        if args.sdpa_batch_head_limit <= 0:
+            parser.error("--sdpa-batch-head-limit must be positive")
+        model_layer.SDPA_BATCH_HEAD_LIMIT = args.sdpa_batch_head_limit
 
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     distributed = world_size > 1
@@ -252,6 +271,7 @@ def main():
     steady = [record["seconds"] for record in records if record["cycle"] > 0]
     summary = {
         "strategy": args.strategy,
+        "sdpa_batch_head_limit": model_layer.SDPA_BATCH_HEAD_LIMIT,
         "native_rms_norm": args.native_rms_norm,
         "batch_size": args.batch_size,
         "shape_count": len(args.shapes),
