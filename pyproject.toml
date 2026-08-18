@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synthefy-nori"
-version = "0.18.0"
+version = "0.18.1"
 description = "Nori foundation model training, inference, and evaluation"
 readme = "README.md"
 requires-python = ">=3.9"

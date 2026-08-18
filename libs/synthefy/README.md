@@ -133,7 +133,8 @@ Synthefy API if you'd rather not run it locally.
    ```python
    from synthefy import SynthefyNoriClient
 
-   # model is required -- name a size: "nori-30m" (~29.2M) or "nori-6m" (~6M base).
+   # model is required -- name a size: "nori-100m" (~98.3M), "nori-30m" (~29.2M),
+   # or "nori-6m" (~6M base).
    client = SynthefyNoriClient(mode="local", model="nori-30m")   # runs on this machine, no API key
 
    y_pred = client.predict(
@@ -253,7 +254,8 @@ preds = client.predict(X_train, y_train, X_test, as_pandas=True)
 
 The client targets the Baseten inference **gateway**
 (`https://inference.baseten.co/predict`); `model=` is required and names a size —
-`"nori-30m"` (→ `synthefy/nori-30m`) or `"nori-6m"` (→ `synthefy/nori-6m`). The
+`"nori-100m"` (→ `synthefy/nori-100m`), `"nori-30m"` (→ `synthefy/nori-30m`), or
+`"nori-6m"` (→ `synthefy/nori-6m`). The
 gateway resolves that slug to a deployment, so you never name a deployment yourself.
 
 `timeout` and `max_retries` are also configurable on the constructor.
@@ -540,7 +542,7 @@ continuous mean is already optimal for those metrics.
 
 ### SynthefyNoriClient (Tabular Regression)
 
-- `SynthefyNoriClient(api_key=None, *, mode="remote", timeout=300.0, max_retries=2, base_url=..., endpoint=..., model, user_agent=None, endpoint_name=None, region_name=None)` — `model` is **required everywhere** and accepts the three released Nori variants (`nori-6m`, `nori-30m`, and `nori-30m-thinking-medium`) or an explicit custom HTTP slug; there is no `None`/default model path. SageMaker uses response streaming for all three so large 30M requests can run beyond the regular-response limit while `predict()` still returns one normal result.
+- `SynthefyNoriClient(api_key=None, *, mode="remote", timeout=300.0, max_retries=2, base_url=..., endpoint=..., model, user_agent=None, endpoint_name=None, region_name=None)` — `model` is **required everywhere** and accepts the released Nori variants (`nori-6m`, `nori-30m`, `nori-100m`, and `nori-30m-thinking-medium`) or an explicit custom HTTP slug; there is no `None`/default model path. SageMaker uses response streaming for every variant so large 30M/100M requests can run beyond the regular-response limit while `predict()` still returns one normal result.
   - `mode`: `"remote"` (hosted, default), `"local"` (in-process via
     `synthefy-nori`), or `"sagemaker"` (a named SageMaker endpoint using the AWS
     credential chain).
