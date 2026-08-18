@@ -17,14 +17,15 @@ DEFAULT_CHECKPOINT_FILENAME = os.environ.get(
 )
 
 # Model-variant registry: friendly name -> Hugging Face repo id. A size is REQUIRED -- there is no
-# default "nori"; every caller must pick ``model="nori-6m"`` or ``model="nori-30m"`` on NoriRegressor
-# / infer / predict (or ``download_checkpoint(model=...)``). Naming the size keeps the identifier
-# stable: it never silently changes which weights it loads. ``"nori-6m"`` is the ~6M base and honors
-# the SYNTHEFY_NORI_HF_REPO override. Add one line per new variant. An unknown name is treated as a
-# raw repo id, so an explicit ``"org/repo"`` still works.
+# default "nori"; every caller must pick ``model="nori-6m"``, ``model="nori-30m"``, or
+# ``model="nori-100m"`` on NoriRegressor / infer / predict (or ``download_checkpoint(model=...)``).
+# Naming the size keeps the identifier stable: it never silently changes which weights it loads.
+# ``"nori-6m"`` is the ~6M base and honors the SYNTHEFY_NORI_HF_REPO override. Add one line per new
+# variant. An unknown name is treated as a raw repo id, so an explicit ``"org/repo"`` still works.
 NORI_MODELS = {
     "nori-6m": DEFAULT_MODEL_REPO_ID,  # ~6M base (honors SYNTHEFY_NORI_HF_REPO)
     "nori-30m": "Synthefy/Nori-30M",   # ~29.2M scaling-law variant
+    "nori-100m": "Synthefy/Nori-100M", # ~98.3M scaling-law variant
 }
 
 
