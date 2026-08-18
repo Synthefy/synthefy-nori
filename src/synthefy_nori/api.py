@@ -183,8 +183,8 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
             model_path: path to a local ``.pt`` checkpoint. When ``None``, ``model``
                 is required and its checkpoint is downloaded/cached from Hugging Face.
             model: variant selector -- REQUIRED when ``model_path`` is None. Choose
-                ``"nori-6m"`` (~6M base), ``"nori-30m"`` (~29.2M) or ``"nori-100m"``
-                (~98.3M); there is no default and omitting both raises. Ignored when
+                ``"nori-6m"`` (the base), ``"nori-30m"`` or ``"nori-100m"`` (the
+                largest); there is no default and omitting both raises. Ignored when
                 ``model_path`` is given.
             device: torch device for inference (``"cuda:0"``, ``"cpu"``, ...).
                 ``None`` automatically picks CUDA, then Apple MPS when available,
