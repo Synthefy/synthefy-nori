@@ -18,9 +18,12 @@ The model is trained entirely on synthetic data.
 This repository contains the public training, inference, evaluation, and Hugging
 Face checkpoint tooling.
 
-Across 96 public regression tasks the base (~6M) averages **0.75 mean / 0.87 median R²**, and the
-larger **Nori-30M** variant (`model="nori-30m"`) is stronger on every suite — see
-[Benchmarks](#benchmarks) for the full breakdown and how to reproduce it.
+Three sizes ship, and `model=` is required — there is no default:
+**`"nori-6m"`** (~6M base), **`"nori-30m"`** (~29.2M), and **`"nori-100m"`** (~98.3M, the largest).
+Across 96 public regression tasks the base averages **0.75 mean / 0.87 median R²** and Nori-30M is
+stronger on every suite — see [Benchmarks](#benchmarks) for the full breakdown and how to reproduce
+it. Nori-100M is the newest and largest checkpoint; it has not yet been scored on that same
+96-task protocol, so it does not appear in the table below.
 
 ## Table of contents
 
@@ -57,7 +60,7 @@ and it automatically uses CUDA or Apple MPS when available (CPU otherwise).
    ```python
    from synthefy_nori import NoriRegressor
 
-   reg = NoriRegressor(model="nori-6m")   # "nori-30m" for the larger, stronger variant
+   reg = NoriRegressor(model="nori-6m")   # or "nori-30m" / "nori-100m" for the larger sizes
    reg.fit(X_train, y_train)              # stores your rows as context — no training happens
    y_pred = reg.predict(X_test)           # point predictions (predictive-distribution mean)
 
@@ -175,8 +178,10 @@ lacks it, the package automatically falls back to a built-in implementation.
 
 ## Quickstart
 
-Pretrained weights are hosted on the Hugging Face Hub at
-[`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori).
+Pretrained weights are hosted on the Hugging Face Hub, one repo per size:
+[`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori) (`nori-6m`),
+[`Synthefy/Nori-30M`](https://huggingface.co/Synthefy/Nori-30M) (`nori-30m`) and
+[`Synthefy/Nori-100M`](https://huggingface.co/Synthefy/Nori-100M) (`nori-100m`).
 The first call downloads and caches the checkpoint automatically, so a complete
 working example is just:
 
@@ -339,7 +344,8 @@ needed at all.
 
 ### Architecture
 
-Nori is a **FeaturesTransformer (~6M parameters)** that alternates
+Nori is a **FeaturesTransformer** — ~6M parameters in the base, ~29.2M in `nori-30m` and ~98.3M in
+`nori-100m`, all the same architecture at different widths and depths — that alternates
 two kinds of attention:
 
 - **Feature attention** learns relationships between columns.
@@ -434,8 +440,10 @@ Reproduce (prints the results table and writes `benchmarks/plots/shap_speed.png`
 
 ## Benchmarks
 
-Mean and median R² across 96 regression tasks from three public benchmark suites, for both
-Nori sizes — `model=` is required; select `model="nori-6m"` (~6M) or `model="nori-30m"` (~29M):
+Mean and median R² across 96 regression tasks from three public benchmark suites, for the two
+sizes scored under this protocol — `model="nori-6m"` (~6M) and `model="nori-30m"` (~29.2M).
+`model="nori-100m"` (~98.3M) is available but has not been run on these suites yet, so it is
+absent here rather than represented by numbers measured a different way:
 
 | Suite | Datasets | Nori · mean / median | Nori-30M · mean / median |
 |-------|---------:|:--------------------:|:------------------------:|
