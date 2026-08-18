@@ -5,7 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [7.0.1] - Unreleased
+## [7.0.2] - Unreleased
+
+### Added
+
+- Added the `nori-100m` size to `NORI_VARIANTS`, so `model="nori-100m"` (and the
+  raw gateway slug `"synthefy/nori-100m"`) select the ~98.3M checkpoint in both
+  hosted and local modes. The weights are public at
+  [`Synthefy/Nori-100M`](https://huggingface.co/Synthefy/Nori-100M).
+
+## [7.0.1] - 2026-08-15
 
 ### Added
 

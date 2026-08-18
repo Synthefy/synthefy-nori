@@ -32,8 +32,11 @@ from synthefy.nori_client import (
     GATEWAY_ENDPOINT,
     NORI_VARIANTS,
     SAGEMAKER_MAX_BODY_BYTES,
+    SAGEMAKER_VARIANTS,
+    _MODEL_NAMES,
     _is_thinking_model,
     _nullable_matrix,
+    _resolve_local_variant,
     _resolve_remote_levels,
     _resolve_text_device,
     _snap_to_levels,
@@ -1490,7 +1493,63 @@ def test_no_bare_nori_slug():
     # The ambiguous bare selectors are gone -- only size-explicit names/slugs resolve.
     assert "nori" not in NORI_VARIANTS
     assert "synthefy/nori" not in NORI_VARIANTS
-    assert set(NORI_VARIANTS) >= {"nori-6m", "nori-30m", "synthefy/nori-6m", "synthefy/nori-30m"}
+    assert set(NORI_VARIANTS) >= {
+        "nori-6m",
+        "nori-30m",
+        "nori-100m",
+        "synthefy/nori-6m",
+        "synthefy/nori-30m",
+        "synthefy/nori-100m",
+    }
+
+
+def test_nori_100m_resolves_like_the_other_sizes():
+    # The ~98.3M variant is a plain size selector: friendly name and raw slug both map to the
+    # nori-100m gateway slug and the nori-100m local checkpoint (no Thinking, no special case).
+    c100 = SynthefyNoriClient(api_key="k", model="nori-100m")
+    assert c100.model == "synthefy/nori-100m"
+    assert c100._local_variant == "nori-100m"
+
+    craw = SynthefyNoriClient(api_key="k", model="synthefy/nori-100m")
+    assert craw.model == "synthefy/nori-100m"
+    assert craw._local_variant == "nori-100m"
+
+    assert not _is_thinking_model("nori-100m")
+
+
+def test_nori_100m_is_offered_everywhere_the_size_list_is_derived():
+    # _MODEL_NAMES and SAGEMAKER_VARIANTS are both derived from NORI_VARIANTS, so a new size
+    # must appear in each without a second edit.
+    assert "nori-100m" in _MODEL_NAMES
+    assert "nori-100m" in SAGEMAKER_VARIANTS
+    assert "nori-30m-thinking-medium" in _MODEL_NAMES
+    assert all("/" not in name for name in _MODEL_NAMES)
+    # Thinking has no local checkpoint; nori-100m does. Assert the behaviour directly rather
+    # than through a derived name list.
+    assert _resolve_local_variant("nori-100m") == "nori-100m"
+    with pytest.raises(ValueError, match="no local checkpoint"):
+        _resolve_local_variant("nori-30m-thinking-medium")
+
+
+def test_local_mode_passes_nori_100m_to_predict(monkeypatch):
+    seen: Dict = {}
+
+    def fake_predict(X_train, y_train, X_test, *, task=None, model="__unset__"):
+        seen["model"] = model
+        return [0.0]
+
+    monkeypatch.setattr("synthefy.nori_client._load_local_predict", lambda: fake_predict)
+    client = SynthefyNoriClient(mode="local", model="nori-100m")
+    client.predict(X_train=_XTR, y_train=_YTR, X_test=_XTE)
+    assert seen["model"] == "nori-100m"
+
+
+def test_remote_body_uses_nori_100m_gateway_slug():
+    capture: Dict = {}
+    client = SynthefyNoriClient(api_key="k", model="nori-100m")
+    _attach_mock(client, _ok_handler([1.0], capture))
+    client.predict(X_train=_XTR, y_train=_YTR, X_test=_XTE)
+    assert capture["body"]["model"] == "synthefy/nori-100m"
 
 
 def test_remote_body_uses_variant_gateway_slug():

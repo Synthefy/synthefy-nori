@@ -64,8 +64,8 @@ _MODEL_REQUIRED: Any = object()
 #   local_variant       = the name forwarded to synthefy-nori's ``model=`` selector (local mode)
 # Every selector names its size -- there is no bare "nori"/"synthefy/nori", so a slug never silently
 # changes which model it serves (``model=`` is required; see the constructor). "nori-6m" is the ~6M
-# base; "nori-30m" is the ~29.2M variant. The raw gateway slugs are listed too so they load the
-# right checkpoint locally instead of being treated as a raw HF repo.
+# base; "nori-30m" is the ~29.2M variant; "nori-100m" is the ~98.3M variant. The raw gateway slugs
+# are listed too so they load the right checkpoint locally instead of being treated as a raw HF repo.
 # The "nori-30m-thinking-medium" entries are the test-time-compute variant: hosted-API only,
 # so they map a remote gateway slug but have NO local variant -- the thinking guard in __init__
 # refuses it in mode="local" (its ``local_variant`` below is therefore never consulted).
@@ -74,8 +74,10 @@ _MODEL_REQUIRED: Any = object()
 NORI_VARIANTS = {
     "nori-6m": ("synthefy/nori-6m", "nori-6m"),
     "nori-30m": ("synthefy/nori-30m", "nori-30m"),
+    "nori-100m": ("synthefy/nori-100m", "nori-100m"),
     "synthefy/nori-6m": ("synthefy/nori-6m", "nori-6m"),
     "synthefy/nori-30m": ("synthefy/nori-30m", "nori-30m"),
+    "synthefy/nori-100m": ("synthefy/nori-100m", "nori-100m"),
     # Thinking (test-time compute) -- hosted deployments only; local is refused by the
     # thinking guard. Medium is the only released Thinking budget.
     "nori-30m-thinking-medium": ("synthefy/nori-30m-thinking-medium", None),
@@ -128,7 +130,8 @@ def _resolve_local_variant(model: Optional[str]) -> Optional[str]:
     """Resolve the synthefy-nori ``model=`` value for local inference, or raise if impossible.
 
     ``"nori-6m"``/``"synthefy/nori-6m"`` run the ~6M base checkpoint; ``"nori-30m"``/
-    ``"synthefy/nori-30m"`` run the 29.2M checkpoint. ``None`` forwards no ``model=`` (so
+    ``"synthefy/nori-30m"`` run the 29.2M checkpoint; ``"nori-100m"``/``"synthefy/nori-100m"``
+    run the 98.3M checkpoint. ``None`` forwards no ``model=`` (so
     synthefy-nori, which itself requires an explicit model, would raise). Any other selector has
     no local checkpoint, so this
     raises :class:`ValueError` instead of silently falling back to the base model -- a Nori
@@ -139,14 +142,14 @@ def _resolve_local_variant(model: Optional[str]) -> Optional[str]:
         raise ValueError(
             f"model={model!r} is a Nori Thinking (test-time-compute) variant, which runs only "
             "on the hosted Synthefy API and has no local checkpoint. Use mode='remote' with a "
-            "Baseten API key to run Thinking, or select 'nori-6m'/'nori-30m' for local "
-            "inference."
+            "Baseten API key to run Thinking, or select 'nori-6m'/'nori-30m'/'nori-100m' for "
+            "local inference."
         )
     if model is None or model in NORI_VARIANTS:
         return _resolve_variant(model)[1]
     raise ValueError(
         f"model={model!r} has no local checkpoint and cannot run in mode='local'. Local "
-        "inference supports the base model ('nori-6m') and 'nori-30m'. For hosted-only "
+        "inference supports 'nori-6m', 'nori-30m' and 'nori-100m'. For hosted-only "
         "variants (e.g. Nori Thinking) or a custom deployment slug, use mode='remote' with a "
         "Baseten API key."
     )

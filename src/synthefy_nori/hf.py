@@ -17,14 +17,15 @@ DEFAULT_CHECKPOINT_FILENAME = os.environ.get(
 )
 
 # Model-variant registry: friendly name -> Hugging Face repo id. A size is REQUIRED -- there is no
-# default "nori"; every caller must pick ``model="nori-6m"`` or ``model="nori-30m"`` on NoriRegressor
-# / infer / predict (or ``download_checkpoint(model=...)``). Naming the size keeps the identifier
-# stable: it never silently changes which weights it loads. ``"nori-6m"`` is the ~6M base and honors
-# the SYNTHEFY_NORI_HF_REPO override. Add one line per new variant. An unknown name is treated as a
-# raw repo id, so an explicit ``"org/repo"`` still works.
+# default "nori"; every caller must pick ``model="nori-6m"``, ``model="nori-30m"``, or
+# ``model="nori-100m"`` on NoriRegressor / infer / predict (or ``download_checkpoint(model=...)``).
+# Naming the size keeps the identifier stable: it never silently changes which weights it loads.
+# ``"nori-6m"`` is the ~6M base and honors the SYNTHEFY_NORI_HF_REPO override. Add one line per new
+# variant. An unknown name is treated as a raw repo id, so an explicit ``"org/repo"`` still works.
 NORI_MODELS = {
     "nori-6m": DEFAULT_MODEL_REPO_ID,  # ~6M base (honors SYNTHEFY_NORI_HF_REPO)
     "nori-30m": "Synthefy/Nori-30M",   # ~29.2M scaling-law variant
+    "nori-100m": "Synthefy/Nori-100M", # ~98.3M scaling-law variant
 }
 
 
@@ -41,7 +42,7 @@ def _is_thinking_model(model: str) -> bool:
 
 def resolve_model_repo(model: str | None) -> str:
     """Map a variant name to its HF repo id. A size is required: ``None`` or a bare ``"nori"``
-    raises (there is no default) -- pick ``"nori-6m"`` or ``"nori-30m"``. A known name -> its repo;
+    raises (there is no default) -- pick one of :data:`NORI_MODELS`. A known name -> its repo;
     anything else is returned unchanged (so a raw ``"org/repo"`` id also works).
 
     A Nori Thinking selector raises :class:`ValueError`: it has no downloadable checkpoint here,
@@ -57,8 +58,8 @@ def resolve_model_repo(model: str | None) -> str:
             f"model={model!r} selects a Nori Thinking (test-time-compute) variant, which runs "
             "only on the hosted Synthefy API. The synthefy-nori package does single-pass local "
             "inference and has no Thinking checkpoint. Use the hosted API (e.g. the `synthefy` "
-            "client with mode='remote') for Thinking, or select 'nori-6m' / 'nori-30m' "
-            "for local inference."
+            "client with mode='remote') for Thinking, or select one of "
+            f"{', '.join(repr(name) for name in NORI_MODELS)} for local inference."
         )
     return NORI_MODELS.get(model, model)
 
@@ -96,14 +97,15 @@ def download_checkpoint(
     """Download a checkpoint from the Hugging Face Hub and return its local path.
 
     ``model`` selects a registry variant (e.g. ``"nori-6m"``) and overrides ``repo_id``. A size is
-    required: with neither ``model`` nor ``repo_id`` given, this raises -- pass
-    ``model="nori-6m"``/``"nori-30m"`` or an explicit ``repo_id``.
+    required: with neither ``model`` nor ``repo_id`` given, this raises -- pass a
+    :data:`NORI_MODELS` name as ``model=`` or an explicit ``repo_id``.
     """
     if model is not None:
         repo_id = resolve_model_repo(model)
     elif repo_id is None:
         raise ValueError(
-            "download_checkpoint requires model= ('nori-6m'/'nori-30m') or an explicit repo_id="
+            "download_checkpoint requires model= "
+            f"({'/'.join(repr(name) for name in NORI_MODELS)}) or an explicit repo_id="
         )
     try:
         from huggingface_hub import hf_hub_download
