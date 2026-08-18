@@ -65,8 +65,10 @@ and it automatically uses CUDA or Apple MPS when available (CPU otherwise).
    lo, mid, hi = reg.predict(X_test, output_type="quantiles", quantiles=[0.1, 0.5, 0.9])
    ```
 
-X is a numeric feature matrix (encode categoricals as ordinals/one-hot, leave
-missing values as NaN, no scaling needed); y is a finite continuous target. If I
+X may be a numeric list/array, or a pandas DataFrame containing numeric and
+categorical columns; name free-text columns with `text_columns=[...]`. DataFrame
+category mappings are fitted on training rows and replayed on query rows. Leave
+missing values as NaN and do not scale. y is a finite continuous target. If I
 already have a model, wire Nori up alongside it on the same train/test split and
 metric so I can compare them. If the best place to plug Nori in isn't obvious,
 show me where you'd put it and confirm with me before making changes.
@@ -199,6 +201,56 @@ encoders use that same device. A one-shot helper skips the object entirely:
 from synthefy_nori import predict
 pred = predict(X_train, y_train, X_test, task="regression", model="nori-30m")
 ```
+
+### DataFrame features: numeric, categorical, and text
+
+`NoriRegressor` accepts raw pandas DataFrames. By default,
+`categorical_columns="auto"` encodes remaining non-numeric columns without
+loading the optional text model. Name categoricals explicitly when you want a
+strict schema, and name free text separately. The mixed example below requires
+`pip install "synthefy-nori[text]"`:
+
+```python
+import pandas as pd
+from synthefy_nori import NoriRegressor
+
+X_train = pd.DataFrame({
+    "monthly_spend": [29.0, 85.0, 42.0],
+    "plan": ["free", "pro", "free"],
+    "ticket_description": ["login failed", "invoice question", "slow dashboard"],
+})
+X_test = pd.DataFrame({
+    "ticket_description": ["cannot sign in"],  # order may differ
+    "plan": ["enterprise"],                    # unseen -> fitted "other" code
+    "monthly_spend": [110.0],
+})
+
+reg = NoriRegressor(
+    model="nori-30m",
+    categorical_columns=["plan"],
+    text_columns=["ticket_description"],
+).fit(X_train, [3.0, 1.0, 4.0])
+prediction = reg.predict(X_test)
+```
+
+The three categorical modes are:
+
+- `"auto"` (default): encode remaining non-numeric, non-text columns;
+- a sequence such as `["plan"]`: encode exactly those columns and reject other
+  undeclared strings;
+- `None`: disable categorical inference and require remaining columns to be numeric.
+
+Ordinal mappings and text SVD are fitted on `X_train` only. Missing categorical
+values remain `NaN`; rare and unseen values use one bounded `other` code.
+Automatically inferred columns above `max_categorical_cardinality=100` raise an
+ambiguity error instead of being silently dropped or embedded. Explicitly name
+such a column as categorical (top-K plus `other`), text, or encode/remove it.
+Numeric lists/arrays remain positional and must already be numeric.
+
+`categorical_columns` describes feature columns in `X`. In contrast,
+`categorical_levels` below describes the allowed numeric values of the target
+`y`; it never declares feature columns. See
+[DataFrame preprocessing](docs/inference.md#dataframe-features-numeric-categorical-and-text).
 
 To run from your own checkpoint instead of the Hub default, pass a path:
 

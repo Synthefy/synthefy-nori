@@ -235,7 +235,7 @@ def test_unseen_category_and_nan_handled_at_transform():
     assert Xt.shape[1] == mp.n_features_out_
     assert Xt[1, 1] == unknown_code                  # 'C' unseen
     assert Xt[0, 1] == mp.category_maps_["brand"]["A"]
-    assert Xt[1, 0] == 0.0                           # NaN price -> 0
+    assert np.isnan(Xt[1, 0])                        # numeric missing stays NaN
 
 
 def test_transform_before_fit_raises():
@@ -300,7 +300,8 @@ def test_categorical_encoding_bounded_by_max_cardinality():
         "review": [f"row {i}" for i in range(n)],
     })
     mp = MultimodalPreprocessor(text_columns=["review"], svd_dim=4,
-                                embedder=_fake_embed, max_cardinality=5)
+                                embedder=_fake_embed, max_cardinality=5,
+                                categorical_columns=["hc"])
     Xtr = mp.fit_transform(train)
     hc_col = mp.nontext_columns_.index("hc")
     assert len(mp.category_maps_["hc"]) == 5            # capped to top-5
@@ -360,14 +361,19 @@ def test_noriregressor_clone_and_pickle_carry_text_config():
     from sklearn.base import clone
     from synthefy_nori import NoriRegressor
 
-    reg = NoriRegressor(text_columns=["review"], svd_dim=4, embedder=_fake_embed)
+    reg = NoriRegressor(
+        categorical_columns=["brand"],
+        text_columns=["review"],
+        svd_dim=4,
+        embedder=_fake_embed,
+    )
     assert clone(reg).get_params()["text_columns"] == ["review"]
     reg.fit(_frame(8), np.arange(8.0, dtype=float))
     assert reg.n_features_in_ == 3                 # input cols, not the widened SVD block
     assert list(reg.feature_names_in_) == ["price", "brand", "review"]
     round_tripped = pickle.loads(pickle.dumps(reg))
-    assert round_tripped._text_preprocessor.text_columns_ == ["review"]
-    assert round_tripped._text_preprocessor._encoder is None      # dropped on pickle
+    assert round_tripped._feature_preprocessor.text_columns_ == ["review"]
+    assert round_tripped._feature_preprocessor._text_preprocessor._encoder is None
 
 
 def test_categorical_key_canonicalization_int_vs_float():
@@ -387,7 +393,8 @@ def test_categorical_key_canonicalization_int_vs_float():
 def test_categorical_tiebreak_is_deterministic():
     df = pd.DataFrame({"c": ["b", "a", "c", "a", "b", "c"], "review": ["x"] * 6})  # a,b,c each 2
     m = MultimodalPreprocessor(text_columns=["review"], svd_dim=2,
-                               embedder=_fake_embed, max_cardinality=2)
+                               embedder=_fake_embed, max_cardinality=2,
+                               categorical_columns=["c"])
     m.fit_transform(df)
     assert m.category_maps_["c"] == {"a": 0, "b": 1}  # ties broken by key ascending
 

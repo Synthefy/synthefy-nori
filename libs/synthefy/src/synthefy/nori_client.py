@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 from synthefy.featurize import (
+    CATEGORICAL_AUTO as _CATEGORICAL_AUTO,
     DEFAULT_CATEGORICAL_ENCODING as _DEFAULT_CATEGORICAL_ENCODING,
     DEFAULT_MAX_CARDINALITY as _DEFAULT_MAX_CARDINALITY,
     align_and_featurize as _align_and_featurize,
@@ -251,9 +252,8 @@ def _result_index(X_test: Any) -> Optional[Any]:
 def _reject_non_numeric_columns(frame: pd.DataFrame, name: str) -> None:
     """Raise ``ValueError`` if any column is not numeric.
 
-    Nori is a numeric-only model, so categorical/text/datetime columns must be
-    encoded by the caller before prediction. ``bool`` and integer columns are
-    treated as numeric.
+    This helper runs after public DataFrame preprocessing, so any remaining
+    categorical/text/temporal column means the schema was not resolved.
     """
     non_numeric = [
         str(col)
@@ -262,9 +262,9 @@ def _reject_non_numeric_columns(frame: pd.DataFrame, name: str) -> None:
     ]
     if non_numeric:
         raise ValueError(
-            f"{name} has non-numeric column(s) {non_numeric}; Nori is a "
-            "numeric-only model. Encode categorical/text/datetime columns "
-            "(e.g. one-hot or ordinal encoding) before calling predict()."
+            f"{name} has unresolved non-numeric column(s) {non_numeric}. Pass raw "
+            "features as DataFrames and choose categorical_columns=[...] or "
+            "text_columns=[...], or pre-encode them numerically."
         )
 
 
@@ -341,6 +341,7 @@ def _build_nori_request(
     y_train: VectorLike,
     X_test: MatrixLike,
     task: str = DEFAULT_TASK,
+    categorical_columns: Any = _CATEGORICAL_AUTO,
     max_categorical_cardinality: int = _DEFAULT_MAX_CARDINALITY,
     categorical_encoding: str = _DEFAULT_CATEGORICAL_ENCODING,
     output_type: str = DEFAULT_OUTPUT_TYPE,
@@ -368,6 +369,7 @@ def _build_nori_request(
         X_train,
         X_test,
         max_categorical_cardinality,
+        categorical_columns=categorical_columns,
         categorical_encoding=categorical_encoding,
         _warning_stacklevel=5,
     )
@@ -751,86 +753,40 @@ def _widen_text_columns(
     max_cardinality,
     categorical_encoding,
     text_device,
+    categorical_columns=_CATEGORICAL_AUTO,
 ):
-    """Embed free-text columns client-side, returning widened numeric frames.
+    """Prepare named text columns client-side, returning numeric frames.
 
-    Uses ``synthefy``'s ``MultimodalPreprocessor`` to turn the named text
-    columns into SVD features (fit on ``X_train`` only) appended to the numeric /
-    categorical block. Both inputs must be pandas DataFrames so the text columns
-    can be located by name; the result is fully numeric, so the ordinary request
-    path (which sends numeric matrices to any backend) is unchanged. The frames'
-    indexes are preserved for ``as_pandas`` output.
+    The shared DataFrame preprocessor fits text SVD and categorical mappings on
+    ``X_train``. Both inputs must be DataFrames; their indexes are preserved for
+    ``as_pandas`` output.
     """
-    if not (isinstance(X_train, pd.DataFrame) and isinstance(X_test, pd.DataFrame)):
-        raise ValueError(
-            "text_columns requires X_train and X_test to be pandas DataFrames "
-            "(so the text columns can be located by name)."
-        )
-    try:
-        from synthefy.text_features import MultimodalPreprocessor
-    except ImportError as e:  # pragma: no cover - dependency hint
-        raise ImportError(
-            "text_columns needs the text extra: install `pip install "
-            '"synthefy[text]"`.'
-        ) from e
     resolved_text_device = (
         _resolve_text_device(text_device) if isinstance(embedder, str) else None
     )
-    text_columns = list(text_columns)
-    if len(text_columns) != len(set(text_columns)):
-        raise ValueError("text_columns must not contain duplicate column names")
-
-    # Use the canonical tabular featurizer for every non-text column so
-    # categorical_encoding= retains exactly the same ordinal/one-hot semantics
-    # with and without text. Empty slices make this a cheap validation/alignment
-    # pass before any encoder is loaded.
-    _, aligned_test = _align_and_featurize(
-        X_train.iloc[:0],
-        X_test.iloc[:0],
+    return _align_and_featurize(
+        X_train,
+        X_test,
         max_cardinality,
+        categorical_columns=categorical_columns,
         categorical_encoding=categorical_encoding,
-        _warning_stacklevel=6,
-    )
-    X_test = X_test.loc[:, list(aligned_test.columns)]
-
-    missing_text = [column for column in text_columns if column not in X_train.columns]
-    if missing_text:
-        raise ValueError(f"text_columns not found in the DataFrame: {missing_text}")
-
-    tabular_columns = [column for column in X_train.columns if column not in text_columns]
-    if tabular_columns:
-        Xtr_tabular, Xte_tabular = _align_and_featurize(
-            X_train[tabular_columns],
-            X_test[tabular_columns],
-            max_cardinality,
-            categorical_encoding=categorical_encoding,
-            _warning_stacklevel=6,
-            _allow_empty=True,
-        )
-        Xtr_tabular_values = Xtr_tabular.to_numpy(dtype=np.float32)
-        Xte_tabular_values = Xte_tabular.to_numpy(dtype=np.float32)
-    else:
-        Xtr_tabular_values = np.empty((len(X_train), 0), dtype=np.float32)
-        Xte_tabular_values = np.empty((len(X_test), 0), dtype=np.float32)
-
-    # Restrict MultimodalPreprocessor to the explicitly named text columns. Its
-    # tabular block is therefore empty; the canonical featurizer above remains
-    # the sole owner of categorical behavior.
-    mm = MultimodalPreprocessor(
-        text_columns,
+        text_columns=text_columns,
         svd_dim=svd_dim,
         embedder=embedder,
-        max_cardinality=max_cardinality,
-        device=resolved_text_device,
+        text_device=resolved_text_device,
     )
-    Xtr_text = mm.fit_transform(X_train[text_columns])
-    Xte_text = mm.transform(X_test[text_columns])
-    Xtr = np.hstack([Xtr_tabular_values, Xtr_text]).astype(np.float32)
-    Xte = np.hstack([Xte_tabular_values, Xte_text]).astype(np.float32)
-    return (
-        pd.DataFrame(Xtr, index=X_train.index),
-        pd.DataFrame(Xte, index=X_test.index),
-    )
+
+
+def _has_declared_text_columns(text_columns: Any) -> bool:
+    """Return whether the public declaration names at least one text column."""
+    if text_columns is None:
+        return False
+    if isinstance(text_columns, str):
+        return True
+    try:
+        return len(text_columns) > 0
+    except TypeError:
+        return True
 
 
 class SynthefyNoriClient:
@@ -1113,11 +1069,12 @@ class SynthefyNoriClient:
         as_pandas: bool = False,
         output_type: str = DEFAULT_OUTPUT_TYPE,
         quantiles: Optional[VectorLike] = None,
+        categorical_columns: Any = _CATEGORICAL_AUTO,
         max_categorical_cardinality: int = _DEFAULT_MAX_CARDINALITY,
         categorical_encoding: str = _DEFAULT_CATEGORICAL_ENCODING,
         text_columns: Optional[Sequence[str]] = None,
         svd_dim: Optional[int] = 128,
-        embedder: str = "minilm",
+        embedder: Any = "minilm",
         text_device: Optional[str] = "auto",
         discretize: Optional[str] = None,
         categorical_levels: Optional[VectorLike] = None,
@@ -1131,9 +1088,8 @@ class SynthefyNoriClient:
         ----------
         X_train : array-like of shape (n_context, n_features)
             Labeled context rows. Python lists, numpy arrays, or a pandas
-            DataFrame are accepted. In the DataFrame/DataFrame case, non-numeric
-            columns are encoded for you (see ``X_test``,
-            ``categorical_encoding``, and ``max_categorical_cardinality``);
+            DataFrame are accepted. In the DataFrame/DataFrame case, feature
+            roles follow ``categorical_columns`` and ``text_columns``;
             otherwise all columns must be numeric. Missing values are allowed:
             NaN in a numeric column is imputed server-side; NaN in a categorical
             column stays NaN under ordinal encoding (imputed server-side) or
@@ -1146,15 +1102,11 @@ class SynthefyNoriClient:
             ``X_train``. When both ``X_train`` and ``X_test`` are DataFrames,
             ``X_test`` is aligned to ``X_train``'s columns *by name* (column
             order is irrelevant; a mismatch in the column sets raises), and any
-            non-numeric columns are **encoded** — fit on ``X_train`` and
-            applied to ``X_test`` — into a fully numeric matrix. By default
-            each categorical column becomes a single column of ordinal codes
-            (categories from ``X_train`` in sorted order; a value seen only in
-            ``X_test`` maps to -1, missing to NaN — the model's own server-side
-            convention). Datetime columns and categorical columns with more
-            than ``max_categorical_cardinality`` distinct training values are
-            dropped with a warning; ``timedelta`` columns are unsupported and
-            raise (convert them to a number or string first).
+            categorical columns are encoded using mappings fitted only on
+            ``X_train``. Ordinal missing values remain NaN; rare and unseen
+            values use one bounded ``other`` code. Unsupported temporal values
+            and ambiguous high-cardinality strings raise with guidance instead
+            of being silently dropped or embedded.
         task : str, default "regression"
             The prediction task. Currently only ``"regression"`` is supported.
         as_pandas : bool, default False
@@ -1202,15 +1154,22 @@ class SynthefyNoriClient:
             median. Required by (and valid only with) ``output_type="quantiles"``;
             the returned rows follow the order given here, so the order is
             yours to choose.
+        categorical_columns : {"auto", None} or sequence of column names, default "auto"
+            DataFrame categorical-feature policy. ``"auto"`` encodes every
+            remaining non-numeric, non-text column. A sequence encodes exactly
+            those columns and raises for any other non-numeric column. ``None``
+            disables categorical inference. Explicit text and categorical
+            declarations must not overlap.
         max_categorical_cardinality : int, default 100
-            Maximum number of distinct training values a non-numeric column may
-            have to be encoded (DataFrame inputs only). Columns above this cap —
-            almost always identifiers — are dropped with a warning. Ignored
-            when inputs are already numeric.
+            Maximum retained training levels per categorical. An automatically
+            inferred column above the cap raises because it may be an identifier
+            or free text. An explicitly named categorical keeps its top-K levels;
+            rarer and unseen values share the bounded ``other`` value.
         categorical_encoding : {"ordinal", "onehot"}, default "ordinal"
             How non-numeric columns are encoded (DataFrame inputs only).
             ``"ordinal"`` maps each categorical column to one column of integer
-            codes, matching the model's server-side handling of categoricals;
+            codes, with missing values kept as NaN and rare/unseen values mapped
+            to one bounded ``other`` code;
             it benchmarked at least as well as one-hot across 35 categorical
             datasets and never widens the feature matrix. ``"onehot"``
             reproduces the previous client behavior (indicator columns per
@@ -1222,7 +1181,7 @@ class SynthefyNoriClient:
             and appended as numeric features — the request still carries a fully
             numeric matrix, so every backend works unchanged. Needs the ``text``
             extra (``pip install "synthefy[text]"``). ``None`` (default) leaves
-            behavior unchanged.
+            text embedding disabled. It may not overlap ``categorical_columns``.
         svd_dim : int or None, default 128
             Number of SVD text columns appended (``None`` = full raw embedding).
             Ignored when ``text_columns`` is None.
@@ -1315,7 +1274,11 @@ class SynthefyNoriClient:
             If the input shapes are inconsistent (e.g. ``X_train`` and
             ``y_train`` row counts differ, or ``X_test`` has a different number
             of features than ``X_train``); if DataFrame ``X_train``/``X_test``
-            have mismatched column sets or duplicate column names; if a column is
+            have mismatched column sets or duplicate column names; if declared
+            categorical/text columns are missing or overlap; if an undeclared
+            non-numeric column is ambiguous under an explicit/disabled policy;
+            if an automatically inferred categorical exceeds the cardinality cap;
+            if a column is
             numeric in one of ``X_train``/``X_test`` but not the other; if a
             column has unsupported ``timedelta`` dtype; if a non-DataFrame input
             contains non-numeric values; if ``categorical_encoding`` is not one
@@ -1380,16 +1343,22 @@ class SynthefyNoriClient:
             quantiles,
             discretizing=discretize is not None or categorical_levels is not None,
         )
-        if text_columns:
+        request_categorical_columns = categorical_columns
+        if _has_declared_text_columns(text_columns):
             # Embed free-text columns client-side into numeric SVD features, then
             # send the widened numeric matrix through the normal request path
             # (works identically for local / remote / AWS backends).
             X_train, X_test = _widen_text_columns(
-                X_train, X_test, list(text_columns), svd_dim, embedder,
+                X_train, X_test, text_columns, svd_dim, embedder,
                 max_categorical_cardinality, categorical_encoding, text_device,
+                categorical_columns,
             )
+            # The widened frames are already numeric; do not resolve the original
+            # named declarations a second time in _build_nori_request.
+            request_categorical_columns = None
         request = _build_nori_request(
             X_train, y_train, X_test, task,
+            categorical_columns=request_categorical_columns,
             max_categorical_cardinality=max_categorical_cardinality,
             categorical_encoding=categorical_encoding,
             output_type=output_type,

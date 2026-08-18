@@ -106,6 +106,12 @@ via their CLI flags; don't hardcode paths.
 
 ## Guardrails
 
+- **Audit every public wrapper when the feature contract changes.** Check
+  `NoriRegressor`, the module-level `infer` / `predict` helpers,
+  `SynthefyNoriClient`, `NoriEmbedding`, and `NoriTSForecaster`. Each surface
+  must either support the feature, document why it does not apply, or link a
+  tracked follow-up; support in one wrapper does not imply support in all of
+  them.
 - **Use only the documented public API.** The constructor and `predict`
   signatures in `references/api.md` are exact — do not invent kwargs, env vars,
   or telemetry flags. Unknown constructor kwargs raise `TypeError`.

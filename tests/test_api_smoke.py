@@ -63,21 +63,26 @@ def test_fit_resolves_and_reuses_device_for_named_text_encoder(monkeypatch):
     captured = {}
 
     class FakePreprocessor:
-        def __init__(self, text_columns, **kwargs):
-            captured.update(kwargs)
-            self.text_columns_ = list(text_columns)
+        def __init__(self, **kwargs):
+            if "text_device" in kwargs:
+                captured.update(kwargs)
+
+        def _validate_parameters(self):
+            pass
 
         def fit_transform(self, frame):
-            return np.zeros((len(frame), 2), dtype=np.float32)
+            return pd.DataFrame(
+                np.zeros((len(frame), 2), dtype=np.float32), index=frame.index
+            )
 
     monkeypatch.setattr(api, "_as_device", lambda device: torch.device("mps"))
-    monkeypatch.setattr(api, "MultimodalPreprocessor", FakePreprocessor)
+    monkeypatch.setattr(api, "DataFramePreprocessor", FakePreprocessor)
 
     model = NoriRegressor(model_path="local.pt", text_columns=["review"])
     model.fit(pd.DataFrame({"review": ["good", "bad"]}), [1.0, 0.0])
 
     assert model.device_ == torch.device("mps")
-    assert captured["device"] == torch.device("mps")
+    assert captured["text_device"] == torch.device("mps")
 
 
 def test_mps_inference_disables_mixed_precision(monkeypatch):

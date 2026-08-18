@@ -13,6 +13,48 @@ y_pred = reg.predict(X_test)
 If `model_path` is omitted, the default checkpoint is resolved from Hugging
 Face through `synthefy_nori.hf.download_checkpoint()`.
 
+## DataFrame features: numeric, categorical, and text
+
+All local public paths share one fitted DataFrame schema:
+
+```python
+reg = NoriRegressor(
+    model="nori-30m",
+    categorical_columns=["plan", "region"],
+    text_columns=["ticket_description"],
+)
+reg.fit(X_train, y_train)
+y_pred = reg.predict(X_test)
+```
+
+The estimator API is `fit(X_train, y_train)` followed by `predict(X_test)`.
+The one-shot helper is separately `predict(X_train, y_train, X_test, ...)` and
+accepts the same feature-preprocessing arguments.
+
+| `categorical_columns` | Behavior for DataFrames |
+| --- | --- |
+| `"auto"` (default) | Encode every remaining non-numeric, non-text column. |
+| sequence of names | Encode exactly those columns; other non-numeric columns raise with their names and dtypes. |
+| `None` | Disable categorical inference; remaining columns must be numeric. |
+
+Text and categorical declarations cannot overlap. Column names are learned at
+`fit`, and query frames are reordered to that schema; missing or extra query
+columns raise directly. Category mappings and text SVD are learned only from
+training rows. Ordinal encoding assigns deterministic `0..K-1` codes, preserves
+missing values as `NaN`, and maps rare or unseen values to the bounded `K`
+`other` code. `categorical_encoding="onehot"` remains available for compatibility.
+
+An automatically inferred string column above
+`max_categorical_cardinality=100` is ambiguous—it may be an ID, free text, or a
+real high-cardinality categorical—so Nori asks you to declare it rather than
+dropping or embedding it. Explicit categoricals retain their top K training
+levels and collapse the rest to `other`. Datetime, timedelta, and period columns
+must be converted explicitly. Positional lists/arrays remain numeric-only.
+
+Categorical **features** are declared with `categorical_columns`. The
+`categorical_levels` option in the target section below applies only to numeric
+values of `y` and does not preprocess `X`.
+
 ## Execution defaults and exact reproducibility
 
 Standard inference loads checkpoints with PyTorch's native RMSNorm kernel and

@@ -1,0 +1,24 @@
+{
+  "contract": "synthefy-dataframe-features-v1",
+  "categorical_columns": ["plan"],
+  "max_categorical_cardinality": 2,
+  "train": {
+    "amount": [10.0, 20.0, 30.0, 40.0],
+    "plan": ["pro", "free", "pro", "rare"]
+  },
+  "query": {
+    "plan": ["free", "new", null],
+    "amount": [50.0, 60.0, 70.0]
+  },
+  "expected_train": [
+    [10.0, 1.0],
+    [20.0, 0.0],
+    [30.0, 1.0],
+    [40.0, 2.0]
+  ],
+  "expected_query": [
+    [50.0, 0.0],
+    [60.0, 2.0],
+    [70.0, null]
+  ]
+}

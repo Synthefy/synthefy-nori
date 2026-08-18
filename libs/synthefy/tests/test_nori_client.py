@@ -6,7 +6,6 @@ the optional ``synthefy-nori`` package is installed.
 """
 
 import builtins
-import inspect
 import importlib.util
 import json
 import math
@@ -570,14 +569,14 @@ def test_non_numeric_columns_are_ordinal_encoded_by_default():
     out = client.predict(
         X_train=pd.DataFrame({"a": [0.0, 1.0, 2.0], "cat": ["y", "x", "y"]}),
         y_train=[1.0, 2.0, 3.0],
-        # 'z' is unseen in training -> code -1 (the server's unknown_value).
+        # 'z' is unseen in training -> bounded other code K=2.
         X_test=pd.DataFrame({"a": [3.0, 4.0], "cat": ["x", "z"]}),
     )
 
     assert out == [5.0]
     # one column per categorical, codes in sorted-category order: x=0, y=1
     assert capture["body"]["X_train"] == [[0.0, 1.0], [1.0, 0.0], [2.0, 1.0]]
-    assert capture["body"]["X_test"] == [[3.0, 0.0], [4.0, -1.0]]
+    assert capture["body"]["X_test"] == [[3.0, 0.0], [4.0, 2.0]]
 
 
 def test_ordinal_missing_categorical_is_forwarded_as_null():
@@ -673,31 +672,10 @@ def test_one_hot_train_category_absent_in_test_is_kept_as_zero_column():
     assert capture["body"]["X_test"] == [[5.0, 1.0, 0.0, 0.0]]
 
 
-def test_high_cardinality_column_is_dropped_with_warning():
-    capture: Dict = {}
+def test_auto_high_cardinality_column_requires_explicit_choice():
     client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
-    _attach_mock(client, _ok_handler([1.0], capture))
 
-    with pytest.warns(UserWarning, match="unique values"):
-        client.predict(
-            X_train=pd.DataFrame({"a": [0.0, 1.0, 2.0], "hc": ["p", "q", "r"]}),
-            y_train=[1.0, 2.0, 3.0],
-            X_test=pd.DataFrame({"a": [3.0], "hc": ["p"]}),
-            max_categorical_cardinality=2,  # 'hc' has 3 uniques -> dropped
-        )
-
-    assert capture["body"]["X_train"] == [[0.0], [1.0], [2.0]]
-    assert capture["body"]["X_test"] == [[3.0]]
-
-
-def test_featurization_warning_keeps_its_public_predict_callsite():
-    capture: Dict = {}
-    client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
-    _attach_mock(client, _ok_handler([1.0], capture))
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        warning_line = inspect.currentframe().f_lineno + 1
+    with pytest.raises(ValueError, match="Automatic handling is ambiguous"):
         client.predict(
             X_train=pd.DataFrame({"a": [0.0, 1.0, 2.0], "hc": ["p", "q", "r"]}),
             y_train=[1.0, 2.0, 3.0],
@@ -705,23 +683,28 @@ def test_featurization_warning_keeps_its_public_predict_callsite():
             max_categorical_cardinality=2,
         )
 
-    assert len(caught) == 1
-    assert caught[0].category is UserWarning
-    assert str(caught[0].message) == (
-        "Nori featurization dropped non-encodable column(s): "
-        "'hc' (>2 unique values). Encode them yourself "
-        "(e.g. target/hash encoding) if you need them."
-    )
-    assert caught[0].filename == __file__
-    assert caught[0].lineno == warning_line
 
-
-def test_datetime_column_is_dropped_with_warning():
+def test_explicit_high_cardinality_column_uses_top_k_plus_other():
     capture: Dict = {}
     client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
     _attach_mock(client, _ok_handler([1.0], capture))
 
-    with pytest.warns(UserWarning, match="datetime"):
+    client.predict(
+        X_train=pd.DataFrame({"a": [0.0, 1.0, 2.0], "hc": ["p", "q", "r"]}),
+        y_train=[1.0, 2.0, 3.0],
+        X_test=pd.DataFrame({"a": [3.0, 4.0], "hc": ["p", "new"]}),
+        max_categorical_cardinality=2,
+        categorical_columns=["hc"],
+    )
+    # p and q win the deterministic frequency tie; r/new share other=2.
+    assert capture["body"]["X_train"] == [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]
+    assert capture["body"]["X_test"] == [[3.0, 0.0], [4.0, 2.0]]
+
+
+def test_datetime_column_requires_explicit_conversion():
+    client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
+
+    with pytest.raises(ValueError, match="unsupported dtype"):
         client.predict(
             X_train=pd.DataFrame(
                 {"a": [0.0, 1.0], "d": pd.to_datetime(["2024-01-01", "2024-01-02"])}
@@ -730,7 +713,6 @@ def test_datetime_column_is_dropped_with_warning():
             X_test=pd.DataFrame({"a": [2.0], "d": pd.to_datetime(["2024-01-03"])}),
         )
 
-    assert capture["body"]["X_train"] == [[0.0], [1.0]]
 
 
 def test_bool_columns_pass_through_as_numeric():
@@ -788,7 +770,7 @@ def test_column_numeric_in_train_but_not_test_raises_clearly():
         )
 
 
-def test_numeric_category_dtype_is_treated_as_numeric_not_one_hot():
+def test_numeric_category_dtype_is_respected_as_categorical():
     capture: Dict = {}
     client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
     _attach_mock(client, _ok_handler([1.0], capture))
@@ -805,23 +787,22 @@ def test_numeric_category_dtype_is_treated_as_numeric_not_one_hot():
                 {"a": [5.0], "r": pd.Categorical([2], categories=[1, 2, 3])}
             ),
         )
-    # 'r' kept as a single numeric column (its values), not exploded to r_1/r_2/r_3
-    assert capture["body"]["X_train"] == [[0.0, 1.0], [1.0, 2.0], [2.0, 3.0]]
-    assert capture["body"]["X_test"] == [[5.0, 2.0]]
+    assert capture["body"]["X_train"] == [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]
+    assert capture["body"]["X_test"] == [[5.0, 1.0]]
 
 
-def test_all_missing_categorical_column_dropped_with_warning():
+def test_all_missing_categorical_column_is_preserved_as_null():
     capture: Dict = {}
     client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
     _attach_mock(client, _ok_handler([1.0], capture))
 
-    with pytest.warns(UserWarning, match="no non-missing"):
-        client.predict(
-            X_train=pd.DataFrame({"a": [0.0, 1.0], "cat": [None, None]}),
-            y_train=[1.0, 2.0],
-            X_test=pd.DataFrame({"a": [2.0], "cat": [None]}),
-        )
-    assert capture["body"]["X_train"] == [[0.0], [1.0]]
+    client.predict(
+        X_train=pd.DataFrame({"a": [0.0, 1.0], "cat": [None, None]}),
+        y_train=[1.0, 2.0],
+        X_test=pd.DataFrame({"a": [2.0], "cat": [None]}),
+    )
+    assert capture["body"]["X_train"] == [[0.0, None], [1.0, None]]
+    assert capture["body"]["X_test"] == [[2.0, None]]
 
 
 def test_timedelta_column_raises_unsupported():
@@ -871,7 +852,7 @@ def test_integer_category_with_nan_does_not_crash():
         X_test=pd.DataFrame({"r": pd.Categorical([2], categories=[1, 2, 3])}),
     )
     sent = capture["body"]["X_train"]
-    assert sent[0] == [1.0] and sent[1] == [2.0]
+    assert sent[0] == [0.0] and sent[1] == [1.0]
     assert sent[2][0] is None  # standards-compliant missing value, not a NaN token
 
 
@@ -1992,6 +1973,28 @@ def test_text_columns_embeds_client_side_and_sends_numeric():
 
 
 @requires_text_runtime
+def test_text_columns_accepts_a_pandas_index_declaration():
+    capture: Dict = {}
+    client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
+    _attach_mock(client, _ok_handler([1.0], capture))
+    train = pd.DataFrame(
+        {"amount": [1.0, 2.0, 3.0], "review": ["good", "bad", "fine"]}
+    )
+    test = pd.DataFrame({"review": ["new"], "amount": [4.0]})
+
+    client.predict(
+        train,
+        [1.0, 2.0, 3.0],
+        test,
+        text_columns=pd.Index(["review"]),
+        svd_dim=2,
+        embedder=_fake_embed,
+    )
+
+    assert len(capture["body"]["X_train"][0]) == 3
+
+
+@requires_text_runtime
 def test_text_columns_respect_onehot_categorical_encoding():
     capture: Dict = {}
     client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
@@ -2029,7 +2032,7 @@ def test_text_columns_respect_onehot_categorical_encoding():
 
 
 @requires_text_runtime
-def test_text_columns_remain_usable_when_every_tabular_column_is_dropped():
+def test_text_columns_require_a_choice_for_high_cardinality_tabular_columns():
     capture: Dict = {}
     client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
     _attach_mock(client, _ok_handler([1.0], capture))
@@ -2041,7 +2044,7 @@ def test_text_columns_remain_usable_when_every_tabular_column_is_dropped():
     )
     df_test = pd.DataFrame({"row_id": ["new-id"], "review": ["nice"]})
 
-    with pytest.warns(UserWarning, match="row_id"):
+    with pytest.raises(ValueError, match="Automatic handling is ambiguous"):
         client.predict(
             df_train,
             [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
@@ -2051,9 +2054,6 @@ def test_text_columns_remain_usable_when_every_tabular_column_is_dropped():
             embedder=_fake_embed,
             max_categorical_cardinality=2,
         )
-
-    assert len(capture["body"]["X_train"][0]) == 4
-
 
 def test_text_columns_requires_dataframe():
     client = SynthefyNoriClient(api_key="test-key", model="nori-30m")

@@ -270,15 +270,14 @@ def test_tabular_preparation_has_one_v7_implementation_owner():
     client_defs = {
         node.name for node in client_tree.body if isinstance(node, ast.FunctionDef)
     }
-    duplicate_helpers = {
+    canonical_helpers = {
         "_has_encodable_columns",
         "_numeric_categories_to_values",
-        "_featurize_frames",
         "align_and_featurize",
     }
 
-    assert duplicate_helpers <= canonical_defs
-    assert duplicate_helpers.isdisjoint(client_defs)
+    assert canonical_helpers <= canonical_defs
+    assert canonical_helpers.isdisjoint(client_defs)
     assert not any(isinstance(node, ast.FunctionDef) for node in legacy_tree.body)
 
     builder = next(
