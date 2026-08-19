@@ -447,7 +447,7 @@ sizes. Accuracy increases with size on every suite, on both statistics:
 | OpenML | 11 | 0.6362 / 0.5718 | 0.6451 / 0.6212 | **0.6495 / 0.6297** |
 | **Overall** | **95** | 0.7567 / 0.8705 | 0.7588 / 0.8752 | **0.7601 / 0.8799** |
 
-How to read this, and the two caveats that matter:
+How the table was produced, and the two caveats that matter:
 
 - **Same run, same machine, same protocol.** All three columns come from one sweep of
   `synthefy-nori-eval` on H200s, using the released `synthefy-nori[eval]` from PyPI — not a
