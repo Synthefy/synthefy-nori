@@ -437,10 +437,32 @@ Reproduce (prints the results table and writes `benchmarks/plots/shap_speed.png`
 
 ## Benchmarks
 
-Nori is evaluated on 96 public regression tasks from three suites — TabArena (13),
-TALENT (72) and the OpenML regression suite (11). Rather than publish a table here that
-goes stale the moment a checkpoint or a suite changes, this section tells you how to run
-the benchmark yourself, for whichever size you care about, and get current numbers.
+Mean and median R² across 95 public regression tasks from three suites, for all three
+sizes. Accuracy increases with size on every suite, on both statistics:
+
+| Suite | Datasets | Nori-6M · mean / median | Nori-30M · mean / median | Nori-100M · mean / median |
+|-------|---------:|:-----------------------:|:------------------------:|:-------------------------:|
+| TabArena | 13 | 0.8069 / 0.8772 | 0.8099 / 0.8834 | **0.8118 / 0.8902** |
+| TALENT | 71 | 0.7661 / 0.8928 | 0.7671 / 0.8937 | **0.7677 / 0.8938** |
+| OpenML | 11 | 0.6362 / 0.5718 | 0.6451 / 0.6212 | **0.6495 / 0.6297** |
+| **Overall** | **95** | 0.7567 / 0.8705 | 0.7588 / 0.8752 | **0.7601 / 0.8799** |
+
+How to read this, and the two caveats that matter:
+
+- **Same run, same machine, same protocol.** All three columns come from one sweep of
+  `synthefy-nori-eval` on H200s, using the released `synthefy-nori[eval]` from PyPI — not a
+  local checkout — so the table is reproducible with the command below.
+- **`--max-elements-budget 2000000`, not the 8M default.** Nori-100M's key/value cache
+  reaches ~179 GiB on the long-context tables and does not fit an 80 GB or a 141 GB GPU at
+  the 8M budget. Lowering the budget trims context on the largest tables, which costs a
+  little accuracy for every size — so these numbers are comparable **to each other** but are
+  *not* comparable to figures produced at a different budget.
+- **95 tasks, not 96.** Nori-100M errored on `talent/topo_2_1`, so that dataset is excluded
+  from all three columns rather than being scored for some models and not others.
+
+The gaps are real but small — Overall mean moves 0.7567 → 0.7588 → 0.7601 from 6M to 100M.
+Pick the size that fits your latency and memory budget; the larger checkpoints need
+materially more GPU memory on wide, long-context tables.
 
 Large-N / long-context tables (common in TabArena) are the current focus of the
 large-table training stages.
@@ -453,8 +475,19 @@ large-table training stages.
 ```bash
 pip install "synthefy-nori[eval]"
 
-synthefy-nori-eval --download-benchmarks --openml-reg
+# One size. Repeat --checkpoint (label:path) to score several in one pass, which is how
+# the table above was produced. --max-elements-budget must match across sizes for the
+# results to be comparable; 2000000 is what the table used.
+synthefy-nori-eval --download-benchmarks --openml-reg \
+  --checkpoint "nori-100m:$(python -c 'from synthefy_nori.hf import download_checkpoint as d; print(d(model="nori-100m"))')" \
+  --max-elements-budget 2000000
 ```
+
+`--download-benchmarks` writes the TabArena and TALENT CSVs to `cache/` by default;
+point them elsewhere with `--tabarena-reg-dir` / `--talent-reg-dir`. Those two flags are
+what control dataset location — `--cache-dir` does not, and if the directories are empty
+the run scores whatever it can find and still exits 0, so check the
+`Loaded N ... datasets` lines before trusting a result.
 
 The first run downloads the pretrained checkpoint from the Hugging Face Hub and
 fetches the benchmark datasets into `cache/` as CSVs: TabArena from the
@@ -466,13 +499,14 @@ splits use a fixed seed, so the evaluation data is fully deterministic.
 Evaluation uses the bundled default inference config
 (`default_inference.json`).
 
-The benchmark uses the **large-GPU protocol**: up to 50,000 context rows per
-dataset (no memory-based row cap) and an inference element budget of 8M
-(`SYNTHEFY_MAX_ELEMENTS_BUDGET`, settable via `--max-elements-budget`). The
-table was produced on a single H200. On smaller GPUs, pass `--gpu-mem-gb
-<GiB>` to enable a memory-based cap on context rows and/or lower
-`--max-elements-budget` — the run then fits in memory, but results on the
-largest tables drop below a full-context run (more context is genuinely better).
+The benchmark allows up to 50,000 context rows per dataset (no memory-based row cap). The
+inference element budget (`SYNTHEFY_MAX_ELEMENTS_BUDGET`, or `--max-elements-budget`)
+defaults to 8M, which targets large GPUs; **the table above used 2M**, because Nori-100M's
+key/value cache reaches ~179 GiB on the long-context tables and does not fit an 80 GB or a
+141 GB GPU at 8M. Lowering the budget trims context on the largest tables, so results there
+sit below a full-context run — more context is genuinely better. Keep the budget identical
+across every size you intend to compare. On smaller GPUs also pass `--gpu-mem-gb <GiB>` to
+cap context rows by available memory.
 
 The command prints a per-source mean R² summary and
 writes per-dataset metrics to `results/eval/all_results.csv`. Expect roughly
