@@ -1,8 +1,15 @@
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from synthefy.nori_data_models import MemoryPolicyInput, MemoryReport
+from synthefy.nori_data_models import (
+    LargeContextPolicy,
+    LargeContextReport,
+    MAX_LARGE_CONTEXT_SEED,
+    MAX_LARGE_CONTEXT_THRESHOLD,
+    MemoryPolicyInput,
+    MemoryReport,
+)
 
 
 class NoriPredictRequest(BaseModel):
@@ -38,6 +45,23 @@ class NoriPredictRequest(BaseModel):
     quantiles : List[float] or None, optional
         Tau levels in ``(0, 1)`` for ``output_type="quantiles"``, in the caller's
         order. Omitted from the body when ``None``.
+    large_context_policy : {"random", "cluster_route", "cluster_route_g4"} or None
+        Hosted-safe context-selection policy. Omitted when unset.
+
+        * ``"random"`` -- 1 internal Nori call. One shared context window, chosen at
+          random. The cheapest fallback; no routing, no accuracy upside.
+        * ``"cluster_route"`` -- up to 8 internal Nori calls. Clusters query rows into
+          groups, each scored against its own local context pool. The recommended
+          choice: the only one with full coverage on the validated benchmark sweep and
+          it never regressed below ``"random"``.
+        * ``"cluster_route_g4"`` -- the same mechanism, up to 4 calls (cheaper). Best
+          mean score on the tables it was measured against, but that measurement covers
+          a smaller subset -- not a safe blanket default.
+    large_context_threshold : int or None, optional
+        Context row count strictly above which the policy engages. Valid only
+        with ``large_context_policy``.
+    large_context_seed : int or None, optional
+        Deterministic selection/routing seed. Valid only with a policy.
     """
 
     # Coerce assignments just as construction does, so assigning a policy dict
@@ -51,6 +75,25 @@ class NoriPredictRequest(BaseModel):
     memory_policy: Optional[MemoryPolicyInput] = None
     output_type: Optional[str] = None
     quantiles: Optional[List[float]] = None
+    large_context_policy: Optional[LargeContextPolicy] = None
+    large_context_threshold: Optional[int] = Field(
+        default=None, strict=True, ge=1, le=MAX_LARGE_CONTEXT_THRESHOLD
+    )
+    large_context_seed: Optional[int] = Field(
+        default=None, strict=True, ge=0, le=MAX_LARGE_CONTEXT_SEED
+    )
+
+    @model_validator(mode="after")
+    def _large_context_parameters_need_a_policy(self):
+        if self.large_context_policy is None and (
+            self.large_context_threshold is not None
+            or self.large_context_seed is not None
+        ):
+            raise ValueError(
+                "large_context_threshold/large_context_seed require "
+                "large_context_policy"
+            )
+        return self
 
     def to_wire(self) -> Dict[str, Any]:
         """Serialize the request without pinning optional server defaults.
@@ -110,6 +153,9 @@ class NoriPredictResponse(BaseModel):
         ``NaN``.
     taus : List[float] or None, optional
         The ``K`` quantile levels matching ``quantiles``' columns.
+    large_context_report : LargeContextReport or None, optional
+        Capability handshake and resolved execution report. Present only when
+        the request selected a large-context policy.
     """
 
     task: str
@@ -119,3 +165,4 @@ class NoriPredictResponse(BaseModel):
     output_type: Optional[str] = None
     quantiles: Optional[List[List[Optional[float]]]] = None
     taus: Optional[List[float]] = None
+    large_context_report: Optional[LargeContextReport] = None

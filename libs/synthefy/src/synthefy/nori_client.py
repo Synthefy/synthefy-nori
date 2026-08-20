@@ -24,6 +24,7 @@ selected with the ``mode`` constructor argument:
 import importlib.util
 import json
 import os
+import threading
 import time
 import warnings
 from numbers import Integral, Real
@@ -40,7 +41,16 @@ from synthefy.featurize import (
     align_and_featurize as _align_and_featurize,
 )
 from synthefy.data_models import NoriPredictRequest, NoriPredictResponse
-from synthefy.nori_data_models import MemoryPolicyInput
+from synthefy.nori_data_models import (
+    DEFAULT_LARGE_CONTEXT_SEED,
+    DEFAULT_LARGE_CONTEXT_THRESHOLD,
+    HOSTED_LARGE_CONTEXT_POLICIES,
+    LargeContextPolicy,
+    LargeContextReport,
+    MAX_LARGE_CONTEXT_SEED,
+    MAX_LARGE_CONTEXT_THRESHOLD,
+    MemoryPolicyInput,
+)
 from synthefy.errors import (
     APIConnectionError,
     APITimeoutError,
@@ -349,6 +359,10 @@ def _build_nori_request(
     categorical_encoding: str = _DEFAULT_CATEGORICAL_ENCODING,
     output_type: str = DEFAULT_OUTPUT_TYPE,
     quantile_levels: Optional[List[float]] = None,
+    memory_policy: Optional[MemoryPolicyInput] = None,
+    large_context_policy: Optional[LargeContextPolicy] = None,
+    large_context_threshold: Optional[int] = None,
+    large_context_seed: Optional[int] = None,
 ) -> NoriPredictRequest:
     """Validate shapes and build a :class:`NoriPredictRequest`.
 
@@ -401,6 +415,15 @@ def _build_nori_request(
     if not isinstance(task, str) or not task.strip():
         raise ValueError("task must be a non-empty string")
 
+    # All fields, including the large-context trio, are passed to the constructor
+    # together rather than assigned onto an already-built request afterward: pydantic
+    # validates a constructor call's fields as one complete set, so
+    # NoriPredictRequest's "threshold/seed require a policy" model_validator sees a
+    # coherent object on its first and only run here. Sequential post-construction
+    # attribute assignment (with validate_assignment=True) instead validates after
+    # EVERY individual assignment, so it only works if the caller assigns policy
+    # before threshold/seed -- an ordering invariant that would otherwise be enforced
+    # by nothing but a comment.
     return NoriPredictRequest(
         X_train=_nullable_matrix(X_train_arr),
         y_train=y_train_arr.tolist(),
@@ -410,6 +433,10 @@ def _build_nori_request(
         # field (see _predict_remote's exclude_none dump).
         output_type=None if output_type == DEFAULT_OUTPUT_TYPE else output_type,
         quantiles=quantile_levels,
+        memory_policy=memory_policy,
+        large_context_policy=large_context_policy,
+        large_context_threshold=large_context_threshold,
+        large_context_seed=large_context_seed,
     )
 
 
@@ -532,7 +559,145 @@ def _local_memory_policy_available() -> bool:
     never appears in its parameters on any version, and gating on that would reject
     every build including new ones.
     """
-    return importlib.util.find_spec("synthefy_nori.inference.memory_policy") is not None
+    try:
+        return importlib.util.find_spec("synthefy_nori.inference.memory_policy") is not None
+    except ModuleNotFoundError:
+        # find_spec on a dotted path imports the PARENT package to read its __path__, so
+        # when synthefy-nori is not installed at all (the base synthefy install, the
+        # common case this check exists for) it raises here instead of returning None.
+        return False
+
+
+def _local_large_context_available() -> bool:
+    """Return ``True`` if the installed ``synthefy-nori`` accepts ``large_context_policy=``.
+
+    The feature landed as ``synthefy_nori.inference.large_context``, so the module's
+    presence is the capability -- a signature probe on ``NoriRegressor.__init__`` would
+    NOT reliably work here, for the same reason ``_local_memory_policy_available`` doesn't
+    use one: a future ``NoriRegressor`` could forward ``large_context_policy`` via
+    ``**kwargs`` instead of naming it in its signature, which a probe would falsely reject.
+    """
+    try:
+        return importlib.util.find_spec("synthefy_nori.inference.large_context") is not None
+    except ModuleNotFoundError:
+        # Same reason as _local_memory_policy_available: find_spec on a dotted path
+        # imports the parent package first, which raises instead of returning None
+        # when synthefy-nori is not installed at all.
+        return False
+
+
+def _validate_large_context_controls(
+    *,
+    policy: Optional[LargeContextPolicy],
+    threshold: Optional[int],
+    seed: Optional[int],
+    output_type: str,
+    model: Optional[str],
+) -> None:
+    """Fail before preprocessing, checkpoint load, or a paid hosted request.
+
+    ``threshold``/``seed`` are ``None`` when the caller did not pass them (mirroring
+    ``NoriPredictRequest``'s own ``Optional[int] = None`` wire fields), not a
+    resolved default -- so an explicit value equal to the default is still
+    distinguishable from "omitted" here, unlike comparing against the default value.
+    """
+    if policy is None:
+        if threshold is not None or seed is not None:
+            # Both are otherwise silently dropped from the wire request: the caller
+            # almost certainly meant to also pass large_context_policy=. Same rule,
+            # same wording, as NoriPredictRequest's own model_validator and the
+            # server's _parse_large_context, so the client fails exactly where the
+            # request would have anyway -- before a paid hosted round-trip.
+            raise ValueError(
+                "large_context_threshold/large_context_seed require "
+                f"large_context_policy; got threshold={threshold!r}, seed={seed!r} "
+                "with no policy selected. Pass large_context_policy=..., or omit "
+                "both large_context_threshold and large_context_seed."
+            )
+        return
+    if not isinstance(policy, str) or policy not in HOSTED_LARGE_CONTEXT_POLICIES:
+        raise ValueError(
+            f"large_context_policy must be one of "
+            f"{HOSTED_LARGE_CONTEXT_POLICIES}; got {policy!r}. Custom "
+            "callables/paths, gates, boosting policies, and parameter strings "
+            "remain available through NoriRegressor directly, not the shared "
+            "client/hosted contract."
+        )
+    if threshold is not None and (
+        isinstance(threshold, bool)
+        or not isinstance(threshold, Integral)
+        or not 1 <= int(threshold) <= MAX_LARGE_CONTEXT_THRESHOLD
+    ):
+        raise ValueError(
+            "large_context_threshold must be an integer between 1 and "
+            f"{MAX_LARGE_CONTEXT_THRESHOLD:,}; got {threshold!r}."
+        )
+    if seed is not None and (
+        isinstance(seed, bool)
+        or not isinstance(seed, Integral)
+        or not 0 <= int(seed) <= MAX_LARGE_CONTEXT_SEED
+    ):
+        raise ValueError(
+            "large_context_seed must be an integer between 0 and "
+            f"{MAX_LARGE_CONTEXT_SEED:,}; got {seed!r}."
+        )
+    if output_type in _DISTRIBUTION_OUTPUT_TYPES:
+        raise ValueError(
+            f"large_context_policy={policy!r} cannot serve "
+            f"output_type={output_type!r}: routed policies combine point "
+            "predictions from several Nori calls and have no combined "
+            "predictive distribution. Use output_type='mean' or 'median', or "
+            "omit large_context_policy."
+        )
+    if _is_thinking_model(model):
+        raise ValueError(
+            "large_context_policy is not available on Nori Thinking "
+            "(test-time-compute) variants. Use a base nori-6m or nori-30m "
+            "model, or omit the policy."
+        )
+
+
+def _normalized_large_context_report(
+    request: NoriPredictRequest, report: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Give local mode the same typed per-call report as hosted modes."""
+    policy = request.large_context_policy
+    if policy is None:
+        raise RuntimeError("large-context report requested without a policy")
+    threshold = (
+        request.large_context_threshold
+        if request.large_context_threshold is not None
+        else DEFAULT_LARGE_CONTEXT_THRESHOLD
+    )
+    seed = (
+        request.large_context_seed
+        if request.large_context_seed is not None
+        else DEFAULT_LARGE_CONTEXT_SEED
+    )
+    if report is None:
+        return LargeContextReport(
+            applied=False,
+            policy=policy,
+            threshold=threshold,
+            seed=seed,
+            reason="below_threshold",
+            window=None,
+            n_train=len(request.X_train),
+            n_test=len(request.X_test),
+            shards_available=None,
+            nori_calls=0,
+            full_context=None,
+            reused_train_state=False,
+        ).model_dump()
+    return LargeContextReport.model_validate(
+        {
+            **report,
+            "applied": True,
+            "threshold": threshold,
+            "seed": seed,
+            "reason": None,
+        }
+    ).model_dump()
 
 
 # The one discretization strategy computable from the hosted endpoint's
@@ -1001,6 +1166,10 @@ class SynthefyNoriClient:
         self._aws_user_agent_extra = user_agent or "synthefy-python"
         self._aws_client: Optional[Any] = None
         self._local_regressor: Optional[Any] = None
+        # Guards mutation of the cached local regressor's memory_policy/large_context_*
+        # attributes and its fit/predict/report sequence, the same shared-mutable-state
+        # hazard the server engine's own lock exists to prevent for its estimator.
+        self._local_regressor_lock = threading.Lock()
 
         if mode == "sagemaker":
             self.api_key = None
@@ -1041,6 +1210,10 @@ class SynthefyNoriClient:
         #: estimator owned by this client, but no report is copied here. Use ``NoriRegressor``
         #: directly and read ``memory_report_`` if you need the local report.
         self.last_memory_report: Optional[Dict[str, Any]] = None
+        # Typed capability handshake for the most recent call that set a
+        # large-context policy, in every mode. Cleared before every call so an
+        # error or ordinary prediction cannot expose stale provenance.
+        self.last_large_context_report: Optional[Dict[str, Any]] = None
 
     # Context manager support (sync) and utilities
     def __enter__(self) -> "SynthefyNoriClient":
@@ -1060,7 +1233,8 @@ class SynthefyNoriClient:
                 self._aws_client.close()
             except Exception:
                 pass
-        self._local_regressor = None
+        with self._local_regressor_lock:
+            self._local_regressor = None
 
     def predict(
         self,
@@ -1082,6 +1256,9 @@ class SynthefyNoriClient:
         discretize: Optional[str] = None,
         categorical_levels: Optional[VectorLike] = None,
         memory_policy: Optional[MemoryPolicyInput] = None,
+        large_context_policy: Optional[LargeContextPolicy] = None,
+        large_context_threshold: Optional[int] = None,
+        large_context_seed: Optional[int] = None,
         timeout: Optional[float] = None,
         extra_headers: Optional[Dict[str, str]] = None,
     ) -> Union[List[float], pd.Series, List[List[float]], pd.DataFrame, Dict[str, Any]]:
@@ -1249,6 +1426,47 @@ class SynthefyNoriClient:
             settings needs far more query rows than the hosted request-body limit allows
             (~64 MiB) -- so lowering ``elements_budget`` is what lets a hosted caller reach
             the cached path at all.
+        large_context_policy : {"random", "cluster_route", "cluster_route_g4"} or None
+            Select context rows explicitly when `len(X_train)` exceeds
+            `large_context_threshold`. Off by default. The same bounded menu
+            works in local, remote, and SageMaker modes:
+
+            - `random`: 1 internal Nori call. One shared context window, chosen
+              at random. The cheapest fallback; no routing, no accuracy upside.
+            - `cluster_route`: at most 8 internal Nori calls. Clusters query
+              rows into groups, each scored against its own local context
+              pool. **Recommended** -- the only policy with full coverage on
+              the validated benchmark sweep, and it never regressed below
+              `random`.
+            - `cluster_route_g4`: the same mechanism at a smaller group count
+              (at most 4 calls, cheaper). Best mean score on the tables it was
+              measured against, but that measurement covers a smaller subset
+              -- not a safe blanket default.
+
+            Direct `NoriRegressor` use retains the broader local research API
+            (callables, paths, parameter strings, gates and boosting
+            policies); those values are not a shared network contract.
+
+            Point output only: `mean` and `median` are supported;
+            `quantiles`/`full` and Nori Thinking variants fail before
+            inference. After a call, `last_large_context_report` records
+            whether the policy engaged, its resolved window and internal call
+            count. Hosted modes require that report as a capability handshake.
+        large_context_threshold : int or None, optional
+            Context-row count strictly above which the selected policy engages.
+            Valid range 1 through 10000000. `None` (the default) resolves to 50000
+            once `large_context_policy` is set; passing it without a policy raises,
+            rather than being silently dropped.
+        large_context_seed : int or None, optional
+            Deterministic policy seed in the range 0 through 2**32 - 1. `None` (the
+            default) resolves to 0 once `large_context_policy` is set; passing it
+            without a policy raises, rather than being silently dropped.
+
+            Client calls are one-shot: every call supplies and fits `X_train`
+            again. No hidden local or hosted cross-request context cache is
+            created, and `large_context_cache_entries` is intentionally not a
+            client option. Use `NoriRegressor` directly for explicit
+            fit-once/predict-many local state.
         timeout : float or None, optional
             Override the client timeout for this request (remote mode only).
             It is ignored with a warning for SageMaker, where timeout is fixed
@@ -1326,6 +1544,12 @@ class SynthefyNoriClient:
         APIConnectionError
             In remote mode, if a network/connection error occurs.
         """
+        # These reports belong to one prediction attempt. Clear them before
+        # validation so even a rejected call cannot expose an earlier call's
+        # provenance as its own.
+        self.last_memory_report = None
+        self.last_large_context_report = None
+
         # Validate the output contract first: a bad output_type/quantiles pair is
         # caught before the expensive steps below (loading a sentence encoder for
         # text_columns, a checkpoint, or a paid network round-trip).
@@ -1346,6 +1570,13 @@ class SynthefyNoriClient:
             quantiles,
             discretizing=discretize is not None or categorical_levels is not None,
         )
+        _validate_large_context_controls(
+            policy=large_context_policy,
+            threshold=large_context_threshold,
+            seed=large_context_seed,
+            output_type=output_type,
+            model=self.model,
+        )
         request_categorical_columns = categorical_columns
         if _has_declared_text_columns(text_columns):
             # Embed free-text columns client-side into numeric SVD features, then
@@ -1359,6 +1590,29 @@ class SynthefyNoriClient:
             # The widened frames are already numeric; do not resolve the original
             # named declarations a second time in _build_nori_request.
             request_categorical_columns = None
+        # Optional controls stay absent (None) from an ordinary request, preserving its
+        # historical wire bytes; _build_nori_request passes all three together into the
+        # constructor so there is no assignment-order dependency on the request model's
+        # "threshold/seed require a policy" validator. _validate_large_context_controls
+        # above already guarantees threshold/seed are None here whenever policy is None.
+        #
+        # When a policy IS set, an omitted threshold/seed resolves to the documented
+        # default and is still sent explicitly -- the wire request always carries the
+        # values that actually ran, never leaving the caller to infer them.
+        if large_context_policy is not None:
+            resolved_large_context_threshold = (
+                DEFAULT_LARGE_CONTEXT_THRESHOLD
+                if large_context_threshold is None
+                else int(large_context_threshold)
+            )
+            resolved_large_context_seed = (
+                DEFAULT_LARGE_CONTEXT_SEED
+                if large_context_seed is None
+                else int(large_context_seed)
+            )
+        else:
+            resolved_large_context_threshold = None
+            resolved_large_context_seed = None
         request = _build_nori_request(
             X_train, y_train, X_test, task,
             categorical_columns=request_categorical_columns,
@@ -1366,12 +1620,11 @@ class SynthefyNoriClient:
             categorical_encoding=categorical_encoding,
             output_type=output_type,
             quantile_levels=quantile_levels,
+            memory_policy=memory_policy,
+            large_context_policy=large_context_policy,
+            large_context_threshold=resolved_large_context_threshold,
+            large_context_seed=resolved_large_context_seed,
         )
-        request.memory_policy = memory_policy
-        # Cleared per call so a stale report from an earlier prediction can never be read
-        # as belonging to this one.
-        self.last_memory_report = None
-
         # Distribution output is shaped separately: it is not one value per query
         # row, so it does not flow through the point-prediction path below.
         if output_type in _DISTRIBUTION_OUTPUT_TYPES:
@@ -1450,12 +1703,14 @@ class SynthefyNoriClient:
         *,
         output_type: str,
         quantile_levels: Optional[List[float]],
+        discretize: Optional[str] = None,
+        categorical_levels: Optional[VectorLike] = None,
     ) -> Any:
-        """Run local inference through :class:`NoriRegressor` for a non-default ``output_type``.
+        """Run local inference through :class:`NoriRegressor` when its stateful API is needed.
 
         The functional ``synthefy_nori.predict`` cannot express ``output_type``
-        (it forwards ``**kwargs`` to the constructor), so anything other than
-        ``output_type="mean"`` fits/predicts the estimator directly. Returns
+        (it forwards ``**kwargs`` to the constructor) or expose a per-call
+        large-context report. Those calls fit/predict the estimator directly. Returns
         whatever ``NoriRegressor.predict`` returns for that ``output_type``: a
         point array, a ``(n_levels, n_query)`` quantile array, or the ``"full"``
         dict.
@@ -1493,15 +1748,83 @@ class SynthefyNoriClient:
                 if isinstance(request.memory_policy, str)
                 else request.memory_policy.model_dump(exclude_unset=True)
             )
-        if self._local_regressor is None:
-            self._local_regressor = regressor_cls(**init_kwargs)
-        regressor = self._local_regressor
-        if hasattr(regressor, "memory_policy"):
-            regressor.memory_policy = init_kwargs.get("memory_policy")
-        regressor.fit(request.X_train, request.y_train)
-        return regressor.predict(
-            request.X_test, output_type=output_type, quantiles=quantile_levels
-        )
+        if request.large_context_policy is not None:
+            if not _local_large_context_available():
+                raise ImportError(
+                    "large_context_policy requires a newer synthefy-nori "
+                    "with the large-context estimator controls. Upgrade with: "
+                    "pip install -U synthefy-nori."
+                )
+            init_kwargs.update(
+                {
+                    "large_context_policy": request.large_context_policy,
+                    "large_context_threshold": (
+                        request.large_context_threshold
+                        if request.large_context_threshold is not None
+                        else DEFAULT_LARGE_CONTEXT_THRESHOLD
+                    ),
+                    "large_context_seed": (
+                        request.large_context_seed
+                        if request.large_context_seed is not None
+                        else DEFAULT_LARGE_CONTEXT_SEED
+                    ),
+                    # The client API is one-shot: every call fits again. A
+                    # caller that needs fit-once/predict-many cache control
+                    # should use NoriRegressor directly.
+                    "large_context_cache_entries": 1,
+                }
+            )
+        # Everything below mutates or reads the cached, shared regressor's
+        # memory_policy/large_context_* attributes and its fit/predict/report
+        # sequence -- one lock per client instance, so a concurrent call on the
+        # same SynthefyNoriClient cannot interleave with this one's fit/predict.
+        with self._local_regressor_lock:
+            if self._local_regressor is None:
+                self._local_regressor = regressor_cls(**init_kwargs)
+            regressor = self._local_regressor
+            if hasattr(regressor, "memory_policy"):
+                regressor.memory_policy = init_kwargs.get("memory_policy")
+            if hasattr(regressor, "large_context_policy"):
+                # Re-declare the full mutable setting set on every estimator call.
+                # This clears a previous policy before a later median/default call.
+                # hasattr only proves the attribute is readable, not settable (a future
+                # read-only property would pass it and then raise on assignment), so
+                # translate that into the same upgrade-hint ImportError as the signature
+                # probe above rather than letting an AttributeError crash the call.
+                try:
+                    regressor.large_context_policy = request.large_context_policy
+                    regressor.large_context_threshold = (
+                        request.large_context_threshold
+                        if request.large_context_threshold is not None
+                        else DEFAULT_LARGE_CONTEXT_THRESHOLD
+                    )
+                    regressor.large_context_seed = (
+                        request.large_context_seed
+                        if request.large_context_seed is not None
+                        else DEFAULT_LARGE_CONTEXT_SEED
+                    )
+                    regressor.large_context_cache_entries = 1
+                except AttributeError as exc:
+                    raise ImportError(
+                        "large_context_policy requires a newer synthefy-nori "
+                        "with the large-context estimator controls. Upgrade with: "
+                        "pip install -U synthefy-nori."
+                    ) from exc
+            regressor.fit(request.X_train, request.y_train)
+            predict_kwargs: Dict[str, Any] = {
+                "output_type": output_type,
+                "quantiles": quantile_levels,
+            }
+            if discretize is not None:
+                predict_kwargs["discretize"] = discretize
+            if categorical_levels is not None:
+                predict_kwargs["categorical_levels"] = categorical_levels
+            result = regressor.predict(request.X_test, **predict_kwargs)
+            if request.large_context_policy is not None:
+                self.last_large_context_report = _normalized_large_context_report(
+                    request, getattr(regressor, "large_context_report_", None)
+                )
+            return result
 
     def _predict_local_distribution(
         self,
@@ -1549,13 +1872,28 @@ class SynthefyNoriClient:
         discretize: Optional[str] = None,
         categorical_levels: Optional[VectorLike] = None,
     ) -> List[float]:
-        if output_type != DEFAULT_OUTPUT_TYPE:
+        if (
+            output_type != DEFAULT_OUTPUT_TYPE
+            or request.large_context_policy is not None
+        ):
             # "median" is a point output but still needs the estimator API
             # (see _local_regressor_predict). Discretization cannot reach here:
             # _validate_output_type rejects that combination up front.
+            if (
+                discretize is not None or categorical_levels is not None
+            ) and not _local_discretize_available():
+                raise ImportError(
+                    "Categorical-target discretization (discretize=/"
+                    "categorical_levels=) requires a newer synthefy-nori. "
+                    "Upgrade with: pip install -U synthefy-nori."
+                )
             return _as_float_list(
                 self._local_regressor_predict(
-                    request, output_type=output_type, quantile_levels=None
+                    request,
+                    output_type=output_type,
+                    quantile_levels=None,
+                    discretize=discretize,
+                    categorical_levels=categorical_levels,
                 )
             )
         local_predict = _load_local_predict()
@@ -1635,6 +1973,45 @@ class SynthefyNoriClient:
             # Validated through MemoryReport, exposed as a dict: the library's own
             # memory_report_ is a dict, and `report["rung"]` is how it is read.
             self.last_memory_report = parsed.memory_report.model_dump()
+        if request.large_context_policy is not None:
+            report = parsed.large_context_report
+            if report is None:
+                raise ValueError(
+                    "large_context_policy was sent but the deployment omitted "
+                    "large_context_report. The endpoint predates this capability "
+                    "or ignored it, so the returned ordinary prediction is refused "
+                    "instead of being mislabeled as policy output. Upgrade/deploy "
+                    "a server with large-context support, or omit the policy."
+                )
+            expected_threshold = (
+                request.large_context_threshold
+                if request.large_context_threshold is not None
+                else DEFAULT_LARGE_CONTEXT_THRESHOLD
+            )
+            expected_seed = (
+                request.large_context_seed
+                if request.large_context_seed is not None
+                else DEFAULT_LARGE_CONTEXT_SEED
+            )
+            mismatches = []
+            if report.policy != request.large_context_policy:
+                mismatches.append(
+                    f"policy={report.policy!r}, expected "
+                    f"{request.large_context_policy!r}"
+                )
+            if report.threshold != expected_threshold:
+                mismatches.append(
+                    f"threshold={report.threshold}, expected {expected_threshold}"
+                )
+            if report.seed != expected_seed:
+                mismatches.append(f"seed={report.seed}, expected {expected_seed}")
+            if mismatches:
+                raise ValueError(
+                    "The deployment returned a mismatched "
+                    "large_context_report (" + "; ".join(mismatches) + "). "
+                    "The client cannot prove the requested policy was honored."
+                )
+            self.last_large_context_report = report.model_dump()
         if output_type != DEFAULT_OUTPUT_TYPE and parsed.output_type != output_type:
             honored = (
                 "omitted the output_type field entirely, so it predates "
@@ -1830,7 +2207,7 @@ class SynthefyNoriClient:
 
         response = self._post_with_retries(
             self.endpoint,
-            json=payload,
+            payload=payload,
             headers=self._headers(extra_headers=extra_headers),
             timeout=timeout,
         )
@@ -1981,12 +2358,25 @@ class SynthefyNoriClient:
     def _post_with_retries(
         self,
         endpoint: str,
-        json: Dict[str, Any],
+        payload: Dict[str, Any],
         *,
         headers: Optional[Dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> httpx.Response:
         assert self.client is not None  # remote mode always has a client
+        # Serialize once, outside the retry loop: the payload is identical on every
+        # attempt, and a non-finite value here is invalid client input, not a
+        # transport failure a retry could ever fix. Explicit so upgrading httpx
+        # cannot change the public wire bytes -- the imported 6.3 client used
+        # stdlib JSON spacing, which the frozen compatibility trace pins.
+        try:
+            body = json.dumps(payload, allow_nan=False).encode("utf-8")
+        except ValueError as exc:
+            raise ValueError(
+                "Request payload contains a non-finite value (NaN/Infinity), which "
+                "is not valid JSON. y_train must contain only finite numbers for "
+                f"remote inference. Underlying error: {exc}"
+            ) from exc
         last_exc: Optional[Exception] = None
         response: Optional[httpx.Response] = None
         attempts = self.max_retries + 1
@@ -2000,7 +2390,7 @@ class SynthefyNoriClient:
             try:
                 response = self.client.post(
                     endpoint,
-                    json=json,
+                    content=body,
                     headers=headers or self._headers(),
                     timeout=self.timeout if timeout is None else timeout,
                 )

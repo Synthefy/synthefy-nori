@@ -283,9 +283,11 @@ def _public_trace(monkeypatch) -> dict:
             output_type="quantiles",
             quantiles=[0.9, 0.1],
         ).to_wire(),
+        # The golden pins the 6.3 fields. New additive response capabilities
+        # have their own contract tests and are excluded from this legacy view.
         "response": NoriPredictResponse(
             task="regression", predictions=[1.0, None]
-        ).model_dump(),
+        ).model_dump(exclude={"large_context_report"}),
     }
     return trace
 

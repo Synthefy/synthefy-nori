@@ -1010,7 +1010,11 @@ class _FakePredictor:
 
 
 def _entry(nbytes):
-    return ("key", None, None, {"bytes": nbytes})
+    # Per-pipe cache values are a most-recently-used-first LIST of (key, x, y, bundle)
+    # entries (large_context_policy's cache_entries=K rotation needs more than one per
+    # pipe) -- a single-element list here, since these tests only exercise the
+    # byte-budget accounting, not K-pool rotation.
+    return [("key", None, None, {"bytes": nbytes})]
 
 
 def test_context_cache_refuses_a_bundle_larger_than_the_budget():

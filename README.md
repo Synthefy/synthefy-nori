@@ -464,7 +464,7 @@ The gaps are real but small — Overall mean moves 0.7567 → 0.7588 → 0.7601 
 Pick the size that fits your latency and memory budget; the larger checkpoints need
 materially more GPU memory on wide, long-context tables.
 
-Large-N / long-context tables (common in TabArena) are the current focus of the
+Large-context tables (common in TabArena) are the current focus of the
 large-table training stages.
 
 > **Thinking** is an inference-time reasoning extension that improves these
@@ -701,6 +701,66 @@ working-set size. Devices without accelerator memory to exhaust (CPU) are not ca
 **Known limit:** at large row counts × many columns, the first thing to run out of
 memory is the transductive preprocessing (RBF + polynomial expansion over the whole
 table), *upstream* of the transformer. None of the above helps with that.
+
+### Choosing the context on a large table (`large_context_policy=`)
+
+Everything above is about making a context *fit*. When the table is far larger than the
+window, the more interesting question is **which rows** should be in it. By default that
+choice is made by memory pressure: the context is trimmed at random to fit the element
+budget, and you get a `ContextSubsampledWarning`. That is one arbitrary window, arrived
+at by accident.
+
+`large_context_policy=` makes it a decision. Above `large_context_threshold` rows (default
+**50,000**), a *policy* picks the shared context and chains the calls:
+
+```python
+NoriRegressor(model="nori-6m", large_context_policy="cluster_route")   # threshold 50_000
+```
+
+| policy | Nori calls | measured vs one random window | use it when |
+|---|---|---|---|
+| `cluster_route` (**default**) | `groups`, default 8 | **+0.017 mean R², worst case 0.000** over 15 tables of 47k–1M rows; best on 7 | you want the evidence-backed default |
+| `cluster_route_g4` | 4 | +0.027 mean, worst 0.000, but on a 9-table subset | cheaper, and coarse routing suits your table |
+| `safeboost` | one per shard | +0.015 mean, worst **0.000** — on 8 tables | the table is heterogeneous and you can afford the calls |
+| `boost` | one per shard | −0.019 mean, worst **−0.229** | never as a default; only gated or after measuring your own table |
+| `random` | 1 | the baseline | you want today's behavior, made explicit |
+
+Pass a **list** to gate: candidates are scored on a train holdout and the per-table
+winner is deployed. This is the only safe way to use `boost` — the gate declined it on
+exactly the tables where it detonated:
+
+```python
+NoriRegressor(large_context_policy=["random", "cluster_route", "safeboost"])
+```
+
+Also accepted: `True` (the default policy), `"cluster_route[groups=16]"` to pass
+parameters, and `"pkg.mod:fn"` / `"path/to/file.py:fn"` / any callable for your own —
+see `synthefy_nori.inference.policies` for the `(problem, rng) -> ndarray` contract.
+
+After a `predict`, `large_context_report_` says what actually ran: the policy, the window, the
+shard count available, `nori_calls`, the gate's winner, and `reused_train_state` —
+whether this call read train-derived work an earlier one had already done. Train-derived
+work (the imputed train view, a boosting chain's residuals, a gate's chosen winner) is
+computed once per `fit` and reused by later `predict` calls; a policy that rotates
+between several pools also wants `large_context_cache_entries=8`, which costs one K/V cache
+per entry and so is not raised for you.
+
+Two per-call inputs correctly cost a re-derivation rather than being reused, so
+`reused_train_state` reads `False` after either changes:
+
+- **`output_type=`.** A chain's residual labels are relative to what the model said, so
+  a chain built under `"mean"` is not the chain `"median"` would have built. Each decode
+  gets its own, derived once. Alternating between them per call pays for both.
+- **`memory_policy=`.** Decision caches are scoped to the full policy because lossy
+  INT8 precision can change residual labels and gate scores. The element budget is also
+  resolved on every call; if it changes the context window, the window-sized Problem
+  and its chains are rebuilt.
+
+Two honest caveats. These numbers are a **within-checkpoint policy comparison** on 15
+tables, not a promise about yours. Every policy except `random` multiplies the forward
+passes per `predict`, `safeboost`/`boost` most of all (one call per shard). It is
+opt-in for both reasons: `large_context_policy=None` (the default) leaves behavior exactly
+as it was.
 
 ### Silent degradation
 

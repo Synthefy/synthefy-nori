@@ -239,6 +239,72 @@ def test_aws_predict_streams_named_endpoint_with_canonical_body(monkeypatch):
     assert capture["closed"] is True
 
 
+def test_sagemaker_large_context_uses_the_shared_wire_and_report(monkeypatch):
+    from synthefy import nori_client as module
+
+    capture: Dict = {}
+    report = {
+        "applied": True,
+        "policy": "cluster_route_g4",
+        "threshold": 1,
+        "seed": 11,
+        "reason": None,
+        "window": 2,
+        "n_train": 3,
+        "n_test": 2,
+        "shards_available": 1,
+        "nori_calls": 2,
+        "full_context": False,
+        "reused_train_state": False,
+        "gate_winner": None,
+    }
+    response_body = json.dumps(
+        {
+            "task": "regression",
+            "model": "nori-30m",
+            "predictions": [10.0, 20.0],
+            "large_context_report": report,
+        }
+    ).encode()
+
+    class FakeEventStream:
+        def __iter__(self):
+            yield {"PayloadPart": {"Bytes": response_body}}
+
+        def close(self):
+            pass
+
+    class FakeRuntime:
+        def invoke_endpoint_with_response_stream(self, **kwargs):
+            capture["request"] = kwargs
+            return {"Body": FakeEventStream()}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        module, "_create_sagemaker_runtime_client", lambda **_kwargs: FakeRuntime()
+    )
+    client = SynthefyNoriClient(
+        mode="sagemaker",
+        model="nori-30m",
+        endpoint_name="nori-dev-123",
+    )
+    assert client.predict(
+        _X_TRAIN,
+        _Y_TRAIN,
+        _X_TEST,
+        large_context_policy="cluster_route_g4",
+        large_context_threshold=1,
+        large_context_seed=11,
+    ) == [10.0, 20.0]
+    body = json.loads(capture["request"]["Body"])
+    assert body["large_context_policy"] == "cluster_route_g4"
+    assert body["large_context_threshold"] == 1
+    assert body["large_context_seed"] == 11
+    assert client.last_large_context_report == report
+
+
 def test_sagemaker_thinking_medium_uses_response_stream_and_checks_model(monkeypatch):
     from synthefy import nori_client as module
 
@@ -1357,10 +1423,13 @@ def test_request_model_roundtrip():
         # Optional serving-memory policy. None by default, and _predict_remote excludes it
         # from the payload when unset, so an existing caller's request is unchanged on the
         # wire -- see test_a_request_without_memory_does_not_send_the_field.
-        "memory_policy": None,
-        "output_type": None,
-        "quantiles": None,
-    }
+            "memory_policy": None,
+            "output_type": None,
+            "quantiles": None,
+            "large_context_policy": None,
+            "large_context_threshold": None,
+            "large_context_seed": None,
+        }
 
 
 def test_request_model_omits_unset_distribution_fields_on_the_wire():
@@ -2448,6 +2517,350 @@ def test_the_real_memory_policy_round_trips_through_the_client():
     assert "rung" not in sent, "an unresolved policy must not carry decided outputs"
     # And what we send back must be something the model itself accepts, i.e. a real round trip.
     assert MemoryPolicy(**sent).cache_dtype == "int8"
+
+
+# -------------------------------------------------------------- large context
+_LARGE_CONTEXT_REPORT = {
+    "applied": True,
+    "policy": "cluster_route",
+    "threshold": 1,
+    "seed": 7,
+    "reason": None,
+    "window": 2,
+    "n_train": 3,
+    "n_test": 2,
+    "shards_available": 1,
+    "nori_calls": 2,
+    "full_context": False,
+    "reused_train_state": False,
+    "gate_winner": None,
+}
+
+
+def _large_context_handler(
+    capture: Dict, report: Optional[Dict] = None
+) -> Handler:
+    def handler(request: httpx.Request) -> httpx.Response:
+        capture["body"] = json.loads(request.content)
+        body = {"task": "regression", "predictions": [0.1, 0.2]}
+        if report is not None:
+            body["large_context_report"] = report
+        return httpx.Response(200, json=body)
+
+    return handler
+
+
+def test_large_context_wire_and_report_round_trip():
+    capture: Dict = {}
+    client = _client_with(
+        _large_context_handler(capture, _LARGE_CONTEXT_REPORT)
+    )
+    predictions = client.predict(
+        _X_TRAIN,
+        _Y_TRAIN,
+        _X_TEST,
+        large_context_policy="cluster_route",
+        large_context_threshold=1,
+        large_context_seed=7,
+    )
+    assert predictions == [0.1, 0.2]
+    assert capture["body"]["large_context_policy"] == "cluster_route"
+    assert capture["body"]["large_context_threshold"] == 1
+    assert capture["body"]["large_context_seed"] == 7
+    assert client.last_large_context_report == _LARGE_CONTEXT_REPORT
+
+
+def test_large_context_defaults_are_sent_only_when_a_policy_is_requested():
+    capture: Dict = {}
+    report = {
+        **_LARGE_CONTEXT_REPORT,
+        "threshold": 50_000,
+        "seed": 0,
+    }
+    client = _client_with(_large_context_handler(capture, report))
+    client.predict(
+        _X_TRAIN,
+        _Y_TRAIN,
+        _X_TEST,
+        large_context_policy="cluster_route",
+    )
+    assert capture["body"]["large_context_threshold"] == 50_000
+    assert capture["body"]["large_context_seed"] == 0
+
+    capture.clear()
+    _attach_mock(client, _large_context_handler(capture))
+    client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+    assert not {
+        "large_context_policy",
+        "large_context_threshold",
+        "large_context_seed",
+    } & set(capture["body"])
+    assert client.last_large_context_report is None
+
+
+def test_missing_large_context_report_fails_the_capability_handshake():
+    client = _client_with(_large_context_handler({}))
+    with pytest.raises(ValueError, match="omitted large_context_report"):
+        client.predict(
+            _X_TRAIN,
+            _Y_TRAIN,
+            _X_TEST,
+            large_context_policy="cluster_route",
+            large_context_threshold=1,
+            large_context_seed=7,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("policy", "random"),
+        ("threshold", 2),
+        ("seed", 8),
+    ],
+)
+def test_mismatched_large_context_report_fails_closed(field, value):
+    report = dict(_LARGE_CONTEXT_REPORT)
+    report[field] = value
+    client = _client_with(_large_context_handler({}, report))
+    with pytest.raises(ValueError, match="mismatched large_context_report"):
+        client.predict(
+            _X_TRAIN,
+            _Y_TRAIN,
+            _X_TEST,
+            large_context_policy="cluster_route",
+            large_context_threshold=1,
+            large_context_seed=7,
+        )
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        "boost",
+        "safeboost",
+        "cluster_route[groups=16]",
+        ["random", "cluster_route"],
+        True,
+    ],
+)
+def test_client_rejects_non_hosted_large_context_policies_before_network(policy):
+    calls = {"count": 0}
+
+    def handler(_request):
+        calls["count"] += 1
+        return httpx.Response(500)
+
+    client = _client_with(handler)
+    with pytest.raises(ValueError, match="large_context_policy"):
+        client.predict(
+            _X_TRAIN,
+            _Y_TRAIN,
+            _X_TEST,
+            large_context_policy=policy,
+        )
+    assert calls["count"] == 0
+
+
+@pytest.mark.parametrize("output_type", ["quantiles", "full"])
+def test_client_rejects_large_context_distribution_before_network(output_type):
+    client = _client_with(lambda _request: httpx.Response(500))
+    with pytest.raises(ValueError, match="no combined predictive distribution"):
+        client.predict(
+            _X_TRAIN,
+            _Y_TRAIN,
+            _X_TEST,
+            output_type=output_type,
+            quantiles=[0.1, 0.9] if output_type == "quantiles" else None,
+            large_context_policy="cluster_route",
+        )
+
+
+def test_client_rejects_large_context_on_thinking_before_network():
+    client = SynthefyNoriClient(
+        api_key="k",
+        model="nori-30m-thinking-medium",
+        mode="remote",
+    )
+    _attach_mock(client, lambda _request: httpx.Response(500))
+    with pytest.raises(ValueError, match="Thinking"):
+        client.predict(
+            _X_TRAIN,
+            _Y_TRAIN,
+            _X_TEST,
+            large_context_policy="cluster_route",
+        )
+
+
+def test_large_context_report_is_cleared_even_when_the_next_call_is_rejected():
+    client = _client_with(
+        _large_context_handler({}, _LARGE_CONTEXT_REPORT)
+    )
+    client.predict(
+        _X_TRAIN,
+        _Y_TRAIN,
+        _X_TEST,
+        large_context_policy="cluster_route",
+        large_context_threshold=1,
+        large_context_seed=7,
+    )
+    assert client.last_large_context_report is not None
+    with pytest.raises(ValueError):
+        client.predict(
+            _X_TRAIN,
+            _Y_TRAIN,
+            _X_TEST,
+            large_context_policy="boost",
+        )
+    assert client.last_large_context_report is None
+
+
+def test_large_context_request_model_is_bounded_and_omits_unset_fields():
+    base = {
+        "X_train": _X_TRAIN,
+        "y_train": _Y_TRAIN,
+        "X_test": _X_TEST,
+    }
+    request = NoriPredictRequest(
+        **base,
+        large_context_policy="cluster_route_g4",
+        large_context_threshold=123,
+        large_context_seed=42,
+    )
+    assert request.to_wire()["large_context_policy"] == "cluster_route_g4"
+    assert "large_context_policy" not in NoriPredictRequest(**base).to_wire()
+    with pytest.raises(ValueError):
+        NoriPredictRequest(**base, large_context_threshold=123)
+    with pytest.raises(ValueError):
+        NoriPredictRequest(**base, large_context_policy="boost")
+    with pytest.raises(ValueError):
+        NoriPredictRequest(
+            **base,
+            large_context_policy="random",
+            large_context_seed=2**32,
+        )
+
+
+def test_local_large_context_uses_the_estimator_and_copies_its_report(monkeypatch):
+    """Mirrors test_local_mode_forwards_the_policy_when_supported: the capability
+    check probes the REAL installed synthefy-nori (find_spec), not this fake
+    regressor's constructor, so "supported" has to be mocked directly -- an
+    environment testing just the base synthefy install (no synthefy-nori at all)
+    would otherwise report unsupported regardless of what FakeRegressor accepts.
+    """
+    from synthefy import nori_client as module
+
+    seen: Dict = {}
+
+    class FakeRegressor:
+        def __init__(
+            self,
+            model=None,
+            memory_policy=None,
+            large_context_policy=None,
+            large_context_threshold=50_000,
+            large_context_seed=0,
+            large_context_cache_entries=1,
+        ):
+            seen["init"] = {
+                "model": model,
+                "large_context_policy": large_context_policy,
+                "large_context_threshold": large_context_threshold,
+                "large_context_seed": large_context_seed,
+                "large_context_cache_entries": large_context_cache_entries,
+            }
+            self.memory_policy = memory_policy
+            self.large_context_policy = large_context_policy
+            self.large_context_threshold = large_context_threshold
+            self.large_context_seed = large_context_seed
+            self.large_context_cache_entries = large_context_cache_entries
+            self.large_context_report_ = None
+
+        def fit(self, X, y):
+            seen["fit"] = (X, y)
+            return self
+
+        def predict(
+            self,
+            X,
+            *,
+            output_type="mean",
+            quantiles=None,
+            discretize=None,
+            categorical_levels=None,
+        ):
+            seen["predict"] = {
+                "output_type": output_type,
+                "quantiles": quantiles,
+                "discretize": discretize,
+                "categorical_levels": categorical_levels,
+            }
+            self.large_context_report_ = {
+                "policy": self.large_context_policy,
+                "window": 2,
+                "n_train": 3,
+                "n_test": 2,
+                "shards_available": 1,
+                "nori_calls": 2,
+                "full_context": False,
+                "reused_train_state": False,
+            }
+            return [0.4, 0.5]
+
+    monkeypatch.setattr(module, "_load_local_regressor", lambda: FakeRegressor)
+    monkeypatch.setattr(module, "_local_large_context_available", lambda: True)
+    client = SynthefyNoriClient(model="nori-30m", mode="local")
+    predictions = client.predict(
+        _X_TRAIN,
+        _Y_TRAIN,
+        _X_TEST,
+        large_context_policy="cluster_route",
+        large_context_threshold=1,
+        large_context_seed=7,
+    )
+    assert predictions == [0.4, 0.5]
+    assert seen["init"] == {
+        "model": "nori-30m",
+        "large_context_policy": "cluster_route",
+        "large_context_threshold": 1,
+        "large_context_seed": 7,
+        "large_context_cache_entries": 1,
+    }
+    assert client.last_large_context_report == _LARGE_CONTEXT_REPORT
+
+
+def test_local_large_context_has_a_clear_old_package_guard(monkeypatch):
+    """An opaque TypeError from deep inside the library is not an acceptable answer.
+
+    Mirrors test_local_mode_refuses_memory_on_an_old_synthefy_nori: the capability
+    check is a module-presence probe (find_spec against the REAL installed
+    synthefy-nori), not a signature probe on whatever regressor class
+    _load_local_regressor returns, so simulating "an old package" means patching the
+    availability check itself -- an unrelated mocked regressor class proves nothing
+    about which synthefy-nori is actually installed.
+    """
+    from synthefy import nori_client as module
+
+    class OldRegressor:
+        def __init__(self, model=None):
+            self.model = model
+
+        def fit(self, X, y):
+            return self
+
+        def predict(self, X, *, output_type="mean", quantiles=None):
+            return [0.0] * len(X)
+
+    monkeypatch.setattr(module, "_load_local_regressor", lambda: OldRegressor)
+    monkeypatch.setattr(module, "_local_large_context_available", lambda: False)
+    client = SynthefyNoriClient(model="nori-30m", mode="local")
+    with pytest.raises(ImportError, match="newer synthefy-nori"):
+        client.predict(
+            _X_TRAIN,
+            _Y_TRAIN,
+            _X_TEST,
+            large_context_policy="cluster_route",
+        )
 
 
 def _remote_client() -> SynthefyNoriClient:

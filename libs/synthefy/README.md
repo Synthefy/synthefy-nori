@@ -429,6 +429,62 @@ In `mode="local"` the same argument works, but needs `synthefy-nori >= 0.13.0`; 
 builds raise `ImportError` with an upgrade hint. `last_memory_report` stays `None`
 locally — use `NoriRegressor` and read `memory_report_` if you need it there.
 
+### Choosing Context on Large Tables (`large_context_policy=`)
+
+When a context table is larger than one Nori call can use effectively,
+`large_context_policy=` makes row selection explicit instead of leaving it to a
+memory-pressure subsample. It works in `local`, `remote`, and `sagemaker`
+modes:
+
+```python
+preds = client.predict(
+    X_train,
+    y_train,
+    X_test,
+    large_context_policy="cluster_route",
+    large_context_threshold=50_000,
+    large_context_seed=0,
+)
+print(client.last_large_context_report)
+```
+
+The client/hosted contract is deliberately narrower than direct
+`NoriRegressor` use:
+
+| policy | maximum internal Nori calls | hosted status |
+| --- | ---: | --- |
+| `"random"` | 1 | supported |
+| `"cluster_route"` | 8 | supported; recommended default when enabled |
+| `"cluster_route_g4"` | 4 | supported |
+
+Custom callables, module/file paths, parameter strings, holdout gates,
+`boost`, and `safeboost` remain local research APIs available through
+`NoriRegressor` directly. They are not serialized to a shared endpoint.
+`large_context_cache_entries` is also intentionally absent from the client:
+each client call is one-shot, fits the supplied `X_train` again, and hosted
+serving retains no customer context across requests.
+
+`last_large_context_report` is cleared before every call and works in all
+three modes. It records whether the policy engaged, the honored policy,
+threshold and seed, the context window, internal `nori_calls`, and whether
+train-derived state was reused. A hosted client treats a missing or mismatched
+report as an unsupported deployment and raises instead of returning a
+valid-looking ordinary prediction.
+
+Large-context policies currently return point predictions only
+(`output_type="mean"` or `"median"`). Quantile/full distributions and Nori
+Thinking variants reject the option before inference. Baseten and SageMaker
+share this contract; Snowflake SPCS's positional four-value envelope cannot
+carry it and rejects an appended options value.
+
+Hosted use is still a full one-shot upload: `X_train` is sent and policy state
+is recomputed on every call. Upload-once/query-many needs a separate,
+tenant-isolated session API with authentication, routing, TTL cleanup, storage,
+and billing. Also note that `cluster_route` can make up to eight internal model
+calls while the existing gateway usage block still meters public request rows
+and columns; production enablement therefore requires an explicit pricing/cost
+decision after dev latency measurements.
+
 ### Prediction Intervals (`output_type=` / `quantiles=`)
 
 Nori's forward pass produces a whole predictive distribution, not just a point
