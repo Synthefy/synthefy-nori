@@ -24,7 +24,4 @@ def __getattr__(name):
     if name == "EvalRunner":
         from synthefy_nori.evaluation.runner import EvalRunner
         return EvalRunner
-    if name == "EvalAnalyzer":
-        from synthefy_nori.evaluation.analysis import EvalAnalyzer
-        return EvalAnalyzer
     raise AttributeError(f"module 'evaluation' has no attribute {name!r}")
