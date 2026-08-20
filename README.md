@@ -686,6 +686,11 @@ configuration `memory_policy={"reuse_context_cache": False}`. All shared serving
 engine) enforce that value automatically, because one replica may handle multiple people
 or workloads. This does **not** disable the K/V cache within a request; it only prevents
 retaining it for a later request.
+An explicit request for `reuse_context_cache=True` is rejected at the shared-serving
+boundary rather than being silently ignored.
+The one-shot `synthefy_nori.predict` and `infer` helpers create a fresh estimator
+per call, so cross-call reuse requires keeping a fitted `NoriRegressor` (or another
+wrapper that retains one) alive.
 
 Reuse is also bounded by size, which matters on wide tables. A retained context is roughly
 `nlayers × n_feature_groups × n_context` — modest on a typical table, but tens of GiB once a

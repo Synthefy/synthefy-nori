@@ -141,6 +141,39 @@ accuracy loss rather than a rounding-level effect: it counts context rows discar
 to fit. Set `allow_subsample=False` to make that case an error instead of a silent
 shrink.
 
+### Reusing an unchanged context across predictions
+
+A persistent local estimator retains its encoded context by default, so repeated
+predictions with new query rows do not have to encode the same context again:
+
+```python
+reg = NoriRegressor(model="nori-6m").fit(X_train, y_train)
+morning = reg.predict(morning_queries)
+afternoon = reg.predict(afternoon_queries)  # reuses the encoded context
+```
+
+Reuse requires the same `NoriRegressor` instance and exactly unchanged context
+values and cache parameters. Changing `X_train`, `y_train`, cache precision,
+offload behavior, fit row chunk, or seed rebuilds the cache. A small query that
+reports `no_cache` did not build an eligible cache and therefore has nothing to
+retain.
+
+To discard context-derived state after each prediction:
+
+```python
+reg = NoriRegressor(
+    model="nori-6m",
+    memory_policy={"reuse_context_cache": False},
+).fit(X_train, y_train)
+```
+
+This still uses the normal K/V cache within each prediction. The one-shot
+`synthefy_nori.predict` and `infer` helpers construct a new estimator per call,
+so they cannot reuse context across calls. Shared serving processes always disable
+cross-request retention because a replica may serve different callers.
+An explicit `reuse_context_cache=True` request is rejected at the serving boundary
+rather than being silently ignored.
+
 Field-by-field reference, the budget knobs, and the measured saving per lever:
 [README, "Serving memory on large tables"](../README.md#serving-memory-on-large-tables).
 
