@@ -15,7 +15,7 @@ from synthefy.data_models import (
 )
 from synthefy.nori_client import SynthefyNoriClient
 
-__version__ = "7.0.2"
+__version__ = "7.0.3"
 
 __all__ = [
     "DEFAULT_LARGE_CONTEXT_SEED",
