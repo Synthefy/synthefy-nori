@@ -131,6 +131,9 @@ def build_model(config:dict):
         device=config.get('device', None),
         dtype=config.get('dtype', None),
         recompute_attn=config['recompute_attn'],
+        # Kept as a fail-fast compatibility input: True was historically a
+        # silent no-op and must not continue pretending to select an architecture.
+        mlp_use_residual=config.get('mlp_use_residual', False),
         layer_arch=config.get('layer_arch', 'fmfmsm'),
         norm_type=config.get('norm_type', 'layernorm'),
         deepnorm_alpha=config.get('deepnorm_alpha', None),
@@ -147,6 +150,9 @@ def build_model(config:dict):
         use_logn_attention=bool(attn_scale['use_logn_attention']),
         use_learnable_attn_temperature=bool(attn_scale['use_learnable_attn_temperature']),
         attn_n_ref=float(attn_scale['attn_n_ref']),
+        # Legacy configs omit this flag and therefore retain the decoder. That
+        # preserves their state-dict schema for strict checkpoint loading.
+        omit_feature_decoder=bool(config.get('omit_feature_decoder', False)),
     )
     return model
 
@@ -195,6 +201,11 @@ def load_model(model_path, mask_prediction:bool=False, base_config_path:str=None
     # Copy before mutating: `config` is a dict embedded in the loaded checkpoint,
     # and callers (e.g. the eval harness) reuse that object.
     config = dict(config)
+    if mask_prediction and bool(config.get('omit_feature_decoder', False)):
+        raise ValueError(
+            "mask_prediction=True requires a checkpoint with feature_decoder; "
+            "this checkpoint explicitly omits that head"
+        )
     config['mask_prediction'] = mask_prediction
 
     # Strip torch.compile "_orig_mod." prefix if present

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import torch
 import torch.nn as nn
@@ -27,16 +28,18 @@ class ContextCache:
       std) to re-apply to query rows via the frozen path.
     - ``nan_mean``: the ``NanEncoder`` per-column context mean it imputes NaN/Inf
       with, likewise re-applied to query rows via its frozen path.
+    - ``valid_feature_num``: the context-only count used by
+      ``ValidFeatureEncoder`` to keep feature-group scaling independent of the
+      query rows presented in a particular call.
     - ``y_train``: context targets, to reconstruct the query y-placeholder embedding
       exactly as the transductive path does (query rows are NaN-masked anyway).
     - ``eval_pos``: number of context rows (``n_train``).
 
-    ``norm_stats`` and ``nan_mean`` together cover every ``eval_pos``-dependent stage
-    of ``x_preprocess`` (``NanEncoder`` -> ``ValidFeatureEncoder`` ->
-    ``NormalizationEncoder`` -> ``ValidFeatureEncoder``; the two
-    ``ValidFeatureEncoder``s and ``process_4_x`` are row-independent). Both must be
-    carried, or query rows get stats derived from THEMSELVES instead of the context:
-    a silent, data-dependent divergence rather than an error. With both, the cached
+    ``norm_stats``, ``nan_mean`` and ``valid_feature_num`` cover every
+    ``eval_pos``-dependent stage of ``x_preprocess`` (``NanEncoder`` ->
+    ``NormalizationEncoder`` -> ``ValidFeatureEncoder``). All three must be carried,
+    or query rows get stats derived from THEMSELVES instead of the context: a silent,
+    data-dependent divergence rather than an error. With them, the cached
     path stays within float-reassociation distance of the transductive forward (~3e-05
     on nori-6m) for finite, NaN- and Inf-bearing tables alike; it is bit-identical to
     ``forward_cached_regression``, which is literally this build/apply pair.
@@ -47,6 +50,7 @@ class ContextCache:
     y_train: torch.Tensor
     eval_pos: int
     nan_mean: torch.Tensor | None = None
+    valid_feature_num: torch.Tensor | None = None
 from synthefy_nori.model.encoders import get_x_encoder, get_cls_y_encoder, get_reg_y_encoder, preprocesss_4_x
 from torch.amp import autocast
 
@@ -83,9 +87,16 @@ class FeaturesTransformer(nn.Module):
                 use_logn_attention: bool = False,
                 use_learnable_attn_temperature: bool = False,
                 attn_n_ref: float = 1024.0,
+                omit_feature_decoder: bool = False,
                 **layer_kwargs:Any
                 ):
         super().__init__()
+        if mlp_use_residual:
+            raise ValueError(
+                "mlp_use_residual=True is unsupported: every MLP sublayer already "
+                "uses the transformer's outer residual connection. This legacy "
+                "flag was a no-op; leave it false or remove it from the config."
+            )
         
         self.preprocess_config_x = preprocess_config_x
         self.encoder_config_x = encoder_config_x
@@ -97,7 +108,9 @@ class FeaturesTransformer(nn.Module):
         self.embed_dim = embed_dim
         self.hid_dim = hid_dim
         self.mask_prediction = mask_prediction
-        self.features_per_group = features_per_group
+        self.features_per_group = int(features_per_group)
+        if self.features_per_group < 1:
+            raise ValueError("features_per_group must be at least 1")
         self.dropout = dropout
         self.pre_norm = pre_norm
         self.activation = activation
@@ -105,16 +118,60 @@ class FeaturesTransformer(nn.Module):
         self.device = device
         self.dtype = dtype
         self.recompute_attn = recompute_attn
-        self.mlp_use_residual = mlp_use_residual
+        self.mlp_use_residual = False
         self.layer_arch = layer_arch
         self.norm_type = norm_type
         self.deepnorm_alpha = deepnorm_alpha
+        self.omit_feature_decoder = bool(omit_feature_decoder)
         self.num_reg_quantiles = int(decoder_config.get('num_reg_quantiles', 1))
         # Bar-distribution metadata (persisted via decoder_config at training).
         # When regression_loss == 'bar_distribution', the K reg_y_decoder outputs
         # are interpreted as K bin logits over [bar_borders_low, bar_borders_high]
         # at inference time.
-        self.regression_loss = str(decoder_config.get('regression_loss', 'pinball'))
+        configured_regression_loss = decoder_config.get('regression_loss')
+        if configured_regression_loss is None:
+            # Legacy configs persisted only the decoder width. Historically a
+            # scalar head was the MSE default and wider heads were pinball.
+            # A one-level pinball head is inherently indistinguishable here;
+            # new checkpoints persist regression_loss and avoid that ambiguity.
+            configured_regression_loss = (
+                'mse' if self.num_reg_quantiles == 1 else 'pinball'
+            )
+        self.regression_loss = str(configured_regression_loss)
+        configured_quantiles = decoder_config.get('regression_quantiles')
+        if self.regression_loss == 'pinball':
+            if configured_quantiles is None:
+                # Legacy checkpoints recorded only the decoder width. Those
+                # runs used the historical evenly-spaced grid, so reconstruct
+                # that grid exactly as the old inference path did.
+                self.regression_quantiles = tuple(
+                    (index + 1.0) / (self.num_reg_quantiles + 1.0)
+                    for index in range(self.num_reg_quantiles)
+                )
+            else:
+                self.regression_quantiles = tuple(float(q) for q in configured_quantiles)
+                if len(self.regression_quantiles) != self.num_reg_quantiles:
+                    raise ValueError(
+                        "decoder_config.regression_quantiles length "
+                        f"{len(self.regression_quantiles)} does not match "
+                        f"num_reg_quantiles={self.num_reg_quantiles}"
+                    )
+                if any(
+                    not math.isfinite(q) or q <= 0.0 or q >= 1.0
+                    for q in self.regression_quantiles
+                ) or any(
+                    left >= right
+                    for left, right in zip(
+                        self.regression_quantiles,
+                        self.regression_quantiles[1:],
+                    )
+                ):
+                    raise ValueError(
+                        "decoder_config.regression_quantiles must be strictly "
+                        "increasing values in (0, 1)"
+                    )
+        else:
+            self.regression_quantiles = ()
         self.num_bars = int(decoder_config.get('num_bars', self.num_reg_quantiles))
         self.bar_borders_low = float(decoder_config.get('bar_borders_low', -10.0))
         self.bar_borders_high = float(decoder_config.get('bar_borders_high', 10.0))
@@ -247,12 +304,16 @@ class FeaturesTransformer(nn.Module):
                                         nn.GELU(),
                                         nn.Linear(self.hid_dim, self.num_reg_quantiles),
                                         )
-        self.feature_decoder = nn.Sequential(
-                                        nn.Linear(self.embed_dim, self.hid_dim),
-                                        nn.LayerNorm(self.hid_dim),
-                                        nn.GELU(),
-                                        nn.Linear(self.hid_dim, self.features_per_group),
-                                        )
+        self.feature_decoder = (
+            None
+            if self.omit_feature_decoder
+            else nn.Sequential(
+                nn.Linear(self.embed_dim, self.hid_dim),
+                nn.LayerNorm(self.hid_dim),
+                nn.GELU(),
+                nn.Linear(self.hid_dim, self.features_per_group),
+            )
+        )
         
         if feature_positional_embedding_type == "learned":
             self.feature_positional_embedding = nn.Embedding(
@@ -292,30 +353,9 @@ class FeaturesTransformer(nn.Module):
         assert len(y.shape)==2, "y must be [Batch, label]"
         assert eval_pos < x.shape[1] and eval_pos <= y.shape[1], "The split point between train x and test x must be less than the feature dimension of x, and less than or equal to the label dimension of y"
         
-        batch_size, seq_len, num_feature = x.shape
-        x = {'data':x, 'mask':torch.isnan(x).to(torch.int32).to(x.device)}
+        _, seq_len, _ = x.shape
+        x, feature_to_add = self._build_x_preprocess_inputs(x, eval_pos)
         y = {'data':y}
-        
-        feature_to_add = num_feature%self.features_per_group
-        if feature_to_add > 0:
-            # Extend the feature dimension of x when it is insufficient
-            for k in x:
-                x[k] = torch.cat(
-                    (
-                        x[k],
-                        torch.zeros(
-                            batch_size,
-                            seq_len,
-                            feature_to_add,
-                            device=x[k].device,
-                            dtype=x[k].dtype
-                        )
-                    ),
-                    dim=-1
-                )
-        for k in x:
-            x[k] = x[k].reshape(batch_size, seq_len, x[k].shape[2]//self.features_per_group, self.features_per_group)
-        x['eval_pos'] = eval_pos
         preprocessed_x = self.x_preprocess(x)
         preprocessed_x = self.process_4_x(preprocessed_x)
         x_encoder_result = self.encoder_x(preprocessed_x)
@@ -324,14 +364,14 @@ class FeaturesTransformer(nn.Module):
         for k in y:
             # Extend the label dimension of y when it is insufficient
             y[k] = y[k].unsqueeze(-1)
-            if y[k].shape[1] < x['data'].shape[1]:
+            if y[k].shape[1] < seq_len:
                 y[k] = torch.cat(
                     (
                         y[k],
                         torch.nan
                         * torch.zeros(
                             y[k].shape[0],
-                            x["data"].shape[1] - y[k].shape[1],
+                            seq_len - y[k].shape[1],
                             y[k].shape[2],
                             device=y[k].device,
                             dtype=y[k].dtype,
@@ -398,7 +438,10 @@ class FeaturesTransformer(nn.Module):
                 reg_output = self.reg_y_decoder(test_encoder_out)
             feature_pred = (
                 None
-                if getattr(self, "_skip_feature_decoder", False)
+                if (
+                    self.feature_decoder is None
+                    or getattr(self, "_skip_feature_decoder", False)
+                )
                 else self.feature_decoder(encoder_out_4_feature)
             )
             output_decoded = {
@@ -407,13 +450,10 @@ class FeaturesTransformer(nn.Module):
                 "feature_pred": feature_pred,
                 "process_config": {
                     "n_x_padding": feature_to_add,
-                    "features_per_group": self.x_preprocess[3].num_features,
-                    "num_used_features": preprocessed_x.get(
-                        '_valid_feature_num', self.x_preprocess[3].valid_feature_num),
-                    "mean_for_normalization": preprocessed_x.get(
-                        '_norm_mean', self.x_preprocess[2].mean),
-                    "std_for_normalization": preprocessed_x.get(
-                        '_norm_std', self.x_preprocess[2].std),
+                    "features_per_group": self.features_per_group,
+                    "num_used_features": preprocessed_x.get('_valid_feature_num'),
+                    "mean_for_normalization": preprocessed_x.get('_norm_mean'),
+                    "std_for_normalization": preprocessed_x.get('_norm_std'),
                 }
             }
         else:
@@ -433,7 +473,10 @@ class FeaturesTransformer(nn.Module):
         batch_size, seq_len, num_feature = x.shape
         x_dict: dict[str, torch.Tensor | int] = {
             'data': x,
-            'mask': torch.isnan(x).to(torch.int32).to(x.device),
+            # The numeric channel treats NaN and both infinities as missing.
+            # NanEncoder may retain their kind in a separate indicator channel,
+            # but process_4_x must never let an infinity reach the numeric encoder.
+            'mask': (~torch.isfinite(x)).to(torch.int32).to(x.device),
         }
         feature_to_add = (-num_feature) % self.features_per_group
         if feature_to_add > 0:
@@ -689,6 +732,18 @@ class FeaturesTransformer(nn.Module):
             )
         if self.mask_prediction:
             raise NotImplementedError("build_context_cache requires mask_prediction=False")
+        if (
+            not bool(self.preprocess_config_x.get("normalize_on_train_only", True))
+            and (
+                bool(self.preprocess_config_x.get("normalize_x", False))
+                or bool(self.preprocess_config_x.get("remove_outliers", False))
+            )
+        ):
+            raise NotImplementedError(
+                "build_context_cache cannot preserve normalize_on_train_only=False: "
+                "that transductive configuration derives preprocessing statistics "
+                "from context and query rows together; use the uncached forward path"
+            )
         if x_train is None or y_train is None:
             raise AssertionError("x_train and y_train must not be None")
         if len(x_train.shape) != 3:
@@ -708,12 +763,17 @@ class FeaturesTransformer(nn.Module):
         # None (no normalization is active, so query rows need no train stats).
         captured = preprocessed_x.get('_norm_stats') or {}
         norm_stats = {k: v.detach() for k, v in captured.items()} if captured else None
-        # Same for NanEncoder's imputation fill (the train column mean). Captured
-        # unconditionally -- it always runs, and a table with no NaN/Inf simply never
-        # consults it.
+        # Same for NanEncoder's imputation fill (the train column mean). The key is
+        # absent when nan_handling_enabled=False.
         captured_nan_mean = preprocessed_x.get('_nan_mean')
         nan_mean = (captured_nan_mean.detach()
                     if isinstance(captured_nan_mean, torch.Tensor) else None)
+        captured_valid_feature_num = preprocessed_x.get('_valid_feature_num')
+        valid_feature_num = (
+            captured_valid_feature_num.detach()
+            if isinstance(captured_valid_feature_num, torch.Tensor)
+            else None
+        )
         preprocessed_x = self.process_4_x(preprocessed_x)
         data_tensor = preprocessed_x['data']
         assert isinstance(data_tensor, torch.Tensor)
@@ -766,6 +826,7 @@ class FeaturesTransformer(nn.Module):
             y_train=y_train[:, :eval_pos].detach(),
             eval_pos=eval_pos,
             nan_mean=nan_mean,
+            valid_feature_num=valid_feature_num,
         )
 
     def apply_context_cache(
@@ -800,6 +861,8 @@ class FeaturesTransformer(nn.Module):
             x_dict['_frozen_norm_stats'] = context.norm_stats
         if context.nan_mean is not None:
             x_dict['_frozen_nan_mean'] = context.nan_mean
+        if context.valid_feature_num is not None:
+            x_dict['_frozen_valid_feature_num'] = context.valid_feature_num
         preprocessed_x = self.x_preprocess(x_dict)
         preprocessed_x = self.process_4_x(preprocessed_x)
 

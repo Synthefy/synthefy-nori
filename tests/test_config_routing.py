@@ -10,17 +10,12 @@ is one edit.
 import json
 import pathlib
 
-import pytest
-
 import synthefy_nori
 from synthefy_nori.configs import (
     DEFAULT_INFERENCE_CONFIG,
     DEFAULT_MODEL_CONFIG,
     config_path,
 )
-
-LEGACY_NAME = "reg_allordinal_poly10_adaptive_svd256.json"
-
 
 def test_default_inference_config_ships():
     path = pathlib.Path(config_path(DEFAULT_INFERENCE_CONFIG))
@@ -38,7 +33,7 @@ def test_config_path_defaults_to_the_inference_config():
 
 
 def test_the_constants_are_publicly_exported():
-    """The deprecation warning tells callers to use these, so they must be reachable."""
+    """Callers should use the stable phase names through the public package."""
     assert synthefy_nori.DEFAULT_INFERENCE_CONFIG == DEFAULT_INFERENCE_CONFIG
     assert synthefy_nori.DEFAULT_MODEL_CONFIG == DEFAULT_MODEL_CONFIG
 
@@ -58,24 +53,21 @@ def test_every_helper_shares_one_implementation():
     assert len(resolved) == 1, f"helpers disagree on the config path: {resolved}"
 
 
-def test_legacy_name_still_resolves_with_a_deprecation_warning():
-    """Renamed in 0.18.0; the old name works for one minor version (removed in 0.19.0)."""
-    with pytest.warns(DeprecationWarning, match="renamed"):
-        legacy = config_path(LEGACY_NAME)
-    assert legacy == config_path(DEFAULT_INFERENCE_CONFIG)
-
-
 def test_the_new_name_does_not_warn(recwarn):
     config_path(DEFAULT_INFERENCE_CONFIG)
     assert not [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
 
 
+def test_the_retired_0_18_name_no_longer_resolves():
+    legacy = config_path("reg_allordinal_poly10_adaptive_svd256.json")
+    assert not pathlib.Path(legacy).exists()
+
+
 def test_no_source_file_writes_the_config_name_by_hand():
     """The point of the rename: the filename literal lives in exactly one module.
 
-    ``configs/__init__.py`` owns both the constant and the legacy alias map; anywhere
-    else spelling the name out is the duplication that made the last rename a 12-file
-    edit.
+    ``configs/__init__.py`` owns the constant; anywhere else spelling the name out is
+    the duplication that made the last rename a 12-file edit.
     """
     src = pathlib.Path(__file__).resolve().parents[1] / "src" / "synthefy_nori"
     owner = src / "configs" / "__init__.py"

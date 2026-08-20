@@ -17,6 +17,8 @@ synth_v4 (2026-02-19): TabICLv2-inspired diversity improvements:
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 
 
@@ -525,9 +527,10 @@ class LocalCausalStructure:
                 self.concat_mode[i] = False
                 continue
 
-            # Randomly select 1-3 parents (can be overridden by max_parents kwarg)
+            # Randomly select 1..max_parents parents.  ``Generator.integers``
+            # excludes its upper bound, so include it explicitly.
             max_p = getattr(self, '_max_parents', 4)
-            n_parents = min(rng.integers(1, max_p), len(all_candidates))
+            n_parents = min(rng.integers(1, max_p + 1), len(all_candidates))
             chosen = rng.choice(len(all_candidates), size=n_parents, replace=False)
             parents = [all_candidates[c] for c in chosen]
             self.parents[i] = parents
@@ -743,14 +746,463 @@ def _build_hierarchical_scm(n_features, rng, expanded=False, synth_v5=False,
     return lcs_list, global_nodes, global_parents
 
 
+def _finite_mean_std(values):
+    """Return warning-free finite-only moments with overflow-safe scaling."""
+    finite_values = np.asarray(values, dtype=np.float64).ravel()
+    finite_values = finite_values[np.isfinite(finite_values)]
+    if finite_values.size == 0:
+        return 0.0, 0.0
+    scale = float(np.max(np.abs(finite_values)))
+    if scale == 0.0:
+        return 0.0, 0.0
+    scaled = finite_values / scale
+    return float(np.mean(scaled) * scale), float(np.std(scaled) * scale)
+
+def _finite_std(values):
+    """Return a warning-free finite-only standard deviation."""
+    return _finite_mean_std(values)[1]
+
+def _finite_column_variation(values, tolerance=1e-8):
+    """Identify columns with finite variation without all-NaN warnings."""
+    values = np.asarray(values, dtype=np.float64)
+    if values.ndim != 2:
+        raise ValueError("values must be a 2D array")
+    finite = np.isfinite(values)
+    safe = np.where(finite, values, 0.0)
+    counts = np.sum(finite, axis=0)
+    scales = np.max(np.abs(safe), axis=0, initial=0.0)
+    scaled = np.divide(
+        safe,
+        scales[np.newaxis, :],
+        out=np.zeros_like(safe),
+        where=scales[np.newaxis, :] > 0.0,
+    )
+    means = np.divide(
+        np.sum(scaled, axis=0),
+        counts,
+        out=np.zeros(values.shape[1], dtype=np.float64),
+        where=counts > 0,
+    )
+    centered = np.where(finite, scaled - means[np.newaxis, :], 0.0)
+    variances = np.divide(
+        np.sum(centered * centered, axis=0),
+        counts,
+        out=np.zeros(values.shape[1], dtype=np.float64),
+        where=counts > 0,
+    )
+    absolute_std = np.sqrt(variances) * scales
+    return (counts >= 2) & (absolute_std > float(tolerance))
+
+def _finite_column_means(values):
+    """Return finite-only column means, using zero for empty columns."""
+    values = np.asarray(values, dtype=np.float64)
+    return np.asarray([
+        _finite_mean_std(values[:, col])[0]
+        for col in range(values.shape[1])
+    ], dtype=np.float64)
+
+def _finite_percentile(values, percentile):
+    """Return a finite-only percentile, or None when no fit data exists."""
+    finite_values = np.asarray(values, dtype=np.float64)
+    finite_values = finite_values[np.isfinite(finite_values)]
+    if finite_values.size == 0:
+        return None
+    return float(np.percentile(finite_values, percentile))
+
+def _calibrate_noise_to_target_r2(
+        signal, raw_noise, target_r2, context_rows=None):
+    """Scale the complete sampled noise vector to an empirical target R².
+
+    The noise shape (heteroskedasticity and sparse outliers) is sampled first.
+    Solving for one positive scale factor makes the requested
+    ``1 - SSE / SST`` exact while preserving that sampled shape and its natural
+    finite-sample correlation with the signal.
+    """
+    signal = np.asarray(signal, dtype=np.float64)
+    noise = np.asarray(raw_noise, dtype=np.float64)
+    if target_r2 >= 1.0:
+        return np.zeros_like(signal), 1.0
+
+    labeled_rows = _resolve_context_rows(len(signal), context_rows)
+    signal_reference = signal[:labeled_rows]
+    signal_centered = signal_reference - np.mean(signal_reference)
+    noise = np.where(np.isfinite(noise), noise, 0.0)
+    noise = noise - np.mean(noise[:labeled_rows])
+    noise_reference = noise[:labeled_rows]
+    signal_ss = float(np.dot(signal_centered, signal_centered))
+    if signal_ss <= 1e-12:
+        return np.zeros_like(signal), 1.0
+
+    noise_ss = float(np.dot(noise_reference, noise_reference))
+    if noise_ss <= 1e-12:
+        return np.zeros_like(signal), 1.0
+
+    # For y = signal + a*noise, solve
+    #   target_r2 = 1 - a^2 N / (S + 2 a C + a^2 N)
+    # for the non-negative scale a, where S/N/C are centered sums of squares
+    # and cross-products. This retains heteroskedastic and outlier structure.
+    cross = float(np.dot(signal_centered, noise_reference))
+    r2 = max(float(target_r2), 1e-8)
+    residual_fraction = 1.0 - r2
+    discriminant = (
+        residual_fraction ** 2 * cross ** 2
+        + r2 * noise_ss * residual_fraction * signal_ss
+    )
+    scale = (
+        residual_fraction * cross + np.sqrt(max(discriminant, 0.0))
+    ) / (r2 * noise_ss)
+    noise *= max(float(scale), 0.0)
+    noisy_reference = signal_reference + noise[:labeled_rows]
+    noisy_centered = noisy_reference - np.mean(noisy_reference)
+    total_ss = float(np.dot(noisy_centered, noisy_centered))
+    realized_r2 = (
+        1.0 - float(np.dot(noise[:labeled_rows], noise[:labeled_rows])) / total_ss
+        if total_ss > 1e-12 else 1.0
+    )
+    return noise, float(np.clip(realized_r2, 0.0, 1.0))
+
+def _normalize_target_pair(y, y_clean, context_rows=None):
+    """Normalize noisy/clean targets with one labeled-context affine map."""
+    y = np.asarray(y, dtype=np.float64)
+    y_clean = np.asarray(y_clean, dtype=np.float64)
+    labeled_rows = _resolve_context_rows(len(y), context_rows)
+    mu = float(np.mean(y[:labeled_rows]))
+    std = float(np.std(y[:labeled_rows]))
+    if std > 1e-8:
+        return (y - mu) / std, (y_clean - mu) / std, mu, std
+    return y - mu, y_clean - mu, mu, std
+
+def _add_entity_lookup_signal(y_raw, entity_lookup_signal, rng, meta,
+                              context_rows=None):
+    """Add categorical/group-relative signal at a controlled variance ratio."""
+    labeled_rows = _resolve_context_rows(len(y_raw), context_rows)
+    entity_std = np.std(entity_lookup_signal[:labeled_rows])
+    if entity_std <= 1e-8:
+        return y_raw
+
+    y_std_orig = np.std(y_raw[:labeled_rows])
+    if y_std_orig < 1e-8:
+        y_std_orig = 1.0
+    target_ratio = rng.uniform(0.25, 0.55)
+    entity_scale = (
+        np.sqrt(target_ratio / max(1 - target_ratio, 1e-6))
+        * y_std_orig / entity_std
+    )
+    y_with_effect = y_raw + entity_lookup_signal * entity_scale
+    meta['entity_lookup_signal_std'] = float(entity_std)
+    meta['entity_lookup_target_ratio'] = float(target_ratio)
+    return np.where(np.isfinite(y_with_effect), y_with_effect, 0.0)
+
+def _scale_rich_target_component(extra, y_raw, rng, context_rows=None):
+    """Scale a rich-target component using labeled-context variance only."""
+    labeled_rows = _resolve_context_rows(len(y_raw), context_rows)
+    extra_std = float(np.std(extra[:labeled_rows]))
+    y_std_orig = float(np.std(y_raw[:labeled_rows]))
+    if extra_std <= 1e-8 or y_std_orig <= 1e-8:
+        return extra
+    target_ratio = float(rng.uniform(0.3, 0.7))
+    extra_scale = (
+        np.sqrt(target_ratio / (1.0 - target_ratio))
+        * y_std_orig / extra_std
+    )
+    return extra * extra_scale
+
+def _apply_feature_dependent_tail_missingness(X, rng, context_rows=None):
+    """Mask feature columns from an observed covariate's context-fitted tail."""
+    labeled_rows = _resolve_context_rows(len(X), context_rows)
+    candidate_drivers = []
+    for col in range(X.shape[1]):
+        context_values = X[:labeled_rows, col]
+        finite_values = context_values[np.isfinite(context_values)]
+        if finite_values.size >= 2 and np.ptp(finite_values) > 1e-12:
+            candidate_drivers.append(col)
+    if not candidate_drivers:
+        return False
+
+    driver_col = int(rng.choice(candidate_drivers))
+    maskable_cols = [col for col in range(X.shape[1]) if col != driver_col]
+    if not maskable_cols:
+        return False
+    n_masked_cols = min(int(rng.integers(1, 4)), len(maskable_cols))
+    masked_cols = rng.choice(maskable_cols, size=n_masked_cols, replace=False)
+
+    driver = X[:, driver_col]
+    context_driver = driver[:labeled_rows]
+    if rng.random() < 0.5:
+        threshold = np.nanpercentile(context_driver, rng.uniform(75, 95))
+        tail_rows = driver > threshold
+    else:
+        threshold = np.nanpercentile(context_driver, rng.uniform(5, 25))
+        tail_rows = driver < threshold
+    X[np.ix_(tail_rows, masked_cols)] = np.nan
+    # The return value controls whether a later missingness branch consumes
+    # RNG and may alter context rows. Query-only tails must not select that
+    # control flow, even though they may still be masked row-locally above.
+    return bool(np.any(tail_rows[:labeled_rows]))
+
+def _resolve_context_rows(n_samples, context_rows):
+    """Return the labeled-row budget used to calibrate synth-v6 complexity."""
+    if context_rows is None:
+        return int(n_samples)
+    if int(context_rows) < 1:
+        raise ValueError("context_rows must be at least 1")
+    return max(1, min(int(context_rows), int(n_samples)))
+
+def _sample_context_safe_duplicate_indices(
+        n_samples, n_duplicates, rng, context_rows=None):
+    """Sample duplicates without ever copying a query row into context.
+
+    Context-to-query copies remain possible because repeated measurements can
+    legitimately straddle an evaluation split. Context destinations draw only
+    from labeled rows; query destinations retain the original all-row source
+    distribution.
+    """
+    labeled_rows = _resolve_context_rows(n_samples, context_rows)
+    size = min(int(n_duplicates), n_samples)
+    # Preserve the released draw order and exact no-split behavior. Only
+    # redraw pairs whose original direction would copy query into context.
+    src_idx = rng.choice(n_samples, size=size, replace=True)
+    dst_idx = rng.choice(
+        n_samples, size=size, replace=False)
+    unsafe = (src_idx >= labeled_rows) & (dst_idx < labeled_rows)
+    if np.any(unsafe):
+        src_idx[unsafe] = rng.integers(
+            0, labeled_rows, size=int(np.sum(unsafe)))
+    return src_idx, dst_idx
+
+def _context_prefix(values, context_rows):
+    """Return the labeled prefix used to fit episode-level transforms."""
+    values = np.asarray(values)
+    labeled_rows = _resolve_context_rows(len(values), context_rows)
+    return values[:labeled_rows]
+
+def _context_mean_std(values, context_rows):
+    """Fit location and scale without inspecting query targets."""
+    reference = _context_prefix(values, context_rows)
+    return _finite_mean_std(reference)
+
+def _signed_expm1_with_linear_tails(values, scale, limit=20.0):
+    """Apply signed expm1 without allowing query-only tails to overflow."""
+    values = np.asarray(values, dtype=np.float64)
+    magnitude = np.abs(values) * float(scale)
+    central = np.minimum(magnitude, float(limit))
+    warped = np.expm1(central)
+    above = magnitude > limit
+    if np.any(above):
+        warped[above] += np.exp(limit) * (magnitude[above] - limit)
+    return np.sign(values) * warped
+
+def _signed_power_with_linear_tails(values, power, limit=20.0):
+    """Apply a signed power centrally and linearize extreme query tails."""
+    values = np.asarray(values, dtype=np.float64)
+    magnitude = np.abs(values)
+    central = np.minimum(magnitude, float(limit))
+    warped = central ** float(power)
+    above = magnitude > limit
+    if np.any(above):
+        slope = float(power) * float(limit) ** (float(power) - 1.0)
+        warped[above] += slope * (magnitude[above] - limit)
+    return np.sign(values) * warped
+
+def _exp_with_linear_tails(values, limit=20.0):
+    """Exponentiate centrally while keeping extreme tails injective."""
+    values = np.asarray(values, dtype=np.float64)
+    result = values.copy()
+    finite = np.isfinite(values)
+    z = values[finite]
+    warped = np.exp(np.clip(z, -limit, limit))
+    below = z < -limit
+    above = z > limit
+    lower_value = np.exp(-limit)
+    upper_value = np.exp(limit)
+    warped[below] = lower_value * (1.0 + z[below] + limit)
+    warped[above] = upper_value * (1.0 + z[above] - limit)
+    result[finite] = warped
+    return result
+
+def _sigmoid_with_linear_tails(values, limit=8.0):
+    """Apply a sigmoid centrally with monotone non-saturating tails."""
+    values = np.asarray(values, dtype=np.float64)
+    result = values.copy()
+    finite = np.isfinite(values)
+    z = values[finite]
+    clipped = np.clip(z, -limit, limit)
+    warped = 1.0 / (1.0 + np.exp(-clipped))
+    lower_value = 1.0 / (1.0 + np.exp(limit))
+    upper_value = 1.0 / (1.0 + np.exp(-limit))
+    lower_slope = lower_value * (1.0 - lower_value)
+    upper_slope = upper_value * (1.0 - upper_value)
+    below = z < -limit
+    above = z > limit
+    warped[below] = lower_value + lower_slope * (z[below] + limit)
+    warped[above] = upper_value + upper_slope * (z[above] - limit)
+    result[finite] = warped
+    return result
+
+def _apply_invertible_feature_correlation(
+        X, cols, rng, rho, context_rows=None):
+    """Correlate columns with a full-rank coordinate transform.
+
+    Unlike adding an unobserved random shared factor after y is generated, this
+    transform is invertible on fully observed rows. It changes the observed
+    coordinate system without deleting target-relevant information.
+    """
+    cols = np.asarray(cols, dtype=np.int64)
+    if len(cols) < 2:
+        return (
+            np.eye(len(cols), dtype=np.float64),
+            np.zeros(len(cols), dtype=np.float64),
+            np.ones(len(cols), dtype=np.float64),
+        )
+
+    group = np.asarray(X[:, cols], dtype=np.float64)
+    labeled_rows = _resolve_context_rows(len(group), context_rows)
+    reference = group[:labeled_rows]
+    missing = ~np.isfinite(group)
+    means = np.asarray([
+        np.mean(column[np.isfinite(column)])
+        if np.isfinite(column).any() else 0.0
+        for column in reference.T
+    ])
+    filled = np.where(missing, means[None, :], group)
+    scales = np.asarray([
+        np.std(column[np.isfinite(column)])
+        if np.isfinite(column).any() else 0.0
+        for column in reference.T
+    ])
+    scales = np.where(scales > 1e-8, scales, 1.0)
+    standardized = (filled - means[None, :]) / scales[None, :]
+
+    signs = rng.choice(np.asarray([-1.0, 1.0]), size=len(cols))
+    covariance = (
+        (1.0 - rho) * np.eye(len(cols), dtype=np.float64)
+        + rho * np.outer(signs, signs)
+    )
+    transform = np.linalg.cholesky(covariance)
+    mixed = standardized @ transform.T
+    mixed[missing] = np.nan
+    X[:, cols] = mixed
+    return transform, means, scales
+
+def _affine_stabilize_feature_column(values, context_rows=None):
+    """Return a finite-range affine reparameterization, preserving NaNs.
+
+    Affine centering/scaling is one-to-one and therefore does not invalidate
+    the target oracle. Unlike hard clipping, distinct transformed tail values
+    remain distinct.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    result = values.copy()
+    labeled_rows = _resolve_context_rows(len(values), context_rows)
+    finite = np.isfinite(values)
+    reference = values[:labeled_rows]
+    finite_reference = reference[np.isfinite(reference)]
+    if len(finite_reference) < 2:
+        return result
+    mean = float(np.mean(finite_reference))
+    std = float(np.std(finite_reference))
+    if np.isfinite(std) and std > 1e-8:
+        result[finite] = (values[finite] - mean) / std
+    elif np.isfinite(mean):
+        result[finite] = values[finite] - mean
+    return result
+
+def _finalize_feature_batch(
+        X_batch, max_abs=1e4, context_rows=None):
+    """Apply context-stable numeric safety to every generated family.
+
+    Context-wide affine corrections fit only the labeled prefix. Remaining
+    query-only extremes are bounded locally so they cannot rescale context;
+    those non-invertible changes are reported separately for oracle tracking.
+    Structural NaNs remain NaN.
+
+    Returns the stabilized batch, affine ``(episode, column)`` pairs, and
+    non-invertibly bounded ``(episode, column)`` pairs.
+    """
+    X_out = np.asarray(X_batch, dtype=np.float64).copy()
+    labeled_rows = _resolve_context_rows(X_out.shape[1], context_rows)
+    if np.isinf(X_out[:, :labeled_rows]).any():
+        raise SyntheticDataFilterError(
+            'final synthetic context contains infinity')
+    affine_changes = []
+    bounded_changes = []
+    for batch_idx in range(X_out.shape[0]):
+        for col_idx in range(X_out.shape[2]):
+            col = X_out[batch_idx, :, col_idx]
+            reference = col[:labeled_rows]
+            finite_reference = reference[np.isfinite(reference)]
+            affine_changed = False
+            if (
+                len(finite_reference)
+                and float(np.max(np.abs(finite_reference))) > max_abs
+            ):
+                col = _affine_stabilize_feature_column(
+                    col, context_rows=labeled_rows)
+                finite_reference = col[:labeled_rows]
+                finite_reference = finite_reference[
+                    np.isfinite(finite_reference)]
+                if len(finite_reference):
+                    remaining_max = float(
+                        np.max(np.abs(finite_reference)))
+                    if remaining_max > max_abs:
+                        col *= max_abs / remaining_max
+                affine_changed = True
+
+            # Query-only extremes must not rescale the labeled prefix. Bound
+            # them locally, and report the information-losing change so the
+            # target oracle is not treated as exact.
+            bounded = col.copy()
+            finite = np.isfinite(col)
+            bounded[finite] = np.clip(
+                col[finite], -max_abs, max_abs)
+            bounded[np.isposinf(col)] = max_abs
+            bounded[np.isneginf(col)] = -max_abs
+            bounded_changed = not np.array_equal(
+                col, bounded, equal_nan=True)
+            if bounded_changed:
+                col = bounded
+            if affine_changed or bounded_changed:
+                X_out[batch_idx, :, col_idx] = col
+            if affine_changed:
+                affine_changes.append((batch_idx, col_idx))
+            if bounded_changed:
+                bounded_changes.append((batch_idx, col_idx))
+    return (
+        X_out.astype(np.float32, copy=False),
+        affine_changes,
+        bounded_changes,
+    )
+
+
+def _is_numerical_scoreability_error(error):
+    """Whether a model failure says the episode cannot be scored numerically.
+
+    ``ValueError`` is also commonly used for programming/API failures.  Only
+    recognize the narrow messages emitted for non-finite or numerically
+    overflowing data; callers must propagate every other exception.
+    """
+    if isinstance(error, (FloatingPointError, OverflowError,
+                          np.linalg.LinAlgError)):
+        return True
+    if not isinstance(error, ValueError):
+        return False
+    message = str(error).lower()
+    return re.search(
+        r'\b(?:nan|nans|inf|infs|infinite|infinity|overflow|numerical)\b'
+        r'|\bnon[-_ ]?finite\b|\bnot finite\b|\bvalue too large\b',
+        message,
+    ) is not None
+
+
 def _check_learnability(
     X,
     y,
-    task_type,
+    task_type='reg',
     *,
     cls_min_score=0.60,
     cls_margin=0.10,
     reg_min_score=0.10,
+    context_rows=None,
 ):
     """Quick ExtraTrees check: can a simple model beat a constant baseline?
 
@@ -760,29 +1212,57 @@ def _check_learnability(
     import warnings
     from sklearn.ensemble import ExtraTreesRegressor, ExtraTreesClassifier
 
+    X = np.asarray(X)
+    y = np.asarray(y)
+    if X.ndim != 2 or y.ndim != 1 or X.shape[0] != y.shape[0]:
+        return False
     n, f = X.shape
     if n < 20:
-        return True  # too small to test
+        return False
+    if (not np.isfinite(y).all() or np.isinf(X).any()
+            or (context_rows is None and _finite_std(y) <= 1e-8)):
+        return False
 
     # Subsample large tables to keep ExtraTrees fast in prefetch workers.
     # 1000 rows is enough for a reliable OOB signal; fitting on 4096×384
     # is ~16x slower and causes CPU starvation with multiple DDP workers.
     max_rows = 1000
-    if n > max_rows:
+    split_mode = task_type == 'reg' and context_rows is not None
+    if split_mode:
+        labeled_rows = _resolve_context_rows(n, context_rows)
+        query_rows = n - labeled_rows
+        if labeled_rows < 2 or query_rows < 2:
+            return False
+        context_count = min(labeled_rows, max_rows)
+        query_count = min(query_rows, max_rows)
+        context_idx = np.linspace(
+            0, labeled_rows - 1, context_count).round().astype(np.int64)
+        query_idx = labeled_rows + np.linspace(
+            0, query_rows - 1, query_count).round().astype(np.int64)
+        X_fit, y_fit = X[context_idx], y[context_idx]
+        X_test, y_test = X[query_idx], y[query_idx]
+        if _finite_std(y_fit) <= 1e-8 or _finite_std(y_test) <= 1e-8:
+            return False
+    elif n > max_rows:
         idx = np.random.default_rng(0).choice(n, size=max_rows, replace=False)
         X_fit, y_fit = X[idx], y[idx]
     else:
         X_fit, y_fit = X, y
 
     # Use a fast model with limited depth
-    if task_type == 'cls':
-        model = ExtraTreesClassifier(
-            n_estimators=15, max_depth=6, bootstrap=True,
-            oob_score=True, random_state=0, n_jobs=1)
-    else:
-        model = ExtraTreesRegressor(
-            n_estimators=15, max_depth=6, bootstrap=True,
-            oob_score=True, random_state=0, n_jobs=1)
+    model_kwargs = {
+        'n_estimators': 15,
+        'max_depth': 6,
+        'random_state': 0,
+        'n_jobs': 1,
+    }
+    if not split_mode:
+        model_kwargs.update(bootstrap=True, oob_score=True)
+    model = (
+        ExtraTreesClassifier(**model_kwargs)
+        if task_type == 'cls'
+        else ExtraTreesRegressor(**model_kwargs)
+    )
 
     # Replace NaN with 0 for sklearn
     X_clean = np.nan_to_num(X_fit, nan=0.0)
@@ -792,119 +1272,136 @@ def _check_learnability(
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             model.fit(X_clean, y_fit_clean)
-        if task_type == 'cls':
-            # OOB AUC proxy: accuracy must meaningfully exceed chance
-            n_classes = len(np.unique(y_fit_clean))
-            return model.oob_score_ > max(1.0 / n_classes + cls_margin, cls_min_score)
-        else:
-            # OOB R2 must show real signal, not just noise fitting
-            return model.oob_score_ > reg_min_score
-    except Exception:
-        return True  # if fitting fails, don't filter
+            score = (
+                model.score(np.nan_to_num(X_test, nan=0.0), y_test)
+                if split_mode else float(model.oob_score_)
+            )
+    except Exception as error:
+        if _is_numerical_scoreability_error(error):
+            return False
+        raise
+    score = float(score)
+    if not np.isfinite(score):
+        return False
+    if task_type == 'cls':
+        n_classes = len(np.unique(y_fit_clean))
+        return score > max(1.0 / max(n_classes, 1) + cls_margin, cls_min_score)
+    return score > reg_min_score
 
 
 def _check_icl_scaling(
     X,
     y,
-    task_type,
+    task_type='reg',
     *,
     reg_min_score=0.10,
     min_improvement=0.03,
     n_context_sizes=4,
+    context_rows=None,
 ):
-    """ICL scaling filter: does more context actually help?
-
-    Fits ExtraTrees at logarithmically spaced context sizes and checks that:
-    1. Final (largest context) R² > reg_min_score
-    2. R² improves by at least min_improvement from smallest to largest
-
-    This catches:
-    - Pure noise (R² near 0 at all sizes)
-    - Memorization/lookup (R² high at tiny context, no improvement)
-    - Constant targets (R² 0 everywhere)
-
-    And keeps datasets where more context genuinely helps — the hallmark of
-    ICL-learnable data.
-    """
+    """ICL scaling filter: does more context actually help?"""
     import warnings
-    from sklearn.ensemble import ExtraTreesRegressor, ExtraTreesClassifier
+    from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
 
+    X = np.asarray(X)
+    y = np.asarray(y)
+    if X.ndim != 2 or y.ndim != 1 or X.shape[0] != y.shape[0]:
+        return False
     n, f = X.shape
     if n < 60:
-        return True  # too small for meaningful scaling analysis
+        return False
+    if (not np.isfinite(y).all() or np.isinf(X).any()
+            or (context_rows is None and _finite_std(y) <= 1e-8)):
+        return False
 
-    # Subsample features and rows for speed
     max_rows = 1000
     rng = np.random.default_rng(1)
-    if n > max_rows:
-        idx = rng.choice(n, size=max_rows, replace=False)
-        X_sub, y_sub = X[idx], y[idx]
-        n = max_rows
+    split_mode = task_type == 'reg' and context_rows is not None
+    if split_mode:
+        labeled_rows = _resolve_context_rows(n, context_rows)
+        query_rows = n - labeled_rows
+        if labeled_rows < 21 or query_rows < 20:
+            return False
+        context_count = min(labeled_rows, int(max_rows * 0.8))
+        query_count = min(query_rows, max_rows - context_count)
+        if query_count < 20:
+            query_count = min(query_rows, 20)
+        context_idx = (
+            rng.choice(labeled_rows, size=context_count, replace=False)
+            if labeled_rows > context_count else np.arange(labeled_rows)
+        )
+        query_idx = labeled_rows + (
+            rng.choice(query_rows, size=query_count, replace=False)
+            if query_rows > query_count else np.arange(query_rows)
+        )
+        X_pool = np.nan_to_num(X[context_idx], nan=0.0)
+        y_pool = y[context_idx]
+        X_test = np.nan_to_num(X[query_idx], nan=0.0)
+        y_test = y[query_idx]
+        pool_perm = rng.permutation(len(X_pool))
+        test_perm = rng.permutation(len(X_test))
+        X_pool, y_pool = X_pool[pool_perm], y_pool[pool_perm]
+        X_test, y_test = X_test[test_perm], y_test[test_perm]
+        n_pool = len(X_pool)
+        if _finite_std(y_pool) <= 1e-8 or _finite_std(y_test) <= 1e-8:
+            return False
     else:
-        X_sub, y_sub = X.copy(), y.copy()
+        if n > max_rows:
+            idx = rng.choice(n, size=max_rows, replace=False)
+            X_sub, y_sub = X[idx], y[idx]
+            n = max_rows
+        else:
+            X_sub, y_sub = X.copy(), y.copy()
+        X_clean = np.nan_to_num(X_sub, nan=0.0)
+        perm = rng.permutation(n)
+        X_clean = X_clean[perm]
+        y_sub = y_sub[perm]
+        n_test = max(20, int(n * 0.2))
+        n_pool = n - n_test
+        X_test, y_test = X_clean[n_pool:], y_sub[n_pool:]
+        X_pool, y_pool = X_clean[:n_pool], y_sub[:n_pool]
 
-    X_clean = np.nan_to_num(X_sub, nan=0.0)
-
-    # Shuffle to avoid ordering artifacts
-    perm = rng.permutation(n)
-    X_clean = X_clean[perm]
-    y_sub = y_sub[perm]
-
-    # Hold out a fixed test set (last 20%), vary context from the rest
-    n_test = max(20, int(n * 0.2))
-    n_pool = n - n_test
-    X_test, y_test = X_clean[n_pool:], y_sub[n_pool:]
-    X_pool, y_pool = X_clean[:n_pool], y_sub[:n_pool]
-
-    # Logarithmically spaced context sizes from ~25% to 100% of pool
     min_ctx = max(20, int(n_pool * 0.25))
     max_ctx = n_pool
     if max_ctx <= min_ctx:
-        return True
-
-    context_sizes = np.unique(np.geomspace(min_ctx, max_ctx, n_context_sizes).astype(int))
+        return False
+    context_sizes = np.unique(
+        np.geomspace(min_ctx, max_ctx, n_context_sizes).astype(int))
     if len(context_sizes) < 2:
-        return True
+        return False
 
     scores = []
     for ctx_size in context_sizes:
         X_train, y_train = X_pool[:ctx_size], y_pool[:ctx_size]
-
         if len(X_test) < 10:
             continue
-
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                if task_type == 'cls':
-                    model = ExtraTreesClassifier(
-                        n_estimators=10, max_depth=5,
-                        random_state=0, n_jobs=1)
-                    model.fit(X_train, y_train)
-                    score = model.score(X_test, y_test)
-                else:
-                    model = ExtraTreesRegressor(
-                        n_estimators=10, max_depth=5,
-                        random_state=0, n_jobs=1)
-                    model.fit(X_train, y_train)
-                    score = model.score(X_test, y_test)
-                scores.append(float(score))
-        except Exception:
-            scores.append(0.0)
+                model_cls = (
+                    ExtraTreesClassifier
+                    if task_type == 'cls' else ExtraTreesRegressor
+                )
+                model = model_cls(
+                    n_estimators=10, max_depth=5,
+                    random_state=0, n_jobs=1)
+                model.fit(X_train, y_train)
+                score = model.score(X_test, y_test)
+        except Exception as error:
+            if _is_numerical_scoreability_error(error):
+                scores.append(0.0)
+                continue
+            raise
+        scores.append(float(score) if np.isfinite(score) else 0.0)
 
     if len(scores) < 2:
-        return True
-
+        return False
     final_score = scores[-1]
     improvement = scores[-1] - scores[0]
-
-    # Both conditions must hold
-    if task_type == 'reg':
-        return final_score > reg_min_score and improvement > min_improvement
-    else:
-        n_classes = len(np.unique(y_sub))
-        chance = 1.0 / max(n_classes, 2)
+    if task_type == 'cls':
+        chance = 1.0 / max(len(np.unique(y)), 2)
         return final_score > chance + 0.05 and improvement > min_improvement
+    return final_score > reg_min_score and improvement > min_improvement
 
 
 _icl_filter_model = None
@@ -940,77 +1437,97 @@ def _check_learnability_icl(
     X,
     y,
     task_type,
-    model_path,
+    model_path=None,
     *,
     cls_min_auc=0.55,
     reg_min_r2=0.05,
     max_context=64,
     max_query=32,
     max_features=16,
+    context_rows=None,
 ):
-    """ICL-based learnability check: can a frozen LimiX model beat chance?
-
-    Runs a single forward pass on CPU with a context/query split.
-    Returns True if the dataset is learnable, False if it should be filtered.
-
-    Subsample sizes are kept small (64+32 rows, 16 features) because this
-    is a binary keep/reject decision, not a precise score — and CPU inference
-    on the 2M-param model is expensive.  At these sizes: ~60-70ms per call
-    with 2 CPU threads (vs ~1.2s at 500+200 rows with 64 threads).
-    """
+    """Check whether a frozen Nori model can learn an episode."""
     import torch
 
+    # Regression-only internal callers historically passed model_path as the
+    # third positional argument. Retain that form alongside staging's explicit
+    # task_type contract.
+    if model_path is None:
+        model_path = task_type
+        task_type = 'reg'
+
+    X = np.asarray(X)
+    y = np.asarray(y)
+    if X.ndim != 2 or y.ndim != 1 or X.shape[0] != y.shape[0]:
+        return False
     n, f = X.shape
     if n < 20:
-        return True
+        return False
+    if (not np.isfinite(y).all() or np.isinf(X).any()
+            or (context_rows is None and _finite_std(y) <= 1e-8)):
+        return False
 
     model = _get_icl_filter_model(model_path)
-
     rng = np.random.default_rng(0)
-
     if f > max_features:
         feat_idx = rng.choice(f, size=max_features, replace=False)
         X = X[:, feat_idx]
-        f = max_features
 
-    total = min(n, max_context + max_query)
-    idx = rng.choice(n, size=total, replace=False) if n > total else np.arange(n)
-    n_ctx = min(max_context, total - 10)
-    n_qry = total - n_ctx
+    split_mode = task_type == 'reg' and context_rows is not None
+    if split_mode:
+        labeled_rows = _resolve_context_rows(n, context_rows)
+        query_rows = n - labeled_rows
+        if labeled_rows < 10 or query_rows < 10:
+            return False
+        n_ctx = min(max_context, labeled_rows)
+        n_qry = min(max_query, query_rows)
+        context_idx = (
+            rng.choice(labeled_rows, size=n_ctx, replace=False)
+            if labeled_rows > n_ctx else np.arange(labeled_rows)
+        )
+        query_idx = labeled_rows + (
+            rng.choice(query_rows, size=n_qry, replace=False)
+            if query_rows > n_qry else np.arange(query_rows)
+        )
+        idx = np.concatenate([context_idx, query_idx])
+    else:
+        total = min(n, max_context + max_query)
+        idx = (
+            rng.choice(n, size=total, replace=False)
+            if n > total else np.arange(n)
+        )
+        n_ctx = min(max_context, total - 10)
+        n_qry = total - n_ctx
 
     X_sub = X[idx]
     y_sub = y[idx].copy()
-
     X_sub = np.nan_to_num(X_sub, nan=0.0).astype(np.float32)
 
     if task_type == 'cls':
         classes = np.unique(y_sub[np.isfinite(y_sub)])
         n_classes = len(classes)
         if n_classes < 2:
-            return True
+            return False
         label_map = {c: i for i, c in enumerate(classes)}
-        y_sub = np.array([label_map.get(v, 0) for v in y_sub], dtype=np.float32)
+        y_sub = np.array(
+            [label_map.get(v, 0) for v in y_sub], dtype=np.float32)
         n_classes = min(n_classes, 10)
     else:
         y_sub = y_sub.astype(np.float32)
-        ctx_y = y_sub[:n_ctx]
-        ctx_mean = np.nanmean(ctx_y)
-        ctx_std = np.nanstd(ctx_y)
-        if ctx_std < 1e-8:
-            return True
+        ctx_mean, ctx_std = _finite_mean_std(y_sub[:n_ctx])
+        if (not np.isfinite(ctx_mean) or not np.isfinite(ctx_std)
+                or ctx_std < 1e-8):
+            return False
         y_sub = (y_sub - ctx_mean) / ctx_std
         n_classes = None
 
     x_t = torch.from_numpy(X_sub).unsqueeze(0)
     y_t = torch.from_numpy(y_sub).unsqueeze(0)
-
-    try:
-        with torch.no_grad():
-            out = model(x_t, y_t, eval_pos=n_ctx,
-                        task_type=task_type,
-                        y_type='cls' if task_type == 'cls' else 'reg')
-    except Exception:
-        return True
+    with torch.no_grad():
+        out = model(
+            x_t, y_t, eval_pos=n_ctx, task_type=task_type,
+            y_type='cls' if task_type == 'cls' else 'reg',
+        )
 
     if task_type == 'cls':
         logits = out['cls_output'][:, :n_qry, :n_classes]
@@ -1018,14 +1535,18 @@ def _check_learnability_icl(
         true = y_sub[n_ctx:n_ctx + n_qry]
         acc = np.mean(preds == true)
         chance = 1.0 / n_classes
-        return acc > chance + (cls_min_auc - 0.5)
-    else:
-        preds = out['reg_output'][:, :n_qry, 0].squeeze(0).numpy()
-        true = y_sub[n_ctx:n_ctx + n_qry]
-        ss_res = np.sum((true - preds) ** 2)
-        ss_tot = np.sum((true - np.mean(true)) ** 2)
-        r2 = 1.0 - ss_res / max(ss_tot, 1e-8)
-        return r2 > reg_min_r2
+        return np.isfinite(acc) and acc > chance + (cls_min_auc - 0.5)
+
+    preds = out['reg_output'][:, :n_qry, 0].squeeze(0).numpy()
+    true = y_sub[n_ctx:n_ctx + n_qry]
+    if not np.isfinite(preds).all() or not np.isfinite(true).all():
+        return False
+    ss_res = np.sum((true - preds) ** 2)
+    ss_tot = np.sum((true - np.mean(true)) ** 2)
+    if not np.isfinite(ss_res) or not np.isfinite(ss_tot) or ss_tot <= 1e-8:
+        return False
+    r2 = 1.0 - ss_res / ss_tot
+    return np.isfinite(r2) and r2 > reg_min_r2
 
 
 def _extract_quality_task_rules(quality_rules, task_type):
@@ -1042,21 +1563,26 @@ def _extract_quality_task_rules(quality_rules, task_type):
     return task_map.get('regression') or task_map.get('reg')
 
 
-def _compute_health_stats_fast(X, y, task_type):
+def _compute_health_stats_fast(
+        X, y, task_type='reg', context_rows=None):
     """Compute fast, training-time dataset health stats for filtering."""
     X = np.asarray(X)
     y = np.asarray(y)
     n_samples, n_features = X.shape
+    labeled_rows = (
+        _resolve_context_rows(n_samples, context_rows)
+        if task_type == 'reg' else n_samples
+    )
+    X_reference = X[:labeled_rows]
+    y_reference = y[:labeled_rows]
 
-    if X.size == 0:
+    if X_reference.size == 0:
         nan_frac = 0.0
         nonconst = 0
         const_frac = 1.0
     else:
-        nan_frac = float(np.isnan(X).mean())
-        col_std = np.nanstd(X, axis=0)
-        col_std = np.nan_to_num(col_std, nan=0.0, posinf=0.0, neginf=0.0)
-        nonconst = int(np.sum(col_std > 1e-8))
+        nan_frac = float(np.isnan(X_reference).mean())
+        nonconst = int(np.sum(_finite_column_variation(X_reference)))
         const_frac = float(1.0 - (nonconst / max(n_features, 1)))
 
     stats = {
@@ -1068,25 +1594,27 @@ def _compute_health_stats_fast(X, y, task_type):
     }
 
     if task_type == 'cls':
-        y_int = y.astype(np.int64, copy=False)
+        y_int = y_reference.astype(np.int64, copy=False)
         vals, counts = np.unique(y_int, return_counts=True)
         stats['y_unique'] = int(len(vals))
         stats['minority_frac'] = float(counts.min() / max(len(y_int), 1)) if len(counts) > 0 else 0.0
     else:
-        y_f = y.astype(np.float64, copy=False)
+        y_f = y_reference.astype(np.float64, copy=False)
         y_f = np.nan_to_num(y_f, nan=0.0, posinf=0.0, neginf=0.0)
-        stats['y_std'] = float(np.std(y_f))
+        stats['y_std'] = _finite_std(y_f)
 
     return stats
 
 
-def _passes_quality_rules(X, y, task_type, quality_rules):
+def _passes_quality_rules(
+        X, y, task_type, quality_rules, context_rows=None):
     """Return True if dataset passes mined quality rules."""
     task_rules = _extract_quality_task_rules(quality_rules, task_type)
     if task_rules is None:
         return True
 
-    stats = _compute_health_stats_fast(X, y, task_type)
+    stats = _compute_health_stats_fast(
+        X, y, task_type, context_rows=context_rows)
 
     max_nan_frac = task_rules.get('max_nan_frac')
     if max_nan_frac is not None and stats['nan_frac'] > float(max_nan_frac):
@@ -1113,6 +1641,107 @@ def _passes_quality_rules(X, y, task_type, quality_rules):
             return False
 
     return True
+
+
+class SyntheticDataFilterError(RuntimeError):
+    """Raised when no valid episode is produced within the retry budget."""
+
+
+def _passes_basic_episode_health(
+        X, y, task_type='reg', context_rows=None):
+    """Family-independent invariants required for any training episode."""
+    X = np.asarray(X)
+    y = np.asarray(y)
+    if X.ndim != 2 or y.ndim != 1 or X.shape[0] != y.shape[0]:
+        return False
+    if X.shape[0] == 0 or X.shape[1] == 0:
+        return False
+    if not np.isfinite(y).all():
+        return False
+    # NaN is a supported missing-value representation; infinity is not.
+    if np.isinf(X).any():
+        return False
+    labeled_rows = (
+        _resolve_context_rows(X.shape[0], context_rows)
+        if task_type == 'reg' else X.shape[0]
+    )
+    X_reference = X[:labeled_rows]
+    y_reference = y[:labeled_rows]
+    if labeled_rows == 1:
+        return bool(np.isfinite(X_reference).any())
+    if task_type == 'reg' and _finite_std(y_reference) <= 1e-8:
+        return False
+    if task_type == 'cls' and len(np.unique(y_reference)) < 2:
+        return False
+    return bool(np.any(_finite_column_variation(X_reference)))
+
+
+def _passes_requested_dataset_filters(
+        data, *, task_type='reg', quality_rules=None, learnability_filter=False,
+        learnability_filter_reg_min_score=0.10, icl_filter_model=None,
+        icl_filter_reg_min_r2=0.05, icl_scaling_filter=False,
+        icl_scaling_min_improvement=0.03, context_rows=None):
+    """Apply health, quality, and optional learnability gates to final X/y."""
+    X, y = data['X'], data['y']
+    effective_context_rows = context_rows if task_type == 'reg' else None
+    if not _passes_basic_episode_health(
+            X, y, task_type, context_rows=effective_context_rows):
+        return False
+    if quality_rules is not None and not _passes_quality_rules(
+            X, y, task_type, quality_rules,
+            context_rows=effective_context_rows):
+        return False
+
+    if icl_filter_model is not None:
+        passed = _check_learnability_icl(
+            X, y, task_type, icl_filter_model,
+            reg_min_r2=icl_filter_reg_min_r2,
+            context_rows=effective_context_rows)
+    elif learnability_filter:
+        passed = _check_learnability(
+            X, y, task_type,
+            reg_min_score=learnability_filter_reg_min_score,
+            context_rows=effective_context_rows)
+    else:
+        passed = True
+
+    if passed and icl_scaling_filter:
+        passed = _check_icl_scaling(
+            X, y, task_type,
+            reg_min_score=learnability_filter_reg_min_score,
+            min_improvement=icl_scaling_min_improvement,
+            context_rows=effective_context_rows,
+        )
+    return bool(passed)
+
+
+def _generate_filtered_episode(
+        generate_once, *, max_retries=3, quality_rules=None,
+        task_type='reg',
+        learnability_filter=False, learnability_filter_reg_min_score=0.10,
+        icl_filter_model=None, icl_filter_reg_min_r2=0.05,
+        icl_scaling_filter=False, icl_scaling_min_improvement=0.03,
+        context_rows=None):
+    """Regenerate until the actual episode passes every requested gate."""
+    attempts = max(0, int(max_retries)) + 1
+    for _attempt in range(attempts):
+        data = generate_once()
+        if _passes_requested_dataset_filters(
+                data,
+                task_type=task_type,
+                quality_rules=quality_rules,
+                learnability_filter=learnability_filter,
+                learnability_filter_reg_min_score=(
+                    learnability_filter_reg_min_score),
+                icl_filter_model=icl_filter_model,
+                icl_filter_reg_min_r2=icl_filter_reg_min_r2,
+                icl_scaling_filter=icl_scaling_filter,
+                icl_scaling_min_improvement=icl_scaling_min_improvement,
+                context_rows=context_rows):
+            data['filtered'] = False
+            return data
+    raise SyntheticDataFilterError(
+        f"synthetic episode failed all filters after {attempts} attempts")
 
 
 def _apply_feature_importances(X, rng, mild=False):
@@ -1470,7 +2099,9 @@ def _inject_heavy_tails(X, rng, causal_cols=None, exclude_cols=None):
     return X
 
 
-def _add_latent_bayes_error(X, y_raw, n_features, rng, task_type):
+def _add_latent_bayes_error(
+        X, y_raw, n_features, rng, task_type='reg', *,
+        protected_cols=None, metadata=None):
     """Add latent dimensions and hard negatives to create realistic Bayes error.
 
     Three mechanisms:
@@ -1478,7 +2109,11 @@ def _add_latent_bayes_error(X, y_raw, n_features, rng, task_type):
     2. Hard negatives: features correlated with causal features but NOT with y
     3. Feature-dependent label noise (for classification)
     """
+    del task_type
     n_samples = X.shape[0]
+    protected_cols = set() if protected_cols is None else {
+        int(col) for col in protected_cols
+    }
 
     # 1. Latent influence: generate hidden features that affect y but aren't in X
     n_latent = max(1, int(n_features * rng.uniform(0.05, 0.2)))
@@ -1491,21 +2126,53 @@ def _add_latent_bayes_error(X, y_raw, n_features, rng, task_type):
     # 2. Hard negatives: features correlated with important features but not y
     if n_features >= 4 and rng.random() < 0.4:
         n_hard = max(1, int(n_features * rng.uniform(0.05, 0.15)))
-        # Pick source columns (likely important ones)
-        src_cols = rng.choice(n_features, size=min(n_hard, n_features),
-                              replace=False)
-        # Pick target columns to overwrite
-        available = [c for c in range(n_features) if c not in src_cols]
-        if available:
-            tgt_cols = rng.choice(available,
-                                  size=min(n_hard, len(available)),
-                                  replace=False)
-            for src, tgt in zip(src_cols, tgt_cols):
-                # Correlated with src but add enough noise to break y-correlation
-                noise_level = rng.uniform(0.5, 2.0)
-                col_std = np.std(X[:, src])
-                X[:, tgt] = X[:, src] + rng.normal(0, col_std * noise_level,
-                                                     n_samples)
+        # Prefer causal sources: a hard negative should resemble signal, while
+        # its destination must never destroy a column that the target uses.
+        source_pool = sorted(protected_cols) or list(range(n_features))
+        source_pool = [
+            col for col in source_pool
+            if 0 <= col < n_features and np.isfinite(X[:, col]).sum() >= 2
+        ]
+        n_sources = min(n_hard, len(source_pool))
+        src_cols = (
+            rng.choice(source_pool, size=n_sources, replace=False)
+            if n_sources else np.asarray([], dtype=np.int64)
+        )
+        available = [
+            col for col in range(n_features)
+            if col not in protected_cols and col not in src_cols
+        ]
+        n_pairs = min(len(src_cols), len(available))
+        tgt_cols = (
+            rng.choice(available, size=n_pairs, replace=False)
+            if n_pairs else np.asarray([], dtype=np.int64)
+        )
+        modified = []
+        modified_sources = []
+        for src, tgt in zip(src_cols, tgt_cols):
+            # This runs before structural missingness.  Still be nan-safe for
+            # callers supplying a partially observed feature matrix, and keep
+            # any pre-existing missingness in the destination intact.
+            src_values = np.asarray(X[:, src], dtype=np.float64)
+            finite = np.isfinite(src_values)
+            if finite.sum() < 2:
+                continue
+            src_median = float(np.median(src_values[finite]))
+            col_std = float(np.std(src_values[finite]))
+            if not np.isfinite(col_std) or col_std < 1e-8:
+                continue
+            source_filled = np.where(finite, src_values, src_median)
+            noise_level = rng.uniform(0.5, 2.0)
+            hard_negative = source_filled + rng.normal(
+                0.0, col_std * noise_level, n_samples)
+            missing_target = np.isnan(X[:, tgt])
+            X[:, tgt] = np.where(missing_target, np.nan, hard_negative)
+            modified.append(int(tgt))
+            modified_sources.append(int(src))
+        if metadata is not None and modified:
+            metadata.setdefault('hard_negative_cols', []).extend(modified)
+            metadata.setdefault('hard_negative_source_cols', []).extend(
+                modified_sources)
 
     return X, y_raw
 
@@ -1689,7 +2356,9 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
                                reg_dense=False, reg_deterministic_prob=0.20,
                                pareto_importance_prob=0.0,
                                latent_factor_prob=0.0,
-                               X_scm=None, X_scm_target=None):
+                               X_scm=None, X_scm_target=None,
+                               preserve_target_features=False,
+                               context_rows=None):
     """Generate regression dataset matching common real-world patterns.
 
     Covers regimes the SCM generator under-represents: real regression is
@@ -1714,9 +2383,11 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
                rich/correlated/discrete features paired with clean targets.
     """
     use_scm_features = X_scm is not None
+    labeled_rows = _resolve_context_rows(n_samples, context_rows)
     prior_meta = {
         'generator_family': 'regression_prior',
         'use_scm_features': bool(use_scm_features),
+        'context_rows': labeled_rows,
     }
     if use_scm_features:
         # Hybrid mode: use SCM-generated features with regression prior targets.
@@ -1727,18 +2398,19 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         X = np.array(target_source, dtype=np.float64, copy=True)
         nan_mask = np.isnan(X)
         if np.any(nan_mask):
-            col_means = np.nanmean(X, axis=0)
+            col_means = np.nanmean(X[:labeled_rows], axis=0)
             col_means = np.where(np.isfinite(col_means), col_means, 0.0)
             X = np.where(nan_mask, col_means[np.newaxis, :], X)
         X = np.where(np.isfinite(X), X, 0.0)
         # Standardize columns so target functions see unit-scale inputs
         for col in range(n_features):
             v = X[:, col]
-            std = np.std(v)
+            mean = float(np.mean(v[:labeled_rows]))
+            std = float(np.std(v[:labeled_rows]))
             if std > 1e-8:
-                X[:, col] = (v - np.mean(v)) / std
+                X[:, col] = (v - mean) / std
             else:
-                X[:, col] = v - np.mean(v)
+                X[:, col] = v - mean
     else:
         X = rng.standard_normal((n_samples, n_features)).astype(np.float64)
         X_model = None
@@ -1965,12 +2637,13 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         metric_dim = min(n_active, int(rng.integers(2, min(6, n_active) + 1)))
         metric_proj = rng.standard_normal((n_active, metric_dim)) / np.sqrt(max(n_active, 1))
         Z = X_active @ metric_proj
-        Z = Z - Z.mean(axis=0, keepdims=True)
-        Z_std = Z.std(axis=0, keepdims=True)
+        Z = Z - Z[:labeled_rows].mean(axis=0, keepdims=True)
+        Z_std = Z[:labeled_rows].std(axis=0, keepdims=True)
         Z = Z / np.where(Z_std > 1e-8, Z_std, 1.0)
         n_basis = int(rng.integers(3, min(12, max(4, n_samples // 8 + 1)) + 1))
-        if n_samples >= n_basis:
-            center_idx = rng.choice(n_samples, size=n_basis, replace=False)
+        if labeled_rows >= n_basis:
+            center_idx = rng.choice(
+                labeled_rows, size=n_basis, replace=False)
             centers = Z[center_idx]
         else:
             centers = rng.standard_normal((n_basis, metric_dim))
@@ -2004,8 +2677,8 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         latent_dim = min(n_active, int(rng.integers(2, min(6, n_active) + 1)))
         latent_proj = rng.standard_normal((n_active, latent_dim)) / np.sqrt(max(n_active, 1))
         Z = X_active @ latent_proj
-        Z = Z - Z.mean(axis=0, keepdims=True)
-        Z_std = Z.std(axis=0, keepdims=True)
+        Z = Z - Z[:labeled_rows].mean(axis=0, keepdims=True)
+        Z_std = Z[:labeled_rows].std(axis=0, keepdims=True)
         Z = Z / np.where(Z_std > 1e-8, Z_std, 1.0)
         n_terms = int(rng.integers(4, min(20, 3 * latent_dim + 6) + 1))
         y = np.zeros(n_samples)
@@ -2131,18 +2804,16 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
     # --- Smooth clipping for extreme y values (before adding noise) ---
     # Use tanh soft-clip instead of hard clip to avoid gradient cliffs
     # at boundaries. Scale: clip at ±50 with soft transition zone.
-    y_absmax = np.max(np.abs(y))
+    y_absmax = np.max(np.abs(y[:labeled_rows]))
     if y_absmax > 50:
         y = 50.0 * np.tanh(y / 50.0)
+
+    y_clean = y.copy()
 
     # --- Add noise for realistic R² ---
     # Zero-noise mode is controlled by reg_deterministic_prob and teaches the
     # model to produce exact predictions on clean datasets (physics,
     # forward kinematics, pure math functions).
-    y_signal_std = np.std(y)
-    if y_signal_std < 1e-8:
-        y_signal_std = 1.0
-
     # Decide if this is a zero-noise episode.
     _zero_noise_prob = float(np.clip(reg_deterministic_prob, 0.0, 1.0))
     if rng.random() < _zero_noise_prob:
@@ -2162,8 +2833,10 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
     prior_meta['deterministic'] = bool(target_r2 >= 1.0)
 
     if target_r2 < 1.0:
-        noise_var = y_signal_std ** 2 * (1 - target_r2) / max(target_r2, 0.01)
-        y += rng.standard_normal(n_samples) * np.sqrt(noise_var)
+        # Sample every noise component first.  Calibrating only the initial
+        # Gaussian component made heteroskedasticity and outliers silently push
+        # realized R² far below the requested value.
+        total_noise = rng.standard_normal(n_samples)
 
         # --- Heteroskedastic noise ---
         _het_prob = 0.15 if reg_denoise else 0.3
@@ -2172,8 +2845,8 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         if n_features >= 2 and rng.random() < _het_prob:
             driver_col = int(rng.choice(n_features))
             het_scale = np.abs(X[:, driver_col])
-            het_scale /= (np.mean(het_scale) + 1e-8)
-            y += rng.standard_normal(n_samples) * het_scale * y_signal_std * 0.3
+            het_scale /= (np.mean(het_scale[:labeled_rows]) + 1e-8)
+            total_noise += rng.standard_normal(n_samples) * het_scale * 0.3
 
         # --- Occasional y outliers ---
         _outlier_prob = 0.15 if reg_denoise else 0.3
@@ -2182,17 +2855,31 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         if rng.random() < _outlier_prob:
             n_outliers = max(1, int(n_samples * rng.uniform(0.01, 0.05)))
             outlier_idx = rng.choice(n_samples, size=n_outliers, replace=False)
-            y[outlier_idx] += rng.standard_normal(n_outliers) * y_signal_std * rng.uniform(3, 8)
+            total_noise[outlier_idx] += (
+                rng.standard_normal(n_outliers) * rng.uniform(3, 8))
+
+        calibrated_noise, realized_target_r2 = _calibrate_noise_to_target_r2(
+            y_clean, total_noise, target_r2, context_rows=context_rows)
+        y = y_clean + calibrated_noise
+    else:
+        realized_target_r2 = 1.0
+    prior_meta['realized_target_r2'] = float(realized_target_r2)
+    prior_meta['context_realized_target_r2'] = float(realized_target_r2)
 
     # --- Discretize some features (30%) ---
     _disc_prob = 0.15 if smooth_joint_prior else 0.3
     if not use_scm_features and rng.random() < _disc_prob and n_features >= 2:
         n_disc = max(1, int(rng.integers(1, max(2, n_features // 3 + 1))))
-        disc_cols = rng.choice(n_features, size=n_disc, replace=False)
+        disc_cols = (
+            np.asarray([], dtype=np.int64)
+            if preserve_target_features else
+            rng.choice(n_features, size=n_disc, replace=False)
+        )
         for col in disc_cols:
             n_bins = int(rng.integers(3, 15))
             col_vals = X[:, col]
-            edges = np.quantile(col_vals, np.linspace(0, 1, n_bins + 1))
+            edges = np.quantile(
+                col_vals[:labeled_rows], np.linspace(0, 1, n_bins + 1))
             X[:, col] = np.digitize(col_vals, edges[1:-1]).astype(np.float64)
 
     # --- Replace some features with noise ---
@@ -2202,7 +2889,11 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         _noise_prob = 0.08 if reg_dense else 0.2
     if not use_scm_features and rng.random() < _noise_prob and n_features >= 4:
         n_noise = max(1, int(rng.integers(1, max(2, n_features // 4 + 1))))
-        noise_cols = rng.choice(n_features, size=n_noise, replace=False)
+        noise_cols = (
+            np.asarray([], dtype=np.int64)
+            if preserve_target_features else
+            rng.choice(n_features, size=n_noise, replace=False)
+        )
         for col in noise_cols:
             X[:, col] = rng.standard_normal(n_samples)
 
@@ -2220,41 +2911,131 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         X = X.astype(np.float32)
         # Winsorize X per-column
         for col in range(n_features):
-            v = X[:, col]
-            finite = v[np.isfinite(v)]
-            if len(finite) < 5:
+            if preserve_target_features:
                 continue
-            med = np.median(finite)
-            mad = np.median(np.abs(finite - med)) * 1.4826
+            v = X[:, col]
+            reference = v[:labeled_rows]
+            finite_reference = reference[np.isfinite(reference)]
+            if len(finite_reference) < 5:
+                continue
+            med = np.median(finite_reference)
+            mad = np.median(np.abs(finite_reference - med)) * 1.4826
             if mad < 1e-8:
-                mad = max(np.std(finite), 1e-8)
+                mad = max(np.std(finite_reference), 1e-8)
             lo, hi = med - 6 * mad, med + 6 * mad
             X[:, col] = np.clip(v, lo, hi)
-        X = np.clip(X, -1e4, 1e4)
+        if not preserve_target_features:
+            X = np.clip(X, -1e4, 1e4)
         X = np.where(np.isfinite(X), X, 0.0)
         X_out = X
 
-    # Global normalization stabilizes the generator output scale, preventing
-    # extreme y values from blowing up the loss before the trainer's context-only
-    # normalization gets to it.
-    y = y.astype(np.float32)
+    # Fit target normalization on labeled context only.
     if not np.all(np.isfinite(y)):
         y = np.where(np.isfinite(y), y, 0.0)
-    y_mean = np.mean(y)
-    y_std = np.std(y)
-    if y_std > 1e-8:
-        y = (y - y_mean) / y_std
-    else:
-        y = y - y_mean
+    y, y_clean_out, _y_mean, _y_std = _normalize_target_pair(
+        y, y_clean, context_rows=context_rows)
+    y = y.astype(np.float32)
+    y_clean_out = y_clean_out.astype(np.float32)
+
+    prior_meta['oracle_exact'] = bool(preserve_target_features)
+    prior_meta['r2_oracle_bound'] = 0.0
 
     return {
         'X': X_out,
         'y': y,
+        'y_clean': y_clean_out,
         'task_type': 'reg',
         'n_classes': None,
         'filtered': False,
         'meta': prior_meta,
     }
+
+
+def _create_groupby_relative_numeric(X, cat_col, n_samples, rng, cardinality,
+                                     n_features, discrete_cols, cat_cols_iter,
+                                     signal_cols=None, context_rows=None,
+                                     excluded_cols=None):
+    """B-3 relative-GroupBy prior: target depends on a numeric feature's value
+    RELATIVE to its category group (x - E[x|c], x/E[x|c], or within-group rank).
+    Teaches the GroupBy / relative-aggregation ICL circuit (TabPrep Pattern B-3).
+
+    Overwrites cat_col with a Zipf-frequency categorical; picks a SEPARATE
+    continuous column as the numeric. BOTH stay RAW in X (the model must learn
+    the relationship in-context). Returns (row_effect, n_cols_used).
+    n_cols_used is 1 — the numeric column is read, not overwritten.
+    """
+    # 1. Zipf categorical into cat_col
+    alpha = rng.uniform(0.6, 1.4)
+    ranks = np.arange(1, cardinality + 1, dtype=np.float64)
+    probs = ranks ** (-alpha); probs /= probs.sum()
+    cat_ids = rng.choice(cardinality, size=n_samples, replace=True, p=probs)
+    X[:, cat_col] = cat_ids.astype(np.float64, copy=False)
+    if signal_cols is not None:
+        signal_cols.add(int(cat_col))
+
+    # 2. pick a continuous numeric column (not already discrete/categorical)
+    excluded_cols = set() if excluded_cols is None else set(excluded_cols)
+    available = [
+        c for c in range(n_features)
+        if c != cat_col and c not in discrete_cols
+        and c not in cat_cols_iter and c not in excluded_cols
+    ]
+    if not available:
+        eff = rng.standard_normal(cardinality)
+        eff -= eff.mean(); eff /= (eff.std() + 1e-8)
+        return eff[cat_ids].astype(np.float64, copy=False), 1
+    num_col = int(rng.choice(available))
+    if signal_cols is not None:
+        signal_cols.add(num_col)
+    x = X[:, num_col].astype(np.float64)
+
+    # 3. Estimate per-group statistics from labeled context only.  Query rows
+    # must not change the target assigned to an otherwise identical context
+    # row.  Unseen query groups fall back to the context-global statistic.
+    labeled_rows = _resolve_context_rows(n_samples, context_rows)
+    context_ids = cat_ids[:labeled_rows]
+    context_x = x[:labeled_rows]
+    global_mean = float(np.mean(context_x)) if len(context_x) else 0.0
+    grp_sum = np.bincount(
+        context_ids, weights=context_x, minlength=cardinality)
+    grp_cnt = np.bincount(
+        context_ids, minlength=cardinality).astype(np.float64)
+    group_means = np.full(cardinality, global_mean, dtype=np.float64)
+    seen_groups = grp_cnt > 0
+    group_means[seen_groups] = grp_sum[seen_groups] / grp_cnt[seen_groups]
+    grp_mean = group_means[cat_ids]
+
+    # 4. relative op
+    op = int(rng.integers(0, 3))
+    if op == 0:                       # x - E[x|c]
+        rel = x - grp_mean
+    elif op == 1:                     # x / E[x|c], denominator-guarded (repro lesson)
+        denom = grp_mean.copy()
+        small = np.abs(denom) < 1e-3
+        denom[small] = np.where(denom[small] >= 0, 1e-3, -1e-3)
+        rel = np.clip(x / denom, -10.0, 10.0)
+    else:                             # within-group empirical CDF in [0,1]
+        rel = np.full(n_samples, 0.5, dtype=np.float64)
+        global_sorted = np.sort(context_x)
+        for g in np.unique(cat_ids):
+            row_mask = cat_ids == g
+            reference = np.sort(context_x[context_ids == g])
+            if len(reference) == 0:
+                reference = global_sorted
+            if len(reference) > 1:
+                # Mid-rank ECDF evaluated against context values only.
+                left = np.searchsorted(reference, x[row_mask], side='left')
+                right = np.searchsorted(reference, x[row_mask], side='right')
+                rel[row_mask] = (left + right) / (2.0 * len(reference))
+
+    # 5. standardize -> target effect with random sign/scale
+    context_mean = float(np.mean(rel[:labeled_rows]))
+    rel = rel - context_mean
+    s = float(np.std(rel[:labeled_rows]))
+    if s > 1e-8:
+        rel = rel / s
+    row_effect = rel * rng.standard_normal()
+    return row_effect.astype(np.float64, copy=False), 1
 
 
 def generate_dataset(n_samples, n_features, task_type, n_classes=None,
@@ -2265,7 +3046,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                      synth_v5_declone=True, synth_v5_mixture=False,
                      reg_denoise=False, reg_dense=False,
                      probabilistic_labels=False, nominal_categoricals=False,
-                     enhanced_missingness=False):
+                     enhanced_missingness=False, context_rows=None):
     """Generate a synthetic dataset using hierarchical SCM.
 
     Args:
@@ -2301,6 +3082,8 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                   noise features 0-50%→0-20%, structural missingness 30%→15%,
                   Gaussian noise scale capped at 0.15, discretization 0-80%→0-40%,
                   target transforms 40%→20%
+        context_rows: number of labeled rows. Group-relative statistics are
+                  estimated from these rows only; defaults to all rows.
 
     Returns:
         dict with keys:
@@ -2639,6 +3422,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
         n_disc = int(n_features * disc_frac)
         if n_disc > 0:
             disc_cols = rng.choice(n_features, size=n_disc, replace=False)
+            causal_disc_cols = np.asarray([], dtype=np.int64)
             for col in disc_cols:
                 if force_binary_episode:
                     # Strict 2-bucket binarization with random per-column
@@ -2668,6 +3452,9 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                     X[:, col] = np.array(
                         [rank_map[v] for v in rounded], dtype=np.float64)
                 discrete_cols.add(int(col))
+            if len(causal_disc_cols):
+                meta['coarsened_signal_cols'] = sorted(
+                    int(col) for col in causal_disc_cols)
 
     # --- 5.5 True categorical features [synth_v3] ---
     # Unlike discretization (which bins continuous values preserving order),
@@ -2792,20 +3579,11 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                 X[np.ix_(block_rows, block_cols)] = np.nan
                 _did_enhanced = True
             elif _enh_type == 2:
-                # Target-dependent: features missing when y_raw is extreme
-                # (outcome-dependent censoring)
-                n_td_cols = min(int(rng.integers(1, 4)), n_features)
-                td_cols = rng.choice(n_features, size=n_td_cols, replace=False)
-                for col in td_cols:
-                    if rng.random() < 0.5:
-                        pct = rng.uniform(75, 95)
-                        threshold = np.nanpercentile(y_raw, pct)
-                        X[y_raw > threshold, col] = np.nan
-                    else:
-                        pct = rng.uniform(5, 25)
-                        threshold = np.nanpercentile(y_raw, pct)
-                        X[y_raw < threshold, col] = np.nan
-                _did_enhanced = True
+                # Covariate-dependent tail censoring. The historical variant
+                # read realized y for every row, exposing query labels through
+                # the missingness mask.
+                _did_enhanced = _apply_feature_dependent_tail_missingness(
+                    X, rng, context_rows=context_rows)
             elif _enh_type == 3 and discrete_cols:
                 # Categorical missing-as-category: replace NaN with new level
                 # for discrete columns. The model learns that "missing" is a
@@ -2857,26 +3635,15 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
     # via hidden columns. Stacking both causes double-dipping and makes tasks
     # too hard (oob_auc/oob_r2 far below real data).
     if augment_v4 and not synth_v5 and n_features >= 4 and rng.random() < 0.4:
-        X, y_raw = _add_latent_bayes_error(X, y_raw, n_features, rng, task_type)
+        X, y_raw = _add_latent_bayes_error(
+            X, y_raw, n_features, rng, task_type,
+            protected_cols=_causal_col_indices, metadata=meta)
 
     # --- 7. Create target y ---
+    y_raw = _add_entity_lookup_signal(
+        y_raw, entity_lookup_signal, rng, meta,
+        context_rows=context_rows if task_type == 'reg' else None)
     if task_type == 'cls':
-        if np.std(entity_lookup_signal) > 1e-8:
-            # Make the repeated-entity columns genuinely predictive without
-            # letting them swamp the original SCM target.
-            entity_std = np.std(entity_lookup_signal)
-            y_std_orig = np.std(y_raw)
-            if y_std_orig < 1e-8:
-                y_std_orig = 1.0
-            target_ratio = rng.uniform(0.25, 0.55)
-            entity_scale = (
-                np.sqrt(target_ratio / max(1 - target_ratio, 1e-6))
-                * y_std_orig / entity_std
-            )
-            y_raw = y_raw + entity_lookup_signal * entity_scale
-            y_raw = np.where(np.isfinite(y_raw), y_raw, 0.0)
-            meta['entity_lookup_signal_std'] = float(entity_std)
-            meta['entity_lookup_target_ratio'] = float(target_ratio)
         if n_classes is None:
             n_classes = int(rng.integers(2, 11))
 
@@ -2996,12 +3763,8 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
             # Scale extra terms to contribute 30-70% of total y variance.
             # Without this, n_extra terms with weight~N(0,1) can have
             # variance ~50x the original SCM target, drowning it out.
-            extra_std = np.std(extra)
-            y_std_orig = np.std(y_raw)
-            if extra_std > 1e-8 and y_std_orig > 1e-8:
-                target_ratio = rng.uniform(0.3, 0.7)
-                extra_scale = np.sqrt(target_ratio / (1 - target_ratio)) * y_std_orig / extra_std
-                extra = extra * extra_scale
+            extra = _scale_rich_target_component(
+                extra, y_raw, rng, context_rows=context_rows)
             y_raw = y_raw + extra
 
             # Safety clip after adding dependencies
@@ -3010,8 +3773,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
 
         # Normalize regression targets to zero-mean, unit-variance
         y = y_raw.astype(np.float32)
-        y_mean = np.mean(y)
-        y_std = np.std(y)
+        y_mean, y_std = _context_mean_std(y, context_rows)
         if y_std > 1e-8:
             y = (y - y_mean) / y_std
         else:
@@ -3027,18 +3789,17 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
             if transform_type == 0:
                 # Exponential: log-normal-like (prices, salaries)
                 scale = rng.uniform(0.3, 0.8)
-                y = np.sign(y) * np.expm1(np.abs(y) * scale)
+                y = _signed_expm1_with_linear_tails(y, scale)
             elif transform_type == 1:
                 # Power: heavy-tailed (counts, sizes)
                 power = rng.uniform(1.5, 3.0)
-                y = np.sign(y) * (np.abs(y) ** power)
+                y = _signed_power_with_linear_tails(y, power)
             else:
                 # Sqrt: compressed (rates, probabilities)
                 y = np.sign(y) * np.sqrt(np.abs(y))
             # Re-normalize after transform
             y = y.astype(np.float32)
-            y_mean = np.mean(y)
-            y_std = np.std(y)
+            y_mean, y_std = _context_mean_std(y, context_rows)
             if y_std > 1e-8:
                 y = (y - y_mean) / y_std
 
@@ -3086,13 +3847,14 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
     # and cause loss spikes / training collapse.
     for col in range(X.shape[1]):
         v = X[:, col]
-        finite = v[np.isfinite(v)]
-        if len(finite) < 5:
+        reference = _context_prefix(v, context_rows)
+        finite_reference = reference[np.isfinite(reference)]
+        if len(finite_reference) < 5:
             continue
-        med = np.median(finite)
-        mad = np.median(np.abs(finite - med)) * 1.4826
+        med = np.median(finite_reference)
+        mad = np.median(np.abs(finite_reference - med)) * 1.4826
         if mad < 1e-8:
-            mad = max(np.std(finite), 1e-8)
+            mad = max(np.std(finite_reference), 1e-8)
         lo, hi = med - 6 * mad, med + 6 * mad
         # Preserve NaN; only clip finite values
         finite_mask = np.isfinite(v)
@@ -3119,8 +3881,8 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
             dup_frac = min(rng.exponential(0.20), 0.50)
         n_dup = max(1, int(n_samples * dup_frac))
         # Sample rows to duplicate (with replacement — same row can appear 3+x)
-        src_idx = rng.choice(n_samples, size=n_dup, replace=True)
-        dst_idx = rng.choice(n_samples, size=n_dup, replace=False)
+        src_idx, dst_idx = _sample_context_safe_duplicate_indices(
+            n_samples, n_dup, rng, context_rows=context_rows)
         X[dst_idx] = X[src_idx]
         y[dst_idx] = y[src_idx]
         if X_target is not None:
@@ -3141,7 +3903,9 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
     }
 
 
-def _random_decision_tree_predict(X, feature_cols, rng, depth=4, n_classes_leaf=0):
+def _random_decision_tree_predict(
+        X, feature_cols, rng, depth=4, n_classes_leaf=0,
+        context_rows=None):
     """Generate predictions from a random (unfitted) decision tree.
 
     Procedurally generates random axis-aligned splits and random leaf values.
@@ -3166,11 +3930,13 @@ def _random_decision_tree_predict(X, feature_cols, rng, depth=4, n_classes_leaf=
         leaf_values = rng.standard_normal(n_leaves)
 
     leaf_idx = np.zeros(n_samples, dtype=np.int64)
+    labeled_rows = _resolve_context_rows(n_samples, context_rows)
     for d in range(depth):
         feat = feature_cols[d % len(feature_cols)]
         col_vals = X[:, feat].copy()
         col_vals = np.where(np.isfinite(col_vals), col_vals, 0.0)
-        finite = col_vals[np.isfinite(col_vals)]
+        finite = col_vals[:labeled_rows]
+        finite = finite[np.isfinite(finite)]
         if len(finite) > 1:
             pct = rng.uniform(20, 80)
             threshold = np.nanpercentile(finite, pct)
@@ -3185,7 +3951,8 @@ def _random_decision_tree_predict(X, feature_cols, rng, depth=4, n_classes_leaf=
 
 def _generate_tree_prior_episode(n_samples, n_features, task_type,
                                  n_classes, rng,
-                                 probabilistic_labels=False):
+                                 probabilistic_labels=False,
+                                 context_rows=None):
     """Generate a dataset with tree-ensemble targets.
 
     Produces piecewise-constant targets from random decision tree ensembles.
@@ -3230,22 +3997,22 @@ def _generate_tree_prior_episode(n_samples, n_features, task_type,
     for _ in range(n_trees):
         # Each tree uses a random feature subset
         tree_feats = rng.choice(n_features, size=n_active, replace=False)
-        y += _random_decision_tree_predict(X, tree_feats, rng, depth=tree_depth)
+        y += _random_decision_tree_predict(
+            X, tree_feats, rng, depth=tree_depth,
+            context_rows=context_rows)
 
     y /= n_trees  # Average
 
     # --- Add noise + create final target ---
     if task_type == 'reg':
-        # Calibrated noise
-        y_std = np.std(y)
-        if y_std > 1e-8:
-            target_r2 = rng.uniform(0.4, 0.95)
-            noise_std = y_std * np.sqrt((1 - target_r2) / max(target_r2, 1e-6))
-            y += rng.standard_normal(n_samples) * noise_std
-        # Normalize
-        mu, std = np.mean(y), np.std(y)
-        if std > 1e-8:
-            y = (y - mu) / std
+        y_clean = y.copy()
+        target_r2 = rng.uniform(0.4, 0.95)
+        noise, realized_r2 = _calibrate_noise_to_target_r2(
+            y_clean, rng.standard_normal(n_samples), target_r2,
+            context_rows=context_rows)
+        y = y_clean + noise
+        y, y_clean_out, _mu, _std = _normalize_target_pair(
+            y, y_clean, context_rows=context_rows)
         y = y.astype(np.float32)
         actual_n_classes = None
     else:
@@ -3274,14 +4041,22 @@ def _generate_tree_prior_episode(n_samples, n_features, task_type,
         'task_type': task_type,
         'n_classes': actual_n_classes,
         'filtered': False,
-        'meta': {'tree_prior': True, 'n_trees': n_trees, 'tree_depth': tree_depth},
+        'y_clean': y_clean_out.astype(np.float32) if task_type == 'reg' else None,
+        'meta': {
+            'tree_prior': True,
+            'generator_family': 'tree_prior',
+            'n_trees': n_trees,
+            'tree_depth': tree_depth,
+            'realized_target_r2': float(realized_r2) if task_type == 'reg' else None,
+        },
     }
 
 
 def _generate_gp_prior_episode(n_samples, n_features, task_type,
                                n_classes, rng,
                                reg_denoise=False,
-                               probabilistic_labels=False):
+                               probabilistic_labels=False,
+                               context_rows=None):
     """Generate a dataset with a Gaussian Process smooth function target.
 
     Uses Random Fourier Features (RFF) to approximate GP samples:
@@ -3295,6 +4070,9 @@ def _generate_gp_prior_episode(n_samples, n_features, task_type,
     Directly produces smooth joint multivariate functions — the data shape
     of sulfur, debutanizer, space_ga, kin8nm, houses, physiochemical_protein.
     """
+    regression_context_rows = context_rows if task_type == 'reg' else None
+    labeled_rows = _resolve_context_rows(
+        n_samples, regression_context_rows)
     # --- Generate features ---
     X = np.zeros((n_samples, n_features), dtype=np.float64)
 
@@ -3314,13 +4092,19 @@ def _generate_gp_prior_episode(n_samples, n_features, task_type,
 
     # Standardize
     for j in range(n_features):
-        mu, s = np.mean(X[:, j]), np.std(X[:, j])
+        reference = X[:labeled_rows, j]
+        mu, s = np.mean(reference), np.std(reference)
         if s > 1e-8:
             X[:, j] = (X[:, j] - mu) / s
 
     # --- Select active features for the GP target ---
-    max_active = min(20, n_features)
-    min_active = min(4, n_features)
+    if regression_context_rows is None:
+        max_active = min(20, n_features)
+        min_active = min(4, n_features)
+    else:
+        context_active_cap = max(2, min(8, labeled_rows // 32))
+        max_active = min(context_active_cap, n_features)
+        min_active = min(2, n_features)
     n_active = int(rng.integers(min_active, max_active + 1))
     active = rng.choice(n_features, size=n_active, replace=False)
     X_active = X[:, active]
@@ -3347,7 +4131,8 @@ def _generate_gp_prior_episode(n_samples, n_features, task_type,
         X_active = (L @ X_active.T).T
         # Re-standardize per column
         for j in range(n_active):
-            mu, s = np.mean(X_active[:, j]), np.std(X_active[:, j])
+            reference = X_active[:labeled_rows, j]
+            mu, s = np.mean(reference), np.std(reference)
             if s > 1e-8:
                 X_active[:, j] = (X_active[:, j] - mu) / s
         # Write correlated features back to the full X matrix
@@ -3359,7 +4144,10 @@ def _generate_gp_prior_episode(n_samples, n_features, task_type,
     # Per-feature lengthscales — use LONGER lengthscales for smoother functions
     # Real gap datasets (sulfur, debutanizer) have very smooth targets.
     # Longer lengthscale = smoother GP = higher R2 = matches real data better.
-    lengthscales = rng.uniform(1.0, 5.0, size=n_active)
+    if regression_context_rows is None:
+        lengthscales = rng.uniform(1.0, 5.0, size=n_active)
+    else:
+        lengthscales = rng.uniform(2.0, 6.0, size=n_active)
 
     # Amplitude
     amplitude = rng.uniform(0.5, 2.0)
@@ -3367,7 +4155,15 @@ def _generate_gp_prior_episode(n_samples, n_features, task_type,
     # Number of Random Fourier Features — fewer = smoother GP sample.
     # Real gap datasets have smooth targets (R2=0.4-0.8 with ExtraTrees).
     # Too many RFF creates noisy, oscillatory functions.
-    n_rff = int(rng.integers(30, 150))
+    if regression_context_rows is None:
+        n_rff = int(rng.integers(30, 150))
+    else:
+        max_rff = max(4, min(64, labeled_rows // 4))
+        min_rff = min(32, max_rff)
+        n_rff = (
+            min_rff if min_rff == max_rff
+            else int(rng.integers(min_rff, max_rff + 1))
+        )
 
     # --- Sample spectral frequencies from kernel's spectral density ---
     if kernel_type == 'rbf':
@@ -3412,21 +4208,33 @@ def _generate_gp_prior_episode(n_samples, n_features, task_type,
 
     # --- Noise + normalization ---
     if task_type == 'reg':
-        y_std = np.std(y)
+        y_clean = y.copy()
+        y_std = float(np.std(y[:labeled_rows]))
+        target_r2 = 1.0
+        raw_noise = np.zeros(n_samples, dtype=np.float64)
         if y_std > 1e-8:
             # GP targets tend to be cleaner — higher R²
             target_r2 = rng.uniform(0.75, 0.995) if reg_denoise else rng.uniform(0.55, 0.98)
             noise_std = y_std * np.sqrt((1 - target_r2) / max(target_r2, 1e-6))
-            y += rng.standard_normal(n_samples) * noise_std
+            raw_noise += rng.standard_normal(n_samples) * noise_std
         # Heteroskedastic noise (15% chance)
         if rng.random() < 0.15:
             het_feat = rng.choice(active)
             het_scale = 0.3 * np.abs(X[:, het_feat])
-            y += rng.standard_normal(n_samples) * het_scale * 0.1
-        mu, std = np.mean(y), np.std(y)
-        if std > 1e-8:
-            y = (y - mu) / std
+            raw_noise += rng.standard_normal(n_samples) * het_scale * 0.1
+        if target_r2 < 1.0:
+            calibrated_noise, realized_target_r2 = _calibrate_noise_to_target_r2(
+                y_clean, raw_noise, target_r2,
+                context_rows=regression_context_rows)
+            y = y_clean + calibrated_noise
+        else:
+            calibrated_noise = np.zeros_like(y_clean)
+            realized_target_r2 = 1.0
+            y = y_clean.copy()
+        y, y_clean, _mu, _std = _normalize_target_pair(
+            y, y_clean, context_rows=regression_context_rows)
         y = y.astype(np.float32)
+        y_clean = y_clean.astype(np.float32)
         actual_n_classes = None
     else:
         if n_classes is None:
@@ -3450,27 +4258,50 @@ def _generate_gp_prior_episode(n_samples, n_features, task_type,
             for col in noise_cols:
                 X[:, col] = rng.standard_normal(n_samples)
 
-    return {
+    meta = {
+        'gp_prior': True,
+        'generator_family': 'gp_prior',
+        'kernel': kernel_type,
+        'n_active': n_active,
+        'n_rff': n_rff,
+    }
+    if task_type == 'reg':
+        meta.update({
+            'context_rows': labeled_rows,
+            'target_r2': float(target_r2),
+            'context_realized_target_r2': float(realized_target_r2),
+            'noise_std': float(np.std(calibrated_noise[:labeled_rows])),
+            'oracle_exact': True,
+            'r2_oracle_bound': 0.0,
+        })
+
+    out = {
         'X': X,
         'y': y.astype(np.float32),
         'task_type': task_type,
         'n_classes': actual_n_classes,
         'filtered': False,
-        'meta': {'gp_prior': True, 'kernel': kernel_type,
-                 'n_active': n_active, 'n_rff': n_rff},
+        'meta': meta,
     }
+    if task_type == 'reg':
+        out['y_clean'] = y_clean
+    return out
 
 
 def _generate_quadratic_surface_episode(n_samples, n_features, task_type,
                                         n_classes, rng,
                                         reg_denoise=False,
-                                        probabilistic_labels=False):
+                                        probabilistic_labels=False,
+                                        context_rows=None):
     """Generate a dataset with a quadratic response surface target.
 
     y = x^T M x + w^T x + b over a random subset of 4-20 features.
     Covers smooth coupled multivariate interactions (industrial process
     control, kinematics, response surfaces).
     """
+    regression_context_rows = context_rows if task_type == 'reg' else None
+    labeled_rows = _resolve_context_rows(
+        n_samples, regression_context_rows)
     X = np.zeros((n_samples, n_features), dtype=np.float64)
     for j in range(n_features):
         dist = int(rng.integers(0, 4))
@@ -3487,12 +4318,21 @@ def _generate_quadratic_surface_episode(n_samples, n_features, task_type,
 
     for j in range(n_features):
         col = X[:, j]
-        mu, s = np.mean(col), np.std(col)
+        reference = col[:labeled_rows]
+        mu, s = np.mean(reference), np.std(reference)
         if s > 1e-8:
             X[:, j] = (col - mu) / s
 
-    max_active = min(20, n_features)
-    min_active = min(4, n_features)
+    if regression_context_rows is None:
+        max_active = min(20, n_features)
+        min_active = min(4, n_features)
+    else:
+        max_quadratic_terms = max(1, labeled_rows // 5)
+        context_active_cap = int(
+            np.floor((np.sqrt(1.0 + 8.0 * max_quadratic_terms) - 1.0) / 2.0)
+        )
+        max_active = min(20, n_features, max(1, context_active_cap))
+        min_active = min(2, max_active)
     n_active = int(rng.integers(min_active, max_active + 1))
     active = rng.choice(n_features, size=n_active, replace=False)
     X_active = X[:, active]
@@ -3532,19 +4372,31 @@ def _generate_quadratic_surface_episode(n_samples, n_features, task_type,
                 X[:, ct] = rho * X[:, src] + np.sqrt(1 - rho**2) * rng.standard_normal(n_samples)
 
     if task_type == 'reg':
-        y_std = np.std(y)
+        y_clean = y.copy()
+        y_std = float(np.std(y[:labeled_rows]))
+        target_r2 = 1.0
+        raw_noise = np.zeros(n_samples, dtype=np.float64)
         if y_std > 1e-8:
             target_r2 = rng.uniform(0.6, 0.98) if reg_denoise else rng.uniform(0.4, 0.95)
             noise_std = y_std * np.sqrt((1 - target_r2) / max(target_r2, 1e-6))
-            y += rng.standard_normal(n_samples) * noise_std
+            raw_noise += rng.standard_normal(n_samples) * noise_std
         if rng.random() < 0.15:
             het_feat = rng.choice(active)
             het_scale = 0.5 * np.abs(X[:, het_feat])
-            y += rng.standard_normal(n_samples) * het_scale * 0.1
-        mu, std = np.mean(y), np.std(y)
-        if std > 1e-8:
-            y = (y - mu) / std
+            raw_noise += rng.standard_normal(n_samples) * het_scale * 0.1
+        if target_r2 < 1.0:
+            calibrated_noise, realized_target_r2 = _calibrate_noise_to_target_r2(
+                y_clean, raw_noise, target_r2,
+                context_rows=regression_context_rows)
+            y = y_clean + calibrated_noise
+        else:
+            calibrated_noise = np.zeros_like(y_clean)
+            realized_target_r2 = 1.0
+            y = y_clean.copy()
+        y, y_clean, _mu, _std = _normalize_target_pair(
+            y, y_clean, context_rows=regression_context_rows)
         y = y.astype(np.float32)
+        y_clean = y_clean.astype(np.float32)
         actual_n_classes = None
     else:
         if n_classes is None:
@@ -3567,20 +4419,40 @@ def _generate_quadratic_surface_episode(n_samples, n_features, task_type,
         for col in noise_cols:
             X[:, col] = rng.standard_normal(n_samples)
 
-    return {
+    meta = {
+        'quadratic_surface': True,
+        'generator_family': 'quadratic_surface',
+        'n_active': n_active,
+        'quadratic_terms': n_active * (n_active + 1) // 2,
+    }
+    if task_type == 'reg':
+        meta.update({
+            'context_rows': labeled_rows,
+            'target_r2': float(target_r2),
+            'context_realized_target_r2': float(realized_target_r2),
+            'noise_std': float(np.std(calibrated_noise[:labeled_rows])),
+            'oracle_exact': True,
+            'r2_oracle_bound': 0.0,
+        })
+
+    out = {
         'X': X,
         'y': y.astype(np.float32),
         'task_type': task_type,
         'n_classes': actual_n_classes,
         'filtered': False,
-        'meta': {'quadratic_surface': True, 'n_active': n_active},
+        'meta': meta,
     }
+    if task_type == 'reg':
+        out['y_clean'] = y_clean
+    return out
 
 
 def _generate_sparse_nonlinear_episode(n_samples, n_features, task_type,
                                        n_classes, rng,
                                        reg_denoise=False,
-                                       probabilistic_labels=False):
+                                       probabilistic_labels=False,
+                                       context_rows=None):
     """QSAR/MIP-inspired high-dim sparse nonlinear with realistic correlation structure.
 
     Real chemistry/genomics datasets have:
@@ -3599,6 +4471,10 @@ def _generate_sparse_nonlinear_episode(n_samples, n_features, task_type,
     - Remaining features are redundant proxies (correlated via blocks) or distractors
     - 30% of episodes add a threshold effect; 50% use heteroskedastic noise
     """
+    regression_context_rows = context_rows if task_type == 'reg' else None
+    labeled_rows = _resolve_context_rows(
+        n_samples, regression_context_rows)
+
     # === 1. Feature blocks with multicollinearity ===
     # n_blocks: roughly n_features / avg_block_size, clipped to [max(1, n/10), min(80, n/2)]
     min_blocks = max(1, min(10, n_features // 10))
@@ -3638,8 +4514,9 @@ def _generate_sparse_nonlinear_episode(n_samples, n_features, task_type,
     # Standardize each feature column
     for j in range(n_features):
         col = X[:, j]
-        mu = np.mean(col)
-        s = np.std(col)
+        reference = col[:labeled_rows]
+        mu = np.mean(reference)
+        s = np.std(reference)
         if s > 1e-8:
             X[:, j] = (col - mu) / s
 
@@ -3753,43 +4630,62 @@ def _generate_sparse_nonlinear_episode(n_samples, n_features, task_type,
 
     # === 4. Weak additive background (linear over weak features) ===
     if n_weak > 0:
-        y_strong_std = max(float(np.std(y)), 1e-8)
+        y_strong_std = max(float(np.std(y[:labeled_rows])), 1e-8)
         weak_scale_frac = rng.uniform(0.10, 0.30)
         X_weak = X[:, weak_indices]
         weak_coefs = rng.standard_normal(n_weak)
         y_weak_raw = X_weak @ weak_coefs
-        y_weak_std = max(float(np.std(y_weak_raw)), 1e-8)
+        y_weak_std = max(
+            float(np.std(y_weak_raw[:labeled_rows])), 1e-8)
         y = y + y_weak_raw * (weak_scale_frac * y_strong_std / y_weak_std)
 
     # === 5. Occasional threshold effect (30%) ===
     if rng.random() < 0.30 and n_strong > 0:
         idx = int(rng.integers(0, n_strong))
         threshold = rng.uniform(-1.0, 1.0)
-        effect_scale = max(float(np.std(y)), 1e-8) * rng.uniform(0.2, 0.6)
+        effect_scale = max(
+            float(np.std(y[:labeled_rows])), 1e-8) * rng.uniform(0.2, 0.6)
         above = (X_strong[:, idx] > threshold).astype(np.float64) * 2.0 - 1.0
         y = y + above * effect_scale
 
     # === 6. Noise (heteroskedastic 50% / homoscedastic 50%) ===
     if task_type == 'reg':
-        y_std = float(np.std(y))
+        y_clean = y.copy()
+        y_std = float(np.std(y[:labeled_rows]))
+        target_r2 = 1.0
+        calibrated_noise = np.zeros(n_samples, dtype=np.float64)
         if y_std > 1e-8:
-            target_r2 = rng.uniform(0.5, 0.95) if reg_denoise else rng.uniform(0.3, 0.90)
+            if regression_context_rows is not None:
+                target_r2 = rng.uniform(0.65, 0.95)
+            else:
+                target_r2 = (
+                    rng.uniform(0.5, 0.95)
+                    if reg_denoise else rng.uniform(0.3, 0.90)
+                )
             base_noise_std = y_std * np.sqrt((1.0 - target_r2) / max(target_r2, 1e-6))
 
             if rng.random() < 0.5 and n_strong > 0:
                 driver_idx = int(rng.integers(0, n_strong))
                 driver = X_strong[:, driver_idx]
                 noise_scale = np.abs(driver) + 0.5
-                noise_scale = noise_scale / max(float(np.mean(noise_scale)), 1e-8)
-                y = y + rng.standard_normal(n_samples) * base_noise_std * noise_scale
+                noise_scale = noise_scale / max(
+                    float(np.mean(noise_scale[:labeled_rows])), 1e-8)
+                raw_noise = (
+                    rng.standard_normal(n_samples) * base_noise_std * noise_scale)
             else:
-                y = y + rng.standard_normal(n_samples) * base_noise_std
+                raw_noise = rng.standard_normal(n_samples) * base_noise_std
+            calibrated_noise, realized_target_r2 = _calibrate_noise_to_target_r2(
+                y_clean, raw_noise, target_r2,
+                context_rows=regression_context_rows)
+            y = y_clean + calibrated_noise
+        else:
+            realized_target_r2 = 1.0
+            y = y_clean.copy()
 
-        mu = float(np.mean(y))
-        sd = float(np.std(y))
-        if sd > 1e-8:
-            y = (y - mu) / sd
+        y, y_clean, _mu, _std = _normalize_target_pair(
+            y, y_clean, context_rows=regression_context_rows)
         y = y.astype(np.float32)
+        y_clean = y_clean.astype(np.float32)
         actual_n_classes = None
     else:
         if n_classes is None:
@@ -3803,25 +4699,41 @@ def _generate_sparse_nonlinear_episode(n_samples, n_features, task_type,
         y = y_cls
         actual_n_classes = n_classes
 
-    return {
+    meta = {
+        'sparse_nonlinear_v2': True,
+        'generator_family': 'sparse_nonlinear',
+        'n_strong': n_strong,
+        'n_weak': n_weak,
+        'n_blocks': n_blocks,
+        'fn_type': fn_name,
+    }
+    if task_type == 'reg':
+        meta.update({
+            'context_rows': labeled_rows,
+            'target_r2': float(target_r2),
+            'context_realized_target_r2': float(realized_target_r2),
+            'noise_std': float(np.std(calibrated_noise[:labeled_rows])),
+            'oracle_exact': True,
+            'r2_oracle_bound': 0.0,
+        })
+
+    out = {
         'X': X.astype(np.float32),
         'y': y.astype(np.float32),
         'task_type': task_type,
         'n_classes': actual_n_classes,
         'filtered': False,
-        'meta': {
-            'sparse_nonlinear_v2': True,
-            'n_strong': n_strong,
-            'n_weak': n_weak,
-            'n_blocks': n_blocks,
-            'fn_type': fn_name,
-        },
+        'meta': meta,
     }
+    if task_type == 'reg':
+        out['y_clean'] = y_clean
+    return out
 
 
 def _generate_lookup_prior_episode(n_samples, n_features, task_type,
                                    n_classes, rng,
-                                   probabilistic_labels=False):
+                                   probabilistic_labels=False,
+                                   context_rows=None):
     """Generate a dataset with categorical lookup targets.
 
     Produces data where y = f(entity_ids) + continuous_signal + noise.
@@ -3832,27 +4744,60 @@ def _generate_lookup_prior_episode(n_samples, n_features, task_type,
     Target depends primarily on entity-specific effects.
     """
     X = np.zeros((n_samples, n_features), dtype=np.float64)
+    regression_context_rows = context_rows if task_type == 'reg' else None
+    labeled_rows = _resolve_context_rows(
+        n_samples, regression_context_rows)
 
     # --- Categorical ID columns (1-3) ---
-    n_id_cols = min(int(rng.integers(1, 4)), max(1, n_features // 3))
-    n_cont = max(2, n_features - n_id_cols)
-    n_id_cols = n_features - n_cont  # Adjust if needed
+    if task_type == 'reg':
+        # Retain an ID column even for explicit one- and two-feature episodes.
+        if n_features <= 1:
+            n_id_cols, n_cont = 1, 0
+        else:
+            n_id_cols = min(
+                int(rng.integers(1, 4)), max(1, n_features - 1))
+            n_cont = n_features - n_id_cols
+    else:
+        # Preserve the released classification geometry.
+        n_id_cols = min(
+            int(rng.integers(1, 4)), max(1, n_features // 3))
+        n_cont = max(2, n_features - n_id_cols)
+        n_id_cols = n_features - n_cont
 
     entity_signal = np.zeros(n_samples, dtype=np.float64)
+    cardinalities = []
+    minimum_context_counts = []
+    query_unseen_fractions = []
+    unseen_cardinalities = []
     for j in range(n_id_cols):
         # Cardinality: 10-300, often higher than n_samples/4 to force
         # genuine train/test partial overlap (audit: chscase_foot has 236
         # train levels vs 125 test, only 64 overlap; CookbookReviews and
         # Goodreads have similar high-cardinality patterns).
         # Mix of "moderate" and "high-cardinality near-unique" regimes.
-        if rng.random() < 0.40:
+        if regression_context_rows is not None:
+            has_query = labeled_rows < n_samples
+            min_K = 3 if has_query and labeled_rows >= 2 else 2
+            max_K = max(min_K, min(200, max(1, labeled_rows // 8)))
+            min_K = min(10, max_K)
+            K = (
+                max_K if min_K == max_K
+                else int(np.exp(rng.uniform(
+                    np.log(float(min_K)), np.log(float(max_K)))))
+            )
+            K = int(np.clip(K, min_K, max_K))
+        elif rng.random() < 0.40:
             # High-cardinality (near-unique IDs): K close to n_samples
             max_K = int(min(300, max(20, n_samples // 2)))
+            K = int(np.exp(rng.uniform(
+                np.log(10.0), np.log(float(max_K)))))
+            K = int(np.clip(K, 10, max_K))
         else:
             # Moderate cardinality (counts more useful)
             max_K = int(min(200, max(10, n_samples // 4)))
-        K = int(np.exp(rng.uniform(np.log(10.0), np.log(float(max_K)))))
-        K = int(np.clip(K, 10, max_K))
+            K = int(np.exp(rng.uniform(
+                np.log(10.0), np.log(float(max_K)))))
+            K = int(np.clip(K, 10, max_K))
 
         # Zipf-like frequency. Stronger long-tail (alpha 1.0-3.0 vs old
         # 0.6-1.5) — most levels appear ≤2 times, matching real-world
@@ -3863,10 +4808,59 @@ def _generate_lookup_prior_episode(n_samples, n_features, task_type,
         probs /= probs.sum()
         cat_ids = rng.choice(K, size=n_samples, replace=True, p=probs)
 
+        if regression_context_rows is not None:
+            n_query = n_samples - labeled_rows
+            min_seen = min(2, labeled_rows)
+            if n_query > 0 and K > min_seen:
+                desired_unseen = max(
+                    1, int(np.ceil(K * rng.uniform(0.10, 0.25))))
+                n_unseen = min(desired_unseen, K - min_seen)
+            else:
+                n_unseen = 0
+            id_order = rng.permutation(K)
+            unseen_ids = id_order[:n_unseen]
+            seen_ids = id_order[n_unseen:]
+            seen_probs = probs[seen_ids]
+            seen_probs /= seen_probs.sum()
+            cat_ids[:labeled_rows] = rng.choice(
+                seen_ids, size=labeled_rows, replace=True, p=seen_probs)
+            coverage_size = min(len(seen_ids), labeled_rows)
+            coverage_positions = rng.choice(
+                labeled_rows, size=coverage_size, replace=False)
+            cat_ids[coverage_positions] = rng.permutation(
+                seen_ids)[:coverage_size]
+            if n_query > 0:
+                cat_ids[labeled_rows:] = rng.choice(
+                    seen_ids, size=n_query, replace=True, p=seen_probs)
+                if n_unseen:
+                    cold_fraction = rng.uniform(0.05, 0.20)
+                    n_cold = max(1, int(round(n_query * cold_fraction)))
+                    cold_positions = labeled_rows + rng.choice(
+                        n_query, size=min(n_cold, n_query), replace=False)
+                    unseen_probs = probs[unseen_ids]
+                    unseen_probs /= unseen_probs.sum()
+                    cat_ids[cold_positions] = rng.choice(
+                        unseen_ids, size=len(cold_positions), replace=True,
+                        p=unseen_probs)
+            context_counts = np.bincount(
+                cat_ids[:labeled_rows], minlength=K)
+            query_ids = cat_ids[labeled_rows:]
+            unseen = (
+                ~np.isin(query_ids, np.flatnonzero(context_counts))
+                if len(query_ids) else np.asarray([], dtype=bool)
+            )
+            minimum_context_counts.append(
+                int(context_counts[seen_ids].min()) if len(seen_ids) else 0)
+            query_unseen_fractions.append(
+                float(unseen.mean()) if len(unseen) else 0.0)
+            unseen_cardinalities.append(int(n_unseen))
+        cardinalities.append(K)
+
         # Force some IDs to appear EXACTLY ONCE (rare singleton pattern).
         # Real high-card datasets have ~5-25% singleton rate. Pick random
         # rows to overwrite with rare-IDs (drawn from the tail of K).
-        if rng.random() < 0.50 and K > 30:
+        if (regression_context_rows is None
+                and rng.random() < 0.50 and K > 30):
             singleton_frac = rng.uniform(0.05, 0.25)
             n_singletons = max(1, int(n_samples * singleton_frac))
             # IDs in the tail (less common already) — promote to singletons
@@ -3907,11 +4901,17 @@ def _generate_lookup_prior_episode(n_samples, n_features, task_type,
             X[:, j] = rng.beta(a, b, size=n_samples) * 6 - 3
 
     # Weak continuous signal (1-3 features)
-    n_active_cont = min(int(rng.integers(1, 4)), n_cont)
-    active_cols = rng.choice(range(n_id_cols, n_features),
-                             size=n_active_cont, replace=False)
+    n_active_cont = min(int(rng.integers(1, 4)), n_cont) if n_cont else 0
+    active_cols = (
+        rng.choice(range(n_id_cols, n_features),
+                   size=n_active_cont, replace=False)
+        if n_active_cont else np.asarray([], dtype=np.int64)
+    )
     beta = rng.standard_normal(n_active_cont) * 0.5
-    cont_signal = X[:, active_cols] @ beta
+    cont_signal = (
+        X[:, active_cols] @ beta
+        if n_active_cont else np.zeros(n_samples, dtype=np.float64)
+    )
 
     # Combined signal: entity dominant, continuous secondary
     entity_weight = rng.uniform(0.6, 0.9)
@@ -3919,15 +4919,22 @@ def _generate_lookup_prior_episode(n_samples, n_features, task_type,
 
     # --- Create final target ---
     if task_type == 'reg':
-        y_std = np.std(y_raw)
+        y_clean = y_raw.copy()
+        y_std = float(np.std(y_raw[:labeled_rows]))
+        target_r2 = 1.0
+        calibrated_noise = np.zeros(n_samples, dtype=np.float64)
         if y_std > 1e-8:
             target_r2 = rng.uniform(0.4, 0.90)
-            noise_std = y_std * np.sqrt((1 - target_r2) / max(target_r2, 1e-6))
-            y_raw += rng.standard_normal(n_samples) * noise_std
-        mu, std = np.mean(y_raw), np.std(y_raw)
-        if std > 1e-8:
-            y_raw = (y_raw - mu) / std
-        y = y_raw.astype(np.float32)
+            calibrated_noise, realized_target_r2 = _calibrate_noise_to_target_r2(
+                y_clean, rng.standard_normal(n_samples), target_r2,
+                context_rows=regression_context_rows)
+            y_raw = y_clean + calibrated_noise
+        else:
+            realized_target_r2 = 1.0
+        y_raw, y_clean, _mu, _std = _normalize_target_pair(
+            y_raw, y_clean, context_rows=regression_context_rows)
+        y = y_raw.astype(np.float32, copy=False)
+        y_clean = y_clean.astype(np.float32)
         actual_n_classes = None
     else:
         if n_classes is None:
@@ -3945,20 +4952,43 @@ def _generate_lookup_prior_episode(n_samples, n_features, task_type,
         if j >= n_id_cols and j not in active_cols:
             X[:, j] = rng.standard_normal(n_samples)
 
-    return {
+    meta = {
+        'lookup_prior': True,
+        'generator_family': 'lookup_prior',
+        'n_id_cols': n_id_cols,
+    }
+    if task_type == 'reg':
+        meta.update({
+            'cardinalities': cardinalities,
+            'minimum_context_counts': minimum_context_counts,
+            'query_unseen_fractions': query_unseen_fractions,
+            'unseen_cardinalities': unseen_cardinalities,
+            'context_rows': labeled_rows,
+            'target_r2': float(target_r2),
+            'context_realized_target_r2': float(realized_target_r2),
+            'noise_std': float(np.std(calibrated_noise[:labeled_rows])),
+            'oracle_exact': True,
+            'r2_oracle_bound': 0.0,
+        })
+
+    out = {
         'X': X,
         'y': y.astype(np.float32),
         'task_type': task_type,
         'n_classes': actual_n_classes,
         'filtered': False,
-        'meta': {'lookup_prior': True, 'n_id_cols': n_id_cols},
+        'meta': meta,
     }
+    if task_type == 'reg':
+        out['y_clean'] = y_clean
+    return out
 
 
 def _generate_clean_lowdim_episode(n_samples, n_features_batch, task_type,
                                    n_classes, rng,
                                    probabilistic_labels=False,
-                                   nominal_categoricals=False):
+                                   nominal_categoricals=False,
+                                   context_rows=None):
     """Generate a clean, low-dimensional episode with high categorical fraction.
 
     Covers real-world tabular datasets with 5-30 features, mostly categorical,
@@ -3993,8 +5023,10 @@ def _generate_clean_lowdim_episode(n_samples, n_features_batch, task_type,
 
     # --- Generate categorical features ---
     cat_effects_list = []
+    categorical_cardinalities = []
     for j in range(n_cont, n_features):
         cardinality = int(rng.integers(2, min(21, max(3, n_samples // 10))))
+        categorical_cardinalities.append(cardinality)
         # Zipf-like frequency
         alpha = rng.uniform(0.5, 1.2)
         ranks = np.arange(1, cardinality + 1, dtype=np.float64)
@@ -4595,75 +5627,39 @@ def _generate_temporal_prior_episode(n_samples, n_features, task_type,
 
 def generate_dataset_filtered(n_samples, n_features, task_type, n_classes=None,
                               rng=None, max_retries=3, quality_rules=None, **kwargs):
-    """Generate a synthetic dataset with optional learnability filtering.
-
-    Supports two filter backends:
-      - ExtraTrees (default): fits a small ExtraTrees model, checks OOB score.
-      - ICL (--icl-filter-model): runs a frozen LimiX forward pass on CPU,
-        checks if the model can predict better than chance.  Preferred because
-        it tests in-context learnability directly.
-
-    If the dataset is unlearnable, regenerate up to max_retries times.
-    """
-    v4_filter = kwargs.get('augment_v4', False) and kwargs.get('v4_filter', True)
-    learnability_filter = kwargs.pop('learnability_filter', False) or v4_filter
-    learnability_filter_cls_min_score = kwargs.pop(
-        'learnability_filter_cls_min_score', 0.60)
-    learnability_filter_cls_margin = kwargs.pop(
-        'learnability_filter_cls_margin', 0.10)
+    """Generate until the actual public episode passes requested filters."""
+    v4_filter = kwargs.get('augment_v4', False) and kwargs.get(
+        'v4_filter', True)
+    learnability_filter = (
+        kwargs.pop('learnability_filter', False) or v4_filter)
     learnability_filter_reg_min_score = kwargs.pop(
         'learnability_filter_reg_min_score', 0.10)
-
+    # Keep public classification knobs accepted even though the shared helper
+    # dispatches them through staging's task-aware filter implementation.
+    kwargs.pop('learnability_filter_cls_min_score', 0.60)
+    kwargs.pop('learnability_filter_cls_margin', 0.10)
     icl_filter_model = kwargs.pop('icl_filter_model', None)
-    icl_filter_cls_min_auc = kwargs.pop('icl_filter_cls_min_auc', 0.55)
+    kwargs.pop('icl_filter_cls_min_auc', 0.55)
     icl_filter_reg_min_r2 = kwargs.pop('icl_filter_reg_min_r2', 0.05)
-
     icl_scaling_filter = kwargs.pop('icl_scaling_filter', False)
-    icl_scaling_min_improvement = kwargs.pop('icl_scaling_min_improvement', 0.03)
-
-    use_icl = icl_filter_model is not None
-    use_et = learnability_filter and not use_icl
-
-    for attempt in range(max_retries + 1):
-        data = generate_dataset(n_samples, n_features, task_type,
-                                n_classes=n_classes, rng=rng, **kwargs)
-
-        if quality_rules is not None and not _passes_quality_rules(
-                data['X'], data['y'], task_type, quality_rules):
-            data['filtered'] = True
-            continue
-
-        if not use_et and not use_icl:
-            return data
-
-        if use_icl:
-            passed = _check_learnability_icl(
-                data['X'], data['y'], task_type, icl_filter_model,
-                cls_min_auc=icl_filter_cls_min_auc,
-                reg_min_r2=icl_filter_reg_min_r2,
-            )
-        else:
-            passed = _check_learnability(
-                data['X'], data['y'], task_type,
-                cls_min_score=learnability_filter_cls_min_score,
-                cls_margin=learnability_filter_cls_margin,
-                reg_min_score=learnability_filter_reg_min_score,
-            )
-
-        if passed and icl_scaling_filter:
-            # Second gate: does more context actually help?
-            passed = _check_icl_scaling(
-                data['X'], data['y'], task_type,
-                reg_min_score=learnability_filter_reg_min_score,
-                min_improvement=icl_scaling_min_improvement,
-            )
-
-        if passed:
-            return data
-
-        data['filtered'] = True
-
-    return data
+    icl_scaling_min_improvement = kwargs.pop(
+        'icl_scaling_min_improvement', 0.03)
+    context_rows = kwargs.get('context_rows')
+    return _generate_filtered_episode(
+        lambda: generate_dataset(
+            n_samples, n_features, task_type,
+            n_classes=n_classes, rng=rng, **kwargs),
+        max_retries=max_retries,
+        task_type=task_type,
+        quality_rules=quality_rules,
+        learnability_filter=learnability_filter,
+        learnability_filter_reg_min_score=learnability_filter_reg_min_score,
+        icl_filter_model=icl_filter_model,
+        icl_filter_reg_min_r2=icl_filter_reg_min_r2,
+        icl_scaling_filter=icl_scaling_filter,
+        icl_scaling_min_improvement=icl_scaling_min_improvement,
+        context_rows=context_rows,
+    )
 
 
 def _apply_train_feature_augmentation(X_batch, rng, p_episode=0.6,
@@ -4840,7 +5836,9 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                    icl_filter_reg_min_r2=0.05,
                    icl_scaling_filter=False,
                    icl_scaling_min_improvement=0.03,
-                   quality_rules=None, filter_max_retries=3):
+                   quality_rules=None, filter_max_retries=3,
+                   context_rows=None, oracle_sink=None,
+                   cap_high_fraction_prob=0.0):
     """Generate a batch of synthetic datasets with the same dimensions.
 
     Args:
@@ -4885,12 +5883,17 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
     """
     if rng is None:
         rng = np.random.default_rng()
+    v6_context_rows = context_rows if task_type == 'reg' else None
+    if cap_high_fraction_prob > 0:
+        high_cap_prob = cap_high_fraction_prob
 
     X_list = []
     y_list = []
+    episode_data = []
     actual_n_classes = n_classes
 
     for _ in range(batch_size):
+        selected_family = 'other'
         # --- Clean low-dim regime ---
         # Simple 5-30 feature datasets with high categorical fraction,
         # low noise. Covers Amazon-like tabular tasks.
@@ -4898,31 +5901,37 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
             data = _generate_clean_lowdim_episode(
                 n_samples, n_features, task_type, n_classes, rng,
                 probabilistic_labels=probabilistic_labels,
-                nominal_categoricals=nominal_categoricals)
+                nominal_categoricals=nominal_categoricals,
+                context_rows=v6_context_rows)
         # --- Tree-ensemble prior ---
         # Piecewise-constant targets from random decision tree ensembles.
         elif tree_prior_prob > 0 and rng.random() < tree_prior_prob:
+            selected_family = 'tree_prior'
             data = _generate_tree_prior_episode(
                 n_samples, n_features, task_type, n_classes, rng,
-                probabilistic_labels=probabilistic_labels)
+                probabilistic_labels=probabilistic_labels,
+                context_rows=v6_context_rows)
         # --- Categorical lookup prior ---
         # Entity-lookup data: y = f(entity_id) + noise.
         elif lookup_prior_prob > 0 and rng.random() < lookup_prior_prob:
             data = _generate_lookup_prior_episode(
                 n_samples, n_features, task_type, n_classes, rng,
-                probabilistic_labels=probabilistic_labels)
+                probabilistic_labels=probabilistic_labels,
+                context_rows=v6_context_rows)
         # --- Quadratic response surface prior ---
         elif quadratic_surface_prob > 0 and rng.random() < quadratic_surface_prob:
             data = _generate_quadratic_surface_episode(
                 n_samples, n_features, task_type, n_classes, rng,
                 reg_denoise=reg_denoise,
-                probabilistic_labels=probabilistic_labels)
+                probabilistic_labels=probabilistic_labels,
+                context_rows=v6_context_rows)
         # --- Sparse nonlinear high-dim prior ---
         elif sparse_nonlinear_prob > 0 and rng.random() < sparse_nonlinear_prob:
             data = _generate_sparse_nonlinear_episode(
                 n_samples, n_features, task_type, n_classes, rng,
                 reg_denoise=reg_denoise,
-                probabilistic_labels=probabilistic_labels)
+                probabilistic_labels=probabilistic_labels,
+                context_rows=v6_context_rows)
         # --- GP smooth function prior ---
         # y sampled from Gaussian Process with RBF/Matern kernels.
         # Produces smooth joint multivariate functions (sulfur, debutanizer,
@@ -4931,7 +5940,8 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
             data = _generate_gp_prior_episode(
                 n_samples, n_features, task_type, n_classes, rng,
                 reg_denoise=reg_denoise,
-                probabilistic_labels=probabilistic_labels)
+                probabilistic_labels=probabilistic_labels,
+                context_rows=v6_context_rows)
         # --- Categorical-dominant prior ---
         # 60-95% of cols are categorical (cardinalities 2-50, biased small).
         # Targets cat-heavy benchmarks (Ailerons, Buzzinsocialmedia,
@@ -4964,7 +5974,8 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
             from synthefy_nori.training.scm_prior_generator import generate_scm_prior_dataset
             data = generate_scm_prior_dataset(
                 n_samples, n_features, task_type,
-                n_classes=n_classes, rng=rng)
+                n_classes=n_classes, rng=rng,
+                context_rows=v6_context_rows)
         # For regression, use the regression-specific prior with probability
         # reg_prior_prob. These cover real-world regimes (dense linear, GAM,
         # interactions) that the SCM generator under-represents.
@@ -5000,7 +6011,8 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                     reg_denoise=reg_denoise,
                     reg_dense=reg_dense,
                     nominal_categoricals=nominal_categoricals,
-                    enhanced_missingness=enhanced_missingness)
+                    enhanced_missingness=enhanced_missingness,
+                    context_rows=v6_context_rows)
                 data = _generate_regression_prior(
                     n_samples, n_features, rng,
                     reg_denoise=reg_denoise,
@@ -5009,14 +6021,18 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                     pareto_importance_prob=pareto_importance_prob,
                     latent_factor_prob=latent_factor_prob,
                     X_scm=base_data['X'],
-                    X_scm_target=base_data.get('X_target'))
+                    X_scm_target=base_data.get('X_target'),
+                    preserve_target_features=True,
+                    context_rows=v6_context_rows)
             else:
                 data = _generate_regression_prior(n_samples, n_features, rng,
                                                   reg_denoise=reg_denoise,
                                                   reg_deterministic_prob=reg_deterministic_prob,
                                                   reg_dense=reg_dense,
                                                   pareto_importance_prob=pareto_importance_prob,
-                                                  latent_factor_prob=latent_factor_prob)
+                                                  latent_factor_prob=latent_factor_prob,
+                                                  preserve_target_features=True,
+                                                  context_rows=v6_context_rows)
         else:
             data = generate_dataset_filtered(
                 n_samples, n_features, task_type,
@@ -5045,9 +6061,39 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                 reg_dense=reg_dense,
                 probabilistic_labels=probabilistic_labels,
                 nominal_categoricals=nominal_categoricals,
-                enhanced_missingness=enhanced_missingness)
+                enhanced_missingness=enhanced_missingness,
+                context_rows=v6_context_rows)
+        filter_attempt = 0
+        while not _passes_requested_dataset_filters(
+                data,
+                task_type=task_type,
+                quality_rules=quality_rules,
+                learnability_filter=learnability_filter,
+                learnability_filter_reg_min_score=(
+                    learnability_filter_reg_min_score),
+                icl_filter_model=icl_filter_model,
+                icl_filter_reg_min_r2=icl_filter_reg_min_r2,
+                icl_scaling_filter=icl_scaling_filter,
+                icl_scaling_min_improvement=icl_scaling_min_improvement,
+                context_rows=v6_context_rows):
+            if filter_attempt >= max(0, int(filter_max_retries)):
+                raise SyntheticDataFilterError(
+                    "synthetic episode failed all filters after "
+                    f"{filter_attempt + 1} attempts")
+            filter_attempt += 1
+            if selected_family == 'tree_prior':
+                data = _generate_tree_prior_episode(
+                    n_samples, n_features, task_type, n_classes, rng,
+                    probabilistic_labels=probabilistic_labels,
+                    context_rows=v6_context_rows)
+                continue
+            # The general SCM path already exhausted its own retry budget.
+            raise SyntheticDataFilterError(
+                "synthetic episode failed health after regeneration")
+
         X_list.append(data['X'])
         y_list.append(data['y'])
+        episode_data.append(data)
         if actual_n_classes is None and task_type == 'cls':
             actual_n_classes = data['n_classes']
 
@@ -5089,6 +6135,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
     # Suppress numpy warnings from realistic augmentation (nanstd on
     # columns with ≤1 non-NaN value, exp overflow before clipping).
     import warnings as _warnings
+    _warning_filters_before = list(_warnings.filters)
     # Realistic augmentation: applies to all priors post-generation.
     # Addresses three gaps vs real data identified in benchmark analysis:
     #   1. Heavy-tailed targets (real: skew 1-7, kurtosis 5-80; synthetic: ~0)
@@ -5106,28 +6153,31 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
             # (skew=1.7, kurt=4.5), space_ga (skew=-1.2, kurt=11.5) have
             # targets far from Gaussian. Our synthetic targets are near-Gaussian.
             if rng.random() < 0.4:
-                y = y_batch[b].copy()
+                y = y_batch[b].astype(np.float64, copy=True)
                 transform = int(rng.integers(0, 4))
                 if transform == 0:
                     # Exponential right-skew: y → exp(y * scale)
                     scale = rng.uniform(0.3, 1.0)
-                    y = np.exp(np.clip(y * scale, -20, 20))
+                    y = _exp_with_linear_tails(y * scale)
                 elif transform == 1:
                     # Power transform: y → sign(y) * |y|^p
                     power = rng.uniform(1.5, 3.0)
-                    y = np.sign(y) * np.abs(y) ** power
+                    y = _signed_power_with_linear_tails(y, power)
                 elif transform == 2:
                     # Log-normal: y → exp(y) (always positive)
-                    y = np.exp(np.clip(y * rng.uniform(0.5, 1.5), -20, 20))
+                    y = _exp_with_linear_tails(
+                        y * rng.uniform(0.5, 1.5))
                 else:
                     # Asymmetric clip: heavy right tail
                     clip_lo = rng.uniform(-3, -1)
                     y = np.clip(y, clip_lo, None)
-                    y = y ** 2 * np.sign(y - np.median(y))
+                    context_median = float(np.median(
+                        _context_prefix(y, v6_context_rows)))
+                    y = y ** 2 * np.sign(y - context_median)
 
                 # Soft clip extreme values, re-standardize
                 y = 50.0 * np.tanh(y / 50.0)
-                mu, std = np.nanmean(y), np.nanstd(y)
+                mu, std = _context_mean_std(y, v6_context_rows)
                 if std > 1e-8:
                     y = (y - mu) / std
                 y_batch[b] = y.astype(np.float32)
@@ -5136,7 +6186,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
             # Real datasets have correlated feature groups (mean_corr 0.1-0.5).
             # Our GP/quadratic/sparse priors generate near-independent features.
             if rng.random() < 0.5 and F >= 4:
-                X = X_batch[b].copy()
+                X = X_batch[b]
                 n_groups = int(rng.integers(2, min(5, F // 2 + 1)))
                 group_size = max(2, F // n_groups)
                 for g in range(n_groups):
@@ -5145,36 +6195,49 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                     if end - start < 2:
                         continue
                     rho = rng.uniform(0.2, 0.7)
-                    shared = rng.standard_normal(N)
-                    for j in range(start, end):
-                        col = X[:, j]
-                        col_std = np.nanstd(col)
-                        if col_std > 1e-8:
-                            col_norm = (col - np.nanmean(col)) / col_std
-                            X[:, j] = rho * shared + np.sqrt(1 - rho**2) * col_norm
-                X_batch[b] = X.astype(X_batch.dtype)
+                    _apply_invertible_feature_correlation(
+                        X, np.arange(start, end), rng, rho,
+                        context_rows=v6_context_rows)
 
             # --- Skewed feature distributions (30% of augmented episodes) ---
             # Real features are often log-normal, power-law, or bounded.
             if rng.random() < 0.3 and F >= 2:
-                X = X_batch[b].copy()
+                X = X_batch[b]
                 n_transform = int(rng.integers(1, max(2, F // 3 + 1)))
                 cols = rng.choice(F, size=n_transform, replace=False)
                 for col_idx in cols:
                     col = X[:, col_idx]
-                    if np.nanstd(col) < 1e-8:
+                    context_col = _context_prefix(col, v6_context_rows)
+                    col_std = _finite_std(context_col)
+                    if col_std < 1e-8:
                         continue
                     ft = int(rng.integers(0, 3))
+                    finite_col = context_col[np.isfinite(context_col)]
+                    max_abs = (
+                        float(np.max(np.abs(finite_col)))
+                        if len(finite_col) else 0.0
+                    )
                     if ft == 0:
-                        # Log-normal feature (clip input to prevent overflow)
-                        X[:, col_idx] = np.exp(np.clip(col * rng.uniform(0.3, 0.8), -20, 20))
+                        # Positive and skewed centrally, with linear tails so
+                        # extreme query values cannot underflow together.
+                        raw_scale = rng.uniform(0.3, 0.8)
+                        scale = min(
+                            raw_scale, 20.0 / max(max_abs, 1e-8))
+                        transformed = _exp_with_linear_tails(col * scale)
                     elif ft == 1:
-                        # Squared feature (always positive, heavy tail)
-                        X[:, col_idx] = col ** 2
+                        # Signed square is heavy-tailed and exactly invertible.
+                        col64 = col.astype(np.float64, copy=False)
+                        transformed = np.sign(col64) * col64 ** 2
                     else:
-                        # Sigmoid-bounded feature
-                        X[:, col_idx] = 1.0 / (1.0 + np.exp(-np.clip(col * rng.uniform(0.5, 2.0), -20, 20)))
-                X_batch[b] = X.astype(X_batch.dtype)
+                        # Sigmoid-shaped centrally, with linear tails instead
+                        # of floating-point saturation at zero or one.
+                        raw_scale = rng.uniform(0.5, 2.0)
+                        scale = min(
+                            raw_scale, 8.0 / max(max_abs, 1e-8))
+                        transformed = _sigmoid_with_linear_tails(
+                            col * scale)
+                    X[:, col_idx] = _affine_stabilize_feature_column(
+                        transformed, context_rows=v6_context_rows)
 
     # --- Realistic y-target transforms ---
     # Real-world regression targets often have distributions our smooth SCM /
@@ -5210,11 +6273,13 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                 # MIP-2016 solve-time timeout at 72000). No rounding, just
                 # percentile-based clipping.
                 cap_pct = float(rng.uniform(80.0, 97.0))
-                cap_val = float(np.percentile(y, cap_pct))
+                cap_val = float(np.percentile(
+                    _context_prefix(y, v6_context_rows), cap_pct))
                 y = np.minimum(y, cap_val)
                 if rng.random() < 0.4:
                     floor_pct = float(rng.uniform(3.0, 15.0))
-                    floor_val = float(np.percentile(y, floor_pct))
+                    floor_val = float(np.percentile(
+                        _context_prefix(y, v6_context_rows), floor_pct))
                     y = np.maximum(y, floor_val)
 
             elif t < 0.60:
@@ -5222,8 +6287,11 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                 # aggressive ratings). Simulates scoring systems with moderate
                 # resolution like 0-100 scores or multi-panel averaged ratings.
                 n_levels = int(rng.integers(15, 41))
-                ranks = np.argsort(np.argsort(y)).astype(np.float64)
-                y = np.floor(ranks / max(len(ranks), 1) * n_levels)
+                reference = _context_prefix(y, v6_context_rows)
+                edges = np.quantile(
+                    reference, np.linspace(0.0, 1.0, n_levels + 1))
+                y = np.searchsorted(
+                    edges[1:-1], y, side='right').astype(np.float64)
                 step = float(rng.choice([0.1, 0.25, 0.5, 1.0]))
                 offset = rng.uniform(-5.0, 15.0)
                 y = y * step + offset
@@ -5233,8 +6301,8 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                 # of discrete ratings). Fine quantization: 0.05-0.5 step.
                 lo = float(rng.uniform(0.0, 1.0))
                 hi = float(rng.uniform(3.0, 5.0))
-                y_std = max(float(np.std(y)), 1e-8)
-                y = (y - float(np.mean(y))) / y_std
+                y_mean, y_std = _context_mean_std(y, v6_context_rows)
+                y = (y - y_mean) / max(y_std, 1e-8)
                 y = np.clip(y * 0.3 + (lo + hi) / 2.0, lo, hi)
                 step = float(rng.choice([0.05, 0.1, 0.25, 0.5]))
                 y = np.round(y / step) * step
@@ -5260,8 +6328,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
             # per-episode via context-only stats in _prepare_batch, but also
             # ensure finite values here).
             y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
-            mu = float(np.mean(y))
-            sd = float(np.std(y))
+            mu, sd = _context_mean_std(y, v6_context_rows)
             if sd > 1e-8:
                 y = (y - mu) / sd
             else:
@@ -5294,15 +6361,16 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
             n_levels = int(rng.integers(5, 16))
             # Quantile-bucket so each level has roughly equal mass; preserves
             # the original target ordering and rough scale.
-            edges = np.quantile(y, np.linspace(0, 1, n_levels + 1))
+            edges = np.quantile(
+                _context_prefix(y, v6_context_rows),
+                np.linspace(0, 1, n_levels + 1))
             edges[0] -= 1e-6  # ensure inclusive lower bound
             edges[-1] += 1e-6
             level_idx = np.clip(np.searchsorted(edges, y, side='right') - 1, 0, n_levels - 1)
             # Use bucket midpoints as the level value.
             mids = 0.5 * (edges[:-1] + edges[1:])
             y = mids[level_idx]
-            mu = float(np.mean(y))
-            sd = float(np.std(y))
+            mu, sd = _context_mean_std(y, v6_context_rows)
             if sd > 1e-8:
                 y = (y - mu) / sd
             y_batch[b] = y.astype(np.float32)
@@ -5324,7 +6392,8 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                     cap_pct = float(rng.uniform(50.0, 80.0))
                 else:
                     cap_pct = float(rng.uniform(80.0, 97.0))
-                cap_val = float(np.percentile(y, cap_pct))
+                cap_val = float(np.percentile(
+                    _context_prefix(y, v6_context_rows), cap_pct))
                 y = np.minimum(y, cap_val)
             # Lower floor (less common)
             if rng.random() < 0.30:
@@ -5332,12 +6401,12 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                     floor_pct = float(rng.uniform(20.0, 50.0))
                 else:
                     floor_pct = float(rng.uniform(3.0, 20.0))
-                floor_val = float(np.percentile(y, floor_pct))
+                floor_val = float(np.percentile(
+                    _context_prefix(y, v6_context_rows), floor_pct))
                 y = np.maximum(y, floor_val)
             # Re-standardize (context-only re-norm happens in trainer, but
             # ensure episode-level sanity)
-            mu = float(np.mean(y))
-            sd = float(np.std(y))
+            mu, sd = _context_mean_std(y, v6_context_rows)
             if sd > 1e-8:
                 y = (y - mu) / sd
             y_batch[b] = y.astype(np.float32)
@@ -5376,7 +6445,9 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                 # on top of existing signal. Targets sulfur/debutanizer style
                 # heavy-right-tail distributions.
                 alpha = rng.uniform(1.5, 4.0)  # lower alpha = heavier tail
-                y_std = max(float(np.std(y)), 1e-8)
+                _mean, context_std = _context_mean_std(
+                    y, v6_context_rows)
+                y_std = max(context_std, 1e-8)
                 tail_noise = rng.pareto(alpha, size=len(y)) * y_std
                 # Apply to positive side only, randomly
                 sign_mask = rng.choice([1.0, -1.0], size=len(y))
@@ -5385,7 +6456,9 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
             elif t < 0.80:
                 # Stronger outlier injection: larger fraction, larger magnitude
                 # Represents rare extreme events (measurement errors, tail events)
-                y_std = max(float(np.std(y)), 1e-8)
+                _mean, context_std = _context_mean_std(
+                    y, v6_context_rows)
+                y_std = max(context_std, 1e-8)
                 n_out = max(1, int(len(y) * rng.uniform(0.05, 0.10)))
                 out_idx = rng.choice(len(y), size=n_out, replace=False)
                 scale = rng.uniform(3.0, 15.0)
@@ -5400,7 +6473,9 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                 # real failure mode (Job_Profitability has ~0.2% of rows at
                 # ~1500× the bulk std). One-sided to mimic real data where
                 # the catastrophic tail is usually directional.
-                y_std = max(float(np.std(y)), 1e-8)
+                _mean, context_std = _context_mean_std(
+                    y, v6_context_rows)
+                y_std = max(context_std, 1e-8)
                 n_out = max(1, int(len(y) * rng.uniform(0.005, 0.02)))
                 out_idx = rng.choice(len(y), size=n_out, replace=False)
                 sign = rng.choice([-1.0, 1.0])
@@ -5409,11 +6484,29 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
 
             # Re-standardize for normalized-y contract
             y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
-            mu = float(np.mean(y))
-            sd = float(np.std(y))
+            mu, sd = _context_mean_std(y, v6_context_rows)
             if sd > 1e-8:
                 y = (y - mu) / sd
             y_batch[b] = y.astype(np.float32)
 
+    X_batch, _affine_changes, bounded_changes = _finalize_feature_batch(
+        X_batch, context_rows=v6_context_rows)
+    if oracle_sink is not None:
+        bounded_episodes = {batch_idx for batch_idx, _col in bounded_changes}
+        for batch_idx, data in enumerate(episode_data):
+            meta = dict(data.get('meta') or {})
+            lineage = list(meta.get('transformation_lineage') or [])
+            y_clean = data.get('y_clean')
+            oracle_exact = meta.get('oracle_exact')
+            if batch_idx in bounded_episodes:
+                lineage.append('final_feature_bound')
+                y_clean = None
+                oracle_exact = None
+            oracle_sink.append({
+                **meta,
+                'oracle_exact': oracle_exact,
+                'y_clean': y_clean,
+                'transformation_lineage': lineage,
+            })
+    _warnings.filters[:] = _warning_filters_before
     return X_batch, y_batch, actual_n_classes
-

@@ -19,7 +19,6 @@ describe the phase, and the values live inside the file.
 
 from __future__ import annotations
 
-import warnings
 from importlib.resources import files
 
 #: The one inference config the package ships.
@@ -28,31 +27,11 @@ DEFAULT_INFERENCE_CONFIG = "default_inference.json"
 #: The bundled training/architecture config — a different phase, not an inference config.
 DEFAULT_MODEL_CONFIG = "model_base.json"
 
-# Renamed in 0.18.0. The old name keeps resolving for one minor version so callers
-# pinning it — including installed 0.17.x code — do not break on upgrade. Delete
-# this map in 0.19.0.
-_RENAMED_IN_0_18 = {
-    "reg_allordinal_poly10_adaptive_svd256.json": DEFAULT_INFERENCE_CONFIG,
-}
-
-
 def config_path(filename: str = DEFAULT_INFERENCE_CONFIG) -> str:
     """Return an absolute path for a bundled config file.
 
-    Defaults to :data:`DEFAULT_INFERENCE_CONFIG`. Names retired in 0.18.0 still
-    resolve, with a :class:`DeprecationWarning`.
+    Defaults to :data:`DEFAULT_INFERENCE_CONFIG`.
     """
-    renamed = _RENAMED_IN_0_18.get(filename)
-    if renamed is not None:
-        warnings.warn(
-            f"The bundled config {filename!r} was renamed to {renamed!r} in "
-            f"synthefy-nori 0.18.0 — its name recorded tuning values (svd256) that no "
-            f"longer match the file. The old name still resolves for this minor version "
-            f"and is removed in 0.19.0; use synthefy_nori.DEFAULT_INFERENCE_CONFIG.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        filename = renamed
     return str(files("synthefy_nori.configs").joinpath(filename))
 
 

@@ -41,7 +41,9 @@ class TrainingConfig:
     batch_size: int = 8
     gradient_accumulation: int = 1
 
-    # Data generation ranges
+    # Pre-bucket data-generation draw envelopes. These are not promised
+    # physical table endpoints: the trainer logs/manifests the exact effective
+    # bucket support. Envelope margins give endpoint buckets nonzero mass.
     min_samples: int = 50
     max_samples: int = 2000
     min_features: int = 2
@@ -122,7 +124,10 @@ class TrainingConfig:
 
     # Regression-specific synth_v3 sub-flags (allow independent control)
     rich_reg_targets: bool = True  # multi-feature deps + interaction terms in y
-    scale_variation: bool = True   # random y scale (0.37x to 2.72x)
+    # Compatibility field for older manifests. Context normalization removes
+    # positive affine target scale before the model sees it, so keep the dead
+    # generator-side transform disabled.
+    scale_variation: bool = False
 
     # TabICL prior generator (alternative data source from TabICL's prior system)
     scm_prior: bool = False   # Enable TabICL MLP/Tree SCM prior
@@ -138,10 +143,11 @@ class TrainingConfig:
     icl_filter_model: str = ''       # Path to frozen LimiX checkpoint for ICL-based filtering
     icl_filter_cls_min_auc: float = 0.55
     icl_filter_reg_min_r2: float = 0.05
-    # Replacement-loop budget in _filter_and_replace. Old default was a hard-
-    # coded 2 with silent acceptance after the loop. 6 makes the silent-accept
-    # rate negligible in practice; the trainer logs the empirical rate so we
-    # can tune it.
+    # Compatibility field for older manifests. The sampled training split is
+    # always authoritative; a fixed 70/30 gate was mismatched.
+    icl_filter_use_train_context: bool = True
+    # Replacement-loop budget in _filter_and_replace and for an async-pool
+    # shortfall. Exhaustion fails the batch; rejected episodes are never used.
     icl_filter_max_rounds: int = 6
     icl_scaling_filter: bool = False  # Second gate: does more context help?
     icl_scaling_min_improvement: float = 0.03  # Min R² improvement from small to large context
@@ -376,8 +382,9 @@ class TrainingConfig:
     skip_zero_feature_decoder: bool = False
     native_rms_norm: bool = False
 
-    # Regional compiler execution.
+    # Compiler execution controls.
     compile_encoder_layers: str = "none"
+    compile_pinball_loss: bool = True
     compile_mode: str = "default"
     compile_cache_limit: int = 1024
     compile_disable_ddp_optimizer: bool = False

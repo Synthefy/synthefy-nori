@@ -15,11 +15,18 @@ import torch
 from torch.amp import GradScaler
 
 from synthefy_nori.training.config import TrainingConfig
-from synthefy_nori.training.data_generator import generate_batch
+from synthefy_nori.training.data_generator import (
+    SyntheticDataFilterError,
+    generate_batch,
+)
 from synthefy_nori.training.masking import create_masks, random_mask_type, random_mask_ratio
 from synthefy_nori.training.loss import compute_ccmm_loss
 from synthefy_nori.training.optim import build_optimizer
 from synthefy_nori.training.prefetch import DataPrefetcher
+
+
+class ICLFilterExhaustedError(RuntimeError):
+    """The configured ICL gate could not fill a clean training batch."""
 
 
 def _foreach_ema_update(
@@ -89,6 +96,23 @@ class NoriTrainer:
 
         # Rank-0 flag for logging/checkpointing
         self.is_main = config.local_rank == 0
+
+        # ``min_*``/``max_*`` bound the continuous draw, but the physical
+        # tables are bucketed.  Resolve that finite support once, fail early if
+        # the requested range contains no supported shape, and expose the
+        # actual endpoints in logs instead of implying that unreachable raw
+        # endpoints are trained.
+        self.effective_shape_support = self._resolve_effective_shape_support(config)
+        if self.is_main:
+            support = self.effective_shape_support
+            print(
+                "Effective bucketed shape support: "
+                f"rows={support['min_samples']}..{support['max_samples']} "
+                f"({len(support['sample_buckets'])} buckets), "
+                f"features={support['min_features']}..{support['max_features']} "
+                f"({len(support['feature_buckets'])} buckets), "
+                f"shapes={len(support['shapes'])}"
+            )
 
         # Optimizer
         self.optimizer, optimizer_stats = build_optimizer(
@@ -187,8 +211,8 @@ class NoriTrainer:
         # ICL filter telemetry — reset every log_interval, logged to wandb.
         # _icl_total_episodes:    denominator (episodes considered)
         # _icl_first_round_reject: numerator for reject_rate (failed initial filter)
-        # _icl_escape_count:      episodes that survived all max_rounds (still bad,
-        #                         silently accepted — V11 default 6 rounds)
+        # _icl_escape_count:      slots that exhausted all replacement rounds;
+        #                         the batch fails instead of training on them
         # _icl_rounds_used_sum:   sum of rounds-needed across all bad episodes;
         #                         ratio with first_round_reject = avg rounds.
         self._icl_total_episodes = 0
@@ -206,6 +230,54 @@ class NoriTrainer:
     SAMPLE_BUCKETS = [64, 128, 256, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 12288, 16384, 24576, 32768, 49152]
     FEATURE_BUCKETS = [4, 8, 16, 32, 48, 64, 96, 128, 192, 256, 320, 384, 512, 768, 1024]
     CONTEXT_RATIO_BUCKETS = [0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
+
+    @classmethod
+    def _resolve_effective_shape_support(cls, cfg):
+        """Return the exact bucketed shapes reachable by a configuration."""
+        if cfg.shape_palette:
+            shapes = tuple(
+                (int(rows), int(features))
+                for rows, features, _weight in cfg.shape_palette
+                if int(rows) * int(features) <= cfg.max_sample_feature_budget
+            )
+        else:
+            sample_buckets = tuple(
+                int(value)
+                for value in cls.SAMPLE_BUCKETS
+                if cfg.min_samples <= int(value) <= cfg.max_samples
+            )
+            feature_buckets = tuple(
+                int(value)
+                for value in cls.FEATURE_BUCKETS
+                if cfg.min_features <= int(value) <= cfg.max_features
+                and int(value) % cfg.features_per_group == 0
+            )
+            shapes = tuple(
+                (rows, features)
+                for rows in sample_buckets
+                for features in feature_buckets
+                if rows * features <= cfg.max_sample_feature_budget
+            )
+
+        if not shapes:
+            raise ValueError(
+                "Configured random shape range contains no supported bucket: "
+                f"rows={cfg.min_samples}..{cfg.max_samples}, "
+                f"features={cfg.min_features}..{cfg.max_features}, "
+                f"budget={cfg.max_sample_feature_budget}"
+            )
+
+        sample_buckets = tuple(sorted({rows for rows, _ in shapes}))
+        feature_buckets = tuple(sorted({features for _, features in shapes}))
+        return {
+            'shapes': shapes,
+            'sample_buckets': sample_buckets,
+            'feature_buckets': feature_buckets,
+            'min_samples': sample_buckets[0],
+            'max_samples': sample_buckets[-1],
+            'min_features': feature_buckets[0],
+            'max_features': feature_buckets[-1],
+        }
 
     def _sample_data_params(self):
         """Sample data generation parameters for one training step.
@@ -264,12 +336,17 @@ class NoriTrainer:
                 n_samples = max(cfg.min_samples, budget // n_features)
 
         if not explicit_shape:
-            valid_s = [b for b in self.SAMPLE_BUCKETS
-                       if b <= n_samples and b >= cfg.min_samples]
-            valid_f = [b for b in self.FEATURE_BUCKETS if b <= n_features]
-            n_samples = max(valid_s) if valid_s else max(
-                cfg.min_samples, self.SAMPLE_BUCKETS[0])
-            n_features = max(valid_f) if valid_f else self.FEATURE_BUCKETS[0]
+            support = self.effective_shape_support
+            valid_s = [
+                bucket for bucket in support['sample_buckets']
+                if bucket <= n_samples
+            ]
+            valid_f = [
+                bucket for bucket in support['feature_buckets']
+                if bucket <= n_features
+            ]
+            n_samples = max(valid_s) if valid_s else support['min_samples']
+            n_features = max(valid_f) if valid_f else support['min_features']
 
         if cfg.task_type == 'both':
             task_type = 'reg' if rng.random() < cfg.regression_ratio else 'cls'
@@ -293,7 +370,15 @@ class NoriTrainer:
 
         return n_samples, n_features, task_type, n_classes, context_ratio
 
-    def _build_gen_kwargs(self, n_samples, n_features, task_type, n_classes):
+    def _build_gen_kwargs(
+        self,
+        n_samples,
+        n_features,
+        task_type,
+        n_classes,
+        *,
+        context_ratio=None,
+    ):
         """Build keyword arguments dict for generate_batch from config."""
         cfg = self.config
         return {
@@ -305,7 +390,9 @@ class NoriTrainer:
             'augment': cfg.synth_v2,
             'augment_v3': cfg.synth_v3,
             'rich_reg_targets': cfg.rich_reg_targets,
-            'scale_variation': cfg.scale_variation,
+            # Context normalization removes positive affine target scaling.
+            # Keep the dead transform off even for legacy configs that set it.
+            'scale_variation': False,
             'augment_v4': cfg.synth_v4,
             'v4_filter': cfg.v4_filter,
             'learnability_filter': cfg.learnability_filter,
@@ -347,6 +434,10 @@ class NoriTrainer:
             'icl_scaling_min_improvement': cfg.icl_scaling_min_improvement,
             'quality_rules': self.quality_rules,
             'filter_max_retries': cfg.quality_filter_max_retries,
+            'context_rows': (
+                min(max(1, int(n_samples * context_ratio)), n_samples - 1)
+                if context_ratio is not None else None
+            ),
         }
 
     def _get_current_feature_loss_weight(self) -> float:
@@ -385,11 +476,23 @@ class NoriTrainer:
         if hasattr(bare_model, 'target_aware_scale'):
             bare_model.target_aware_scale = float(scale)
 
-    def _submit_prefetch(self, n_samples, n_features, task_type, n_classes):
+    def _submit_prefetch(
+        self,
+        n_samples,
+        n_features,
+        task_type,
+        n_classes,
+        context_ratio,
+    ):
         """Submit one batch to the prefetcher with a deterministic seed."""
         seed = int(self.rng.integers(0, 2**63))
         gen_kwargs = self._build_gen_kwargs(
-            n_samples, n_features, task_type, n_classes)
+            n_samples,
+            n_features,
+            task_type,
+            n_classes,
+            context_ratio=context_ratio,
+        )
         self.prefetcher.submit(seed=seed, gen_kwargs=gen_kwargs)
 
     # ── GPU-batched ICL learnability filter ──────────────────────────────
@@ -435,7 +538,15 @@ class NoriTrainer:
             print(f"GPU ICL filter: LimiX {model_path} -> {self.device}")
 
     @torch.no_grad()
-    def _gpu_icl_filter(self, X_batch, y_batch, task_type, n_classes):
+    def _gpu_icl_filter(
+        self,
+        X_batch,
+        y_batch,
+        task_type='reg',
+        n_classes=None,
+        *,
+        context_ratio=None,
+    ):
         """Run batched ICL learnability check on GPU.
 
         Uses the frozen LimiX model (native forward). The model is loaded
@@ -451,9 +562,70 @@ class NoriTrainer:
             passed: np.ndarray[bool] of shape [B] — True if episode is learnable
         """
         return self._gpu_icl_filter_limix(
-            X_batch, y_batch, task_type, n_classes)
+            X_batch,
+            y_batch,
+            task_type,
+            n_classes,
+            context_ratio=context_ratio,
+        )
 
-    def _gpu_icl_filter_limix(self, X_batch, y_batch, task_type, n_classes):
+    @staticmethod
+    def _synthetic_episode_health_mask(
+        X_batch,
+        y_batch,
+        n_ctx,
+        *,
+        task_type='reg',
+    ):
+        """Reject invalid numeric episodes before model-based filtering."""
+        X_batch = np.asarray(X_batch)
+        y_batch = np.asarray(y_batch)
+        if X_batch.ndim != 3 or y_batch.ndim != 2:
+            raise ValueError("ICL filter expects X=[B,N,F] and y=[B,N]")
+        if X_batch.shape[:2] != y_batch.shape:
+            raise ValueError(
+                f"ICL filter X/y shape mismatch: X={X_batch.shape}, "
+                f"y={y_batch.shape}"
+            )
+        if not 0 < n_ctx < X_batch.shape[1]:
+            raise ValueError(
+                f"ICL filter context rows must be in [1, N-1], got {n_ctx}"
+            )
+
+        healthy = np.isfinite(y_batch).all(axis=1)
+        healthy &= ~np.isinf(X_batch).any(axis=(1, 2))
+        if task_type != 'reg':
+            return healthy
+
+        y_ctx = y_batch[:, :n_ctx]
+        y_qry = y_batch[:, n_ctx:]
+        healthy &= np.ptp(y_ctx, axis=1) > 1e-8
+        healthy &= np.ptp(y_qry, axis=1) > 1e-8
+
+        x_ctx = X_batch[:, :n_ctx, :]
+        ctx_finite = np.isfinite(x_ctx)
+        finite_count = ctx_finite.sum(axis=1)
+        ctx_min = np.min(np.where(ctx_finite, x_ctx, np.inf), axis=1)
+        ctx_max = np.max(np.where(ctx_finite, x_ctx, -np.inf), axis=1)
+        variable_ctx_feature = (
+            (finite_count >= 2)
+            & np.isfinite(ctx_min)
+            & np.isfinite(ctx_max)
+            & ((ctx_max - ctx_min) > 1e-8)
+        )
+        query_observed = np.isfinite(X_batch[:, n_ctx:, :]).any(axis=1)
+        healthy &= np.any(variable_ctx_feature & query_observed, axis=1)
+        return healthy
+
+    def _gpu_icl_filter_limix(
+        self,
+        X_batch,
+        y_batch,
+        task_type='reg',
+        n_classes=None,
+        *,
+        context_ratio=None,
+    ):
         """Filter using frozen LimiX model (batched GPU forward pass).
 
         Uses the full dataset size (not a tiny subsample) so the filter
@@ -463,12 +635,27 @@ class NoriTrainer:
         cfg = self.config
         B, N, F = X_batch.shape
 
-        # Use 70% context / 30% query — matches training context_ratio range
-        n_ctx = max(20, int(N * 0.7))
+        # Score the exact sampled split used by the training step. A historical
+        # fixed 70/30 gate could accept one boundary and train on another.
+        filter_context_ratio = 0.7 if context_ratio is None else float(context_ratio)
+        filter_context_ratio = min(max(filter_context_ratio, 0.05), 0.95)
+        n_ctx = min(max(1, int(N * filter_context_ratio)), N - 1)
         n_qry = N - n_ctx
 
-        X_sub = X_batch.copy()
-        y_sub = y_batch.copy()
+        passed = np.zeros(B, dtype=bool)
+        healthy_idx = np.flatnonzero(
+            self._synthetic_episode_health_mask(
+                X_batch,
+                y_batch,
+                n_ctx,
+                task_type=task_type,
+            )
+        )
+        if len(healthy_idx) == 0:
+            return passed
+
+        X_sub = X_batch[healthy_idx].copy()
+        y_sub = y_batch[healthy_idx].copy()
 
         X_sub = np.nan_to_num(X_sub, nan=0.0).astype(np.float32)
 
@@ -477,22 +664,27 @@ class NoriTrainer:
             y_sub = np.clip(y_sub, 0, nc - 1).astype(np.float32)
         else:
             ctx_y = y_sub[:, :n_ctx]
-            ctx_mean = np.nanmean(ctx_y, axis=-1, keepdims=True)
-            ctx_std = np.nanstd(ctx_y, axis=-1, keepdims=True)
-            ctx_std = np.where(ctx_std < 1e-8, 1.0, ctx_std)
+            ctx_mean = np.mean(ctx_y, axis=-1, keepdims=True)
+            ctx_std = np.std(ctx_y, axis=-1, keepdims=True)
             y_sub = ((y_sub - ctx_mean) / ctx_std).astype(np.float32)
             nc = None
-
-        passed = np.ones(B, dtype=bool)
 
         def _eval_batch(X_np, y_np):
             """Run filter on a batch slice, return R2 array or None on OOM."""
             try:
                 x_t = torch.from_numpy(X_np).to(self.device)
                 y_t = torch.from_numpy(y_np).to(self.device)
-                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                    out = self._icl_filter_model(x_t, y_t, eval_pos=n_ctx,
-                                                 task_type=task_type)
+                with torch.autocast(
+                    device_type=self.device.type,
+                    dtype=torch.bfloat16,
+                    enabled=self.device.type == 'cuda',
+                ):
+                    out = self._icl_filter_model(
+                        x_t,
+                        y_t,
+                        eval_pos=n_ctx,
+                        task_type=task_type,
+                    )
                 if task_type == 'cls':
                     logits = out['cls_output'][:, :n_qry, :nc].float().cpu().numpy()
                     preds = logits.argmax(axis=-1)
@@ -508,34 +700,50 @@ class NoriTrainer:
                     ss_tot = ((true - true.mean(axis=-1, keepdims=True)) ** 2).sum(axis=-1)
                     r2 = 1.0 - ss_res / np.maximum(ss_tot, 1e-8)
                     return r2 > cfg.icl_filter_reg_min_r2
-            except (torch.cuda.OutOfMemoryError, RuntimeError):
+            except torch.cuda.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                return None
+            except RuntimeError as exc:
+                if 'out of memory' not in str(exc).lower():
+                    raise
                 torch.cuda.empty_cache()
                 return None
 
         # Try full batch first (fastest)
         result = _eval_batch(X_sub, y_sub)
         if result is not None:
-            return result
+            passed[healthy_idx] = result
+            return passed
 
         # OOM: fall back to per-episode
-        for b in range(B):
+        for b, original_idx in enumerate(healthy_idx):
             result = _eval_batch(X_sub[b:b+1], y_sub[b:b+1])
-            if result is not None:
-                passed[b] = result[0]
-            # else: OOM even on single episode, keep it
+            if result is None:
+                raise RuntimeError(
+                    "ICL filter OOM on a single episode; refusing to accept an "
+                    "unscored synthetic episode"
+                )
+            passed[original_idx] = result[0]
 
         return passed
 
-    def _filter_and_replace(self, X_batch, y_batch, task_type, n_classes,
-                            n_samples, n_features):
+    def _filter_and_replace(
+        self,
+        X_batch,
+        y_batch,
+        task_type='reg',
+        n_classes=None,
+        n_samples=None,
+        n_features=None,
+        context_ratio=None,
+    ):
         """Filter a batch with GPU ICL and replace rejected episodes.
 
         Rejected episodes are regenerated synchronously (without ICL filter,
         since the replacement itself gets a GPU check on the next pass).
-        Up to cfg.icl_filter_max_rounds (default 6) replacement rounds. After
-        the budget is exhausted, any still-bad episodes are silently kept —
-        the trainer tracks the rate as `train/icl_filter_escape_rate` so we
-        can see if it's actually a problem.
+        Up to cfg.icl_filter_max_rounds (default 6) replacement rounds. If the
+        budget is exhausted, fail the batch clearly rather than training on a
+        candidate that the configured gate rejected.
 
         Telemetry counters (reset by the periodic log block):
           self._icl_total_episodes      — denominator
@@ -543,13 +751,21 @@ class NoriTrainer:
                                           for reject_rate)
           self._icl_rounds_used_sum     — total rounds used across rejected
                                           episodes (avg = sum/reject_count)
-          self._icl_escape_count        — episodes that survived all rounds
-                                          (numerator for escape_rate)
+          self._icl_escape_count        — slots that exhausted all rounds
+                                          (numerator for exhaustion rate)
         """
         cfg = self.config
         max_rounds = max(1, int(getattr(cfg, 'icl_filter_max_rounds', 6)))
 
-        passed = self._gpu_icl_filter(X_batch, y_batch, task_type, n_classes)
+        n_samples = int(n_samples or X_batch.shape[1])
+        n_features = int(n_features or X_batch.shape[2])
+        passed = self._gpu_icl_filter(
+            X_batch,
+            y_batch,
+            task_type,
+            n_classes,
+            context_ratio=context_ratio,
+        )
         n_rejected = int((~passed).sum())
 
         # Telemetry: count this batch toward the totals regardless of outcome.
@@ -564,7 +780,13 @@ class NoriTrainer:
             print(f"  [ICL-GPU] Rejected {n_rejected}/{len(passed)} episodes "
                   f"(round budget={max_rounds})")
 
-        gen_kwargs = self._build_gen_kwargs(n_samples, n_features, task_type, n_classes)
+        gen_kwargs = self._build_gen_kwargs(
+            n_samples,
+            n_features,
+            task_type,
+            n_classes,
+            context_ratio=context_ratio,
+        )
         gen_kwargs.pop('icl_filter_model', None)
         gen_kwargs.pop('batch_size', None)
 
@@ -579,31 +801,37 @@ class NoriTrainer:
             for i in bad_idx:
                 rng_replace = np.random.default_rng(
                     int(self.rng.integers(0, 2**63)))
-                X_new, y_new, _ = generate_batch(
+                generated = generate_batch(
                     batch_size=1, rng=rng_replace, **gen_kwargs)
+                X_new, y_new = generated[:2]
                 X_batch[i] = X_new[0]
                 y_batch[i] = y_new[0]
 
-            passed = self._gpu_icl_filter(X_batch, y_batch, task_type, n_classes)
+            passed = self._gpu_icl_filter(
+                X_batch,
+                y_batch,
+                task_type,
+                n_classes,
+                context_ratio=context_ratio,
+            )
             # Episodes that just flipped from False to True passed at this round.
             newly_passed = passed & (rounds_needed == -1)
             rounds_needed[newly_passed] = round_idx
 
-        # Anything still ==-1 is an escape (silently accepted).
+        good_rounds = rounds_needed[rounds_needed > 0]
+        if len(good_rounds) > 0:
+            self._icl_rounds_used_sum += int(good_rounds.sum())
+
+        # Never turn retry exhaustion into implicit filter bypass.
         escape_idx = np.where(rounds_needed == -1)[0]
         if len(escape_idx) > 0:
             self._icl_escape_count += len(escape_idx)
-            # Charge the full max_rounds against the rounds-used budget.
             self._icl_rounds_used_sum += int(len(escape_idx) * max_rounds)
-            if self.is_main and self.global_step % self.config.log_interval == 0:
-                print(f"  [ICL-GPU] Escape: {len(escape_idx)}/{len(passed)} "
-                      f"episodes still bad after {max_rounds} rounds — "
-                      f"silently accepted")
-
-        # Sum of rounds used by episodes that eventually passed.
-        good_rounds = rounds_needed[(rounds_needed > 0)]
-        if len(good_rounds) > 0:
-            self._icl_rounds_used_sum += int(good_rounds.sum())
+            raise ICLFilterExhaustedError(
+                "ICL filter exhausted its replacement budget: "
+                f"{len(escape_idx)}/{len(passed)} episode(s) still rejected "
+                f"after {max_rounds} rounds"
+            )
 
         return X_batch, y_batch
 
@@ -814,10 +1042,9 @@ class NoriTrainer:
         eval_pos = max(1, int(n_samples * context_ratio))
         eval_pos = min(eval_pos, n_samples - 1)  # At least 1 query row
 
-        # For regression, re-normalize y using context-only stats to match
-        # inference. The generator normalizes with global (all-row) stats, but
-        # at inference the evaluator normalizes with train-only stats. This
-        # mismatch creates a systematic scale/shift error that hurts R².
+        # Re-normalize regression targets from the actual sampled context.
+        # Generators receive a planned context budget, while this boundary is
+        # authoritative and remains the final inference-parity guard.
         if task_type == 'reg':
             context_y = y_batch[:, :eval_pos]
             y_ctx_mean = context_y.mean(axis=-1, keepdims=True)
@@ -972,11 +1199,47 @@ class NoriTrainer:
         torch.distributed.all_reduce(skip_tensor, op=torch.distributed.ReduceOp.MAX)
         return skip_tensor.item() > 0.5
 
+    def _ddp_step_status(self, should_skip, fatal_error):
+        """Synchronize skip/fatal state before entering the next DDP phase."""
+        if not self.config.distributed:
+            return bool(should_skip), fatal_error is not None
+        status = torch.tensor(
+            [1 if should_skip else 0, 1 if fatal_error is not None else 0],
+            device=self.device,
+            dtype=torch.int32,
+        )
+        torch.distributed.all_reduce(status, op=torch.distributed.ReduceOp.MAX)
+        return bool(status[0].item()), bool(status[1].item())
+
+    def _raise_synchronized_step_error(self, fatal_error, phase):
+        if not self.config.distributed and fatal_error is not None:
+            raise fatal_error
+        if fatal_error is not None:
+            raise RuntimeError(
+                f"Fatal {phase} error on rank {self.config.local_rank}: "
+                f"{type(fatal_error).__name__}: {fatal_error}"
+            ) from fatal_error
+        raise RuntimeError(
+            f"Fatal {phase} error on another rank; see that rank's log"
+        )
+
+    @staticmethod
+    def _prefetch_worker_exception(error):
+        """Reconstruct known worker outcomes without masking programming bugs."""
+        if error.err_type == 'SyntheticDataFilterError':
+            return SyntheticDataFilterError(error.err_msg)
+        if error.err_type == 'ICLFilterExhaustedError':
+            return ICLFilterExhaustedError(error.err_msg)
+        return RuntimeError(
+            f"Worker error ({error.err_type}): {error.err_msg}\n{error.tb}"
+        )
+
     def train_step(self):
-        """Execute one training step. Handles all errors internally.
+        """Execute one training step with synchronized DDP phase boundaries.
 
         In DDP mode, all ranks are guaranteed to either all call backward()
-        or all skip it, preventing deadlocks.
+        or all skip it. Bounded data/OOM outcomes skip; unexpected failures are
+        raised on every rank before the next collective phase.
 
         Returns:
             loss_dict: dict with loss components, always includes 'skipped' key
@@ -1019,13 +1282,14 @@ class NoriTrainer:
             }
 
         should_skip = False
+        fatal_error = None
         output = None
         loss = None
         loss_val = 0.0
         loss_dict = None
         eval_pos = 0
 
-        # --- Generate batch + forward + loss (can error) ---
+        # --- Generate/filter/prepare. Synchronize before any DDP forward. ---
         try:
             if self.prefetcher is not None:
                 # Async path: get pre-generated batch from prefetcher.
@@ -1036,18 +1300,17 @@ class NoriTrainer:
                 result = self.prefetcher.get()
                 from synthefy_nori.training.prefetch import _ErrorSentinel
                 if isinstance(result, _ErrorSentinel):
-                    # Treat worker errors as skippable (don't crash DDP).
-                    # Print full traceback for diagnosis then skip via ValueError.
-                    if self.is_main:
-                        print(f"  [SKIP] Worker error at step {self.global_step}: "
-                              f"{result.err_type}: {result.err_msg}\n"
-                              f"{result.tb}")
-                    raise ValueError(f"Worker error: {result.err_msg}")
+                    raise self._prefetch_worker_exception(result)
                 X_batch, y_batch, n_classes = result
             else:
                 # Synchronous path (prefetch disabled)
                 gen_kwargs = self._build_gen_kwargs(
-                    n_samples, n_features, task_type, n_classes)
+                    n_samples,
+                    n_features,
+                    task_type,
+                    n_classes,
+                    context_ratio=context_ratio,
+                )
                 X_batch, y_batch, n_classes = generate_batch(
                     rng=self.rng,
                     **gen_kwargs,
@@ -1058,11 +1321,50 @@ class NoriTrainer:
             if self._icl_filter_model is not None:
                 X_batch, y_batch = self._filter_and_replace(
                     X_batch, y_batch, task_type, n_classes,
-                    n_samples, n_features)
+                    n_samples, n_features, context_ratio)
 
             x_input, y_input, eval_pos, x_original, feature_mask, y_query = \
                 self._prepare_batch(X_batch, y_batch, task_type, n_classes,
                                     context_ratio)
+
+        except (ICLFilterExhaustedError, SyntheticDataFilterError) as error:
+            if self.is_main:
+                print(
+                    f"  [SKIP] Synthetic filter exhausted at step "
+                    f"{self.global_step}: {error}"
+                )
+            should_skip = True
+        except RuntimeError as error:
+            if "out of memory" in str(error).lower():
+                if self.is_main:
+                    print(
+                        f"  [SKIP] OOM during data preparation at step "
+                        f"{self.global_step} (n={n_samples}, f={n_features})"
+                    )
+                torch.cuda.empty_cache()
+                should_skip = True
+            else:
+                fatal_error = error
+                should_skip = True
+        except Exception as error:
+            fatal_error = error
+            should_skip = True
+
+        should_skip, fatal_any = self._ddp_step_status(
+            should_skip,
+            fatal_error,
+        )
+        if fatal_any:
+            self._raise_synchronized_step_error(fatal_error, "data preparation")
+        if should_skip:
+            if cfg.gradient_accumulation <= 1:
+                self.optimizer.zero_grad()
+            return _skip_result()
+
+        # Every rank has a prepared batch before any DDP forward begins.
+        should_skip = False
+        fatal_error = None
+        try:
 
             # Forward pass
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16,
@@ -1101,6 +1403,7 @@ class NoriTrainer:
                 bar_borders=_bar_borders,
                 bar_target_sigma_y=getattr(cfg, 'bar_target_sigma_y', 0.0),
                 bar_aux_mse_weight=getattr(cfg, 'bar_aux_mse_weight', 0.0),
+                compile_pinball_loss=cfg.compile_pinball_loss,
             )
             loss_dict['feature_loss_weight'] = current_feature_loss_weight
             loss_dict['target_aware_scale'] = current_tae_scale
@@ -1127,35 +1430,36 @@ class NoriTrainer:
                           f"[y={y_l:.2f} feat={f_l:.2f} task={task_type}]")
                 should_skip = True
 
-        except RuntimeError as e:
-            if "out of memory" in str(e).lower():
+        except RuntimeError as error:
+            if "out of memory" in str(error).lower():
                 if self.is_main:
-                    print(f"  [SKIP] OOM at step {self.global_step} "
-                          f"(n={n_samples}, f={n_features})")
+                    print(
+                        f"  [SKIP] OOM during forward/loss at step "
+                        f"{self.global_step} (n={n_samples}, f={n_features})"
+                    )
                 torch.cuda.empty_cache()
                 should_skip = True
             else:
-                raise
-        except ValueError as e:
-            if self.is_main:
-                print(f"  [SKIP] Data error at step {self.global_step}: {e}")
-            should_skip = True
-        except Exception as e:
-            # Catch-all for unexpected errors (OverflowError, TypeError, etc.)
-            # Without this, loss stays None and the step crashes at backward()
-            if self.is_main:
-                print(f"  [SKIP] Unexpected error at step {self.global_step}: "
-                      f"{type(e).__name__}: {e}")
+                fatal_error = error
+                should_skip = True
+        except Exception as error:
+            fatal_error = error
             should_skip = True
 
         # Safety: if loss is None despite no exception, force skip
-        if loss is None and not should_skip:
+        if loss is None and not should_skip and fatal_error is None:
             if self.is_main:
                 print(f"  [SKIP] loss=None at step {self.global_step}")
             should_skip = True
 
-        # --- DDP sync: if ANY rank wants to skip, ALL skip ---
-        should_skip = self._ddp_should_skip(should_skip)
+        # All ranks entered DDP forward before this second status sync. Fatal
+        # local failures become fatal on every rank; bounded outcomes skip.
+        should_skip, fatal_any = self._ddp_step_status(
+            should_skip,
+            fatal_error,
+        )
+        if fatal_any:
+            self._raise_synchronized_step_error(fatal_error, "forward/loss")
 
         if should_skip:
             # During gradient accumulation, don't zero_grad on skip —
@@ -1587,7 +1891,13 @@ class NoriTrainer:
                 params = self._sample_data_params()
                 n_samples, n_features, task_type, n_classes, context_ratio = params
                 self._prefetch_params_queue.append(params)
-                self._submit_prefetch(n_samples, n_features, task_type, n_classes)
+                self._submit_prefetch(
+                    n_samples,
+                    n_features,
+                    task_type,
+                    n_classes,
+                    context_ratio,
+                )
         else:
             self._prefetch_params_queue = []
 
@@ -1636,7 +1946,7 @@ class NoriTrainer:
                 params = self._sample_data_params()
                 ns, nf, tt, nc, cr = params
                 self._prefetch_params_queue.append(params)
-                self._submit_prefetch(ns, nf, tt, nc)
+                self._submit_prefetch(ns, nf, tt, nc, cr)
 
             if not loss_dict.get('skipped', False):
                 running_loss += loss_dict['total_loss']
@@ -1703,18 +2013,18 @@ class NoriTrainer:
                     if self._icl_total_episodes > 0:
                         denom = float(self._icl_total_episodes)
                         reject_rate = self._icl_first_round_reject / denom
-                        escape_rate = self._icl_escape_count / denom
+                        exhaustion_rate = self._icl_escape_count / denom
                         log_dict['train/icl_filter_reject_rate'] = reject_rate
-                        log_dict['train/icl_filter_escape_rate'] = escape_rate
+                        log_dict['train/icl_filter_exhaustion_rate'] = exhaustion_rate
                         log_dict['train/icl_filter_episodes'] = int(self._icl_total_episodes)
                         if self._icl_first_round_reject > 0:
                             avg_rounds = (self._icl_rounds_used_sum
                                           / float(self._icl_first_round_reject))
                             log_dict['train/icl_filter_avg_rounds'] = avg_rounds
                         # Echo the rates to stdout — operators care about
-                        # escape_rate especially (silent acceptance signal).
+                        # Exhaustion is a bounded skip, never silent acceptance.
                         print(f"  [ICL-GPU/win] reject={reject_rate*100:.1f}% "
-                              f"escape={escape_rate*100:.2f}% "
+                              f"exhausted={exhaustion_rate*100:.2f}% "
                               f"(over {int(denom)} eps)")
                     wandb.log(log_dict, step=opt_step)
 
