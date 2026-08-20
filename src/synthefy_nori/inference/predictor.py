@@ -995,6 +995,71 @@ class NoriPredictor:
             return max(base, int(base * (total_gb / 24.0)))
         return base
 
+    #: How many DISTINCT encoded contexts ``_get_or_build_context`` retains per pipeline
+    #: when ``memory_policy.reuse_context_cache`` is on.
+    #:
+    #: 1 is the historical behavior and right for ordinary ``predict``, which reuses one
+    #: context. A large-context policy (:mod:`synthefy_nori.inference.large_context`) rotates between
+    #: several shared pools, and at 1 each pool evicts the previous one, so a policy with
+    #: 8 pools gets zero hits and pays 8 rebuilds *plus* 8 verification clones. Costs one
+    #: full K/V cache per entry, so raising it is opt-in
+    #: (``NoriRegressor(large_context_cache_entries=K)``) rather than automatic -- growing this
+    #: on the caller's behalf would trade a missed optimization for an OOM.
+    #:
+    #: Deliberately an attribute here and NOT a :class:`MemoryPolicy` field: that class is
+    #: mirrored in the ``synthefy`` client and published in the serving request schema, and
+    #: this is an implementation detail of a library-only feature the hosted API does not
+    #: expose. Putting it there broke client/server parity for no caller benefit.
+    context_cache_entries: int = 1
+
+    def budget_n_features(self, x_train: np.ndarray) -> int:
+        """The feature count :meth:`max_context_rows` divides the budget by.
+
+        Public because it is the expensive, *table-derived* half of that arithmetic and
+        a caller re-checking the window every call should not repay it: detecting the
+        binary columns costs a float64 copy of the whole table and a ``np.unique`` per
+        column (~5s on 1M x 130). It depends only on ``inference_config`` and the
+        values in ``x_train``, so it is fixed for the life of a fit, while callers may
+        change the element budget between predictions. Cache this, pass it back to
+        :meth:`max_context_rows`, and drop it on re-``fit``.
+        """
+        x_train = np.asarray(x_train)
+        n_features = x_train.shape[1] if x_train.ndim > 1 else 1
+        return self._effective_budget_n_features(n_features, x_train)
+
+    def max_context_rows(self, x_train: np.ndarray, *,
+                         budget_n_features: int | None = None) -> int:
+        """Context rows one call can take for this table before subsampling engages.
+
+        Mirrors the budget arithmetic in :meth:`_predict_reg_single` exactly: returns
+        ``len(x_train)`` when the whole context already fits the element budget, and
+        otherwise the same ``max_train_samples`` that path would trim it to.
+
+        Exists so a large-context policy (:mod:`synthefy_nori.inference.large_context`) can size its
+        shared context to the budget that would otherwise have cut it, instead of
+        guessing a window and being silently subsampled underneath. Read-only: it
+        resolves the budget but predicts nothing and changes no state.
+
+        Args:
+            x_train: the full context matrix, for its row and feature counts (the
+                feature count is the post-``HighDimFeatureSelector`` one, and detecting
+                that needs the values, not just the shape).
+            budget_n_features: a previously computed :meth:`budget_n_features` for this
+                same table, to skip re-deriving it. ``None`` derives it here.
+
+        Returns:
+            Rows per call, at least 10 -- the same floor ``_predict_reg_single`` uses.
+        """
+        x_train = np.asarray(x_train)
+        # The budget is resolved on every call, never cached: it follows `memory_policy`
+        # (re-declared per call) or the default derived from the device's total VRAM.
+        budget = self._resolve_max_elements_budget()
+        if budget_n_features is None:
+            budget_n_features = self.budget_n_features(x_train)
+        if (len(x_train) + 1) * budget_n_features <= budget:
+            return len(x_train)
+        return max(10, budget // (2 * budget_n_features))
+
     def _resolve_max_elements_budget(self) -> int:
         """Per-forward element budget: the policy's value, else the VRAM-aware default.
 
@@ -1451,7 +1516,7 @@ class NoriPredictor:
 
     def _get_or_build_context(self, bare_model, id_pipe, *, x_train_t, y_train_t,
                               cache_dtype, offload_kv_cache, fit_row_chunk,
-                              reuse_context_cache):
+                              reuse_context_cache, cache_entries=1):
         """Build the per-pipe context (train) K/V cache, reusing it across predict()
         calls whose context and cache params are unchanged.
 
@@ -1464,16 +1529,25 @@ class NoriPredictor:
         same one -- the cache only skips recomputing an identical result.
 
         Reuse is decided by EXACT content verification (``_same_context``), not by a
-        digest: a long-lived server re-``fit``s this same predictor for every request
-        (``serving/core/nori_inference/engine.py`` holds one estimator forever), so a false
-        cache hit would answer one caller's rows against another caller's context.
-        That is a wrong-answer bug, not a slow one, so the check may not be
-        probabilistic -- see ``_same_context`` for why bytes and not a hash.
+        digest. A long-lived predictor may be re-fitted with a different table, so a
+        false cache hit would answer new query rows against an earlier context. That is
+        a wrong-answer bug, not a slow one, so the check may not be probabilistic --
+        see ``_same_context`` for why bytes are compared directly instead of using a
+        summary hash.
 
         ``MemoryPolicy(reuse_context_cache=False)`` rebuilds on every call and clears
         any retained bundle. This is a typed policy rather than an environment knob,
         so sklearn cloning, serialized configuration, local inference and serving all
         share one explicit contract.
+
+        ``NoriRegressor(large_context_cache_entries=K)`` retains K DISTINCT contexts per
+        pipeline instead of one, most-recently-used first. Ordinary ``predict`` reuses
+        a single context and wants the default of 1; a large-context policy rotates between
+        several shared pools within one ``predict``
+        (:mod:`synthefy_nori.inference.large_context`), and at K=1 each pool evicts the
+        previous one, so a policy with 8 pools gets zero hits and pays 8 rebuilds plus
+        8 verification clones. Each entry is a full K/V cache, so capacity is bounded
+        only by the caller's explicit, memory-aware choice.
         """
         def _build():
             return bare_model.build_context_cache(
@@ -1493,43 +1567,68 @@ class NoriPredictor:
         cache = getattr(self, "_context_cache", None)
         if cache is None:
             cache = self._context_cache = {}
-        hit = cache.get(id_pipe)
-        if hit is not None:
-            hit_key, hit_x, hit_y, hit_bundle = hit
+        # Per pipe: a most-recently-used-first list of entries. A list and a linear
+        # scan, not an OrderedDict keyed by a digest, because the hit test is the exact
+        # byte compare below -- there is no key to hash that would not reintroduce the
+        # false-positive risk _same_context exists to avoid. K is single digits.
+        #
+        # Read with .get, and insert the list only once there is a bundle to put in it:
+        # an empty list per pipe would make `self._context_cache` truthy, which is how
+        # callers and tests ask "is anything retained?" -- including after a build that
+        # raised, where the answer must stay no.
+        entries = cache.get(id_pipe) or []
+        capacity = max(1, int(cache_entries))
+        for position, (hit_key, hit_x, hit_y, hit_bundle) in enumerate(entries):
             # Cheap scalar key first, then the O(N_train*F) byte compare -- a param
             # change short-circuits without touching the tensors.
             if (hit_key == key
                     and self._same_context(hit_x, x_train_t)
                     and self._same_context(hit_y, y_train_t)):
+                if position:                    # promote: this pool is in active rotation
+                    entries.insert(0, entries.pop(position))
+                # Honour a capacity shrink on the hit path too. Returning early here is
+                # how a drop from 3 to 1 used to retain all three K/V bundles for as
+                # long as the caller kept asking for a context already in the list --
+                # exactly the case where the caller is trying to free memory. Promotion
+                # above runs first, so the entry being returned always survives.
+                del entries[capacity:]
                 return hit_bundle
         bundle = _build()                       # cache only on a successful build
+        entries = cache.setdefault(id_pipe, entries)
         # Keep our OWN contiguous copies to verify future calls against. Clones, not
         # the caller's tensors: x_train_t is a slice of the concatenated train+test
         # table, so retaining the view would pin the (unbounded) query rows alive
         # too. One N_train x F copy is negligible against the per-layer K/V cache it
         # guards, which is ~nlayers x n_groups times larger.
         #
-        # BOUND THE CACHE BY TOTAL BYTES. It is keyed per PIPE, and the default
-        # regression path runs an 8-member preprocessing ensemble, so an unbounded dict
-        # retains eight context caches at once. Each is ~nlayers x n_groups x n_ctx:
-        # small on a normal table, very large on a WIDE one. Measured on TALENT's
-        # topo_2_1 (7108 x 266 -> ~134 feature groups at features_per_group=2) one bundle
-        # is 15.2 GiB, so eight is 121.6 GiB and a 143 GiB H200 is exhausted before any
-        # query runs. The memory ladder then OOMs on every rung and even the plain-loop
-        # fallback dies -- though it needs only 14.5 GiB by itself -- because
-        # `torch.cuda.empty_cache()` cannot release tensors this dict still references.
+        # BOUND THE CACHE BY TOTAL BYTES, across every pipe and every retained entry.
+        # It is keyed per PIPE, and each pipe may retain up to `cache_entries` distinct
+        # contexts (see the K-pool docstring above), so the default regression path's
+        # 8-member preprocessing ensemble times a large-N policy's K pools can retain
+        # many bundles at once. Each is ~nlayers x n_groups x n_ctx: small on a normal
+        # table, very large on a WIDE one. Measured on TALENT's topo_2_1 (7108 x 266 ->
+        # ~134 feature groups at features_per_group=2) one bundle is 15.2 GiB, so eight
+        # is 121.6 GiB and a 143 GiB H200 is exhausted before any query runs. The memory
+        # ladder then OOMs on every rung and even the plain-loop fallback dies -- though
+        # it needs only 14.5 GiB by itself -- because `torch.cuda.empty_cache()` cannot
+        # release tensors this dict still references.
         #
         # Evicting to a BYTE budget rather than a fixed count keeps the fit-once /
-        # serve-many amortization intact in the common case (8 small bundles all fit) and
-        # sheds bundles only when they are individually huge, which is precisely when
+        # serve-many amortization intact in the common case (bundles all fit) and sheds
+        # bundles only when they are individually huge, which is precisely when
         # retaining them is what breaks the run.
-        if self._evict_context_cache_for(cache, bundle):
-            cache[id_pipe] = (
+        if self._evict_context_cache_for(cache, bundle, keep_pipe=id_pipe):
+            entries.insert(0, (
                 key,
                 x_train_t.detach().clone(memory_format=torch.contiguous_format),
                 y_train_t.detach().clone(memory_format=torch.contiguous_format),
                 bundle,
-            )
+            ))
+            # Evict from the cold end. Shrinking capacity between calls (the shared
+            # engine re-declares its policy per request) is honoured here rather than
+            # needing its own path: the list is trimmed to whatever the CURRENT call
+            # asked for.
+            del entries[capacity:]
         return bundle
 
     @staticmethod
@@ -1597,13 +1696,26 @@ class NoriPredictor:
             pass
         return None                             # cannot measure -> leave behaviour unchanged
 
-    def _evict_context_cache_for(self, cache: dict, incoming) -> bool:
-        """Drop cached bundles (oldest first) until ``incoming`` fits the byte budget.
+    def _evict_context_cache_for(self, cache: dict, incoming, *, keep_pipe=None) -> bool:
+        """Drop cached bundles (oldest first, across every pipe) until ``incoming``
+        fits the byte budget.
 
-        Returns whether ``incoming`` should be retained. False means the bundle is still
-        built and returned to the caller -- it simply is not kept for a later call. That
-        is the wide-table case: reuse is worth nothing if holding one bundle leaves no
-        room to run the model.
+        ``cache`` maps ``id_pipe -> [(key, x, y, bundle), ...]``, most-recently-used
+        first per pipe (see ``_get_or_build_context``'s K-pool docstring), so this
+        walks every entry in every pipe's list rather than treating ``cache`` itself
+        as one bundle per key.
+
+        ``keep_pipe`` is the id_pipe the caller is about to insert ``incoming`` into:
+        its list is drained like any other's if that is what eviction needs, but the
+        now-empty list is never popped from ``cache`` here. The caller pre-registers
+        that (possibly still-empty) list via ``cache.setdefault`` before calling this,
+        and inserts into it right after -- popping the key out from under that insert
+        would silently orphan the new bundle onto a list ``cache`` no longer holds.
+
+        Returns whether ``incoming`` should be retained. False means the bundle is
+        still built and returned to the caller -- it simply is not kept for a later
+        call. That is the wide-table case: reuse is worth nothing if holding one
+        bundle leaves no room to run the model.
         """
         budget = self._context_cache_budget_bytes()
         if budget is None:
@@ -1615,15 +1727,24 @@ class NoriPredictor:
             # is held so the forward pass gets the whole card.
             cache.clear()
             return False
-        held = {k: self._bundle_device_bytes(v[3]) for k, v in cache.items()}
-        total = sum(held.values())
-        # dict preserves insertion order, so iterating keys is oldest-first (LRU enough:
-        # a hit returns early and never re-inserts, so order tracks first use).
-        for k in list(cache.keys()):
+        total = sum(
+            self._bundle_device_bytes(entry[3])
+            for entries in cache.values()
+            for entry in entries
+        )
+        # Dict preserves pipe insertion order, and each per-pipe list is
+        # most-recently-used-first (see _get_or_build_context), so popping from the
+        # END of the first pipe's list, then the next pipe's, evicts oldest-first
+        # without tracking a single cross-pipe timeline.
+        for id_pipe in list(cache.keys()):
+            entries = cache[id_pipe]
+            while entries and total + incoming_bytes > budget:
+                evicted = entries.pop()
+                total -= self._bundle_device_bytes(evicted[3])
+            if not entries and id_pipe != keep_pipe:
+                cache.pop(id_pipe, None)
             if total + incoming_bytes <= budget:
                 break
-            total -= held.get(k, 0)
-            cache.pop(k, None)
         return True
 
     def _context_cache_key(self, cache_dtype, offload_kv_cache, fit_row_chunk) -> tuple:
@@ -1947,6 +2068,7 @@ class NoriPredictor:
                                     offload_kv_cache=policy.offload_to_host,
                                     fit_row_chunk=attempt_fit_chunk,
                                     reuse_context_cache=policy.reuse_context_cache,
+                                    cache_entries=self.context_cache_entries,
                                 )
                                 output = bare_model.apply_context_cache(
                                     x_[n_ctx:].unsqueeze(0), ctx_bundle,

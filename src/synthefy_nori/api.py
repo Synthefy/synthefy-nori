@@ -14,6 +14,15 @@ from synthefy.featurize import CATEGORICAL_AUTO, DataFramePreprocessor
 # Re-exported: `synthefy_nori.config_path` and `from synthefy_nori.api import config_path`
 # are both long-standing entry points. The implementation lives in one place.
 from synthefy_nori.configs import DEFAULT_INFERENCE_CONFIG, config_path
+from synthefy_nori.inference.large_context import (
+    DEFAULT_LARGE_CONTEXT_THRESHOLD,
+    LargeContextUnsupportedOutputError,
+    build_problem,
+    large_context_applies,
+    predictor_call_fn,
+    resolve_large_context_policy,
+    run_policy,
+)
 from synthefy_nori.inference.memory_policy import MemoryPolicy
 from synthefy_nori.discretize import (
     DEFAULT_DISCRETIZE_METHOD,
@@ -172,6 +181,10 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         max_categorical_cardinality: int = DEFAULT_MAX_CARDINALITY,
         text_columns=None,
         memory_policy: "MemoryPolicy | dict | str | None" = None,
+        large_context_policy=None,
+        large_context_threshold: int = DEFAULT_LARGE_CONTEXT_THRESHOLD,
+        large_context_seed: int = 0,
+        large_context_cache_entries: int = 1,
         svd_dim: int | None = 128,
         embedder="minilm",
         text_max_cardinality: int | None = None,
@@ -245,6 +258,27 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 auto-enables it for known LLM encoders and disables it otherwise;
                 set ``True``/``False`` to override (needed for a preloaded encoder
                 object, whose model id can't be inspected).
+            large_context_policy: how to choose the context when the table exceeds
+                ``large_context_threshold`` rows. ``None`` (default) keeps the existing
+                behavior — full context, trimmed by ``memory_policy`` if it does not
+                fit. Otherwise a policy name (``"cluster_route"``,
+                ``"cluster_route_g4"``, ``"safeboost"``, ``"boost"``, ``"random"``),
+                ``True`` for the default (``"cluster_route"``), a
+                ``"pkg.mod:fn"``/``"file.py:fn"`` path, a callable, or a LIST of any of
+                those (scored on a train holdout, per-table winner deployed). Append
+                ``"[k=v]"`` to pass parameters, e.g. ``"cluster_route[groups=16]"``.
+                See :mod:`synthefy_nori.inference.large_context` — and note that ``"boost"``
+                measured −0.229 worst-case, so prefer ``"safeboost"`` or a list.
+            large_context_threshold: row count above which ``large_context_policy`` engages.
+                Default 50,000. Inert when ``large_context_policy`` is ``None``.
+            large_context_seed: seeds the policies' row draws, so two identical predicts
+                agree. Default 0.
+            large_context_cache_entries: how many distinct encoded contexts to retain across
+                ``predict`` calls. Default 1 (the historical behavior). A policy that
+                rotates between pools — ``cluster_route`` builds ``groups`` of them —
+                gets no cache hits at 1, since each pool evicts the previous one; raise
+                it to the pool count to keep the rotation. **Costs one full K/V cache
+                per entry**, which is why it is not raised automatically.
 
         The discretize/categorical_levels pair are estimator-level defaults; the
         same-named ``predict`` kwargs override them per call. The text_* params take
@@ -290,10 +324,24 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # _get_predictor(); transforming it here would break sklearn clone(), whose
         # identity check requires the stored attribute to be the object handed in.
         self.memory_policy = memory_policy
+        # Large-context policy. Stored verbatim for the same clone() reason as
+        # memory_policy above — large_context_policy may be a callable or a list, and
+        # resolving it here would replace the object sklearn compares identity on.
+        self.large_context_policy = large_context_policy
+        self.large_context_threshold = int(large_context_threshold)
+        self.large_context_seed = int(large_context_seed)
+        self.large_context_cache_entries = int(large_context_cache_entries)
         self._predictor = None
         self._feature_preprocessor = None
         # Legacy fitted-text slot retained for old pickles; new fits use the
         # unified _feature_preprocessor above.
+        # The fitted half of a large-context prediction (train-derived state that survives
+        # across predict calls), rebuilt by fit(). See _large_context_predict.
+        self._large_context_problem = None
+        # The table-derived half of the large-context window (see _large_context_predict), cached
+        # for the life of a fit because deriving it scans the whole table.
+        self._large_context_budget_features = None
+        self.large_context_report_ = None
         self._text_preprocessor = None
 
     @property
@@ -334,6 +382,18 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # predict time, where an incoherent config would only surface minutes into a
         # job. The coerced policy is discarded: this call exists for its errors.
         MemoryPolicy.coerce(self.memory_policy)
+        # Same reason, for large_context_policy=: an unknown policy name or a bad parameter
+        # should fail at fit(), not minutes into a job on a million-row table.
+        if self.large_context_policy is not None:
+            resolve_large_context_policy(self.large_context_policy)
+        # Every large-context cache is keyed to the table being replaced, so drop it here.
+        # Keeping it would let a boosting chain built on the PREVIOUS fit's rows serve
+        # this one -- a wrong answer, and the reason this is invalidated in fit rather
+        # than checked lazily. Long-lived estimators may be re-fitted repeatedly, so
+        # keep this invalidation on the ordinary fit path.
+        self._large_context_problem = None
+        self._large_context_budget_features = None
+        self.large_context_report_ = None
         # Resolve automatic placement once per fit so text preprocessing and model
         # inference cannot independently choose different devices. Keep the raw
         # constructor parameter unchanged for sklearn clone/get_params semantics.
@@ -454,6 +514,9 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
             )
         else:
             self._predictor.memory_policy = self.memory_policy
+        # Re-declared per call for the same reason as memory_policy: a resource decision
+        # that says nothing about the weights, so it must not freeze at first use.
+        self._predictor.context_cache_entries = self.large_context_cache_entries
         return self._predictor
 
     def predict(
@@ -568,18 +631,91 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         X_test = self._prepare_query_features(X)
         y_norm = ((self.y_train_ - self.y_mean_) / self.y_std_).astype(np.float32)
 
+        # This report belongs to one prediction attempt. Clear an earlier policy's
+        # report before dispatch so a later full-context call cannot claim the old
+        # policy ran (and a failed attempt cannot leave stale provenance behind).
+        self.large_context_report_ = None
         predictor = self._get_predictor()
         saved = (predictor.quantile_collapse, predictor.bar_point_estimator)
         try:
             predictor.quantile_collapse = quantile_collapse
             predictor.bar_point_estimator = bar_point_estimator
-            pred = predictor.predict(self.X_train_, y_norm, X_test)
+            if large_context_applies(len(self.X_train_), self.large_context_policy,
+                               self.large_context_threshold):
+                pred = self._large_context_predict(
+                    predictor, X_test, y_norm,
+                    decoder=(quantile_collapse, bar_point_estimator))
+            else:
+                pred = predictor.predict(self.X_train_, y_norm, X_test)
         finally:
             predictor.quantile_collapse, predictor.bar_point_estimator = saved
         if isinstance(pred, torch.Tensor):
             pred = pred.detach().cpu().numpy()
         pred = np.asarray(pred, dtype=np.float64).squeeze()
         return pred * self.y_std_ + self.y_mean_
+
+    def _large_context_predict(self, predictor, X_test: np.ndarray, y_norm: np.ndarray,
+                         *, decoder: tuple):
+        """Predict through ``large_context_policy`` instead of one full-context call.
+
+        The :class:`~synthefy_nori.inference.policies.Problem` is built once per ``fit``
+        and reused, so train-derived work — the imputed train view, the train routing
+        space, a boosting chain's residuals — is paid once rather than per ``predict``.
+        Only the query-derived half is recomputed here.
+
+        Two things are re-derived per call rather than frozen at ``fit``, because both
+        are per-call inputs the caller is entitled to change:
+
+        * **the window**, from ``memory_policy``. That policy is re-declared on the
+          predictor on every call (a server sets it per request), so a later, smaller
+          ``elements_budget`` must shrink the context a policy emits. Frozen, the policy
+          would keep emitting the old size and the predictor would subsample it back
+          down at random or raise ``ContextTooLargeError`` — while the report still
+          advertised the old window. A changed window invalidates the Problem outright:
+          a boosting chain's shards are window-sized, so it is a different chain.
+        * **everything that changes the model's answer**, as the cache scope. That is
+          the decoder plus ``memory_policy``: INT8 cache precision is deliberately
+          lossy, so its residual labels and gate winner are not interchangeable with
+          BF16's even when both policies produce the same context window. See
+          :attr:`~synthefy_nori.inference.policies.Problem.train_cache`.
+
+        Runs in NORMALIZED y (the caller denormalizes), which every policy tolerates:
+        row selection is scale-free and residual boosting works on differences.
+        """
+        # The budget that would otherwise have trimmed the context sizes it instead, so
+        # the per-call subsample never fires under a policy. Re-resolved per call, but
+        # its table-derived half is not: that one scans the whole table for binary
+        # columns (~5s on 1M x 130), which is precisely the kind of per-predict
+        # repetition the rest of this path exists to remove.
+        if self._large_context_budget_features is None:
+            self._large_context_budget_features = predictor.budget_n_features(self.X_train_)
+        window = predictor.max_context_rows(
+            self.X_train_, budget_n_features=self._large_context_budget_features)
+        if self._large_context_problem is None or self._large_context_problem.window != window:
+            previous = self._large_context_problem
+            self._large_context_problem = build_problem(
+                predictor_call_fn(predictor),
+                self.X_train_,
+                y_norm,
+                window=window,
+                seed=self.large_context_seed,
+            )
+            if previous is not None:
+                # The window changed, so the cached DECISIONS are stale (a chain's
+                # shards are window-sized) -- but the imputed train block is not, and
+                # re-deriving it per memory_policy change is the cost this path exists
+                # to avoid.
+                self._large_context_problem.adopt_train_state(previous)
+        # A train-cache decision depends on every outside input that can change
+        # `predict_fn`, not just the decoder. MemoryPolicy's JSON is stable, hashable,
+        # includes defaults, and follows in-place dict changes between calls.
+        memory_scope = MemoryPolicy.coerce(self.memory_policy).model_dump_json()
+        pred, self.large_context_report_ = run_policy(
+            self._large_context_problem, X_test,
+            policy_spec=self.large_context_policy, seed=self.large_context_seed,
+            cache_scope=("decoder", decoder, "memory_policy", memory_scope),
+        )
+        return pred
 
     def get_embeddings(self, X=None, *, data_source: str = "test") -> np.ndarray:
         """Return the model's learned representation of rows.
@@ -625,6 +761,24 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         """
         if not hasattr(self, "X_train_"):
             raise ValueError("Call fit(X, y) before predict(X).")
+        # The one chokepoint for every distribution-based path, including the
+        # discretize strategies that decode from a quantile bank -- so refusing here
+        # covers all of them. A large-context policy returns POINT predictions: it averages
+        # or sums the results of several Nori calls, and there is no meaningful way to
+        # combine their quantile banks. Silently ignoring the policy and answering from
+        # a memory-trimmed full context would hand back numbers the caller believes
+        # came from their policy.
+        if large_context_applies(len(self.X_train_), self.large_context_policy,
+                           self.large_context_threshold):
+            raise LargeContextUnsupportedOutputError(
+                f"large_context_policy={self.large_context_policy!r} cannot serve "
+                f"output_type={output_type!r} (nor a discretize strategy that decodes "
+                f"from the predictive distribution): a shared-pool policy chains several "
+                f"Nori calls into a POINT prediction and has no combined distribution to "
+                f"report. Use output_type='mean'/'median'/'mode', raise "
+                f"large_context_threshold above {len(self.X_train_)}, or set "
+                f"large_context_policy=None for this call."
+            )
         if output_type == "quantiles":
             if not quantiles:
                 raise ValueError(
@@ -704,6 +858,11 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 method, lattice, point=point, y_train=self.y_train_)
         try:
             dist = self._predict_distribution(X, output_type="full", quantiles=None)
+        except LargeContextUnsupportedOutputError:
+            # Not the checkpoint's doing, and it already names its own cause and remedy.
+            # Rewrapping it here sent the caller hunting a bar_distribution problem they
+            # do not have.
+            raise
         except NotImplementedError as err:
             raise NotImplementedError(
                 f"discretize={method!r} needs the quantile bank, which this "
