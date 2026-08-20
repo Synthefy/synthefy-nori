@@ -51,6 +51,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [7.0.0] - 2026-08-12
 
+### Added
+
+- Added bounded large-context selection to ``SynthefyNoriClient.predict`` in
+  local, Baseten remote, and SageMaker modes. The shared contract accepts
+  ``random``, ``cluster_route``, and ``cluster_route_g4`` plus a bounded
+  threshold and seed; ``last_large_context_report`` proves what ran and how
+  many internal Nori calls it made. Hosted calls are one-shot and retain no
+  customer context between requests; Snowflake SPCS rejects the unsupported
+  fifth-options shape explicitly.
+
 ### Removed
 
 - Removed the retired `SynthefyAPIClient` and `SynthefyAsyncAPIClient`, the

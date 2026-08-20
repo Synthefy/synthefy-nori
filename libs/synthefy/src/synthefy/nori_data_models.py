@@ -1,4 +1,8 @@
-"""Nori serving-memory data models — a mirror of ``synthefy-nori``'s ``MemoryPolicy``.
+"""Lightweight Nori client/serving data models.
+
+``MemoryPolicy`` mirrors the authoritative model in ``synthefy-nori``. The
+large-context types below instead define the deliberately bounded client/wire
+subset of the library's broader local research API.
 
 **This is a copy, and the original is authoritative.** The policy is defined by
 ``synthefy_nori.inference.memory_policy.MemoryPolicy``, in the repo that also runs the
@@ -42,7 +46,25 @@ MEMORY_PRESETS = ('exact', 'max_context', 'off')
 #: The fallback rungs the server may report, in decreasing memory cost.
 MEMORY_RUNGS = ('no_cache', 'resident_bf16', 'resident_int8', 'offload_bf16', 'offload_int8', 'context_row_chunk', 'plain_loop')
 
+#: Large-context policies safe to execute on a shared hosted endpoint. The local
+#: NoriRegressor deliberately accepts a much broader research extension surface
+#: (callables, module/file paths, parameter strings, gates and boosting policies).
+#: None of those are a network contract: callables/paths are code execution, while the
+#: unbounded policies can multiply model calls without a serving or billing cap.
+HOSTED_LARGE_CONTEXT_POLICIES = ('random', 'cluster_route', 'cluster_route_g4')
+
+#: The direct library's defaults, copied here because synthefy must remain usable
+#: without importing the heavyweight synthefy-nori package.
+DEFAULT_LARGE_CONTEXT_THRESHOLD = 50_000
+DEFAULT_LARGE_CONTEXT_SEED = 0
+
+#: Wire-level bounds. The policy menu caps model calls (1, 8 and 4 respectively);
+#: these cap the two remaining integer controls before a request is sent.
+MAX_LARGE_CONTEXT_THRESHOLD = 10_000_000
+MAX_LARGE_CONTEXT_SEED = 2**32 - 1
+
 MemoryPreset = Literal['exact', 'max_context', 'off']
+LargeContextPolicy = Literal['random', 'cluster_route', 'cluster_route_g4']
 
 
 class MemoryPolicy(BaseModel):
@@ -277,6 +299,85 @@ class MemoryReport(BaseModel):
             "you meant, e.g. a budget that cannot take effect. Empty when it was unambiguous. "
             "Locally these are Python warnings; over HTTP they are returned here instead, "
             "because a warning would land in the server's log rather than reaching you."
+        ),
+    )
+
+
+class LargeContextReport(BaseModel):
+    """What one client call did about large_context_policy.
+
+    This is a capability handshake as well as observability. A deployment older
+    than the large-context wire contract ignores an unknown request field and can
+    return plausible ordinary predictions, so a client that requested a policy
+    must require this report.
+
+    Extra response fields are allowed for forward compatibility.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    applied: bool = Field(
+        description=(
+            "Whether the request crossed its row threshold and entered the "
+            "large-context policy path. False means ordinary full-context/memory-policy "
+            "inference ran instead; see reason."
+        )
+    )
+    policy: LargeContextPolicy = Field(
+        description="Resolved built-in policy name honored by the server."
+    )
+    threshold: int = Field(
+        ge=1,
+        le=MAX_LARGE_CONTEXT_THRESHOLD,
+        description="Context-row threshold honored for this request.",
+    )
+    seed: int = Field(
+        ge=0,
+        le=MAX_LARGE_CONTEXT_SEED,
+        description="Deterministic policy seed honored for this request.",
+    )
+    reason: Optional[str] = Field(
+        None,
+        description="Why the policy was not applied, currently below_threshold, else null.",
+    )
+    window: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Maximum context rows used by each internal Nori call when applied.",
+    )
+    n_train: int = Field(ge=0, description="Number of context rows in the request.")
+    n_test: int = Field(ge=0, description="Number of query rows in the request.")
+    shards_available: Optional[int] = Field(
+        None,
+        ge=0,
+        description="How many full policy windows the context table contains.",
+    )
+    nori_calls: int = Field(
+        ge=0,
+        description="Internal Nori forward calls made for this client request.",
+    )
+    full_context: Optional[bool] = Field(
+        None,
+        description=(
+            "Whether the applied policy used the complete context in one call. "
+            "Null when the policy did not engage."
+        ),
+    )
+    reused_train_state: bool = Field(
+        description=(
+            "Whether train-derived policy state was reused. Shared hosted requests "
+            "are one-shot and report false."
+        )
+    )
+    gate_winner: Optional[str] = Field(
+        None,
+        description=(
+            "Winning policy for a local holdout gate. Hosted serving does not accept "
+            "gates, but the response model carries the field for local parity. Always "
+            "null today: none of HOSTED_LARGE_CONTEXT_POLICIES runs the gate path, so no "
+            "code path in this engine can set it to a real value. A future change that "
+            "exposes a hosted gate must add its own coverage for a non-null response -- "
+            "this field having a place in the schema already is not evidence that it works."
         ),
     )
 

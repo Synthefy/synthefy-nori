@@ -429,7 +429,9 @@ def test_cache_capacity_is_not_a_memory_policy_field():
     """It is a library-only implementation detail, and MemoryPolicy is mirrored in the
     `synthefy` client and published in the serving request schema. Putting it there broke
     client/server parity (`test_the_policy_schema_and_the_client_policy_declare_the_same_inputs`)
-    for a knob no hosted-API caller can use, since serving does not expose large_context_policy."""
+    for a knob no hosted-API caller can use. Serving exposes a bounded large-context
+    policy menu, but deliberately fixes cache entries at one and disables retained
+    customer context across requests."""
     from synthefy_nori.inference.memory_policy import MemoryPolicy
 
     assert "context_cache_entries" not in MemoryPolicy.model_fields

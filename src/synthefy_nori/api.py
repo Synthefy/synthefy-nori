@@ -269,6 +269,21 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 ``"[k=v]"`` to pass parameters, e.g. ``"cluster_route[groups=16]"``.
                 See :mod:`synthefy_nori.inference.large_context` — and note that ``"boost"``
                 measured −0.229 worst-case, so prefer ``"safeboost"`` or a list.
+
+                The three bounded policies also available over the hosted API, and which
+                to reach for:
+
+                * ``"random"`` — **1** Nori call. One shared context window, chosen at
+                  random. The cheapest fallback; no routing, no accuracy upside.
+                * ``"cluster_route"`` — up to ``groups`` (default 8) Nori calls. Clusters
+                  the query rows into groups, each scored against its own local context
+                  pool. **The recommended default when a policy is used**: the only one
+                  with full coverage on the validated benchmark sweep (best on 7/15
+                  tables) and it never regressed below ``"random"`` (min Δ 0.000).
+                * ``"cluster_route_g4"`` — the same mechanism at ``groups=4`` (up to 4
+                  calls, so cheaper). Best *mean* score on the tables it was measured
+                  against, but that measurement covers only a 9-table subset — not a
+                  safe blanket default, so it is available but not chosen automatically.
             large_context_threshold: row count above which ``large_context_policy`` engages.
                 Default 50,000. Inert when ``large_context_policy`` is ``None``.
             large_context_seed: seeds the policies' row draws, so two identical predicts
@@ -386,6 +401,20 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # should fail at fit(), not minutes into a job on a million-row table.
         if self.large_context_policy is not None:
             resolve_large_context_policy(self.large_context_policy)
+            # large_context_applies() only ever compares n_train > threshold, so a
+            # non-positive threshold silently makes the policy apply to EVERY table
+            # regardless of size -- almost certainly a typo (a stray minus sign, or a
+            # dropped digit), not an intentional "always route" request. No upper bound
+            # here: unlike the hosted wire contract's MAX_LARGE_CONTEXT_THRESHOLD (a
+            # network sanity/DoS cap for an untrusted multi-tenant caller), a local
+            # NoriRegressor call is trusted, single-process input with no such threat
+            # model, so there is nothing technical to cap it against.
+            if self.large_context_threshold < 1:
+                raise ValueError(
+                    "large_context_threshold must be a positive integer; got "
+                    f"{self.large_context_threshold!r}. A non-positive threshold makes "
+                    "large_context_policy apply to every table regardless of size."
+                )
         # Every large-context cache is keyed to the table being replaced, so drop it here.
         # Keeping it would let a boosting chain built on the PREVIOUS fit's rows serve
         # this one -- a wrong answer, and the reason this is invalidated in fit rather
