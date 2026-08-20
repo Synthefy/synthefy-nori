@@ -11,8 +11,35 @@ so we transform x_original into the same space for comparison.
 
 from __future__ import annotations
 
+import threading
+import warnings
+
 import torch
 import torch.nn.functional as F
+
+
+_MIN_COMPILED_PINBALL_QUANTILES = 256
+_compiled_pinball_objective = None
+_compiled_pinball_preflight_signatures = set()
+_pinball_compile_failed = False
+_pinball_compile_lock = threading.RLock()
+_COMPILER_FAILURE_MODULE_PREFIXES = (
+    "torch._dynamo",
+    "torch._functorch",
+    "torch._inductor",
+)
+_UNSAFE_ACCELERATOR_RUNTIME_MARKERS = (
+    "out of memory",
+    "cuda error",
+    "device-side assert",
+    "illegal memory access",
+    "cublas",
+    "cudnn",
+    "nccl",
+    "hip error",
+    "mps backend",
+    "xpu error",
+)
 
 
 def _pinball_loss(pred: torch.Tensor, target: torch.Tensor, quantiles: torch.Tensor,
@@ -50,6 +77,206 @@ def _quantile_monotonicity_penalty(pred: torch.Tensor) -> torch.Tensor:
         return pred.new_zeros(pred.shape[:-1])
     diff = pred[..., :-1] - pred[..., 1:]
     return F.relu(diff).pow(2).mean(dim=-1)
+
+
+def _pinball_objective_per_episode(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    quantiles: torch.Tensor,
+    per_ep_var: torch.Tensor,
+    tail_weight: float,
+    monotonicity_weight: float,
+    mse_weight: float,
+) -> torch.Tensor:
+    """Return the complete pinball objective before the batch reduction."""
+    per_ep_loss = _pinball_loss(
+        pred,
+        target,
+        quantiles,
+        tail_weight=tail_weight,
+    ).mean(dim=(1, 2))
+    if monotonicity_weight > 0:
+        mono = _quantile_monotonicity_penalty(pred).mean(dim=1)
+        per_ep_loss = per_ep_loss + monotonicity_weight * mono
+    if mse_weight > 0:
+        mean_pred = pred.mean(dim=-1)
+        mse_aux = ((mean_pred - target) ** 2).mean(dim=1) / per_ep_var
+        per_ep_loss = per_ep_loss + mse_weight * mse_aux
+    return per_ep_loss
+
+
+def _warn_and_disable_compiled_pinball(reason: str) -> None:
+    global _compiled_pinball_objective
+    global _pinball_compile_failed
+
+    with _pinball_compile_lock:
+        if _pinball_compile_failed:
+            return
+        _compiled_pinball_objective = None
+        _compiled_pinball_preflight_signatures.clear()
+        _pinball_compile_failed = True
+        warnings.warn(
+            f"Compiled pinball loss unavailable ({reason}); using eager loss for this process.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
+
+def _is_unsafe_execution_failure(exc: Exception) -> bool:
+    """Return whether eager retry could repeat or hide an accelerator fault."""
+    if isinstance(exc, MemoryError):
+        return True
+    if isinstance(exc, getattr(torch, "OutOfMemoryError", ())):
+        return True
+    if isinstance(exc, getattr(torch, "AcceleratorError", ())):
+        return True
+    if isinstance(exc, getattr(torch.cuda, "CudaError", ())):
+        return True
+    if isinstance(exc, RuntimeError):
+        message = str(exc).lower()
+        return any(marker in message for marker in _UNSAFE_ACCELERATOR_RUNTIME_MARKERS)
+    return False
+
+
+def _is_compiler_failure(exc: Exception) -> bool:
+    """Distinguish compiler/setup failures from unsafe execution faults."""
+    pending = [exc]
+    seen = set()
+    saw_compiler_error = False
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if _is_unsafe_execution_failure(current):
+            return False
+        module = type(current).__module__
+        if module.startswith(_COMPILER_FAILURE_MODULE_PREFIXES):
+            saw_compiler_error = True
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+        inner_exception = getattr(current, "inner_exception", None)
+        if isinstance(inner_exception, Exception):
+            pending.append(inner_exception)
+
+    return saw_compiler_error or not isinstance(exc, RuntimeError)
+
+
+def _compiled_pinball_requested(
+    pred: torch.Tensor,
+    compile_pinball_loss: bool,
+) -> bool:
+    return (
+        compile_pinball_loss
+        and torch.is_grad_enabled()
+        and pred.requires_grad
+        and pred.is_cuda
+        and pred.shape[-1] >= _MIN_COMPILED_PINBALL_QUANTILES
+    )
+
+
+def _preflight_compiled_pinball(
+    compiled_objective,
+    args: tuple,
+) -> None:
+    """Compile and execute both autograd halves without touching model state."""
+    pred, target, quantiles, per_ep_var, *weights = args
+    probe_leaf = pred.detach().requires_grad_(True)
+    probe_pred = probe_leaf if pred.is_leaf else probe_leaf + 0.0
+    probe_args = (
+        probe_pred,
+        target.detach(),
+        quantiles.detach(),
+        per_ep_var.detach(),
+        *weights,
+    )
+    probe_output = compiled_objective(*probe_args)
+    torch.autograd.grad(probe_output.sum(), probe_pred)
+    if pred.is_cuda:
+        torch.cuda.synchronize(pred.device)
+
+
+def _pinball_preflight_signature(args: tuple) -> tuple:
+    tensors = args[:4]
+    weights = args[4:]
+    tensor_signatures = tuple(
+        (
+            tensor.device,
+            tensor.dtype,
+            tuple(tensor.shape),
+            tuple(tensor.stride()),
+        )
+        for tensor in tensors
+    )
+    return tensor_signatures + tuple(weights)
+
+
+def _apply_pinball_objective(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    quantiles: torch.Tensor,
+    per_ep_var: torch.Tensor,
+    tail_weight: float,
+    monotonicity_weight: float,
+    mse_weight: float,
+    compile_pinball_loss: bool = True,
+) -> torch.Tensor:
+    """Apply the default compiled pinball region with safe eager fallback."""
+    global _compiled_pinball_objective
+
+    args = (
+        pred,
+        target,
+        quantiles,
+        per_ep_var,
+        tail_weight,
+        monotonicity_weight,
+        mse_weight,
+    )
+    if (
+        not _compiled_pinball_requested(pred, compile_pinball_loss)
+        or _pinball_compile_failed
+    ):
+        return _pinball_objective_per_episode(*args)
+
+    with _pinball_compile_lock:
+        if _pinball_compile_failed:
+            return _pinball_objective_per_episode(*args)
+        if _compiled_pinball_objective is None:
+            _compiled_pinball_preflight_signatures.clear()
+            try:
+                _compiled_pinball_objective = torch.compile(
+                    _pinball_objective_per_episode,
+                    dynamic=True,
+                    fullgraph=True,
+                )
+            except Exception as exc:
+                if not _is_compiler_failure(exc):
+                    raise
+                _warn_and_disable_compiled_pinball(type(exc).__name__)
+                return _pinball_objective_per_episode(*args)
+        signature = _pinball_preflight_signature(args)
+        if signature not in _compiled_pinball_preflight_signatures:
+            try:
+                _preflight_compiled_pinball(_compiled_pinball_objective, args)
+            except Exception as exc:
+                if not _is_compiler_failure(exc):
+                    raise
+                _warn_and_disable_compiled_pinball(type(exc).__name__)
+                return _pinball_objective_per_episode(*args)
+            _compiled_pinball_preflight_signatures.add(signature)
+
+        compiled_objective = _compiled_pinball_objective
+
+    try:
+        return compiled_objective(*args)
+    except Exception as exc:
+        if not _is_compiler_failure(exc):
+            raise
+        _warn_and_disable_compiled_pinball(type(exc).__name__)
+        return _pinball_objective_per_episode(*args)
 
 
 def _bar_distribution_loss(logits: torch.Tensor, target: torch.Tensor,
@@ -149,7 +376,8 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
                       bar_target_sigma: float = 0.0,
                       bar_borders: torch.Tensor | None = None,
                       bar_target_sigma_y: float = 0.0,
-                      bar_aux_mse_weight: float = 0.0):
+                      bar_aux_mse_weight: float = 0.0,
+                      compile_pinball_loss: bool = True):
     """Compute the unified CCMM loss.
 
     Args:
@@ -166,6 +394,7 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
         regression_loss: 'mse', 'smooth_l1', 'huber', or 'pinball'
         regression_loss_beta: beta for smooth_l1/huber
         regression_quantiles: list/tuple of quantile levels for pinball loss
+        compile_pinball_loss: compile the large-quantile pinball region (default: true)
 
     Returns:
         total_loss: scalar
@@ -258,27 +487,19 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
                         f"Pinball loss expects {quantiles.shape[-1]} quantiles, "
                         f"got reg_output last dim {pred.shape[-1]}"
                     )
-                per_ep_loss = _pinball_loss(pred, target, quantiles,
-                                             tail_weight=pinball_tail_weight).mean(dim=(1, 2))
-                # Quantile monotonicity penalty: discourage τ-crossing so the
-                # τ-mean used at inference is a smoother, less-noisy point
-                # estimate. Per-episode mean of the (n_query × adjacent τ)
-                # penalty.
-                if pinball_monotonicity_weight > 0:
-                    mono = _quantile_monotonicity_penalty(pred).mean(dim=1)  # [B]
-                    per_ep_loss = per_ep_loss + pinball_monotonicity_weight * mono
-                # Auxiliary MSE on the τ-mean (point estimate). Pure pinball
-                # produces unbiased τ-quantiles, but the mean of the K
-                # quantiles can still be a biased point estimate when the
-                # predicted distribution is asymmetric — a known cause of
-                # the QSAR-TID-11 "prediction compression" failure (extreme
-                # rows pulled toward the bulk by the quantile averaging).
-                # Episode-variance-normalized so it composes with the
-                # pinball term across heterogeneous targets.
-                if pinball_mse_weight > 0:
-                    mean_pred = pred.mean(dim=-1)  # [B, n_query]
-                    mse_aux = ((mean_pred - target) ** 2).mean(dim=1) / per_ep_var
-                    per_ep_loss = per_ep_loss + pinball_mse_weight * mse_aux
+                # Keep the complete quantile objective in one tensor-only
+                # region so Inductor can fuse its large-Q temporaries. The
+                # eager implementation retains the original operation order.
+                per_ep_loss = _apply_pinball_objective(
+                    pred,
+                    target,
+                    quantiles,
+                    per_ep_var,
+                    pinball_tail_weight,
+                    pinball_monotonicity_weight,
+                    pinball_mse_weight,
+                    compile_pinball_loss,
+                )
             elif regression_loss == 'bar_distribution':
                 # pred: [B, n_query, num_bars] logits (no squeeze)
                 if pred.shape[-1] != num_bars:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from synthefy_nori.inference.inference_method import InferenceAttentionMap, InferenceResultWithRetrieval
+from synthefy_nori.inference.inference_method import DistributedInference
 from synthefy_nori.inference.preprocess import (
     FeatureShuffler,
     FilterValidFeatures,
@@ -10,8 +10,7 @@ from synthefy_nori.inference.preprocess import (
     HighDimFeatureSelector,
     MaxFeatureSubsampler,
     MADWinsorizer,
-    PolynomialInteractionGenerator,
-    SubSampleData)
+    PolynomialInteractionGenerator)
 from synthefy_nori.inference.degradation import ContextSubsampledWarning, DegradedPipelineWarning
 from synthefy_nori.inference.memory_policy import (
     FIT_ROW_CHUNK_ON_OOM,
@@ -102,6 +101,13 @@ class NoriPredictor:
                     inference_config = json.load(f)
             else:
                 raise ValueError(f"inference_config is not a config file path: {inference_config}")
+        for inference_config_item in inference_config:
+            retrieval_config = inference_config_item.get("retrieval_config")
+            if retrieval_config and retrieval_config.get("use_retrieval"):
+                raise ValueError(
+                    "retrieval inference has been removed; omit retrieval_config "
+                    "and use the full context"
+                )
         self.model_path = model_path
         self.device = device
         # Route GPU SVD (preprocess._TorchTruncatedSVD) to this predictor's
@@ -164,6 +170,10 @@ class NoriPredictor:
         self.native_rms_norm = (
             None if native_rms_norm is None else bool(native_rms_norm))
         self.inference_with_DDP=inference_with_DDP
+        if self.inference_with_DDP and self.mask_prediction:
+            raise ValueError(
+                "inference_with_DDP does not support mask_prediction"
+            )
         # Optional inference-time augmentations. Currently supports:
         #   'yj': Yeo-Johnson target transform ensemble — fit PowerTransformer
         #         on y_train, predict in transformed space, inverse-transform,
@@ -212,8 +222,6 @@ class NoriPredictor:
 
         device_type = device.type if isinstance(device, torch.device) else str(device).split(':')[0]
         if device_type == 'cpu':
-            if self.inference_config[0]["retrieval_config"]["use_retrieval"]:
-                raise ValueError("Retrieval is not supported for CPU inference! Please use the noretrieval configuration when running on a CPU device!")
             self.mix_precision = False
             print("Mixed precision is not supported for CPU inference, so it has been automatically disabled")
         elif device_type == 'mps' and self.mix_precision:
@@ -227,6 +235,14 @@ class NoriPredictor:
             self.model = model
         else:
             self.model = load_model(model_path=model_path, mask_prediction=mask_prediction)
+        if (
+            self.mask_prediction
+            and getattr(self._bare_model(), "feature_decoder", None) is None
+        ):
+            raise ValueError(
+                "mask_prediction=True requires a model with feature_decoder; "
+                "the supplied model explicitly omits that head"
+            )
 
         self.preprocess_pipelines = []
         self.preprocess_configs = []
@@ -257,21 +273,6 @@ class NoriPredictor:
         for idx in range(self.n_estimators):
             pipeline = []
             inference_config_item = self.inference_config[idx]
-            retrieval_config = inference_config_item["retrieval_config"]
-            if retrieval_config["use_retrieval"] and retrieval_config["retrieval_before_preprocessing"]:
-                if retrieval_config["subsample_type"] == "sample":
-                    assert retrieval_config[
-                        "calculate_sample_attention"], "Retrieval on sample level must calculate sample attention score before."
-                    if retrieval_config["use_type"] == "mixed":
-                        assert retrieval_config[
-                            "calculate_feature_attention"], "Retrieval on mixed type must calculate sample and feature attention score before."
-                if retrieval_config["subsample_type"] == "feature":
-                    assert retrieval_config[
-                        "calculate_feature_attention"], "Retrieval on sample level must calculate feature attention score before."
-                pipeline.append(
-                    InferenceAttentionMap(self.model_path, retrieval_config["calculate_feature_attention"],
-                                          retrieval_config["calculate_sample_attention"]))
-                pipeline.append(SubSampleData(retrieval_config["subsample_type"], retrieval_config["use_type"]))
             # HighDimFeatureSelector runs BEFORE MaxFeatureSubsampler so we
             # can do supervised top-k selection (corr / MI / ExtraTrees) or
             # SVD projection on binary fingerprints before any random pruning.
@@ -307,20 +308,6 @@ class NoriPredictor:
                 shuffler.offset = self.all_shifts[idx]
                 pipeline.append(shuffler)
             
-            if retrieval_config["use_retrieval"] and not retrieval_config["retrieval_before_preprocessing"]:
-                if retrieval_config["subsample_type"] == "sample":
-                    assert retrieval_config[
-                        "calculate_sample_attention"], "Retrieval on sample level must calculate sample attention score before."
-                    if retrieval_config["use_type"] == "mixed":
-                        assert retrieval_config[
-                            "calculate_feature_attention"], "Retrieval on mixed type must calculate sample and feature attention score before."
-                if retrieval_config["subsample_type"] == "feature":
-                    assert retrieval_config[
-                        "calculate_feature_attention"], "Retrieval on sample level must calculate feature attention score before."
-                pipeline.append(
-                    InferenceAttentionMap(self.model_path, retrieval_config["calculate_feature_attention"],
-                                          retrieval_config["calculate_sample_attention"]))
-                pipeline.append(SubSampleData(retrieval_config["subsample_type"], retrieval_config["use_type"]))
             self.preprocess_pipelines.append(pipeline)
 
     def _check_n_features(self, X, reset):
@@ -755,11 +742,38 @@ class NoriPredictor:
     @property
     def regression_head(self) -> str:
         """'bar_distribution' or 'pinball' (quantile) — the decoder head type."""
-        return str(getattr(self._bare_model(), "regression_loss", "pinball"))
+        model = self._bare_model()
+        regression_loss = getattr(model, "regression_loss", None)
+        if regression_loss is None:
+            # Legacy architecture records have only the decoder width. Their
+            # default scalar head was MSE; width > 1 identified pinball. A
+            # historical one-level pinball head cannot be distinguished, which
+            # is why current checkpoints persist regression_loss explicitly.
+            regression_loss = (
+                "mse"
+                if int(getattr(model, "num_reg_quantiles", 1)) == 1
+                else "pinball"
+            )
+        return str(regression_loss)
 
     @property
     def num_reg_quantiles(self) -> int:
         return int(getattr(self._bare_model(), "num_reg_quantiles", 1))
+
+    @property
+    def regression_quantiles(self) -> tuple[float, ...]:
+        """Quantile levels carried by the checkpoint's pinball head.
+
+        Checkpoints predating explicit level metadata stored only ``K``. Their
+        training grid was ``i / (K + 1)``, so retain that as the legacy
+        fallback rather than guessing from any current training defaults.
+        """
+        model = self._bare_model()
+        levels = getattr(model, "regression_quantiles", None)
+        if levels is not None:
+            return tuple(float(level) for level in levels)
+        count = int(getattr(model, "num_reg_quantiles", 1))
+        return tuple((index + 1.0) / (count + 1.0) for index in range(count))
 
     def _collapse_regression_output(self, output: torch.Tensor) -> torch.Tensor:
         """Convert regression decoder output to one point prediction per test row.
@@ -767,9 +781,9 @@ class NoriPredictor:
         Pinball-trained checkpoints emit one column per quantile τ_i
         (ordered ascending, e.g. τ=0.01..0.99). This method collapses the
         [..., K] quantile bank to a [...] point estimate using
-        self.quantile_collapse (set at __init__). Under uniform τ spacing
-        'mean' is approximately E[y]; other strategies trade accuracy on
-        symmetric bulk for robustness/tail behavior.
+        self.quantile_collapse (set at __init__). ``mean`` integrates the
+        piecewise-linear quantile function on its recorded τ grid; other
+        strategies trade accuracy on symmetric bulk for robustness/tails.
 
         Bar-distribution-trained checkpoints emit K bin logits over a fixed
         [bar_borders_low, bar_borders_high] range. When we detect that mode on
@@ -778,7 +792,7 @@ class NoriPredictor:
         """
         model_ref = self._bare_model()
         num_reg_quantiles = int(getattr(model_ref, "num_reg_quantiles", 1))
-        regression_loss = str(getattr(model_ref, "regression_loss", "pinball"))
+        regression_loss = self.regression_head
         if output.ndim == 0:
             output = output.unsqueeze(0)
 
@@ -856,7 +870,8 @@ class NoriPredictor:
         """Collapse [..., K] quantile tensor to [...] point estimate.
 
         Strategies:
-          mean          — current default; Σ q_i / K (≈ E[y] for uniform τ)
+          mean          — current default; integral of the piecewise-linear
+                          quantile function on the checkpoint's exact τ grid
           median        — q at the middle τ index; robust to quantile
                           crossing, but more conservative on skewed rows
           trimmed_mean  — drop outer 5% of τ indices, average rest
@@ -865,13 +880,40 @@ class NoriPredictor:
         """
         mode = getattr(self, 'quantile_collapse', 'mean')
         K = q.shape[-1]
-        if mode == 'mean' or K <= 1:
+        if K <= 1:
             return q.mean(dim=-1)
+        # MPS does not implement float64 tensors. Float32 still keeps every
+        # level in the released 999-quantile grid distinct; retain float64 on
+        # CPU/CUDA so their existing integration precision is unchanged.
+        tau_dtype = (
+            torch.float32
+            if q.device.type == 'mps'
+            else torch.float64
+        )
+        if mode == 'mean':
+            from synthefy_nori.model.quantile_dist import quantile_dist_mean_simple
+            tau_levels = torch.as_tensor(
+                self.regression_quantiles,
+                device=q.device,
+                dtype=tau_dtype,
+            )
+            return quantile_dist_mean_simple(
+                q, tau_levels, enforce_monotone_first=True,
+            )
         if mode == 'median':
-            # τ-ordered output: middle index is τ=0.5 for odd K, lower-median for even
-            return q[..., K // 2]
+            # For an even-sized bank there is no single middle level. Average
+            # the two central predictions; choosing K // 2 alone makes K=2
+            # return the upper endpoint instead of its median.
+            middle = K // 2
+            if K % 2:
+                return q[..., middle]
+            return q[..., middle - 1:middle + 1].mean(dim=-1)
         if mode == 'trimmed_mean':
-            trim = max(1, int(K * 0.05))
+            # Keep at least one value. The historical max(1, ...) made K=2
+            # trim both endpoints and reduce an empty tensor to NaN.
+            trim = min(max(1, int(K * 0.05)), (K - 1) // 2)
+            if trim == 0:
+                return q.mean(dim=-1)
             return q[..., trim:K - trim].mean(dim=-1)
         if mode == 'huber_mean':
             # Sort defensively against quantile crossing — q should already be
@@ -916,16 +958,27 @@ class NoriPredictor:
             SKEW_RATIO = 3.0
             left_heavy = (left_w.abs() > SKEW_RATIO * right_w.abs().clamp(min=1e-8)) & (spread > spread_thresh)
             right_heavy = (right_w.abs() > SKEW_RATIO * left_w.abs().clamp(min=1e-8)) & (spread > spread_thresh)
-            mean_est = q.mean(dim=-1)
-            result = torch.where(left_heavy, q_lo, mean_est)
-            result = torch.where(right_heavy, q_hi, result)
+            from synthefy_nori.model.quantile_dist import quantile_dist_mean_simple
+            tau_levels = torch.as_tensor(
+                self.regression_quantiles,
+                device=q.device,
+                dtype=tau_dtype,
+            )
+            mean_est = quantile_dist_mean_simple(
+                q, tau_levels, enforce_monotone_first=True,
+            )
+            result = torch.where(left_heavy, q_lo.to(mean_est.dtype), mean_est)
+            result = torch.where(right_heavy, q_hi.to(mean_est.dtype), result)
             return result
         if mode == 'qdist':
             # Quantile-distribution decoder: sort + analytical mean with
             # exp tail extrapolation. K should be ≥ ~100 for stable tail fit.
             # Falls back to qdist_simple at K < 8.
             from synthefy_nori.model.quantile_dist import quantile_dist_mean_batch
-            tau_levels = (np.arange(K, dtype=np.float64) + 1.0) / float(K + 1)
+            tau_levels = np.asarray(
+                self.regression_quantiles,
+                dtype=np.float64,
+            )
             return quantile_dist_mean_batch(
                 q, tau_levels, enforce_monotone_first=True, tail_outer_n=20,
             )
@@ -934,7 +987,11 @@ class NoriPredictor:
             # Faster, fully on-device. Use when tail extrapolation isn't needed
             # (e.g. K=999 already covers 99.9% of mass).
             from synthefy_nori.model.quantile_dist import quantile_dist_mean_simple
-            tau_levels = (torch.arange(K, device=q.device, dtype=q.dtype) + 1.0) / float(K + 1)
+            tau_levels = torch.as_tensor(
+                self.regression_quantiles,
+                device=q.device,
+                dtype=tau_dtype,
+            )
             return quantile_dist_mean_simple(
                 q, tau_levels, enforce_monotone_first=True,
             )
@@ -1175,7 +1232,14 @@ class NoriPredictor:
             feature_pred = feature_pred[:,:-config['n_x_padding']]
         return feature_pred
     
-    def PostProcess(self, feature_pred:np.ndarray, pipeline:List, config: dict, gt=False) -> np.ndarray:        
+    def PostProcess(
+        self,
+        feature_pred: np.ndarray,
+        pipeline: List,
+        config: dict,
+        gt: bool = False,
+        source_row_indices: np.ndarray | None = None,
+    ) -> np.ndarray:
         # Revert preprocess in the Classifier
         for id_step, step in enumerate(reversed(pipeline)):
             if isinstance(step, FeatureShuffler):
@@ -1237,18 +1301,62 @@ class NoriPredictor:
 
                     
             elif isinstance(step, FilterValidFeatures):
-                deleted_indices = np.where(step.invalid_indices)[0]
-                if len(deleted_indices) > 0:
-                    original_cols = len(deleted_indices) + feature_pred.shape[1]
-                    restored = np.zeros((feature_pred.shape[0], original_cols))                
-                    all_indices = set(range(original_cols))
-                    kept_indices = list(all_indices - set(deleted_indices)) 
-                    for i, idx in enumerate(kept_indices):
-                        restored[:, idx] = feature_pred[:, i]                
-                    for i, idx in enumerate(deleted_indices):
-                        restored[:, idx] = step.invalid_features[:, i]
-                    feature_pred = restored.copy()
+                invalid_mask = np.asarray(step.invalid_indices, dtype=bool)
+                if np.any(invalid_mask):
+                    invalid_features = np.asarray(step.invalid_features)
+                    if source_row_indices is not None:
+                        source_row_indices = np.asarray(source_row_indices, dtype=np.int64)
+                        if source_row_indices.shape != (feature_pred.shape[0],):
+                            raise ValueError(
+                                "FilterValidFeatures inverse row index shape "
+                                f"{source_row_indices.shape} does not match reconstructed "
+                                f"rows {feature_pred.shape[0]}"
+                            )
+                        invalid_features = invalid_features[source_row_indices]
+                    elif invalid_features.shape[0] != feature_pred.shape[0]:
+                        raise ValueError(
+                            "FilterValidFeatures inverse needs source_row_indices when "
+                            f"reconstructing {feature_pred.shape[0]} rows from stored "
+                            f"features for {invalid_features.shape[0]} rows"
+                        )
+
+                    valid_mask = ~invalid_mask
+                    if feature_pred.shape[1] != int(valid_mask.sum()):
+                        raise ValueError(
+                            "FilterValidFeatures inverse column mismatch: "
+                            f"{feature_pred.shape[1]} reconstructed valid columns for "
+                            f"{int(valid_mask.sum())} expected"
+                        )
+                    if invalid_features.shape[1] != int(invalid_mask.sum()):
+                        raise ValueError(
+                            "FilterValidFeatures stored invalid-column mismatch: "
+                            f"{invalid_features.shape[1]} for {int(invalid_mask.sum())} expected"
+                        )
+                    restored = np.empty(
+                        (feature_pred.shape[0], invalid_mask.shape[0]),
+                        dtype=np.result_type(feature_pred.dtype, invalid_features.dtype),
+                    )
+                    restored[:, valid_mask] = feature_pred
+                    restored[:, invalid_mask] = invalid_features
+                    feature_pred = restored
         return feature_pred
+
+    @staticmethod
+    def _aggregate_feature_reconstruction_chunks(
+        chunks: list[np.ndarray],
+        n_context: int,
+    ) -> np.ndarray:
+        """Rebuild one full context+query reconstruction from query chunks.
+
+        Every model call reconstructs the complete context plus only that
+        call's query rows. Context rows are therefore averaged across calls,
+        while disjoint query blocks are concatenated in request order.
+        """
+        if not chunks:
+            raise ValueError("At least one feature reconstruction chunk is required")
+        context = np.stack([chunk[:n_context] for chunk in chunks]).mean(axis=0)
+        query = np.concatenate([chunk[n_context:] for chunk in chunks], axis=0)
+        return np.concatenate([context, query], axis=0)
         
     def get_embeddings(self, x_train: np.ndarray, y_train: np.ndarray,
                        x_test: np.ndarray | None = None,
@@ -1359,12 +1467,6 @@ class NoriPredictor:
             y_ = y_train.copy()
             categorical_idx_ = categorical_idx.copy()
             for id_step, step in enumerate(pipe):
-                if isinstance(step, (InferenceAttentionMap, SubSampleData)):
-                    raise NotImplementedError(
-                        "get_embeddings does not support retrieval-based inference "
-                        "configs (per-query-row context selection makes the train "
-                        "embedding ill-defined). Use a non-retrieval config such as "
-                        "reg_default_noretrieval.json.")
                 x_train_, x_test_, categorical_idx_ = self._fit_transform_step_inductive(
                     step, x_train_, x_test_, categorical_idx_,
                     self.seeds[id_pipe * self.preprocess_num
@@ -1419,8 +1521,42 @@ class NoriPredictor:
 
         return np.stack(per_pipeline, axis=0)
 
-    def _predict_reg(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray,
-                     return_distribution: bool = False) -> np.ndarray:
+    def _predict_reg(
+        self,
+        x_train: np.ndarray,
+        y_train: np.ndarray,
+        x_test: np.ndarray,
+        return_distribution: bool = False,
+    ) -> np.ndarray:
+        if not getattr(self, "inference_with_DDP", False):
+            return self._predict_reg_impl(
+                x_train,
+                y_train,
+                x_test,
+                return_distribution=return_distribution,
+            )
+
+        with DistributedInference(
+            model=self.model,
+            device=self.device,
+            mix_precision=self.mix_precision,
+        ) as inference:
+            return self._predict_reg_impl(
+                x_train,
+                y_train,
+                x_test,
+                return_distribution=return_distribution,
+                distributed_inference=inference,
+            )
+
+    def _predict_reg_impl(
+        self,
+        x_train: np.ndarray,
+        y_train: np.ndarray,
+        x_test: np.ndarray,
+        return_distribution: bool = False,
+        distributed_inference: DistributedInference | None = None,
+    ) -> np.ndarray:
         """Regression predict with optional inference-time augmentations.
 
         Default: single pass on raw y_train.
@@ -1438,9 +1574,35 @@ class NoriPredictor:
         distribution-level analogue, so the distribution path returns the raw
         single-pass quantile bank.
         """
+        if distributed_inference is None:
+            predict_single = self._predict_reg_single
+        else:
+            def predict_single(
+                x_train_single,
+                y_train_single,
+                x_test_single,
+                return_distribution=False,
+            ):
+                return self._predict_reg_single_impl(
+                    x_train_single,
+                    y_train_single,
+                    x_test_single,
+                    return_distribution=return_distribution,
+                    distributed_inference=distributed_inference,
+                )
+
         if return_distribution:
-            return self._predict_reg_single(x_train, y_train, x_test, return_distribution=True)
-        base_pred = self._predict_reg_single(x_train, y_train, x_test)
+            return predict_single(
+                x_train,
+                y_train,
+                x_test,
+                return_distribution=True,
+            )
+        base_pred = predict_single(
+            x_train,
+            y_train,
+            x_test,
+        )
         if 'yj' not in self.augmentations:
             return base_pred
 
@@ -1471,7 +1633,11 @@ class NoriPredictor:
                 y_train_yj = pt.fit_transform(y_train_arr).ravel()
 
             # Predict in YJ-transformed target space
-            pred_yj_space = self._predict_reg_single(x_train, y_train_yj, x_test)
+            pred_yj_space = predict_single(
+                x_train,
+                y_train_yj,
+                x_test,
+            )
             # base_pred may be torch.Tensor; normalize to numpy for transform
             pred_yj_np = pred_yj_space.detach().cpu().numpy() if torch.is_tensor(pred_yj_space) else np.asarray(pred_yj_space)
 
@@ -1799,8 +1965,42 @@ class NoriPredictor:
             candidate.detach().contiguous().view(torch.uint8),
         ))
 
-    def _predict_reg_single(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray,
-                            return_distribution: bool = False) -> np.ndarray:
+    def _predict_reg_single(
+        self,
+        x_train: np.ndarray,
+        y_train: np.ndarray,
+        x_test: np.ndarray,
+        return_distribution: bool = False,
+    ) -> np.ndarray:
+        if not getattr(self, "inference_with_DDP", False):
+            return self._predict_reg_single_impl(
+                x_train,
+                y_train,
+                x_test,
+                return_distribution=return_distribution,
+            )
+
+        with DistributedInference(
+            model=self.model,
+            device=self.device,
+            mix_precision=self.mix_precision,
+        ) as inference:
+            return self._predict_reg_single_impl(
+                x_train,
+                y_train,
+                x_test,
+                return_distribution=return_distribution,
+                distributed_inference=inference,
+            )
+
+    def _predict_reg_single_impl(
+        self,
+        x_train: np.ndarray,
+        y_train: np.ndarray,
+        x_test: np.ndarray,
+        return_distribution: bool = False,
+        distributed_inference: DistributedInference | None = None,
+    ) -> np.ndarray:
         # Check size constraints to avoid OOM
         n_features = x_train.shape[1] if x_train.ndim > 1 else 1
         n_samples_train = x_train.shape[0]
@@ -1881,75 +2081,35 @@ class NoriPredictor:
         outputs = []
         mask_predictions = []
         for id_pipe, pipe in enumerate(self.preprocess_pipelines):
+            pipeline_mask_chunks = []
             x_train_ = x_train_base.copy()
             x_test_ = x_test_base.copy()
             y_ = y_train.copy()
             categorical_idx_ = categorical_idx.copy()
             for id_step, step in enumerate(pipe):
-                if isinstance(step, InferenceAttentionMap):
-
-                    feature_attention_score, sample_attention_score = step.inference(X_train=x_train_.astype(np.float32),
-                                                                                     y_train=y_.astype(np.float32),
-                                                                                     X_test=x_test_.astype(np.float32),
-                                                                                     task_type="reg",device=self.device)
-                    
-                elif isinstance(step, SubSampleData):
-                    step.fit(torch.from_numpy(x_train_), torch.from_numpy(y_train),
-                             feature_attention_score=feature_attention_score,
-                             sample_attention_score=sample_attention_score,
-                             subsample_ratio=self.inference_config[id_pipe]["retrieval_config"].get("sub_feature_ratio", 0.5))
-                    if self.inference_config[id_pipe]["retrieval_config"]["subsample_type"] == "feature":
-                        x_combined = step.transform(torch.from_numpy(x_test_).float())
-                        x_train_ = x_combined[:len(y_train)]
-                        x_test_ = x_combined[len(y_train):]
-                        categorical_idx_ = self.get_categorical_features_indices(x_train_)
-                    else:
-                        attention_score = step.transform(torch.from_numpy(x_test_).float())
-                else:
-                    x_train_, x_test_, categorical_idx_ = self._fit_transform_step_inductive(
-                        step,
-                        x_train_,
-                        x_test_,
-                        categorical_idx_,
-                        self.seeds[id_pipe*self.preprocess_num+self._seed_step_index(pipe, id_step)],
-                        y_train=y_,
-                    )
+                x_train_, x_test_, categorical_idx_ = self._fit_transform_step_inductive(
+                    step,
+                    x_train_,
+                    x_test_,
+                    categorical_idx_,
+                    self.seeds[id_pipe*self.preprocess_num+self._seed_step_index(pipe, id_step)],
+                    y_train=y_,
+                )
 
             x_ = np.concatenate([x_train_, x_test_], axis=0)
             x_ = torch.from_numpy(x_[:, :]).float().to(self.device)
             y_ = torch.from_numpy(y_).float().to(self.device)
             torch.manual_seed(self.seed)
             torch.cuda.manual_seed_all(self.seed)
-            if self.inference_config[id_pipe]["retrieval_config"]["use_retrieval"] and \
-                    self.inference_config[id_pipe]["retrieval_config"]["subsample_type"] == "sample":
-                inference = InferenceResultWithRetrieval(model=self.model,
-                                                         sample_selection_type="AM")
-                output = inference.inference(x_[:len(y_train)], y_,
-                                             x_[len(y_train):],
-                                             attention_score=attention_score,
-                                             retrieval_len=self.inference_config[id_pipe]["retrieval_config"][
-                                                 "retrieval_len"],
-                                             dynamic_ratio=self.inference_config[id_pipe]["retrieval_config"].get(
-                                                 "dynamic_ratio", None),
-                                             use_cluster=self.inference_config[id_pipe]["retrieval_config"].get(
-                                                 "use_cluster", False),
-                                             cluster_num=self.inference_config[id_pipe]["retrieval_config"].get(
-                                                 "cluster_num", 20),
-                                             task_type="reg",
-                                             use_threshold=self.inference_config[id_pipe]["retrieval_config"].get(
-                                                 "use_threshold", False),
-                                             threshold=self.inference_config[id_pipe]["retrieval_config"].get(
-                                                 "threshold", 1),
-                                             mixed_method=self.inference_config[id_pipe]["retrieval_config"].get(
-                                                 "mixed_method", "max"),device=self.device)
+            if self.inference_with_DDP:
+                assert distributed_inference is not None
+                output = distributed_inference.inference(
+                    x_[:len(y_train)],
+                    y_,
+                    x_[len(y_train):],
+                )
                 outputs.append(output)
-            elif self.inference_with_DDP:
-                inference = InferenceResultWithRetrieval(model=self.model,
-                                                         sample_selection_type="DDP")
-                output = inference.inference(x_[:len(y_train)].squeeze(1), y_, x_[len(y_train):].squeeze(1),
-                                             task_type="reg")
-                outputs.append(output)
-            if not self.inference_config[id_pipe]["retrieval_config"]["use_retrieval"] and not self.inference_with_DDP:
+            if not self.inference_with_DDP:
                 # Calculate max allowed test samples per batch to avoid OOM.
                 # We need: (n_train + chunk_size) * budget_n_features <= MAX_ELEMENTS_BUDGET.
                 # Use the post-HighDimFeatureSelector feature count — the model
@@ -2170,8 +2330,21 @@ class NoriPredictor:
                     if self.mask_prediction:
                         process_config = chunk_output['process_config']
                         chunk_output_feature_pred = self.PostProcessInModel(chunk_output['feature_pred'], process_config)
-                        chunk_output_feature_pred = self.PostProcess(chunk_output_feature_pred, pipe, process_config)
-                        mask_predictions.append(chunk_output_feature_pred)
+                        source_row_indices = np.concatenate((
+                            np.arange(len(y_train), dtype=np.int64),
+                            np.arange(
+                                len(y_train) + i,
+                                len(y_train) + end_idx,
+                                dtype=np.int64,
+                            ),
+                        ))
+                        chunk_output_feature_pred = self.PostProcess(
+                            chunk_output_feature_pred,
+                            pipe,
+                            process_config,
+                            source_row_indices=source_row_indices,
+                        )
+                        pipeline_mask_chunks.append(chunk_output_feature_pred)
                         chunk_output = chunk_output['reg_output']
 
                     chunk_output = self._unwrap_model_output(chunk_output, task_type="reg").squeeze(0)
@@ -2184,6 +2357,13 @@ class NoriPredictor:
                 if not cached_done:
                     output = torch.cat(all_outputs, dim=0)
                     outputs.append(output)
+                if pipeline_mask_chunks:
+                    mask_predictions.append(
+                        self._aggregate_feature_reconstruction_chunks(
+                            pipeline_mask_chunks,
+                            len(y_train),
+                        )
+                    )
             
         output = torch.stack(outputs).mean(dim=0)
         if return_distribution:

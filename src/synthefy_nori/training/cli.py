@@ -13,9 +13,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import os
+import sys
 import types
 from datetime import datetime
 
@@ -46,14 +48,308 @@ def load_model_config(source: str | None) -> dict:
     return state['config']
 
 
+def load_resume_configs(source: str) -> tuple[dict, object | None]:
+    """Load only architecture and training metadata needed before resume."""
+    state = torch.load(source, map_location='cpu', weights_only=False)
+    try:
+        model_config = copy.deepcopy(
+            state['model_config'] if 'model_config' in state else state['config']
+        )
+        training_config = copy.deepcopy(state.get('config'))
+    finally:
+        del state
+    return model_config, training_config
+
+
 def parse_quantiles(raw: str) -> tuple[float, ...]:
     vals = [float(part.strip()) for part in raw.split(',') if part.strip()]
     if not vals:
         raise argparse.ArgumentTypeError("Expected at least one comma-separated quantile")
     vals = sorted(set(vals))
-    if any(v <= 0 or v >= 1 for v in vals):
-        raise argparse.ArgumentTypeError("Quantiles must satisfy 0 < q < 1")
+    if any(not math.isfinite(v) or v <= 0 or v >= 1 for v in vals):
+        raise argparse.ArgumentTypeError(
+            "Quantiles must be finite and satisfy 0 < q < 1"
+        )
     return tuple(vals)
+
+
+_DEFAULT_REGRESSION_QUANTILES = (0.1, 0.25, 0.5, 0.75, 0.9)
+
+
+def resolve_model_config_source(
+    checkpoint: str | None,
+    resume: str | None,
+) -> str | None:
+    """Choose the architecture record used to construct a training model.
+
+    A resume checkpoint owns the architecture of the weights and optimizer
+    state being restored. Supplying a different ``--checkpoint`` at the same
+    time used to build one architecture and then permissively load another
+    checkpoint's tensors into it, so reject that ambiguous combination.
+    """
+    if checkpoint and resume:
+        checkpoint_path = os.path.realpath(os.path.abspath(checkpoint))
+        resume_path = os.path.realpath(os.path.abspath(resume))
+        if checkpoint_path != resume_path:
+            raise ValueError(
+                "--checkpoint and --resume refer to different files; a resume "
+                "checkpoint is the architecture source, so remove --checkpoint"
+            )
+    return resume or checkpoint
+
+
+def _config_value(config, name: str, default=None):
+    if config is None:
+        return default
+    if isinstance(config, dict):
+        return config.get(name, default)
+    return getattr(config, name, default)
+
+
+_FEATURE_LOSS_OPTIONS = {
+    '--feature-loss-weight': 'feature_loss_weight',
+    '--feature-loss-weight-end': 'feature_loss_weight_end',
+    '--feature-loss-decay-start-step': 'feature_loss_decay_start_step',
+    '--feature-loss-decay-end-step': 'feature_loss_decay_end_step',
+}
+
+
+def configure_feature_loss_schedule(
+    model_config: dict,
+    args,
+    *,
+    resume_training_config=None,
+    preserve_existing: bool = False,
+    explicit_options: set[str] | None = None,
+) -> bool:
+    """Resolve the feature-loss schedule before constructing a resumed model.
+
+    ``omit_feature_decoder=True`` is an architecture promise that feature loss
+    can never be positive. Parser defaults describe a scratch run, so replaying
+    their 0.5 weight on a minimal ``--resume`` would violate that promise. On a
+    resume, inherit every schedule field not explicitly supplied by the user.
+    A slim omitted-head checkpoint with no serialized training config safely
+    falls back to a permanently-zero schedule.
+
+    Returns whether the resolved schedule is permanently zero.
+    """
+    explicit = set(explicit_options or ())
+    if preserve_existing:
+        decoder_omitted = bool(model_config.get('omit_feature_decoder', False))
+        missing_fallbacks = {
+            'feature_loss_weight': 0.0 if decoder_omitted else args.feature_loss_weight,
+            'feature_loss_weight_end': None,
+            'feature_loss_decay_start_step': args.feature_loss_decay_start_step,
+            'feature_loss_decay_end_step': args.feature_loss_decay_end_step,
+        }
+        for option, attribute in _FEATURE_LOSS_OPTIONS.items():
+            if option in explicit:
+                continue
+            inherited = _config_value(
+                resume_training_config,
+                attribute,
+                missing_fallbacks[attribute],
+            )
+            if inherited is None and attribute != 'feature_loss_weight_end':
+                inherited = missing_fallbacks[attribute]
+            setattr(args, attribute, inherited)
+
+    if args.feature_loss_weight < 0:
+        raise ValueError("--feature-loss-weight must be >= 0")
+    if (
+        args.feature_loss_weight_end is not None
+        and args.feature_loss_weight_end < 0
+    ):
+        raise ValueError("--feature-loss-weight-end must be >= 0")
+    if (
+        args.feature_loss_decay_start_step < 0
+        or args.feature_loss_decay_end_step < 0
+    ):
+        raise ValueError(
+            "--feature-loss-decay-start-step and "
+            "--feature-loss-decay-end-step must be >= 0"
+        )
+
+    stays_zero = (
+        args.feature_loss_weight == 0.0
+        and (
+            args.feature_loss_weight_end is None
+            or args.feature_loss_weight_end == 0.0
+        )
+    )
+    if bool(model_config.get('omit_feature_decoder', False)) and not stays_zero:
+        raise ValueError(
+            "This checkpoint omits feature_decoder, so its resolved feature-loss "
+            "schedule must remain zero; remove explicit positive feature-loss "
+            "options or resume a checkpoint that contains the decoder"
+        )
+    return stays_zero
+
+
+def configure_regression_head(
+    model_config: dict,
+    args,
+    *,
+    resume_training_config=None,
+    preserve_existing: bool = False,
+    explicit_options: set[str] | None = None,
+) -> None:
+    """Resolve loss/head options and persist their complete inference schema.
+
+    ``explicit_options`` distinguishes parser defaults from options supplied
+    by the user, so a resume does not accidentally replay scratch-run defaults.
+    New runs retain the historical defaults. Legacy training checkpoints
+    recover metadata first from their serialized ``TrainingConfig`` and
+    finally from the decoder width/grid conventions used at the time.
+    """
+    decoder = model_config.setdefault('decoder_config', {})
+    option_values = {
+        '--regression-loss': args.regression_loss,
+        '--regression-quantiles': args.regression_quantiles,
+        '--num-bars': args.num_bars,
+        '--bar-borders-low': args.bar_borders_low,
+        '--bar-borders-high': args.bar_borders_high,
+    }
+    if explicit_options is None:
+        explicit = {
+            option for option, value in option_values.items()
+            if value is not None
+        }
+    else:
+        explicit = explicit_options & option_values.keys()
+    explicit_head_override = bool(explicit)
+
+    existing_width = int(decoder.get('num_reg_quantiles', 1))
+    if preserve_existing and '--regression-loss' not in explicit:
+        args.regression_loss = decoder.get('regression_loss')
+        if args.regression_loss is None:
+            legacy_loss = 'mse' if existing_width == 1 else 'pinball'
+            args.regression_loss = _config_value(
+                resume_training_config,
+                'regression_loss',
+                legacy_loss,
+            ) or legacy_loss
+    elif args.regression_loss is None:
+        args.regression_loss = 'mse'
+
+    if preserve_existing and '--regression-quantiles' not in explicit:
+        inherited_quantiles = None
+        inherited_quantiles = decoder.get('regression_quantiles')
+        if inherited_quantiles is None:
+            inherited_quantiles = _config_value(
+                resume_training_config,
+                'regression_quantiles',
+            )
+        if inherited_quantiles is None and args.regression_loss == 'pinball':
+            inherited_quantiles = tuple(
+                (index + 1.0) / (existing_width + 1.0)
+                for index in range(existing_width)
+            )
+        args.regression_quantiles = tuple(
+            inherited_quantiles or _DEFAULT_REGRESSION_QUANTILES
+        )
+    elif args.regression_quantiles is None:
+        args.regression_quantiles = _DEFAULT_REGRESSION_QUANTILES
+    else:
+        args.regression_quantiles = tuple(args.regression_quantiles)
+
+    if preserve_existing and '--num-bars' not in explicit:
+        args.num_bars = int(
+            decoder.get(
+                'num_bars',
+                _config_value(resume_training_config, 'num_bars', 5000),
+            )
+        )
+    elif args.num_bars is None:
+        args.num_bars = 5000
+    if preserve_existing and '--bar-borders-low' not in explicit:
+        args.bar_borders_low = float(
+            decoder.get(
+                'bar_borders_low',
+                _config_value(resume_training_config, 'bar_borders_low', -10.0),
+            )
+        )
+    elif args.bar_borders_low is None:
+        args.bar_borders_low = -10.0
+    if preserve_existing and '--bar-borders-high' not in explicit:
+        args.bar_borders_high = float(
+            decoder.get(
+                'bar_borders_high',
+                _config_value(resume_training_config, 'bar_borders_high', 10.0),
+            )
+        )
+    elif args.bar_borders_high is None:
+        args.bar_borders_high = 10.0
+
+    if preserve_existing and not explicit_head_override:
+        head_width = existing_width
+    elif args.regression_loss == 'pinball':
+        head_width = len(args.regression_quantiles)
+    elif args.regression_loss == 'bar_distribution':
+        head_width = int(args.num_bars)
+    else:
+        head_width = 1
+
+    decoder['num_reg_quantiles'] = head_width
+    decoder['regression_loss'] = str(args.regression_loss)
+    if args.regression_loss == 'pinball':
+        if len(args.regression_quantiles) != head_width:
+            raise ValueError(
+                "Resume checkpoint quantile metadata does not match its decoder "
+                f"width: {len(args.regression_quantiles)} levels for {head_width} outputs"
+            )
+        decoder['regression_quantiles'] = [
+            float(q) for q in args.regression_quantiles
+        ]
+    else:
+        decoder.pop('regression_quantiles', None)
+
+    if args.regression_loss == 'bar_distribution':
+        decoder['num_bars'] = int(args.num_bars)
+        decoder['bar_borders_low'] = float(args.bar_borders_low)
+        decoder['bar_borders_high'] = float(args.bar_borders_high)
+
+
+def configure_architecture_extras(
+    model_config: dict,
+    args,
+    *,
+    preserve_existing: bool,
+) -> None:
+    """Apply one-sided boolean architecture switches without resume drift."""
+    if preserve_existing:
+        if args.no_qassmax:
+            model_config['use_qassmax'] = False
+        if args.no_target_aware_embedding:
+            model_config['use_target_aware_embedding'] = False
+        if args.column_specific_y_aware:
+            model_config['use_column_specific_y_aware'] = True
+        return
+    model_config['use_qassmax'] = not args.no_qassmax
+    model_config['use_target_aware_embedding'] = not args.no_target_aware_embedding
+    model_config['use_column_specific_y_aware'] = bool(
+        args.column_specific_y_aware
+    )
+
+
+def configure_feature_decoder_architecture(
+    model_config: dict,
+    args,
+    *,
+    feature_loss_stays_zero: bool,
+    preserve_existing: bool,
+) -> None:
+    """Persist whether this checkpoint architecture contains a feature head.
+
+    Only a new run may derive this from execution/training flags. A resumed
+    checkpoint owns its module schema: an absent flag is the legacy contract
+    and must continue to construct the decoder so strict loads still match.
+    """
+    if preserve_existing:
+        return
+    model_config['omit_feature_decoder'] = bool(
+        args.skip_zero_feature_decoder and feature_loss_stays_zero
+    )
 
 
 def parse_tags(raw: str | None) -> tuple[str, ...]:
@@ -205,8 +501,13 @@ def main():
                         help='Disable synth_v3 data augmentations (true categoricals, interactions, skewed targets)')
     parser.add_argument('--no-rich-reg-targets', action='store_true',
                         help='Disable rich regression targets (multi-feature deps + interactions in y)')
-    parser.add_argument('--no-scale-variation', action='store_true',
-                        help='Disable random target scale variation for regression')
+    parser.add_argument(
+        '--no-scale-variation',
+        action='store_true',
+        default=True,
+        help='Deprecated compatibility flag; target scale variation is always '
+             'disabled because context normalization cancels it.',
+    )
     parser.add_argument('--synth-v4', action='store_true',
                         help='Enable synth_v4 data augmentations (TabICLv2-inspired diversity)')
     parser.add_argument('--no-v4-filter', action='store_true',
@@ -230,6 +531,13 @@ def main():
                         help='Minimum classification accuracy for ICL filter (default: 0.55)')
     parser.add_argument('--icl-filter-reg-min-r2', type=float, default=0.05,
                         help='Minimum regression R2 for ICL filter (default: 0.05)')
+    parser.add_argument(
+        '--icl-filter-use-train-context',
+        action='store_true',
+        default=True,
+        help='Deprecated compatibility flag; the ICL filter always uses the '
+             'sampled training split.',
+    )
     parser.add_argument('--icl-scaling-filter', action='store_true',
                         help='Enable ICL scaling filter: reject datasets where more context does not help')
     parser.add_argument('--icl-scaling-min-improvement', type=float, default=0.03,
@@ -457,6 +765,13 @@ def main():
              'Experimental and off by default.',
     )
     parser.add_argument(
+        '--compile-pinball-loss',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Regionally compile the large-quantile pinball objective. '
+             'Enabled by default; use --no-compile-pinball-loss for eager execution.',
+    )
+    parser.add_argument(
         '--compile-mode',
         choices=['default', 'reduce-overhead', 'max-autotune-no-cudagraphs'],
         default='default',
@@ -485,6 +800,11 @@ def main():
     parser.add_argument('--native-rms-norm', action='store_true',
                         help='Use PyTorch native RMSNorm kernels during this run. '
                              'Experimental and off by default.')
+    raw_cli_options = {
+        token.split('=', 1)[0]
+        for token in sys.argv[1:]
+        if token.startswith('--')
+    }
     args = parser.parse_args()
 
     # Seed Python/NumPy/torch from --seed so same-seed runs are reproducible.
@@ -513,10 +833,6 @@ def main():
 
     if args.run_steps is not None and args.run_steps <= 0:
         parser.error("--run-steps must be a positive integer")
-    if args.feature_loss_weight_end is not None and args.feature_loss_weight_end < 0:
-        parser.error("--feature-loss-weight-end must be >= 0")
-    if args.feature_loss_decay_start_step < 0 or args.feature_loss_decay_end_step < 0:
-        parser.error("--feature-loss-decay-start-step and --feature-loss-decay-end-step must be >= 0")
     if args.target_aware_warmup_steps < 0:
         parser.error("--target-aware-warmup-steps must be >= 0")
     if not 0.0 <= args.target_aware_init_scale <= 1.0:
@@ -546,11 +862,34 @@ def main():
         parser.error(
             "--compile-disable-ddp-optimizer requires --compile-encoder-layers"
         )
-    feature_loss_stays_zero = (
-        args.feature_loss_weight == 0.0
-        and (args.feature_loss_weight_end is None
-             or args.feature_loss_weight_end == 0.0)
-    )
+    # A resume checkpoint owns the architecture of the tensors it restores.
+    # Building from the bundled config here used to rely on strict=False later,
+    # which could silently leave a partly fresh, mismatched model.
+    try:
+        model_config_source = resolve_model_config_source(
+            args.checkpoint,
+            args.resume,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    config_source_label = model_config_source or "bundled model_base.json"
+    print(f"Loading model config from {config_source_label}")
+    if args.resume:
+        model_config, resume_training_config = load_resume_configs(args.resume)
+    else:
+        model_config = load_model_config(model_config_source)
+        resume_training_config = None
+
+    try:
+        feature_loss_stays_zero = configure_feature_loss_schedule(
+            model_config,
+            args,
+            resume_training_config=resume_training_config,
+            preserve_existing=bool(args.resume),
+            explicit_options=raw_cli_options,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.skip_zero_feature_decoder and not feature_loss_stays_zero:
         parser.error(
             "--skip-zero-feature-decoder requires feature loss to remain zero"
@@ -559,35 +898,33 @@ def main():
         parser.error(
             "--skip-zero-feature-decoder requires --freeze-unused-heads"
         )
-    # Load model architecture config
-    config_source = args.checkpoint or "bundled model_base.json"
-    print(f"Loading model config from {config_source}")
-    model_config = load_model_config(args.checkpoint)
-
     # Enable mask prediction for training
     model_config['mask_prediction'] = True
-    model_config.setdefault('decoder_config', {})
-    # Regression head width depends on loss type:
-    #   pinball          -> one output per quantile
-    #   bar_distribution -> one output per bin (num_bars, fixed borders)
-    #   other (mse/huber/smooth_l1) -> single scalar
-    if args.regression_loss == 'pinball':
-        _reg_head_width = len(args.regression_quantiles)
-    elif args.regression_loss == 'bar_distribution':
-        _reg_head_width = int(args.num_bars)
-    else:
-        _reg_head_width = 1
-    model_config['decoder_config']['num_reg_quantiles'] = _reg_head_width
-    # Persist bar-distribution config into the model_config so inference can
-    # reconstruct borders without a separate flag.
-    if args.regression_loss == 'bar_distribution':
-        model_config['decoder_config']['regression_loss'] = 'bar_distribution'
-        model_config['decoder_config']['num_bars'] = int(args.num_bars)
-        model_config['decoder_config']['bar_borders_low'] = float(args.bar_borders_low)
-        model_config['decoder_config']['bar_borders_high'] = float(args.bar_borders_high)
-    model_config['use_qassmax'] = not args.no_qassmax
-    model_config['use_target_aware_embedding'] = not args.no_target_aware_embedding
-    model_config['use_column_specific_y_aware'] = bool(args.column_specific_y_aware)
+    try:
+        configure_regression_head(
+            model_config,
+            args,
+            resume_training_config=resume_training_config,
+            preserve_existing=bool(args.resume),
+            explicit_options=raw_cli_options,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    # Boolean architecture flags have one-sided CLI switches. On a resume,
+    # False therefore means "not supplied" and the checkpoint value must win;
+    # True is an explicit override. New runs keep their historical defaults.
+    configure_architecture_extras(
+        model_config,
+        args,
+        preserve_existing=bool(args.resume),
+    )
+    configure_feature_decoder_architecture(
+        model_config,
+        args,
+        feature_loss_stays_zero=feature_loss_stays_zero,
+        preserve_existing=bool(args.resume),
+    )
     if args.regression_only:
         model_config['regression_only'] = True
 
@@ -703,14 +1040,16 @@ def main():
         if local_rank == 0:
             print(f"Native RMSNorm enabled ({native_norm_count} modules)")
 
-    if (args.freeze_unused_heads and feature_loss_stays_zero
-            and getattr(model, 'feature_decoder', None) is not None):
-        for parameter in model.feature_decoder.parameters():
-            parameter.requires_grad_(False)
-        if args.skip_zero_feature_decoder:
-            model._skip_feature_decoder = True
-        if local_rank == 0:
+    if args.freeze_unused_heads and feature_loss_stays_zero:
+        if model.feature_decoder is not None:
+            for parameter in model.feature_decoder.parameters():
+                parameter.requires_grad_(False)
+            if args.skip_zero_feature_decoder:
+                model._skip_feature_decoder = True
             action = "skipped" if args.skip_zero_feature_decoder else "grad disabled"
+        else:
+            action = "omitted"
+        if local_rank == 0:
             print(f"  [freeze] feature_decoder {action} (feature loss is 0)")
 
     # Freeze column_y_aware_alpha if requested (V10c control experiment).
@@ -910,6 +1249,7 @@ def main():
         skip_zero_feature_decoder=args.skip_zero_feature_decoder,
         native_rms_norm=args.native_rms_norm,
         compile_encoder_layers=args.compile_encoder_layers,
+        compile_pinball_loss=args.compile_pinball_loss,
         compile_mode=args.compile_mode,
         compile_cache_limit=args.compile_cache_limit,
         compile_disable_ddp_optimizer=args.compile_disable_ddp_optimizer,
@@ -926,6 +1266,7 @@ def main():
         icl_filter_model=args.icl_filter_model,
         icl_filter_cls_min_auc=args.icl_filter_cls_min_auc,
         icl_filter_reg_min_r2=args.icl_filter_reg_min_r2,
+        icl_filter_use_train_context=args.icl_filter_use_train_context,
         icl_scaling_filter=args.icl_scaling_filter,
         icl_scaling_min_improvement=args.icl_scaling_min_improvement,
         v4_no_edge_noise=not args.v4_keep_edge_noise,

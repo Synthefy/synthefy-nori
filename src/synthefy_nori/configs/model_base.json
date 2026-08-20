@@ -19,7 +19,6 @@
       "sigma": 0.5,
       "use_learn_sigma": false,
       "use_learn_embeddings": false,
-      "use_random_kernels": false,
       "use_original_features": false
     }
   },

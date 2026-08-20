@@ -44,6 +44,8 @@ dependencies = [
     "pydantic>=2.0",
     "scikit-learn>=1.4",
     "scipy>=1.13",
+    # torch.compile/Inductor imports setuptools during backend discovery.
+    "setuptools>=68,<81",
     "synthefy>=7,<8",
     "torch>=2.8,<2.14",
     "tqdm>=4.65",

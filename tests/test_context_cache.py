@@ -128,13 +128,11 @@ def test_apply_matches_transductive_on_nonfinite_query_values(bare_model, sentin
     # ContextCache.nan_mean the fill comes from the QUERY mean while the transductive
     # path uses the TRAIN mean.
     #
-    # The visible failure is +/-Inf, not NaN: the preprocess mask is `isnan(x)` alone,
-    # so process_4_x writes NaN back over NaN cells and discards the fill there, while
-    # an Inf cell is unmasked and its fill reaches the model. Measured on nori-6m
-    # before the fix: 3.2e+01 (+Inf) and 2.9e+01 (-Inf) against a 2.9e-05 finite
-    # baseline. The 1e-3 bound below sits ~4 orders below the broken values and ~1.5
-    # above the healthy one; the finite arm is the control, so a general plain-vs-cached
-    # regression fails there too rather than being blamed on the non-finite handling.
+    # NaN and both infinities are restored to missing before numeric embedding. The
+    # context-derived fill still has to be frozen because it controls normalization
+    # and any explicitly configured non-finite indicator channel. The finite arm is
+    # the control, so a general plain-vs-cached regression fails there too rather than
+    # being blamed on non-finite handling.
     xt, yt = _nonfinite_table(sentinel)
     ref = _transductive(bare_model, xt, yt, N_TRAIN)
     got = _split(bare_model, xt, yt, N_TRAIN)
@@ -171,27 +169,24 @@ def test_nan_encoder_frozen_mean_overrides_the_eval_pos_split():
     assert out["data"][0, 1, 0].item() == pytest.approx(3.0)
 
 
-def test_nan_encoder_frozen_mean_survives_an_inf_bearing_query_batch():
-    # Why the Inf case is catastrophic and not merely slightly off: calc_mean excludes
-    # NaN (nansum) but NOT Inf, so a single Inf anywhere in the split drives the whole
-    # column mean to Inf. A query-only batch computing its own mean therefore imputes
-    # Inf, and unlike a NaN cell that fill is unmasked and reaches the model. The
-    # frozen context mean is what keeps the column finite.
+def test_nan_encoder_excludes_inf_from_its_mean_and_honors_a_frozen_mean():
+    # Every non-finite value is missing for purposes of the fill statistic. A lone
+    # infinity must not poison the entire column, and a cache-provided context mean
+    # must still override the query batch's own finite mean.
     from synthefy_nori.model.encoders import NanEncoder
 
     enc = NanEncoder(in_keys=["data"], out_key="nan_encoding")
     x = torch.tensor([[[1.0], [3.0], [float("inf")]]])
 
-    poisoned = enc({"data": x.clone(), "eval_pos": 3})
-    assert not torch.isfinite(poisoned["_nan_mean"]).all(), (
-        "expected an Inf in the split to poison calc_mean -- if this now holds, the "
-        "severity argument for freezing the fill has changed")
-    assert not torch.isfinite(poisoned["data"]).all()
-
-    healthy = enc({"data": x.clone(), "eval_pos": 3,
-                   "_frozen_nan_mean": torch.tensor([[2.0]])})
+    healthy = enc({"data": x.clone(), "eval_pos": 3})
+    assert healthy["_nan_mean"].item() == pytest.approx(2.0)
     assert healthy["data"][0, 2, 0].item() == pytest.approx(2.0)
-    assert torch.isfinite(healthy["data"]).all(), (
+    assert torch.isfinite(healthy["data"]).all()
+
+    frozen = enc({"data": x.clone(), "eval_pos": 3,
+                  "_frozen_nan_mean": torch.tensor([[-7.0]])})
+    assert frozen["data"][0, 2, 0].item() == pytest.approx(-7.0)
+    assert torch.isfinite(frozen["data"]).all(), (
         "frozen context mean did not keep the query column finite")
 
 

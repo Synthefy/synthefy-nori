@@ -4,7 +4,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from synthefy_nori.evaluation.datasets import DatasetRegistry
+from synthefy_nori.evaluation.datasets import (
+    DatasetRegistry,
+    encode_categorical_column,
+)
 
 
 @pytest.fixture
@@ -64,3 +67,24 @@ def test_no_nan_survives_preprocessing(registry):
                                          X_test=X_test, y_test=y_test)
     assert np.isfinite(entry.X_train).all()
     assert np.isfinite(entry.X_test).all()
+
+
+def test_categorical_vocab_is_train_only_and_query_unknown_is_minus_one(registry):
+    entry = registry._make_entry_from_df(
+        pd.DataFrame({"cat": ["a", "c"] * 6}),
+        pd.Series(np.arange(12, dtype=float)),
+        "toy",
+        "unit",
+        X_test=pd.DataFrame({"cat": ["b", "c"]}),
+        y_test=pd.Series([4.0, 5.0]),
+    )
+
+    np.testing.assert_array_equal(entry.X_train[:, 0], [0.0, 1.0] * 6)
+    np.testing.assert_array_equal(entry.X_test[:, 0], [-1.0, 1.0])
+
+
+def test_categorical_encoder_rejects_unknown_without_explicit_policy():
+    _, classes = encode_categorical_column(pd.Series(["a", "c"]))
+
+    with pytest.raises(ValueError, match="absent"):
+        encode_categorical_column(pd.Series(["b"]), classes)

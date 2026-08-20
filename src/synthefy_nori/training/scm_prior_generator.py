@@ -15,8 +15,10 @@ Synthefy. See the NOTICE file and licenses/TabICL-BSD-3-Clause.txt for details.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import random as pyrandom
+import re
 import warnings
 
 import numpy as np
@@ -35,6 +37,15 @@ try:
     HAS_XGB = True
 except ImportError:
     HAS_XGB = False
+
+
+def _resolve_context_rows(n_samples, context_rows):
+    """Return the labeled prefix used to fit episode-level transforms."""
+    if context_rows is None:
+        return int(n_samples)
+    if int(context_rows) < 1:
+        raise ValueError("context_rows must be at least 1")
+    return max(1, min(int(context_rows), int(n_samples)))
 
 
 # ============================================================================
@@ -85,11 +96,18 @@ class StdScaleLayer(nn.Module):
         super().__init__()
         self.mean = None
         self.std = None
+        self.context_rows = None
 
     def forward(self, x):
         if self.mean is None or self.std is None:
-            self.mean = x.mean(dim=0, keepdim=True)
-            self.std = x.std(dim=0, keepdim=True) + 1e-6
+            fit_rows = _resolve_context_rows(x.shape[0], self.context_rows)
+            reference = x[:fit_rows]
+            self.mean = reference.mean(dim=0, keepdim=True)
+            self.std = (
+                reference.std(dim=0, keepdim=True)
+                if fit_rows > 1
+                else torch.zeros_like(self.mean)
+            ) + 1e-6
         return (x - self.mean) / self.std
 
 
@@ -132,7 +150,8 @@ class RandomFunctionActivation(nn.Module):
             pyrandom.uniform(math.log(0.7), math.log(3.0))
         )
         with torch.no_grad():
-            freq_factors = self.freqs ** decay_exponent
+            safe_freqs = self.freqs.clamp_min(torch.finfo(self.freqs.dtype).eps)
+            freq_factors = safe_freqs ** decay_exponent
             freq_factors = freq_factors / (freq_factors ** 2).sum().sqrt()
         self.l2_weights = nn.Parameter(
             freq_factors * torch.randn(n_frequencies), requires_grad=False
@@ -210,8 +229,11 @@ def get_activations():
     # Wrap all with StdRandomScaleFactory
     scaled = [StdRandomScaleFactory(act) for act in activations]  # 28 factories
 
-    # Add RandomChoiceFactory for per-layer diversity (28 more)
-    scaled += [RandomChoiceFactory(scaled)] * len(scaled)  # 56 total
+    # Add RandomChoiceFactory for per-layer diversity (28 more). Keep the
+    # choice pool immutable: passing ``scaled`` itself and then extending it
+    # made the factory able to choose itself recursively.
+    base_scaled = tuple(scaled)
+    scaled += [RandomChoiceFactory(base_scaled)] * len(base_scaled)  # 56 total
 
     return scaled
 
@@ -237,9 +259,10 @@ class XSampler:
             self.means = torch.tensor(means, dtype=torch.float, device=device).unsqueeze(0)
             self.stds = torch.tensor(stds, dtype=torch.float, device=device).unsqueeze(0)
 
-    def sample(self):
+    def sample(self, context_rows=None):
         n, d = self.n_samples, self.n_features
         device = self.device
+        fit_rows = _resolve_context_rows(n, context_rows)
 
         if self.sampling == "normal":
             if self.pre_sample_stats:
@@ -273,13 +296,19 @@ class XSampler:
                     n_cats = pyrandom.randint(2, 20)
                     probs = torch.rand(n_cats, device=device)
                     x = torch.multinomial(probs, n, replacement=True).float()
-                    x = (x - x.mean()) / x.std().clamp(min=1e-6)
+                    reference = x[:fit_rows]
+                    reference_std = (
+                        reference.std()
+                        if fit_rows > 1
+                        else torch.zeros((), device=x.device, dtype=x.dtype)
+                    )
+                    x = (x - reference.mean()) / reference_std.clamp(min=1e-6)
                 elif pyrandom.random() > zipf_p:
                     # Zipf
                     a = 2.0 + pyrandom.random() * 2.0
                     vals = np.random.zipf(a, n)
                     x = torch.tensor(vals, device=device).clamp(max=10).float()
-                    x = x - x.mean()
+                    x = x - x[:fit_rows].mean()
                 else:
                     # Uniform
                     x = torch.rand(n, device=device)
@@ -315,22 +344,60 @@ class GaussianNoise(nn.Module):
 
 def _block_wise_dropout_init(weight, init_std, dropout_prob,
                               scale_by_dropout=True):
-    """Non-overlapping grid-block init matching TabICL.
+    """Initialize balanced diagonal blocks with real element dropout.
 
-    Divides weight into n_blocks along each dim, fills diagonal blocks
-    with Normal(0, init_std/sqrt(keep_prob)).
+    Every input and output belongs to exactly one diagonal block, including
+    remainder rows/columns. Dropout is applied inside those blocks while
+    retaining at least one connection per row and column.
     """
-    nn.init.zeros_(weight)
+    if not 0.0 <= dropout_prob < 1.0:
+        raise ValueError("dropout_prob must be in [0, 1)")
+
     h_out, h_in = weight.shape
     n_blocks = pyrandom.randint(1, math.ceil(math.sqrt(min(h_out, h_in))))
-    block_size = [h_out // n_blocks, h_in // n_blocks]
-    keep_prob = (n_blocks * block_size[0] * block_size[1]) / weight.numel()
 
-    std = init_std / (keep_prob ** 0.5) if scale_by_dropout else init_std
-    for block in range(n_blocks):
-        row_slice = slice(block_size[0] * block, block_size[0] * (block + 1))
-        col_slice = slice(block_size[1] * block, block_size[1] * (block + 1))
-        nn.init.normal_(weight[row_slice, col_slice], std=std)
+    def balanced_slices(size):
+        quotient, remainder = divmod(size, n_blocks)
+        start = 0
+        result = []
+        for block_idx in range(n_blocks):
+            width = quotient + int(block_idx < remainder)
+            result.append(slice(start, start + width))
+            start += width
+        return result
+
+    row_slices = balanced_slices(h_out)
+    col_slices = balanced_slices(h_in)
+    masks = []
+    kept = 0
+
+    for row_slice, col_slice in zip(row_slices, col_slices):
+        n_rows = row_slice.stop - row_slice.start
+        n_cols = col_slice.stop - col_slice.start
+        mask = torch.rand((n_rows, n_cols), device=weight.device) >= dropout_prob
+
+        # Aggressive sampled dropout must not disconnect a neuron entirely.
+        for row_idx in range(n_rows):
+            if not bool(mask[row_idx].any()):
+                col_idx = int(torch.randint(n_cols, (1,), device=weight.device))
+                mask[row_idx, col_idx] = True
+        for col_idx in range(n_cols):
+            if not bool(mask[:, col_idx].any()):
+                row_idx = int(torch.randint(n_rows, (1,), device=weight.device))
+                mask[row_idx, col_idx] = True
+
+        masks.append(mask)
+        kept += int(mask.sum())
+
+    keep_prob = kept / weight.numel()
+    std = init_std / math.sqrt(keep_prob) if scale_by_dropout else init_std
+
+    with torch.no_grad():
+        weight.zero_()
+        for row_slice, col_slice, mask in zip(row_slices, col_slices, masks):
+            block = weight[row_slice, col_slice]
+            block.normal_(std=std)
+            block.mul_(mask)
 
 
 # ============================================================================
@@ -359,7 +426,7 @@ class MLPSCM(nn.Module):
                  scale_init_std_by_dropout=True,
                  sampling="normal", pre_sample_cause_stats=False,
                  noise_std=0.01, pre_sample_noise_std=False,
-                 device="cpu"):
+                 device="cpu", context_rows=None):
         super().__init__()
         self.device = device
         self.n_samples = n_samples
@@ -369,6 +436,7 @@ class MLPSCM(nn.Module):
         self.y_is_effect = y_is_effect
         self.in_clique = in_clique
         self.sort_features = sort_features
+        self.context_rows = context_rows
 
         # Key TabICL behavior: non-causal sets num_causes = num_features
         if is_causal:
@@ -399,6 +467,9 @@ class MLPSCM(nn.Module):
                 is_output=True,
             ))
         self.layers = nn.Sequential(*layers).to(device)
+        for module in self.layers.modules():
+            if isinstance(module, StdScaleLayer):
+                module.context_rows = context_rows
 
         # Initialize all parameters
         self._initialize_parameters(
@@ -421,26 +492,34 @@ class MLPSCM(nn.Module):
                 torch.normal(torch.zeros(1, out_dim, device=device),
                              float(noise_std))
             )
+            if noise_std > 0:
+                ns.clamp_(min=torch.finfo(ns.dtype).eps)
         else:
             ns = noise_std
         return nn.Sequential(activation, linear, GaussianNoise(ns))
 
     def _initialize_parameters(self, init_std, block_wise_dropout,
                                 dropout_prob, scale_by_dropout):
-        for i, (name, param) in enumerate(self.layers.named_parameters()):
-            if param.dim() != 2:
-                # Biases — zero init
-                nn.init.zeros_(param)
+        # Activation modules can own one-dimensional parameters (notably the
+        # Fourier frequencies, phases and weights in RandomFunctionActivation).
+        # Initialize Linear modules explicitly rather than treating every
+        # non-matrix parameter in the full module tree as a bias.
+        for module in self.layers.modules():
+            if not isinstance(module, nn.Linear):
                 continue
             if block_wise_dropout:
-                _block_wise_dropout_init(param, init_std, dropout_prob,
+                _block_wise_dropout_init(module.weight, init_std, dropout_prob,
                                          scale_by_dropout)
             else:
-                nn.init.normal_(param, std=init_std)
+                nn.init.normal_(module.weight, std=init_std)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
 
     @torch.no_grad()
     def forward(self):
-        causes = self.x_sampler.sample()  # [n_samples, num_causes]
+        causes = self.x_sampler.sample(
+            context_rows=self.context_rows,
+        )  # [n_samples, num_causes]
 
         # Forward through all layers, collecting intermediate outputs.
         # Clamp after each layer to prevent magnitude explosion through
@@ -455,11 +534,6 @@ class MLPSCM(nn.Module):
         outputs = outputs[2:]
 
         X, y = self._handle_outputs(causes, outputs)
-
-        # NaN handling: TabICL poisons entire dataset if any NaN
-        if torch.any(torch.isnan(X)) or torch.any(torch.isnan(y)):
-            X = torch.zeros_like(X)
-            y = torch.full_like(y, -100.0)
 
         if self.n_outputs == 1 and y.dim() > 1:
             y = y.squeeze(-1)
@@ -546,15 +620,30 @@ class TreeLayer:
                     raise ImportError("sklearn is required for TreeSCM")
             self.models.append(model)
 
-    def fit_transform(self, X, rng):
+    def fit_transform(self, X, rng, context_rows=None):
         n = X.shape[0]
+        fit_rows = _resolve_context_rows(n, context_rows)
+        X_reference = np.asarray(X[:fit_rows])
+        if not np.isfinite(X_reference).all():
+            raise FloatingPointError("nonfinite context tree input")
+        X_predict = np.asarray(X).copy()
+        query = X_predict[fit_rows:]
+        if len(query) and not np.isfinite(query).all():
+            for col in range(X_predict.shape[1]):
+                reference = X_reference[:, col]
+                median = float(np.median(reference))
+                lo = float(np.min(reference))
+                hi = float(np.max(reference))
+                query_col = query[:, col]
+                query[:, col] = np.nan_to_num(
+                    query_col, nan=median, posinf=hi, neginf=lo)
         out = np.zeros((n, self.out_dim), dtype=np.float32)
         for i, model in enumerate(self.models):
             y_fake = rng.standard_normal(n).astype(np.float32)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                model.fit(X, y_fake)
-            out[:, i] = model.predict(X).astype(np.float32)
+                model.fit(X_reference, y_fake[:fit_rows])
+            out[:, i] = model.predict(X_predict).astype(np.float32)
         return out
 
 
@@ -566,15 +655,17 @@ class TreeSCM:
                  max_depth_lambda=0.5, n_estimators_lambda=0.5,
                  sampling="normal", pre_sample_cause_stats=False,
                  noise_std=0.01, pre_sample_noise_std=False,
-                 rng=None, device="cpu"):
+                 rng=None, device="cpu", context_rows=None):
         self.n_samples = n_samples
         self.n_features = n_features
         self.n_outputs = n_outputs
         # TabICL hardcodes is_causal=False for trees, so num_causes = num_features
         self.num_causes = n_features
         self.noise_std = noise_std
+        self.pre_sample_noise_std = pre_sample_noise_std
         self.device = device
         self.rng = rng if rng is not None else np.random.default_rng()
+        self.context_rows = context_rows
 
         # TabICL overrides: shallow for speed
         self.num_layers = int(self.rng.integers(1, 3))
@@ -595,7 +686,9 @@ class TreeSCM:
 
     def generate(self):
         rng = self.rng
-        causes = self.x_sampler.sample().cpu().numpy()
+        causes = self.x_sampler.sample(
+            context_rows=self.context_rows,
+        ).cpu().numpy()
 
         h = causes
         for layer_idx in range(self.num_layers):
@@ -610,10 +703,19 @@ class TreeSCM:
 
             tree_layer = TreeLayer(
                 self.tree_model, max_depth, n_estimators, out_dim, rng)
-            h = tree_layer.fit_transform(h, rng)
+            h = tree_layer.fit_transform(
+                h, rng, context_rows=self.context_rows,
+            )
 
             if self.noise_std > 0:
-                h = h + rng.standard_normal(h.shape).astype(np.float32) * self.noise_std
+                if self.pre_sample_noise_std:
+                    noise_scale = np.abs(
+                        rng.normal(0.0, self.noise_std, size=(1, out_dim))
+                    ).astype(np.float32)
+                    noise_scale = np.maximum(noise_scale, np.finfo(np.float32).eps)
+                else:
+                    noise_scale = self.noise_std
+                h = h + rng.standard_normal(h.shape).astype(np.float32) * noise_scale
 
         # Non-causal: X = causes, y = final output
         X = causes
@@ -779,10 +881,25 @@ def meta_trunc_norm_log_scaled(rng, min_mean=0.01, max_mean=10.0,
     sigma = mu * math.exp(log_std)
 
     def sample():
-        val = rng.normal(mu, max(sigma, 1e-8))
-        val = max(val, lower_bound)
+        # Rejection sampling implements a genuinely truncated distribution.
+        # Clamping rejected draws to the boundary created a large, unintended
+        # atom at exactly zero for init_std and noise_std.
         if round_val:
+            # Integer minima naturally have boundary mass after rounding; keep
+            # their historical one-draw behavior. The zero-atom bug affects
+            # the continuous init/noise scales below.
+            val = max(rng.normal(mu, max(sigma, 1e-8)), lower_bound)
             val = max(int(round(val)), int(math.ceil(lower_bound)))
+            return val
+
+        val = None
+        for _ in range(64):
+            candidate = rng.normal(mu, max(sigma, 1e-8))
+            if candidate > lower_bound:
+                val = candidate
+                break
+        if val is None:
+            val = max(mu, float(np.nextafter(lower_bound, math.inf)))
         return val
 
     return sample
@@ -816,6 +933,131 @@ def meta_choice(rng, values):
         return values[rng.choice(n, p=probs)]
 
     return sample
+
+
+def _robust_stabilize_features(X, clip_value=50.0, context_rows=None):
+    """Median/MAD scale without collapsing rare discrete levels at the clip.
+
+    A zero MAD is common for categorical columns whose modal level occupies at
+    least half the rows. Dividing those columns by epsilon sent every non-modal
+    level to the same hard-clipped value. For only those degenerate-MAD
+    columns, maximum-deviation scaling keeps the affine transform inside the
+    bound, so distinct finite inputs stay distinct. Continuous columns retain
+    the existing robust clipping behavior.
+    """
+    if isinstance(X, torch.Tensor):
+        X = torch.nan_to_num(
+            X.float(), nan=0.0, posinf=1e6, neginf=-1e6,
+        ).clamp(-1e6, 1e6)
+        fit_rows = _resolve_context_rows(X.shape[0], context_rows)
+        reference = X[:fit_rows]
+        med = reference.median(dim=0).values.unsqueeze(0)
+        centered = X - med
+        reference_centered = reference - med
+        mad = reference_centered.abs().median(dim=0).values.unsqueeze(0)
+        bound_scale = (
+            reference_centered.abs().amax(dim=0, keepdim=True) / clip_value
+        )
+        scale = torch.where(mad < 1e-6, bound_scale, mad).clamp(min=1e-6)
+        return (centered / scale).clamp(-clip_value, clip_value)
+
+    X = np.nan_to_num(
+        np.asarray(X, dtype=np.float32),
+        nan=0.0, posinf=1e6, neginf=-1e6,
+    )
+    X = np.clip(X, -1e6, 1e6)
+    fit_rows = _resolve_context_rows(X.shape[0], context_rows)
+    reference = X[:fit_rows]
+    med = np.median(reference, axis=0, keepdims=True)
+    centered = X - med
+    reference_centered = reference - med
+    mad = np.median(np.abs(reference_centered), axis=0, keepdims=True)
+    bound_scale = (
+        np.max(np.abs(reference_centered), axis=0, keepdims=True) / clip_value
+    )
+    scale = np.maximum(np.where(mad < 1e-6, bound_scale, mad), 1e-6)
+    return np.clip(centered / scale, -clip_value, clip_value)
+
+
+def _validate_generated_data(
+        X, y, n_samples, n_features, context_rows=None):
+    """Return whether an SCM draw is finite and has usable X/y variation."""
+    if tuple(X.shape) != (n_samples, n_features):
+        return False, f"X shape {tuple(X.shape)}"
+
+    if isinstance(y, torch.Tensor):
+        y_flat = y.reshape(-1)
+        if y_flat.numel() != n_samples:
+            return False, f"y shape {tuple(y.shape)}"
+        fit_rows = _resolve_context_rows(n_samples, context_rows)
+        if (
+            not bool(torch.isfinite(X[:fit_rows]).all())
+            or not bool(torch.isfinite(y_flat[:fit_rows]).all())
+        ):
+            return False, "nonfinite context output"
+        if fit_rows > 1:
+            if not bool((X[:fit_rows].float().std(dim=0, unbiased=False) > 1e-8).any()):
+                return False, "constant features"
+            if not bool(y_flat[:fit_rows].float().std(unbiased=False) > 1e-8):
+                return False, "constant target"
+        return True, ""
+
+    y_flat = np.asarray(y).reshape(-1)
+    if y_flat.size != n_samples:
+        return False, f"y shape {tuple(np.asarray(y).shape)}"
+    fit_rows = _resolve_context_rows(n_samples, context_rows)
+    if (
+        not np.isfinite(X[:fit_rows]).all()
+        or not np.isfinite(y_flat[:fit_rows]).all()
+    ):
+        return False, "nonfinite context output"
+    if fit_rows > 1:
+        if not np.any(np.std(X[:fit_rows], axis=0) > 1e-8):
+            return False, "constant features"
+        if not np.std(y_flat[:fit_rows]) > 1e-8:
+            return False, "constant target"
+    return True, ""
+
+
+def _known_learnable_fallback(n_samples, n_features, rng):
+    """Return an explicitly linear emergency prior, deterministic in ``rng``."""
+    if n_samples < 2 or n_features < 1:
+        raise ValueError("SCM generation requires at least 2 rows and 1 feature")
+    X = rng.standard_normal((n_samples, n_features)).astype(np.float32)
+    n_signal = min(n_features, 4)
+    weights = np.arange(n_signal, 0, -1, dtype=np.float32)
+    weights /= np.linalg.norm(weights)
+    y = (X[:, :n_signal] @ weights).astype(np.float32)
+    return X, y
+
+
+def _sample_activation_factory(rng):
+    """Sample one activation factory with TabICL's meta-choice weighting."""
+    act_factories = get_activations()
+    n_acts = len(act_factories)
+    act_weights = np.zeros(n_acts)
+    act_weights[0] = 1.0
+    for i in range(1, n_acts):
+        act_weights[i] = rng.uniform(-5, 6)
+    act_weights -= act_weights.max()
+    act_probs = np.exp(act_weights) / np.exp(act_weights).sum()
+    return act_factories[rng.choice(n_acts, p=act_probs)]
+
+
+def _retryable_generation_exception(exc):
+    """Classify sampled numerical failures without hiding code/API defects."""
+    if isinstance(exc, (FloatingPointError, OverflowError)):
+        return True
+    message = str(exc).lower()
+    numerical_failure = re.search(
+        r"\b(?:nans?|infs?|infinite|infinity|overflow|numerical)\b"
+        r"|\bnon[-_ ]?finite\b",
+        message,
+    )
+    return (
+        isinstance(exc, (RuntimeError, ValueError))
+        and numerical_failure is not None
+    )
 
 
 def sample_hyperparams(rng, n_features, device="cpu"):
@@ -860,14 +1102,51 @@ def sample_hyperparams(rng, n_features, device="cpu"):
 # Top-level generation function
 # ============================================================================
 
-def generate_scm_prior_dataset(n_samples, n_features, task_type, n_classes=None,
-                             rng=None, device="cpu"):
+@contextlib.contextmanager
+def _seeded_global_rngs(rng, device):
+    """Make the global numpy, torch, and random streams depend on ``rng``."""
+    seed = int(rng.integers(0, 2**31 - 1))
+    np_state = np.random.get_state()
+    py_state = pyrandom.getstate()
+    devices = []
+    if str(device) != "cpu" and torch.cuda.is_available():
+        devices = [torch.device(device)]
+    try:
+        with torch.random.fork_rng(devices=devices):
+            torch.manual_seed(seed)
+            if devices:
+                torch.cuda.manual_seed_all(seed)
+            np.random.seed(seed)
+            pyrandom.seed(seed)
+            yield
+    finally:
+        np.random.set_state(np_state)
+        pyrandom.setstate(py_state)
+
+
+def generate_scm_prior_dataset(
+        n_samples, n_features, task_type, n_classes=None,
+        rng=None, device="cpu", context_rows=None):
     """Generate a single dataset using TabICL's prior system.
 
     Returns dict(X=[n_samples, n_features], y=[n_samples], n_classes=int|None).
     """
     if rng is None:
         rng = np.random.default_rng()
+    # The context/query boundary is a regression training contract. Keep the
+    # released classification prior's full-table transformations unchanged.
+    effective_context_rows = context_rows if task_type == "reg" else None
+    with _seeded_global_rngs(rng, device):
+        return _generate_scm_prior_dataset(
+            n_samples, n_features, task_type, n_classes, rng, device,
+            context_rows=effective_context_rows,
+        )
+
+
+def _generate_scm_prior_dataset(
+        n_samples, n_features, task_type, n_classes, rng, device,
+        context_rows=None):
+    labeled_rows = _resolve_context_rows(n_samples, context_rows)
 
     # Sample n_classes (TabICL: 50% binary, 50% uniform 2-10)
     if task_type == 'cls' and n_classes is None:
@@ -879,139 +1158,183 @@ def generate_scm_prior_dataset(n_samples, n_features, task_type, n_classes=None,
     hp = sample_hyperparams(rng, n_features, device=device)
 
     if hp["scm_type"] == "mlp":
-        X, y = _generate_mlp(n_samples, n_features, hp, rng, device)
+        X, y, generation_meta = _generate_mlp(
+            n_samples, n_features, hp, rng, device,
+            context_rows=labeled_rows,
+        )
     else:
-        X, y = _generate_tree(n_samples, n_features, hp, rng, device)
+        X, y, generation_meta = _generate_tree(
+            n_samples, n_features, hp, rng, device,
+            context_rows=labeled_rows,
+        )
 
     # --- Robust stabilization in torch (before numpy conversion) ---
     # MLP SCM with ExpActivation / polynomials can produce huge values.
     # Standardize per-column with median/MAD to avoid float32 overflow in
     # numpy's std() (which squares values internally).
+    X = _robust_stabilize_features(X, context_rows=labeled_rows)
     if isinstance(X, torch.Tensor):
-        X = X.float()
-        X = torch.where(torch.isfinite(X), X, torch.zeros_like(X))
-        X = X.clamp(-1e6, 1e6)
-        med = X.median(dim=0).values.unsqueeze(0)
-        mad = (X - med).abs().median(dim=0).values.unsqueeze(0)
-        mad = mad.clamp(min=1e-6)
-        X = (X - med) / mad
-        X = X.clamp(-50, 50)
         X = X.cpu().numpy()
-    else:
-        X = np.clip(X, -1e6, 1e6)
-        med = np.median(X, axis=0, keepdims=True)
-        mad = np.median(np.abs(X - med), axis=0, keepdims=True)
-        mad = np.where(mad < 1e-6, 1.0, mad)
-        X = (X - med) / mad
-        X = np.clip(X, -50, 50)
 
     if isinstance(y, torch.Tensor):
         y = y.float()
-        y = torch.where(torch.isfinite(y), y, torch.zeros_like(y))
-        y = y.clamp(-1e6, 1e6)
+        finite_y = torch.isfinite(y)
+        if not bool(finite_y.all()):
+            y.masked_fill_(~finite_y, 0.0)
+        y.clamp_(-1e6, 1e6)
         y = y.cpu().numpy()
     else:
         y = np.clip(y, -1e6, 1e6)
 
-    X = X.astype(np.float32)
-    y = y.astype(np.float32)
+    X = X.astype(np.float32, copy=False)
+    y = y.astype(np.float32, copy=False)
 
     # Safety: catch any remaining NaN/inf
-    X = np.nan_to_num(X, nan=0.0, posinf=50.0, neginf=-50.0)
-    y = np.nan_to_num(y, nan=0.0, posinf=1e4, neginf=-1e4)
+    X = np.nan_to_num(X, nan=0.0, posinf=50.0, neginf=-50.0, copy=False)
+    y = np.nan_to_num(y, nan=0.0, posinf=1e4, neginf=-1e4, copy=False)
 
     # Delete constant features (TabICL delete_unique_features)
-    col_std = np.std(X, axis=0)
-    keep_mask = col_std > 1e-8
-    if keep_mask.sum() < n_features:
-        X[:, ~keep_mask] = 0.0
+    if labeled_rows > 1:
+        col_std = np.std(X[:labeled_rows], axis=0)
+        keep_mask = col_std > 1e-8
+        if keep_mask.sum() < n_features:
+            X[:, ~keep_mask] = 0.0
 
     if task_type == 'cls':
         X, y, n_classes = reg2cls(X, y, n_classes, rng=rng)
 
     if task_type == 'reg':
-        y_std = np.std(y)
+        y_reference = y[:labeled_rows]
+        y_mean = np.mean(y_reference)
+        y_std = np.std(y_reference)
         if y_std > 1e-8:
-            y = (y - np.mean(y)) / y_std
+            y = (y - y_mean) / y_std
+        else:
+            y = y - y_mean
         y = np.clip(y, -1e4, 1e4)
 
-    X = np.nan_to_num(X, nan=0.0, posinf=50.0, neginf=-50.0)
+    X = np.nan_to_num(X, nan=0.0, posinf=50.0, neginf=-50.0, copy=False)
+
+    meta = {
+        'generator_family': 'scm_prior',
+        'scm_type': hp['scm_type'],
+        'active_dims': int(hp['num_causes']),
+        'noise_std': float(hp['noise_std']),
+        'context_rows': labeled_rows,
+        **generation_meta,
+    }
+    if hp['scm_type'] == 'mlp':
+        meta['n_mlp_layers'] = int(hp['num_layers'])
+        meta['hidden_width'] = int(hp['hidden_dim'])
 
     return {
         'X': X,
         'y': y,
         'n_classes': n_classes if task_type == 'cls' else None,
+        'meta': meta,
     }
 
 
-def _generate_mlp(n_samples, n_features, hp, rng, device):
+def _generate_mlp(
+        n_samples, n_features, hp, rng, device, context_rows=None):
     """Generate data using MLP SCM."""
-    act_factories = get_activations()
+    failure_reason = "unknown generation failure"
+    for attempt in range(1, 4):
+        act_factory = _sample_activation_factory(rng)
+        try:
+            scm = MLPSCM(
+                n_samples=n_samples,
+                n_features=n_features,
+                n_outputs=1,
+                is_causal=hp["is_causal"],
+                num_causes=hp["num_causes"],
+                y_is_effect=hp["y_is_effect"],
+                in_clique=hp["in_clique"],
+                sort_features=hp["sort_features"],
+                num_layers=hp["num_layers"],
+                hidden_dim=hp["hidden_dim"],
+                activation_factory=act_factory,
+                init_std=hp["init_std"],
+                block_wise_dropout=hp["block_wise_dropout"],
+                dropout_prob=hp["dropout_prob"],
+                sampling=hp["sampling"],
+                pre_sample_cause_stats=hp["pre_sample_cause_stats"],
+                noise_std=hp["noise_std"],
+                pre_sample_noise_std=hp["pre_sample_noise_std"],
+                device=device,
+                context_rows=context_rows,
+            )
+            scm.to(device)
+            X, y = scm()
+            healthy, failure_reason = _validate_generated_data(
+                X, y, n_samples, n_features, context_rows=context_rows,
+            )
+            if healthy:
+                return X, y, {
+                    "generation_attempts": attempt,
+                    "fallback_used": False,
+                }
+        except (RuntimeError, ValueError, FloatingPointError, OverflowError) as exc:
+            # Sampled numerical pathologies are retryable; programming and
+            # dependency errors remain visible to callers.
+            if not _retryable_generation_exception(exc):
+                raise
+            failure_reason = f"{type(exc).__name__}: {exc}"[:240]
 
-    # TabICL meta_choice_mixed: sample weights, then pick per-call
-    n_acts = len(act_factories)
-    act_weights = np.zeros(n_acts)
-    act_weights[0] = 1.0
-    for i in range(1, n_acts):
-        act_weights[i] = rng.uniform(-5, 6)
-    act_weights = act_weights - act_weights.max()
-    act_probs = np.exp(act_weights) / np.exp(act_weights).sum()
-    act_idx = rng.choice(n_acts, p=act_probs)
-    act_factory = act_factories[act_idx]
-
-    try:
-        scm = MLPSCM(
-            n_samples=n_samples,
-            n_features=n_features,
-            n_outputs=1,
-            is_causal=hp["is_causal"],
-            num_causes=hp["num_causes"],
-            y_is_effect=hp["y_is_effect"],
-            in_clique=hp["in_clique"],
-            sort_features=hp["sort_features"],
-            num_layers=hp["num_layers"],
-            hidden_dim=hp["hidden_dim"],
-            activation_factory=act_factory,
-            init_std=hp["init_std"],
-            block_wise_dropout=hp["block_wise_dropout"],
-            dropout_prob=hp["dropout_prob"],
-            sampling=hp["sampling"],
-            pre_sample_cause_stats=hp["pre_sample_cause_stats"],
-            noise_std=hp["noise_std"],
-            pre_sample_noise_std=hp["pre_sample_noise_std"],
-            device=device,
-        )
-        scm.to(device)
-        X, y = scm()
-    except Exception:
-        # Fallback: random data if SCM construction fails
-        X = torch.randn(n_samples, n_features, device=device)
-        y = torch.randn(n_samples, device=device)
-
-    return X, y
+    X, y = _known_learnable_fallback(n_samples, n_features, rng)
+    return X, y, {
+        "generation_attempts": 3,
+        "fallback_used": True,
+        "fallback_reason": failure_reason,
+    }
 
 
-def _generate_tree(n_samples, n_features, hp, rng, device):
+def _generate_tree(
+        n_samples, n_features, hp, rng, device, context_rows=None):
     """Generate data using Tree SCM."""
-    try:
-        scm = TreeSCM(
-            n_samples=n_samples,
-            n_features=n_features,
-            n_outputs=1,
-            num_causes=hp["num_causes"],
-            tree_model=hp["tree_model"],
-            max_depth_lambda=hp["max_depth_lambda"],
-            n_estimators_lambda=hp["n_estimators_lambda"],
-            sampling=hp["sampling"],
-            pre_sample_cause_stats=hp["pre_sample_cause_stats"],
-            noise_std=hp["noise_std"],
-            pre_sample_noise_std=hp["pre_sample_noise_std"],
-            rng=rng,
-            device=device,
-        )
-        X, y = scm.generate()
-    except Exception:
-        X = rng.standard_normal((n_samples, n_features)).astype(np.float32)
-        y = rng.standard_normal(n_samples).astype(np.float32)
+    if _resolve_context_rows(n_samples, context_rows) == 1:
+        X, y = _known_learnable_fallback(n_samples, n_features, rng)
+        return X, y, {
+            "generation_attempts": 0,
+            "fallback_used": True,
+            "fallback_reason": "tree prior requires at least 2 context rows",
+        }
+    failure_reason = "unknown generation failure"
+    for attempt in range(1, 4):
+        try:
+            scm = TreeSCM(
+                n_samples=n_samples,
+                n_features=n_features,
+                n_outputs=1,
+                num_causes=hp["num_causes"],
+                tree_model=hp["tree_model"],
+                max_depth_lambda=hp["max_depth_lambda"],
+                n_estimators_lambda=hp["n_estimators_lambda"],
+                sampling=hp["sampling"],
+                pre_sample_cause_stats=hp["pre_sample_cause_stats"],
+                noise_std=hp["noise_std"],
+                pre_sample_noise_std=hp["pre_sample_noise_std"],
+                rng=rng,
+                device=device,
+                context_rows=context_rows,
+            )
+            X, y = scm.generate()
+            healthy, failure_reason = _validate_generated_data(
+                X, y, n_samples, n_features, context_rows=context_rows,
+            )
+            if healthy:
+                return X, y, {
+                    "generation_attempts": attempt,
+                    "fallback_used": False,
+                }
+        except (RuntimeError, ValueError, FloatingPointError, OverflowError) as exc:
+            if not _retryable_generation_exception(exc):
+                raise
+            failure_reason = f"{type(exc).__name__}: {exc}"[:240]
 
-    return X, y
+    X, y = _known_learnable_fallback(n_samples, n_features, rng)
+    return X, y, {
+        "generation_attempts": 3,
+        "fallback_used": True,
+        "fallback_reason": failure_reason,
+    }

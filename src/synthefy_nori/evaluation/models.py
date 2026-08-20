@@ -18,6 +18,7 @@ import numpy as np
 import torch
 
 from synthefy_nori.configs import DEFAULT_INFERENCE_CONFIG, config_path
+from synthefy_nori.model.quantile_dist import quantile_dist_mean_numpy
 
 
 def package_config_path(filename: str) -> str:
@@ -136,6 +137,52 @@ class NoriWrapper(BaseModelWrapper):
 
         # Denormalize
         return pred * y_std + y_mean
+
+    def predict_distribution(self, X_train, y_train, X_test):
+        """Return ``(quantiles, taus, mean)`` for a pinball checkpoint."""
+        predictor = self._get_reg_predictor()
+        predictor.memory_report_ = None
+        regression_head = getattr(predictor, "regression_head", None)
+        if regression_head is None:
+            regression_head = (
+                "mse"
+                if int(getattr(predictor, "num_reg_quantiles", 1)) == 1
+                else "pinball"
+            )
+        if regression_head != "pinball":
+            raise NotImplementedError(
+                "predict_distribution needs the pinball (quantile-head) checkpoint; "
+                f"a {regression_head} checkpoint is not supported."
+            )
+
+        X_train = np.asarray(X_train, dtype=np.float32)
+        X_test = np.asarray(X_test, dtype=np.float32)
+        y_train = np.asarray(y_train, dtype=np.float64)
+        y_mean, y_std = y_train.mean(), y_train.std()
+        if y_std < 1e-12:
+            y_std = 1.0
+        y_norm = ((y_train - y_mean) / y_std).astype(np.float32)
+        bank = predictor.predict(X_train, y_norm, X_test, return_distribution=True)
+        if isinstance(bank, torch.Tensor):
+            bank = bank.detach().cpu().numpy()
+        bank = np.asarray(bank, dtype=np.float64)
+        if bank.ndim == 1:
+            bank = bank[None, :]
+        bank = bank * y_std + y_mean
+        quantiles = np.sort(bank, axis=1)
+        count = quantiles.shape[1]
+        taus = np.asarray(predictor.regression_quantiles, dtype=np.float64)
+        if taus.shape != (count,):
+            raise RuntimeError(
+                "Checkpoint quantile metadata does not match decoder output: "
+                f"{taus.shape[0]} levels for {count} columns."
+            )
+        mean = quantile_dist_mean_numpy(
+            quantiles,
+            taus,
+            enforce_monotone_first=False,
+        )
+        return quantiles, taus, mean
 
     def cleanup(self):
         self._reg_predictor = None

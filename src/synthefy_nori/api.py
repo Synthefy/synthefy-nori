@@ -24,6 +24,7 @@ from synthefy_nori.inference.large_context import (
     run_policy,
 )
 from synthefy_nori.inference.memory_policy import MemoryPolicy
+from synthefy_nori.model.quantile_dist import quantile_dist_mean_numpy
 from synthefy_nori.discretize import (
     DEFAULT_DISCRETIZE_METHOD,
     DISCRETIZE_METHODS,
@@ -819,10 +820,10 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 raise ValueError("quantiles must lie strictly in (0, 1).")
 
         predictor = self._get_predictor()
-        if predictor.regression_head == "bar_distribution":
+        if predictor.regression_head != "pinball":
             raise NotImplementedError(
                 "output_type='quantiles'/'full' is not supported for "
-                "bar_distribution checkpoints yet; the default pinball "
+                f"{predictor.regression_head} checkpoints; a pinball "
                 "(quantile-head) checkpoint is required."
             )
 
@@ -837,14 +838,26 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
             bank = bank[None, :]
 
         # Denormalize (affine, monotone) then sort each row to a valid quantile
-        # function. K quantiles sit at evenly spaced taus = i/(K+1).
+        # function. New checkpoints carry the exact training levels; legacy
+        # checkpoints fall back inside NoriPredictor to i/(K+1).
         bank = bank * self.y_std_ + self.y_mean_
         Q = np.sort(bank, axis=1)
         K = Q.shape[1]
-        taus = (np.arange(K, dtype=np.float64) + 1.0) / (K + 1.0)
+        taus = np.asarray(predictor.regression_quantiles, dtype=np.float64)
+        if taus.shape != (K,):
+            raise RuntimeError(
+                "Checkpoint quantile metadata does not match decoder output: "
+                f"{taus.shape[0]} levels for {K} columns."
+            )
 
         if output_type == "full":
-            return {"quantiles": Q, "taus": taus, "mean": Q.mean(axis=1)}
+            return {
+                "quantiles": Q,
+                "taus": taus,
+                "mean": quantile_dist_mean_numpy(
+                    Q, taus, enforce_monotone_first=False,
+                ),
+            }
 
         # output_type == "quantiles": interpolate the inverse-CDF at each level.
         out = np.empty((q_levels.shape[0], Q.shape[0]), dtype=np.float64)

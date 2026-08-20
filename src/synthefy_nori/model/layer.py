@@ -149,26 +149,9 @@ class QASSMaxScaling(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim
-        self.base_mlp = nn.Sequential(
-            nn.Linear(1, hidden_dim, device=device, dtype=dtype),
-            nn.GELU(),
-            nn.Linear(hidden_dim, num_heads * head_dim, device=device, dtype=dtype),
-        )
-        self.gate_mlp = nn.Sequential(
-            nn.Linear(head_dim, hidden_dim, device=device, dtype=dtype),
-            nn.GELU(),
-            nn.Linear(hidden_dim, head_dim, device=device, dtype=dtype),
-        )
-
-        # Start from SSMax-like behavior: base=0 -> log(n), gate=0 -> 1.
-        nn.init.zeros_(self.base_mlp[-1].weight)
-        nn.init.zeros_(self.base_mlp[-1].bias)
-        nn.init.zeros_(self.gate_mlp[-1].weight)
-        nn.init.zeros_(self.gate_mlp[-1].bias)
-
         # qass_mode selects which learned components are active:
-        #   - "log_only":  q * log(n)                  (base & gate frozen/ignored)
-        #   - "base_only": q * base_scale              (gate frozen/ignored)
+        #   - "log_only":  q * log(n)                  (no learned components)
+        #   - "base_only": q * base_scale              (no query gate)
         #   - "full":      q * base_scale * gate_scale
         # Honoring it is required for older "log_only" checkpoints that still
         # carry trained base/gate weights: running them "full" silently applies
@@ -189,14 +172,74 @@ class QASSMaxScaling(nn.Module):
                 "qass_mode (argument or SYNTHEFY_QASS_MODE) must be one of "
                 f"full, base_only, log_only; got {self.qass_mode!r}"
             )
-        if self.qass_mode == "log_only":
-            for p in self.base_mlp.parameters():
-                p.requires_grad_(False)
-            for p in self.gate_mlp.parameters():
-                p.requires_grad_(False)
-        elif self.qass_mode == "base_only":
-            for p in self.gate_mlp.parameters():
-                p.requires_grad_(False)
+
+        # Build both historical components in their original order before
+        # retaining only the ones this mode executes. Besides creating dead
+        # checkpoint state, the old constructors consumed random numbers between
+        # live attention/MLP initializations. Skipping those draws made a nominally
+        # identical seed initialize almost every later live tensor differently.
+        # Construct-and-discard keeps new state dicts slim while preserving the
+        # established initialization stream exactly. This is deliberately safer
+        # than manually advancing the RNG by a hard-coded number of draws, whose
+        # backend/dtype behavior is not a stable contract.
+        legacy_base_mlp = nn.Sequential(
+            nn.Linear(1, hidden_dim, device=device, dtype=dtype),
+            nn.GELU(),
+            nn.Linear(hidden_dim, num_heads * head_dim, device=device, dtype=dtype),
+        )
+        legacy_gate_mlp = nn.Sequential(
+            nn.Linear(head_dim, hidden_dim, device=device, dtype=dtype),
+            nn.GELU(),
+            nn.Linear(hidden_dim, head_dim, device=device, dtype=dtype),
+        )
+        self.base_mlp = legacy_base_mlp if self.qass_mode != "log_only" else None
+        self.gate_mlp = legacy_gate_mlp if self.qass_mode == "full" else None
+
+        # Start from SSMax-like behavior: base=0 -> log(n), gate=0 -> 1.
+        if self.base_mlp is not None:
+            nn.init.zeros_(self.base_mlp[-1].weight)
+            nn.init.zeros_(self.base_mlp[-1].bias)
+        if self.gate_mlp is not None:
+            nn.init.zeros_(self.gate_mlp[-1].weight)
+            nn.init.zeros_(self.gate_mlp[-1].bias)
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        """Ignore only legacy weights for components absent in this mode.
+
+        Old log_only checkpoints contain frozen ``base_mlp`` and ``gate_mlp``
+        tensors; old base_only checkpoints contain a frozen ``gate_mlp``. They
+        were never read by those modes. Filtering exactly those prefixes keeps
+        strict checkpoint loading backward compatible while preserving strict
+        errors for every live architecture tensor.
+        """
+        ignored_prefixes = []
+        if self.base_mlp is None:
+            ignored_prefixes.append(f"{prefix}base_mlp.")
+        if self.gate_mlp is None:
+            ignored_prefixes.append(f"{prefix}gate_mlp.")
+        if ignored_prefixes:
+            state_dict = state_dict.copy()
+            for key in tuple(state_dict):
+                if key.startswith(tuple(ignored_prefixes)):
+                    state_dict.pop(key)
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
 
     def forward(self, q: torch.Tensor, key_len: int) -> torch.Tensor:
         if key_len <= 1:
@@ -216,12 +259,14 @@ class QASSMaxScaling(nn.Module):
         )
         if self.qass_mode == "log_only":
             return q * log_n.view(1, 1, 1, 1)
+        assert self.base_mlp is not None
         base_delta = self.base_mlp(log_n.view(1, 1)).view(
             1, 1, self.num_heads, self.head_dim
         )
         base_scale = log_n.view(1, 1, 1, 1) * (1.0 + torch.tanh(base_delta))
         if self.qass_mode == "base_only":
             return q * base_scale
+        assert self.gate_mlp is not None
         gate_scale = 1.0 + torch.tanh(self.gate_mlp(q))
         return q * base_scale * gate_scale
 
@@ -333,6 +378,15 @@ class MultiheadAttention(torch.nn.Module):
             factor = self.attn_temperature.abs() * factor
         return q * factor
 
+    def _attention_dropout_p(self) -> float:
+        """Return functional-attention dropout for the current module mode.
+
+        Functional SDPA does not inspect ``Module.training``; it applies the
+        probability the caller passes on every invocation. The module therefore
+        has to turn dropout off explicitly during evaluation.
+        """
+        return float(self.dropout) if self.training else 0.0
+
     def project_kv_cache(
             self,
             x_kv: torch.Tensor,
@@ -430,7 +484,7 @@ class MultiheadAttention(torch.nn.Module):
                 k.transpose(1, 2),
                 v.transpose(1, 2),
                 attn_mask=attn_mask,
-                dropout_p=self.dropout,
+                dropout_p=self._attention_dropout_p(),
             )
         attention_outputs = attention_outputs.transpose(1, 2)
         return attention_outputs
@@ -546,6 +600,12 @@ class EncoderBaseLayer(nn.Module):
                  qass_mode: str|None = None,
                  ):
         super().__init__()
+        if mlp_use_residual:
+            raise ValueError(
+                "mlp_use_residual=True is unsupported: every MLP sublayer already "
+                "uses the transformer's outer residual connection. This legacy "
+                "flag was a no-op; leave it false or remove it from the config."
+            )
         self.use_logn_attention = use_logn_attention
         self.use_learnable_attn_temperature = use_learnable_attn_temperature
         self.attn_n_ref = float(attn_n_ref)
@@ -682,6 +742,29 @@ class EncoderBaseLayer(nn.Module):
             ]
         else:
             raise ValueError(f"Unsupport layr arch: {self.layer_arch}")
+
+        # Locate diagnostic capture points from the actual architecture rather
+        # than numeric step positions. smf puts sequence attention at step 0;
+        # fmfmsm puts it at step 4 and has two feature-attention steps. The
+        # intended map is from the final attention operation of each kind.
+        self._feature_capture_idx = next(
+            (
+                i
+                for i in reversed(range(len(self.layer_steps)))
+                if isinstance(self.layer_steps[i], functools.partial)
+                and self.layer_steps[i].func == self.call_features_attention
+            ),
+            None,
+        )
+        self._sequence_capture_idx = next(
+            (
+                i
+                for i in reversed(range(len(self.layer_steps)))
+                if isinstance(self.layer_steps[i], functools.partial)
+                and self.layer_steps[i].func == self.call_sequence_attention
+            ),
+            None,
+        )
     
         if self.norm_type == 'rmsnorm':
             norm_creator = lambda: RMSNorm(self.embed_dim, eps=self.layer_norm_eps,
@@ -711,8 +794,11 @@ class EncoderBaseLayer(nn.Module):
         q_expanded = q_mask_bool.unsqueeze(-1)
         k_expanded = k_mask_bool.unsqueeze(-2)
         
-        valid_attn = q_expanded & k_expanded
-        attn_mask = ~valid_attn
+        # PyTorch SDPA's boolean-mask contract is True == participates in
+        # attention (the opposite of nn.MultiheadAttention's key-padding mask).
+        # Return the valid pairs directly; inverting them makes every padded
+        # feature attend while every real feature is excluded.
+        attn_mask = q_expanded & k_expanded
         _, _, q_seq_len, k_seq_len = attn_mask.shape
         attn_mask = attn_mask.reshape(-1, q_seq_len, k_seq_len)
         attn_mask = attn_mask.unsqueeze(1).expand(-1, self.nhead, -1, -1)
@@ -1087,16 +1173,22 @@ class EncoderBaseLayer(nn.Module):
         calculate_sample_attention = kwargs.get("calculate_sample_attention", False)
         calculate_feature_attention = kwargs.get("calculate_feature_attention", False)
         layer_idx = kwargs.get("layer_idx", 11)
+        # LayerStack marks the real final layer for arbitrary depths. Retain the
+        # legacy layer-11 fallback for callers that drive an EncoderBaseLayer
+        # directly and therefore cannot provide stack position metadata.
+        is_capture_layer = kwargs.get("is_last_layer", layer_idx == 11)
 
-        feature_attenion=None
+        feature_attention=None
         sample_attention=None
         for idx, (sublayer, layer_norm) in enumerate(zip(self.layer_steps, self.layer_norms)):
             if self.pre_norm:
                 residual = x
                 x = layer_norm(x)
-                if idx == 2 and calculate_feature_attention and layer_idx == 11:
-                    x, feature_attenion, _ = sublayer(x, feature_atten_mask, eval_pos,calculate_feature_attention=True)
-                elif idx == 4 and calculate_sample_attention and layer_idx == 11:
+                if idx == self._feature_capture_idx and calculate_feature_attention and is_capture_layer:
+                    x, feature_attention, _ = sublayer(
+                        x, feature_atten_mask, eval_pos, calculate_feature_attention=True
+                    )
+                elif idx == self._sequence_capture_idx and calculate_sample_attention and is_capture_layer:
                     x, _, sample_attention = sublayer(x, feature_atten_mask, eval_pos,calculate_sample_attention=True)
                 else:
                     if isinstance(sublayer, functools.partial):
@@ -1113,10 +1205,12 @@ class EncoderBaseLayer(nn.Module):
                     x = x + residual
             else:
                 residual = x
-                if idx == 2 and calculate_feature_attention and layer_idx == 11:
-                    x, feature_attenion, _ = sublayer(x, feature_atten_mask, eval_pos,calculate_feature_attention=True)
+                if idx == self._feature_capture_idx and calculate_feature_attention and is_capture_layer:
+                    x, feature_attention, _ = sublayer(
+                        x, feature_atten_mask, eval_pos, calculate_feature_attention=True
+                    )
                     x = x + residual
-                elif idx == 0 and calculate_sample_attention and layer_idx == 11:
+                elif idx == self._sequence_capture_idx and calculate_sample_attention and is_capture_layer:
                     x, _, sample_attention = sublayer(x, feature_atten_mask, eval_pos, calculate_sample_attention=True)
                     x = x + residual
                 else:
@@ -1131,7 +1225,7 @@ class EncoderBaseLayer(nn.Module):
                             x = x[0]
                         x = x + residual
                 x=layer_norm(x)
-        return x,feature_attenion,sample_attention
+        return x,feature_attention,sample_attention
                 
 class LayerStack(nn.Module):
     """
@@ -1144,14 +1238,22 @@ class LayerStack(nn.Module):
         self.gradient_checkpointing = False
 
     def forward(self, x, **kwargs):
+        n_layers = len(self.layers)
+        feature_attention = None
+        sample_attention = None
         for idx,layer in enumerate(self.layers):
             kwargs["layer_idx"] = idx
+            kwargs["is_last_layer"] = idx == n_layers - 1
             if self.gradient_checkpointing and self.training:
-                x,feature_attention,sample_attention = checkpoint(
+                x,layer_feature_attention,layer_sample_attention = checkpoint(
                     layer, x, use_reentrant=False, **kwargs
                 )
             else:
-                x,feature_attention,sample_attention = layer(x,**kwargs)
+                x,layer_feature_attention,layer_sample_attention = layer(x,**kwargs)
+            if layer_feature_attention is not None:
+                feature_attention = layer_feature_attention
+            if layer_sample_attention is not None:
+                sample_attention = layer_sample_attention
         return x,feature_attention,sample_attention
 
     def build_train_cache(self, x_train, **kwargs):

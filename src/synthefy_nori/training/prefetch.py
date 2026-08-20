@@ -104,11 +104,14 @@ class DataPrefetcher:
         self._pending_ids.append(task_id)
         self._task_queue.put((task_id, seed, gen_kwargs))
 
-    def get(self) -> tuple[np.ndarray, np.ndarray, int | None]:
+    def get(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, int | None] | _ErrorSentinel:
         """Block until the next batch (in submission order) is ready.
 
         Returns:
-            (X_batch, y_batch, n_classes) or raises the worker's exception.
+            ``(X_batch, y_batch, n_classes)`` or an ``_ErrorSentinel`` that
+            preserves the worker exception type for trainer classification.
         """
         if not self._started:
             raise RuntimeError("DataPrefetcher not started. Call start() first.")
@@ -127,8 +130,7 @@ class DataPrefetcher:
             if not success:
                 err_type, err_msg, tb = payload
                 if task_id == target_id:
-                    raise RuntimeError(
-                        f"Worker error ({err_type}): {err_msg}\n{tb}")
+                    return _ErrorSentinel(err_type, err_msg, tb)
                 else:
                     # Cache the error for when that task_id is requested
                     self._results_cache[task_id] = _ErrorSentinel(

@@ -10,14 +10,21 @@ import einops
 
 
 def calc_mean(x:torch.Tensor, dim:int):
-    num = torch.sum(~torch.isnan(x), dim=dim).clip(min=1.0)
-    return torch.nansum(x, dim=dim) / num, num
+    finite = torch.isfinite(x)
+    num = torch.sum(finite, dim=dim).clip(min=1)
+    values = torch.where(finite, x, torch.zeros_like(x))
+    return torch.sum(values, dim=dim) / num, num
 
 def calc_std(x:torch.Tensor, dim:int, mean_v:torch.Tensor|None = None, value_num:torch.Tensor|None=None ):
     if mean_v is None or value_num is None:
         mean_v, value_num = calc_mean(x, dim)
-    mean_broadcast = torch.repeat_interleave(mean_v.unsqueeze(dim), x.shape[dim], dim=dim,)
-    return torch.sqrt(torch.nansum(torch.square(mean_broadcast - x), dim=dim) / (value_num - 1))
+    finite = torch.isfinite(x)
+    squared_error = torch.where(
+        finite,
+        torch.square(mean_v.unsqueeze(dim) - x),
+        torch.zeros_like(x),
+    )
+    return torch.sqrt(torch.sum(squared_error, dim=dim) / (value_num - 1).clip(min=1))
 
 def drop_outliers(
                     x:torch.Tensor, 
@@ -93,11 +100,12 @@ class LinearEncoder(nn.Module):
         self.out_key = out_key
         
     def forward(self, input:dict[str, torch.Tensor|int])->dict[str, torch.Tensor]:
-        assert 'data' in input and 'nan_encoding' in input
+        missing_keys = [key for key in self.in_keys if key not in input]
+        assert not missing_keys, f"Missing encoder inputs: {missing_keys}"
         x = [input[key] for key in self.in_keys] 
         x = torch.cat(x, dim=-1) # type: ignore
         if self.nan_to_zero:
-            x = torch.nan_to_num(x, nan=0.0)
+            x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
             
         input[self.out_key] = self.layer(x)
         return input
@@ -112,7 +120,6 @@ class RBFembedding(nn.Module):
         sigma: float = 1.05,
         use_learn_sigma: bool = False,
         center_range: tuple = (0.0, 10.0),
-        use_random_kernels: bool = False,
         use_learn_embeddings: bool = False,
         as_tokenizer: bool = False,
         use_original_features: bool = False,
@@ -129,11 +136,7 @@ class RBFembedding(nn.Module):
         if n_kernels <= 1:
             centers = torch.tensor([(min_val + max_val) / 2.0], dtype=torch.float32)
         else:
-            if use_random_kernels:
-                centers = (max_val - min_val) * torch.rand(n_kernels, dtype=torch.float32) + min_val
-                centers = torch.sort(centers).values
-            else:
-                centers = torch.linspace(min_val, max_val, steps=n_kernels, dtype=torch.float32)
+            centers = torch.linspace(min_val, max_val, steps=n_kernels, dtype=torch.float32)
         self.register_buffer("centers", centers, persistent=False)
         if use_learn_sigma:
             self.sigma = nn.Parameter(torch.tensor(sigma, dtype=dtype))
@@ -166,6 +169,46 @@ class RBFembedding(nn.Module):
             self.out_layer = nn.Linear(n_kernels + 1, embedding_size, dtype=dtype)
         else:
             self.out_layer = nn.Linear(n_kernels, embedding_size, dtype=dtype)
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        # A short-lived checkpoint format persisted these now-deterministic
+        # centers. Accept the key only when it encodes the same canonical grid;
+        # a random or corrupt grid represents different model behavior and must
+        # continue to fail a strict load.
+        centers_key = prefix + "centers"
+        persisted_centers = state_dict.get(centers_key)
+        canonical_centers = self.centers.detach()
+        if (
+            torch.is_tensor(persisted_centers)
+            and persisted_centers.shape == canonical_centers.shape
+            and torch.equal(
+                persisted_centers.to(
+                    device=canonical_centers.device,
+                    dtype=canonical_centers.dtype,
+                ),
+                canonical_centers,
+            )
+        ):
+            state_dict = state_dict.copy()
+            state_dict.pop(centers_key)
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
 
     @torch.compiler.disable
     def _rbf_scientific_decompose(self, x_work):
@@ -322,7 +365,6 @@ class MaskEmbEncoder(nn.Module):
                 use_learn_sigma=RBF_config['use_learn_sigma'],
                 use_learn_embeddings=RBF_config['use_learn_embeddings'],
                 center_range=(0.0, 10.0),
-                use_random_kernels=RBF_config['use_random_kernels'],
                 use_original_features=RBF_config['use_original_features'],
                 as_tokenizer=True,
             )
@@ -346,7 +388,8 @@ class MaskEmbEncoder(nn.Module):
         self.nan_to_zero = nan_to_zero
     
     def forward(self, input:dict[str, torch.Tensor|int])->dict[str, torch.Tensor]:
-        assert 'data' in input and 'nan_encoding' in input
+        missing_keys = [key for key in self.in_keys if key not in input]
+        assert not missing_keys, f"Missing encoder inputs: {missing_keys}"
         x = [input[key] for key in self.in_keys]
         x = torch.cat(x, dim=-1) # type: ignore
         batch_size, seq_len, group, feature_num = x.shape
@@ -357,8 +400,14 @@ class MaskEmbEncoder(nn.Module):
         
         x_emb = self.numeric_mlp(x)
 
-        mask_emb = self.mask_embedding.expand_as(x_emb)
-        combined_emb = torch.where(is_mask, mask_emb, x_emb)
+        if self.nan_to_zero:
+            # The input was already filled with zero above. Honor the flag by
+            # sending missing values through the ordinary numeric-zero path rather
+            # than replacing them with the learned mask embedding.
+            combined_emb = x_emb
+        else:
+            mask_emb = self.mask_embedding.expand_as(x_emb)
+            combined_emb = torch.where(is_mask, mask_emb, x_emb)
         del x, is_mask, x_emb
 
         concat_vector = combined_emb.flatten(3)
@@ -401,15 +450,10 @@ class NanEncoder(nn.Module):
         # one from themselves. Without this, apply_context_cache fills from the QUERY
         # column mean while the transductive path fills from the train mean.
         #
-        # This bites on +/-Inf, not NaN. `_build_x_preprocess_inputs` builds its mask
-        # as `isnan(x)` alone, so `process_4_x` writes NaN back over every NaN cell
-        # afterwards and the fill there is discarded -- but an Inf cell is unmasked, so
-        # its fill survives into the model. And `calc_mean` is nansum/non-NaN-count: it
-        # excludes NaN but NOT Inf, so one Inf in the split drives the whole column
-        # mean to Inf. A query batch computing its own mean therefore imputes Inf where
-        # the transductive path imputes a finite train mean. Measured on nori-6m: max
-        # |delta| vs the transductive path went 2.9e-05 (float reassociation) -> 3.2e+01
-        # in the predictions. Silent, and only for tables carrying infinities.
+        # Every non-finite value is excluded from the statistic. In particular, an
+        # infinity must not poison the fill for every other missing value in its
+        # column. A column with no finite context value receives the neutral fill 0;
+        # the original-value mask restores that column to missing before embedding.
         frozen_mean = input.get('_frozen_nan_mean')
         if frozen_mean is not None:
             mean_value = frozen_mean
@@ -418,10 +462,14 @@ class NanEncoder(nn.Module):
         # Expose the fill actually used so build_context_cache can capture it.
         input['_nan_mean'] = mean_value
 
-        # Functional indicator: NaN/Inf → learned values, else 0
+        # The data channel consistently treats NaN and both infinities as missing.
+        # Keep the signed indicator as a separate channel for encoder configurations
+        # that explicitly include `nan_encoding` (the y encoder does); it never makes
+        # an infinity masquerade as an ordinary numeric feature.
         is_nan = torch.isnan(x)
         is_pos_inf = torch.isinf(x) & (x > 0)
         is_neg_inf = torch.isinf(x) & (x < 0)
+        is_nonfinite = is_nan | is_pos_inf | is_neg_inf
         nans_indicator = torch.where(
             is_nan, self.nan_value,
             torch.where(is_pos_inf, self.inf_value,
@@ -430,7 +478,7 @@ class NanEncoder(nn.Module):
 
         # Replace NaN/Inf with context mean (functional, no clone + masked assign)
         fill = mean_value.unsqueeze(1).expand_as(x)
-        x = torch.where(is_nan | is_pos_inf | is_neg_inf, fill, x)
+        x = torch.where(is_nonfinite, fill, x)
 
         input[self.in_keys[0]] = x
         input[self.out_key ] = nans_indicator
@@ -464,8 +512,30 @@ class ValidFeatureEncoder(nn.Module):
     
     def forward(self, input:dict[str, torch.Tensor|int])->dict[str, torch.Tensor]:
         x:torch.Tensor = input[self.in_keys[0]]  # type: ignore
-        valid_feature = ~torch.all(x == x[:, 0:1, :], dim=1)
-        valid_feature_num = torch.clip(valid_feature.sum(-1).unsqueeze(-1),min=1)
+        frozen_valid_feature_num = input.get('_frozen_valid_feature_num')
+        if frozen_valid_feature_num is None:
+            eval_pos = int(input['eval_pos'])
+            context = x[:, :eval_pos]
+            original_mask = input.get('mask')
+            if (self.in_keys[0] == 'data'
+                    and isinstance(original_mask, torch.Tensor)
+                    and original_mask.shape == x.shape):
+                context = torch.where(
+                    original_mask[:, :eval_pos].to(torch.bool),
+                    torch.full_like(context, float('nan')),
+                    context,
+                )
+            finite = torch.isfinite(context)
+            finite_count = finite.sum(dim=1)
+            finite_min = torch.where(
+                finite, context, torch.full_like(context, float('inf'))).amin(dim=1)
+            finite_max = torch.where(
+                finite, context, torch.full_like(context, float('-inf'))).amax(dim=1)
+            valid_feature = (finite_count > 1) & (finite_min != finite_max)
+            valid_feature_num = torch.clip(valid_feature.sum(-1).unsqueeze(-1), min=1)
+        else:
+            assert isinstance(frozen_valid_feature_num, torch.Tensor)
+            valid_feature_num = frozen_valid_feature_num
         # Store on self for backward compat (inference predictor reads it),
         # and also pass through dict for compile-friendly access.
         self.valid_feature_num = valid_feature_num.detach()
@@ -609,7 +679,9 @@ class NormalizationEncoder(nn.Module):
     def forward(self, input:dict[str, torch.Tensor|int])->dict[str, torch.Tensor]:
         x = input[self.in_keys[0]]
         eval_pos = input['eval_pos']
-        pos = eval_pos if self.train_only else -1
+        # A negative slice endpoint excludes the final row. `train_only=False`
+        # means all rows, including that final row, participate in the statistics.
+        pos = eval_pos if self.train_only else x.shape[1]
         # Context-cache "frozen stats" path: when a caller supplies precomputed
         # train-derived stats (via `_frozen_norm_stats`), apply them directly to
         # these rows instead of recomputing from the [:eval_pos] prefix. This is
@@ -656,7 +728,8 @@ def get_x_encoder(
     numeric_embed_type: str = "linear",
     RBF_config: dict|None = None,
     PBLD_config: dict|None = None,
-    in_keys: list = ['data']
+    in_keys: list = ['data'],
+    nan_to_zero: bool = False,
 ):
     assert isinstance(in_keys, list), "The type of in_keys must be a list!"
     inputs_to_merge = {}
@@ -672,7 +745,9 @@ def get_x_encoder(
             num_features=sum([i["dim"] for i in inputs_to_merge.values()]),
             emsize=embedding_size,
             mask_embedding_size=mask_embedding_size,
+            nan_to_zero=nan_to_zero,
             bias=encoder_use_bias,
+            in_keys=in_keys,
             RBF_config=RBF_config,
             PBLD_config=PBLD_config,
             numeric_embed_type=numeric_embed_type,
@@ -710,19 +785,22 @@ def get_reg_y_encoder(
     num_inputs: int,
     embedding_size: int,
     nan_handling_y_encoder: bool,
-    max_num_classes: int
+    max_num_classes: int = 10,
 ) -> nn.Module:
     steps = []
     inputs_to_merge = [{"name": "data", "dim": num_inputs}]
     if nan_handling_y_encoder:
         steps += [NanEncoder(in_keys=['data'], out_key='nan_encoding')]
-        inputs_to_merge += [{"name": "nan_indicators", "dim": num_inputs}]
+        inputs_to_merge += [{"name": "nan_encoding", "dim": num_inputs}]
+
+    in_keys = [item["name"] for item in inputs_to_merge]
 
     steps += [
         LinearEncoder(
             num_features=sum([i["dim"] for i in inputs_to_merge]),  # type: ignore
             emsize=embedding_size,
-            in_keys=['data', 'nan_encoding'],
+            nan_to_zero=not nan_handling_y_encoder,
+            in_keys=in_keys,
             out_key='data'
         ),
     ]
@@ -739,26 +817,12 @@ def preprocesss_4_x(
     normalize_by_used_features: bool,
     ):
     """feature preprocess"""
-    inputs_to_merge = {"data": {"dim": num_features}}
-
     preprocess_steps = []
 
-    # Obtain the positions of features with NaN and Inf values, and replace these features with the mean of the corresponding feature
-    preprocess_steps += [NanEncoder(in_keys=['data'], out_key='nan_encoding')]   
-    
     if nan_handling_enabled:
-        inputs_to_merge["nan_encoding"] = {"dim": num_features}
-        preprocess_steps += [
-            # Zero values are added to convert the input into a fixed number of features, without normalization (variance is not constant). 
-            # This transformation is applied to the nan_indicators set, which shares the same shape as x. 
-            # However, since x has been imputed prior to this step, this operation is theoretically redundant.
-            ValidFeatureEncoder(
-                num_features=num_features,
-                nan_normalize=False,
-                in_keys=["nan_encoding"],
-                out_key="nan_encoding"
-            ),
-        ]
+        # Obtain the positions of non-finite values and replace those data-channel
+        # values with the corresponding finite context mean for normalization.
+        preprocess_steps += [NanEncoder(in_keys=['data'], out_key='nan_encoding')]
 
     preprocess_steps += [
         NormalizationEncoder(

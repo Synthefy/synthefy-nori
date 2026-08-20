@@ -22,8 +22,6 @@ from sklearn.impute import SimpleImputer
 from sklearn.decomposition import TruncatedSVD
 from sklearn.utils.validation import check_is_fitted
 from synthefy_nori.inference.degradation import SvdFallbackWarning
-from synthefy_nori.utils.data_utils import NoriInferenceDataset
-from torch.cuda import OutOfMemoryError
 
 import hashlib
 import os
@@ -1131,66 +1129,6 @@ class RebalanceFeatureDistribution(BasePreprocess):
         return worker, dis_ix
 
 
-class SubSampleData():
-    def __init__(
-            self,
-            subsample_type: Literal["feature", "sample"] = "sample",
-            use_type: Literal["mixed", "only_sample"] = "mixed",
-    ):
-        super().__init__()
-        self.subsample_type = subsample_type
-        self.use_type = use_type
-
-    def fit(self,
-            x: torch.Tensor=None,
-            y: torch.Tensor = None,
-            feature_attention_score: torch.Tensor = None,
-            sample_attention_score: torch.Tensor = None,
-            subsample_ratio: float | int = 200,
-            subsample_idx:list[int] | np.ndarray[int] = None,
-            ):
-        if isinstance(subsample_ratio, float):
-            if self.subsample_type == "sample":
-                self.subsample_num = int(subsample_ratio * x.shape[0])
-            else:
-                self.subsample_num = int(subsample_ratio * x.shape[1])
-        else:
-            self.subsample_num = subsample_ratio
-        if self.subsample_type == "sample":
-            if self.use_type == "mixed":
-                y_feature_attention_score = feature_attention_score[:, -1, :].squeeze().permute(1, 0).unsqueeze(
-                    -1) # shape [features,test_sample_lens,1] broadcast to [features,test_sample_lens,train_sample_lens]
-                # TODO: this elementwise product may cause OOM on large inputs
-                try:
-                    self.attention_score = torch.mean(sample_attention_score.to("cuda") * y_feature_attention_score.to("cuda"),
-                                                      dim=0).cpu()  # shape [test_sample_lens,train_sample_lens]
-                except OutOfMemoryError as e:
-                    print("calculate attention score OOM, use cpu")
-                    self.attention_score = torch.mean(
-                        sample_attention_score.cpu() * y_feature_attention_score.cpu(),
-                        dim=0)
-                del sample_attention_score,y_feature_attention_score
-
-            else:
-                self.attention_score = sample_attention_score[-1, :, :]
-            self.X_train = x
-            self.y_train = y
-        else:
-            y_feature_attention_score = torch.mean(feature_attention_score[:, -1, :].squeeze(),dim=0)  # shape [test_sample_lens,features]
-            if subsample_idx is None:
-                self.subsample_idx = torch.argsort(y_feature_attention_score)[-min(self.subsample_num, x.shape[0]):]
-            else:
-                self.subsample_idx = subsample_idx
-            self.X_train = x
-
-    def transform(self, x: torch.Tensor=None) -> np.ndarray |torch.Tensor | NoriInferenceDataset:
-        if self.subsample_type == "feature":
-            return torch.cat([self.X_train, x], dim=0)[:, self.subsample_idx].numpy()
-        else:
-            return self.attention_score
-
-
-
 # Large constant for hash normalization
 _HASH_MODULUS = 10**12
 
@@ -1223,7 +1161,7 @@ def float_hash_arr(input_array: np.ndarray) -> float:
 class FingerprintFeatureEncoder(BasePreprocess):
     """
     Appends a fingerprint column derived from row-wise hashing of input data.
-    
+
     For test data: Uses first computed hash even if collisions occur.
     For training data: Resolves hash collisions through iterative rehashing.
     """
@@ -1260,10 +1198,10 @@ class FingerprintFeatureEncoder(BasePreprocess):
         
         n_samples = x.shape[0]
         fingerprint_col = np.zeros(n_samples, dtype=x.dtype)
-        
+
         # Apply salt to input data
         salted_data = x + self.salt_value
-        
+
         if is_test:
             # Test mode: use first hash regardless of collisions
             for idx in range(n_samples):
@@ -1276,12 +1214,12 @@ class FingerprintFeatureEncoder(BasePreprocess):
                 current_row = salted_data[idx]
                 hash_val = float_hash_arr(current_row)
                 increment = 0
-                
+
                 # Handle collisions by incrementing and rehashing
                 while hash_val in existing_hashes:
                     increment += 1
                     hash_val = float_hash_arr(current_row + increment)
-                
+
                 fingerprint_col[idx] = hash_val
                 existing_hashes.add(hash_val)
         

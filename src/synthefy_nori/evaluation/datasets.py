@@ -25,7 +25,7 @@ from sklearn.model_selection import train_test_split
 NA_PLACEHOLDER = "__MISSING__"
 
 
-def encode_categorical_column(col, classes=None):
+def encode_categorical_column(col, classes=None, *, unknown_value=None):
     """Ordinal-encode one categorical feature column to sorted-unique int64
     codes 0..K-1 — exactly what sklearn's LabelEncoder produced here, via the
     same primitives (np.unique / searchsorted), minus the 0-row raise.
@@ -33,9 +33,10 @@ def encode_categorical_column(col, classes=None):
     Missing values are mapped to NA_PLACEHOLDER so they get a real code
     (callers that want NaN restore it afterwards). Cast to object before
     fillna: on category dtype, fillna with an unseen value raises. When
-    ``classes`` is given the codes index into it (every value must be present,
-    e.g. classes derived from train+test combined); otherwise classes are
-    derived from ``col``. Returns ``(codes, classes)``.
+    ``classes`` is given the codes index into that context-fitted vocabulary.
+    Values absent from it raise unless ``unknown_value`` is provided (evaluation
+    query rows use -1). Otherwise classes are derived from ``col``. Returns
+    ``(codes, classes)``.
     """
     arr = col.astype(object).fillna(NA_PLACEHOLDER).astype(str).to_numpy()
     if classes is None:
@@ -44,7 +45,21 @@ def encode_categorical_column(col, classes=None):
         # on any numpy>=2.0 (keeps written CSV codes reproducible).
         codes = codes.ravel()
     else:
+        classes = np.asarray(classes)
         codes = np.searchsorted(classes, arr)
+        bounded = np.minimum(codes, max(len(classes) - 1, 0))
+        known = (
+            np.zeros(arr.shape, dtype=bool)
+            if len(classes) == 0
+            else (codes < len(classes)) & (classes[bounded] == arr)
+        )
+        if not np.all(known):
+            if unknown_value is None:
+                unknown = np.unique(arr[~known]).tolist()
+                raise ValueError(
+                    f"categorical values are absent from the fitted vocabulary: {unknown}"
+                )
+            codes = np.where(known, codes, int(unknown_value))
     return codes.astype(np.int64), classes
 
 
@@ -560,15 +575,19 @@ class DatasetRegistry:
             X_test = pd.DataFrame(X_test) if not isinstance(X_test, pd.DataFrame) else X_test.copy()
             y_test = pd.Series(y_test) if not isinstance(y_test, pd.Series) else y_test.copy()
 
-        # Encode object/category/string columns, classes fit on train+test
-        # combined so a test-only value can't fall outside the code range.
+        # Fit categorical vocabularies on context/train only. Query-only
+        # values are explicitly unknown (-1), so preprocessing remains
+        # inductive and cannot leak the query distribution into the context.
         for col in list(X.select_dtypes(include=["object", "category", "string"]).columns):
             try:
-                parts = [X[col]] + ([X_test[col]] if X_test is not None else [])
-                _, classes = encode_categorical_column(pd.concat(parts))
+                _, classes = encode_categorical_column(X[col])
                 X[col], _ = encode_categorical_column(X[col], classes)
                 if X_test is not None:
-                    X_test[col], _ = encode_categorical_column(X_test[col], classes)
+                    X_test[col], _ = encode_categorical_column(
+                        X_test[col],
+                        classes,
+                        unknown_value=-1,
+                    )
             except Exception:
                 X = X.drop(columns=[col])
                 if X_test is not None:
