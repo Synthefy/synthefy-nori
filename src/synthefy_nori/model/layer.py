@@ -387,6 +387,22 @@ class MultiheadAttention(torch.nn.Module):
         """
         return float(self.dropout) if self.training else 0.0
 
+    # Below this head count, broadcasting a single K/V head through SDPA's
+    # enable_gqa is slower than handing it explicit heads. The cache stays
+    # single-head either way; only the transient per-call tensor changes.
+    GQA_MIN_HEADS = 4
+
+    def _kv_for_kernel(self, kv: torch.Tensor, *, needs_explicit_heads: bool) -> torch.Tensor:
+        """Broadcast single-head MQA K/V as required by the consumer."""
+        if kv.size(-2) == self.num_heads:
+            return kv
+        expanded = kv.expand(*kv.shape[:-2], self.num_heads, kv.shape[-1])
+        if needs_explicit_heads:
+            return expanded
+        if self.num_heads < self.GQA_MIN_HEADS:
+            return expanded.contiguous()
+        return kv
+
     def project_kv_cache(
             self,
             x_kv: torch.Tensor,
@@ -406,11 +422,11 @@ class MultiheadAttention(torch.nn.Module):
         x_kv_flat = x_kv.reshape(-1, *x_kv.shape[-2:])
         kv_proj_weight = self.qkv_proj_weight[1:]
         if copy_first_head_kv:
+            # Keep the cache single-head. Expanding before the contiguous copy
+            # below materializes num_heads identical K/V copies and defeats
+            # the memory-saving purpose of MQA.
             kv_weights = kv_proj_weight[:, :1]
             kv = torch.einsum("... s, j h d s -> ... j h d", x_kv_flat, kv_weights)
-            expand_shape = [-1 for _ in kv.shape]
-            expand_shape[-2] = self.num_heads
-            kv = kv.expand(*expand_shape)
         else:
             kv = torch.einsum("... s, j h d s -> ... j h d", x_kv_flat, kv_proj_weight)
         return {"kv": kv.contiguous(), "batch": B, "groups": S}
@@ -439,12 +455,13 @@ class MultiheadAttention(torch.nn.Module):
         if self.use_qassmax:
             q = self.apply_qassmax(q, kv.shape[1])
 
-        atten_out = self.compute_attention_by_torch(None, q, kv, None)
+        kv_perhead = self._kv_for_kernel(kv, needs_explicit_heads=False)
+        atten_out = self.compute_attention_by_torch(None, q, kv_perhead, None)
 
         atten_out = atten_out.reshape(x_flat.shape[0], x_flat.shape[1], self.num_heads, self.head_dim)
         sample_attention = None
         if calculate_sample_attention:
-            k, _ = kv.unbind(dim=2)
+            k, _ = self._kv_for_kernel(kv, needs_explicit_heads=True).unbind(dim=2)
             sample_attention = self.caculate_attention_score(q[-1], k[-1])
         out = torch.einsum(
             "... h d, h d s -> ... s",
@@ -469,6 +486,10 @@ class MultiheadAttention(torch.nn.Module):
         n_keys = k.size(1)  # k shape: [B, n_keys, num_heads, head_dim]
         q = self._apply_extra_attn_scale(q, n_keys)
 
+        # A single-head MQA K/V is broadcast across Q's heads by SDPA. Equal
+        # head counts leave GQA disabled, preserving the ordinary MHA path.
+        enable_gqa = k.size(2) != q.size(2)
+
         # Newer torch releases can prefer cuDNN SDPA for these shapes. That
         # backend has been slow/intermittently broken for Nori's dynamic table
         # sizes and small head_dim=16. Exclude it only for this call rather than
@@ -485,6 +506,7 @@ class MultiheadAttention(torch.nn.Module):
                 v.transpose(1, 2),
                 attn_mask=attn_mask,
                 dropout_p=self._attention_dropout_p(),
+                enable_gqa=enable_gqa,
             )
         attention_outputs = attention_outputs.transpose(1, 2)
         return attention_outputs
@@ -542,22 +564,22 @@ class MultiheadAttention(torch.nn.Module):
             if copy_first_head_kv:
                 kv_weights = self.kv_proj_weight[:,:1]
                 kv = torch.einsum("... s, j h d s -> ... j h d", x_kv, kv_weights)
-                expand_shape = [-1 for _ in kv.shape]
-                expand_shape[-2] = self.num_heads
-                kv = kv.expand(*expand_shape)
             else:
                 kv = torch.einsum("... s, j h d s -> ... j h d", x_kv, self.kv_proj_weight)
             if self.use_qassmax:
                 q = self.apply_qassmax(q, kv.shape[1])
 
-        atten_out = self.compute_attention_by_torch(qkv, q, kv, attn_mask)
+        kv_perhead = kv if kv is None else self._kv_for_kernel(
+            kv, needs_explicit_heads=False
+        )
+        atten_out = self.compute_attention_by_torch(qkv, q, kv_perhead, attn_mask)
 
         atten_out = atten_out.reshape(BS, F, self.num_heads, self.head_dim)
 
         if qkv is not None:
             q, k, v = qkv.unbind(dim=2)
         else:
-            k,v=kv.unbind(dim=2)
+            k, v = self._kv_for_kernel(kv, needs_explicit_heads=True).unbind(dim=2)
         if calculate_feature_attention:
             feature_attention = self.caculate_attention_score(q, k)
 
