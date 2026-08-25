@@ -101,8 +101,8 @@ def test_project_identities_versions_and_build_backends_are_disjoint():
     assert root["project"]["version"] == "0.19.0"
     assert root["build-system"]["build-backend"] == "setuptools.build_meta"
     assert client["project"]["name"] == "synthefy"
-    assert client["project"]["version"] == "7.0.3"
-    assert _declared_version() == "7.0.3"
+    assert client["project"]["version"] == "7.0.4"
+    assert _declared_version() == "7.0.4"
     assert client["build-system"] == {
         "requires": ["hatchling==1.27.0"],
         "build-backend": "hatchling.build",
@@ -374,7 +374,7 @@ def test_the_root_lock_is_the_only_lock_and_contains_both_editable_projects():
     assert len(root_entries) == len(client_entries) == 1
     assert root_entries[0]["source"] == {"editable": "."}
     assert client_entries[0]["source"] == {"editable": "libs/synthefy"}
-    assert client_entries[0]["version"] == "7.0.3"
+    assert client_entries[0]["version"] == "7.0.4"
     assert "synthefy" in {dep["name"] for dep in root_entries[0]["dependencies"]}
 
     hatchling = [item for item in packages if item["name"] == "hatchling"]

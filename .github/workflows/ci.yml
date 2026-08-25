@@ -19,7 +19,7 @@ jobs:
       - run: >-
           uv run python -c
           "import synthefy, synthefy_nori;
-          assert synthefy.__version__ == '7.0.3';
+          assert synthefy.__version__ == '7.0.4';
           assert synthefy_nori.__version__ == '0.19.0'"
       - run: uv run pytest
       - run: >-
@@ -38,13 +38,13 @@ jobs:
         include:
           - python_version: "3.9"
             kind: wheel
-            artifact_file: dist/synthefy/synthefy-7.0.3-py3-none-any.whl
+            artifact_file: dist/synthefy/synthefy-7.0.4-py3-none-any.whl
           - python_version: "3.9"
             kind: sdist
-            artifact_file: dist/synthefy/synthefy-7.0.3.tar.gz
+            artifact_file: dist/synthefy/synthefy-7.0.4.tar.gz
           - python_version: "3.11"
             kind: wheel
-            artifact_file: dist/synthefy/synthefy-7.0.3-py3-none-any.whl
+            artifact_file: dist/synthefy/synthefy-7.0.4-py3-none-any.whl
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -68,7 +68,7 @@ jobs:
 
           uv pip install --python "$CLIENT_TEST_PY" --strict "$CLIENT_TEST_ARTIFACT"
           uv pip check --python "$CLIENT_TEST_PY"
-          "$CLIENT_TEST_PY" -c 'import importlib.util; import synthefy; from importlib.metadata import metadata; assert "site-packages" in synthefy.__file__; assert synthefy.__version__ == "7.0.3"; assert metadata("synthefy")["Requires-Python"] == ">=3.9"; assert all(importlib.util.find_spec(name) is None for name in ("boto3", "joblib", "scipy", "sentence_transformers", "sklearn", "synthefy_nori", "torch"))'
+          "$CLIENT_TEST_PY" -c 'import importlib.util; import synthefy; from importlib.metadata import metadata; assert "site-packages" in synthefy.__file__; assert synthefy.__version__ == "7.0.4"; assert metadata("synthefy")["Requires-Python"] == ">=3.9"; assert all(importlib.util.find_spec(name) is None for name in ("boto3", "joblib", "scipy", "sentence_transformers", "sklearn", "synthefy_nori", "torch"))'
 
           uv pip install --python "$CLIENT_TEST_PY" --strict \
             "boto3>=1.34,<2" \

@@ -5,7 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [7.0.3] - Unreleased
+## [7.0.4] - Unreleased
+
+### Added
+
+- Added large-context selection to `SynthefyNoriClient.predict` in local,
+  Baseten remote, and SageMaker modes. Hosted modes accept a string naming every
+  installed built-in policy, including `boost`, `safeboost`, and parameter
+  strings; custom policies remain local-only. `last_large_context_report`
+  echoes the resolved policy and proves how many internal Nori calls ran.
+  Hosted policy execution stops before a 65th internal call; direct local use
+  remains unlimited by default. Hosted calls retain no customer context between
+  requests; Snowflake SPCS rejects the unsupported fifth-options shape explicitly.
+
+### Removed (breaking)
+
+- Removed the exported `HOSTED_LARGE_CONTEXT_POLICIES` snapshot. It was not
+  used for validation and could not stay synchronized with the installed
+  server registry. Code importing that constant must upgrade alongside this
+  client change and pass policy specs directly to `predict` instead.
+
+## [7.0.3] - 2026-08-20
 
 ### Added
 

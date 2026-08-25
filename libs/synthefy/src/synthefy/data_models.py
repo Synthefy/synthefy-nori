@@ -45,18 +45,10 @@ class NoriPredictRequest(BaseModel):
     quantiles : List[float] or None, optional
         Tau levels in ``(0, 1)`` for ``output_type="quantiles"``, in the caller's
         order. Omitted from the body when ``None``.
-    large_context_policy : {"random", "cluster_route", "cluster_route_g4"} or None
-        Hosted-safe context-selection policy. Omitted when unset.
-
-        * ``"random"`` -- 1 internal Nori call. One shared context window, chosen at
-          random. The cheapest fallback; no routing, no accuracy upside.
-        * ``"cluster_route"`` -- up to 8 internal Nori calls. Clusters query rows into
-          groups, each scored against its own local context pool. The recommended
-          choice: the only one with full coverage on the validated benchmark sweep and
-          it never regressed below ``"random"``.
-        * ``"cluster_route_g4"`` -- the same mechanism, up to 4 calls (cheaper). Best
-          mean score on the tables it was measured against, but that measurement covers
-          a smaller subset -- not a safe blanket default.
+    large_context_policy : optional
+        A policy-name string in hosted modes; local mode also accepts a callable.
+        The client forwards it unchanged, and the installed policy registry is the
+        source of truth for supported built-ins and parameters.
     large_context_threshold : int or None, optional
         Context row count strictly above which the policy engages. Valid only
         with ``large_context_policy``.

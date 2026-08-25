@@ -1,7 +1,6 @@
 from synthefy.nori_data_models import (
     DEFAULT_LARGE_CONTEXT_SEED,
     DEFAULT_LARGE_CONTEXT_THRESHOLD,
-    HOSTED_LARGE_CONTEXT_POLICIES,
     LargeContextPolicy,
     LargeContextReport,
     MEMORY_PRESETS,
@@ -15,12 +14,11 @@ from synthefy.data_models import (
 )
 from synthefy.nori_client import SynthefyNoriClient
 
-__version__ = "7.0.3"
+__version__ = "7.0.4"
 
 __all__ = [
     "DEFAULT_LARGE_CONTEXT_SEED",
     "DEFAULT_LARGE_CONTEXT_THRESHOLD",
-    "HOSTED_LARGE_CONTEXT_POLICIES",
     "LargeContextPolicy",
     "LargeContextReport",
     "MEMORY_PRESETS",

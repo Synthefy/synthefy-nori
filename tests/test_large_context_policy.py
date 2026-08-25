@@ -424,6 +424,31 @@ def test_build_problem_opts_out_of_imputation():
         ridge_predict, np.zeros((10, 2)), np.zeros(10), window=5).impute is False
 
 
+def test_call_limit_stops_a_gate_before_the_next_predictor_call():
+    calls = {"count": 0}
+
+    def counted_predict(_X_context, _y_context, X_query):
+        calls["count"] += 1
+        return np.zeros(len(X_query))
+
+    X_train = np.arange(6, dtype=np.float32).reshape(-1, 1)
+    base = large_context.build_problem(
+        counted_predict,
+        X_train,
+        np.arange(6, dtype=np.float64),
+        window=2,
+        max_nori_calls=1,
+    )
+    with pytest.warns(pol.LargeContextPolicyWarning):
+        with pytest.raises(pol.LargeContextCallLimitError, match="1-call limit"):
+            large_context.run_policy(
+                base,
+                np.array([[0.5], [4.5]], dtype=np.float32),
+                policy_spec=["random", "cluster_route"],
+            )
+    assert calls["count"] == 1
+
+
 # ------------------------------------------------------------------ tier 1 capacity
 def test_cache_capacity_is_not_a_memory_policy_field():
     """It is a library-only implementation detail, and MemoryPolicy is mirrored in the

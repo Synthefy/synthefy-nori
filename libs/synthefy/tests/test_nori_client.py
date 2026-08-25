@@ -2614,9 +2614,9 @@ def test_missing_large_context_report_fails_the_capability_handshake():
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("policy", "random"),
         ("threshold", 2),
         ("seed", 8),
+        ("policy", "random"),
     ],
 )
 def test_mismatched_large_context_report_fails_closed(field, value):
@@ -2640,11 +2640,49 @@ def test_mismatched_large_context_report_fails_closed(field, value):
         "boost",
         "safeboost",
         "cluster_route[groups=16]",
-        ["random", "cluster_route"],
-        True,
     ],
 )
-def test_client_rejects_non_hosted_large_context_policies_before_network(policy):
+def test_client_forwards_large_context_policy_strings_unchanged(policy):
+    capture: Dict = {}
+    report = {
+        **_LARGE_CONTEXT_REPORT,
+        "policy": policy,
+        "threshold": 50_000,
+        "seed": 0,
+    }
+    client = _client_with(_large_context_handler(capture, report))
+    client.predict(
+        _X_TRAIN,
+        _Y_TRAIN,
+        _X_TEST,
+        large_context_policy=policy,
+    )
+    assert capture["body"]["large_context_policy"] == policy
+    assert client.last_large_context_report["policy"] == policy
+
+
+def test_remote_client_rejects_callable_large_context_policy_before_network():
+    calls = {"count": 0}
+
+    def custom_policy(_problem, _rng):
+        pass
+
+    def handler(_request):
+        calls["count"] += 1
+        return httpx.Response(500)
+
+    client = _client_with(handler)
+    with pytest.raises(ValueError, match="policy name string"):
+        client.predict(
+            _X_TRAIN,
+            _Y_TRAIN,
+            _X_TEST,
+            large_context_policy=custom_policy,
+        )
+    assert calls["count"] == 0
+
+
+def test_remote_client_rejects_non_string_policy_before_network():
     calls = {"count": 0}
 
     def handler(_request):
@@ -2652,12 +2690,12 @@ def test_client_rejects_non_hosted_large_context_policies_before_network(policy)
         return httpx.Response(500)
 
     client = _client_with(handler)
-    with pytest.raises(ValueError, match="large_context_policy"):
+    with pytest.raises(ValueError, match="policy name string"):
         client.predict(
             _X_TRAIN,
             _Y_TRAIN,
             _X_TEST,
-            large_context_policy=policy,
+            large_context_policy=["random", "cluster_route"],
         )
     assert calls["count"] == 0
 
@@ -2710,7 +2748,7 @@ def test_large_context_report_is_cleared_even_when_the_next_call_is_rejected():
             _X_TRAIN,
             _Y_TRAIN,
             _X_TEST,
-            large_context_policy="boost",
+            large_context_policy=lambda *_: None,
         )
     assert client.last_large_context_report is None
 
@@ -2731,14 +2769,34 @@ def test_large_context_request_model_is_bounded_and_omits_unset_fields():
     assert "large_context_policy" not in NoriPredictRequest(**base).to_wire()
     with pytest.raises(ValueError):
         NoriPredictRequest(**base, large_context_threshold=123)
-    with pytest.raises(ValueError):
-        NoriPredictRequest(**base, large_context_policy="boost")
+    for policy in ("boost", "safeboost", "cluster_route[groups=16]"):
+        assert (
+            NoriPredictRequest(**base, large_context_policy=policy).to_wire()["large_context_policy"] == policy
+        )
     with pytest.raises(ValueError):
         NoriPredictRequest(
             **base,
             large_context_policy="random",
             large_context_seed=2**32,
         )
+
+
+def test_local_skipped_report_uses_the_callable_name():
+    from synthefy import nori_client as module
+
+    def custom_policy(_problem, _rng):
+        pass
+
+    request = NoriPredictRequest(
+        X_train=_X_TRAIN,
+        y_train=_Y_TRAIN,
+        X_test=_X_TEST,
+        large_context_policy=custom_policy,
+    )
+    report = module._normalized_large_context_report(request, None)
+
+    assert report["applied"] is False
+    assert report["policy"] == "custom_policy"
 
 
 def test_local_large_context_uses_the_estimator_and_copies_its_report(monkeypatch):
@@ -2751,6 +2809,9 @@ def test_local_large_context_uses_the_estimator_and_copies_its_report(monkeypatc
     from synthefy import nori_client as module
 
     seen: Dict = {}
+
+    def custom_policy(_problem, _rng):
+        pass
 
     class FakeRegressor:
         def __init__(
@@ -2796,7 +2857,7 @@ def test_local_large_context_uses_the_estimator_and_copies_its_report(monkeypatc
                 "categorical_levels": categorical_levels,
             }
             self.large_context_report_ = {
-                "policy": self.large_context_policy,
+                "policy": getattr(self.large_context_policy, "__name__", self.large_context_policy),
                 "window": 2,
                 "n_train": 3,
                 "n_test": 2,
@@ -2814,19 +2875,22 @@ def test_local_large_context_uses_the_estimator_and_copies_its_report(monkeypatc
         _X_TRAIN,
         _Y_TRAIN,
         _X_TEST,
-        large_context_policy="cluster_route",
+        large_context_policy=custom_policy,
         large_context_threshold=1,
         large_context_seed=7,
     )
     assert predictions == [0.4, 0.5]
     assert seen["init"] == {
         "model": "nori-30m",
-        "large_context_policy": "cluster_route",
+        "large_context_policy": custom_policy,
         "large_context_threshold": 1,
         "large_context_seed": 7,
         "large_context_cache_entries": 1,
     }
-    assert client.last_large_context_report == _LARGE_CONTEXT_REPORT
+    assert client.last_large_context_report == {
+        **_LARGE_CONTEXT_REPORT,
+        "policy": "custom_policy",
+    }
 
 
 def test_local_large_context_has_a_clear_old_package_guard(monkeypatch):

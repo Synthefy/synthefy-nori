@@ -110,6 +110,10 @@ class LargeContextPolicyFallbackWarning(DegradedPipelineWarning, LargeContextPol
     """
 
 
+class LargeContextCallLimitError(RuntimeError):
+    """A policy attempted more internal Nori calls than its caller permits."""
+
+
 QUERY_CHUNK = 25_000
 """Max query rows per Nori call. The transductive RBF+poly preprocessing is
 O(n_query * F * poly) and upstream of the transformer (the #235 preprocessing wall),
@@ -274,6 +278,7 @@ class Problem:
         embedder: Optional[Callable[[np.ndarray], np.ndarray]] = None,
         query_chunk: int = QUERY_CHUNK,
         impute: bool = True,
+        max_nori_calls: Optional[int] = None,
     ):
         self.predict_fn = predict_fn
         self.X_train, self.y_train = X_train, np.asarray(y_train, dtype=np.float64)
@@ -287,6 +292,13 @@ class Problem:
         self.window, self.seed = window, seed
         self.embedder, self.query_chunk = embedder, query_chunk
         self.impute = impute
+        if max_nori_calls is not None and (
+            isinstance(max_nori_calls, bool)
+            or not isinstance(max_nori_calls, int)
+            or max_nori_calls < 1
+        ):
+            raise ValueError("max_nori_calls must be a positive integer or None")
+        self.max_nori_calls = max_nori_calls
         # The seed the CURRENT run's rng was drawn from. Part of every chain-cache key:
         # a chain's shards come from that rng, so a different seed is a different chain
         # and must not be served from the cache. `run_policy` sets it per call.
@@ -366,10 +378,21 @@ class Problem:
         """One shared context = one cache build, however many query chunks it serves.
         A subproblem also bills its parent, so a gate's cost includes its holdout sweep.
         """
+        lineage = []
         problem = self
         while problem is not None:
-            problem.nori_calls += 1
+            if (
+                problem.max_nori_calls is not None
+                and problem.nori_calls >= problem.max_nori_calls
+            ):
+                raise LargeContextCallLimitError(
+                    f"large-context policy exceeded the "
+                    f"{problem.max_nori_calls}-call limit"
+                )
+            lineage.append(problem)
             problem = problem._parent
+        for problem in lineage:
+            problem.nori_calls += 1
 
     def predict_arrays(self, X_context, y_context, X_query) -> np.ndarray:
         """One shared-context Nori call over raw arrays; chunks the query block.
@@ -534,6 +557,7 @@ class Problem:
             np.asarray(X_test), None,
             window=self.window, seed=self.seed, embedder=self.embedder,
             query_chunk=self.query_chunk, impute=self.impute,
+            max_nori_calls=self.max_nori_calls,
         )
         # BY REFERENCE, both of them: the view is throwaway, so anything it derives
         # lazily has to land in state the fitted Problem keeps. Assigning copies here is
@@ -581,6 +605,7 @@ class Problem:
             self.embedder,
             self.query_chunk,
             self.impute,
+            self.max_nori_calls,
         )
         sub._parent = self
         return sub
@@ -945,6 +970,8 @@ def holdout_gate(candidates: Sequence[str | Policy], holdout: int = 2000) -> Pol
         for name, fn in resolved:
             try:
                 score = r2(sub.y_test, fn(sub, np.random.default_rng(problem.seed + 11)))
+            except LargeContextCallLimitError:
+                raise
             except Exception as exc:  # noqa: BLE001 - a broken candidate must not sink the gate
                 print(f"    gate candidate {name} FAILED: {exc}", flush=True)
                 continue

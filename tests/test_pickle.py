@@ -87,6 +87,36 @@ def test_rebalance_with_categorical_features_pickles():
     np.testing.assert_allclose(restored.worker.transform(x), expected, rtol=1e-6, atol=1e-6)
 
 
+def test_legacy_large_context_pickle_defaults_missing_call_limit_to_none():
+    from synthefy_nori import NoriRegressor
+
+    class StubPredictor:
+        def budget_n_features(self, _X):
+            return 2
+
+        def max_context_rows(self, _X, *, budget_n_features):
+            assert budget_n_features == 2
+            return 2
+
+        def predict(self, _X_context, _y_context, X_query):
+            return np.zeros(len(X_query))
+
+    model = NoriRegressor(large_context_policy="random", large_context_threshold=1)
+    model.X_train_ = np.arange(8, dtype=np.float32).reshape(4, 2)
+    model.__dict__.pop("large_context_max_calls")
+    restored = pickle.loads(pickle.dumps(model))
+
+    predictions = restored._large_context_predict(
+        StubPredictor(),
+        np.ones((1, 2), dtype=np.float32),
+        np.arange(4, dtype=np.float64),
+        decoder=("mean", "mean"),
+    )
+
+    np.testing.assert_array_equal(predictions, np.zeros(1))
+    assert restored._large_context_problem.max_nori_calls is None
+
+
 @pytest.mark.slow
 def test_fitted_regressor_pickles_and_predicts_identically():
     """End-to-end reproduction from issue #45: fit, stdlib-pickle, predict.

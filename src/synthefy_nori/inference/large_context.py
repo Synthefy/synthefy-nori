@@ -110,6 +110,7 @@ def build_problem(
     window: int,
     seed: int = 0,
     embedder: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    max_nori_calls: Optional[int] = None,
 ) -> Problem:
     """The fitted half of a large-context prediction, with no query rows attached yet.
 
@@ -131,6 +132,8 @@ def build_problem(
         embedder: optional callable for embedding-space routing. Omitted on the
             production path -- the embed-recycle postmortem predicts no separability
             gain, and it would double the forward passes.
+        max_nori_calls: optional ceiling enforced before an internal model call starts.
+            None leaves local use unlimited; shared serving supplies its own bound.
     """
     if window < 1:
         raise ValueError(f"window must be >= 1, got {window}")
@@ -147,6 +150,7 @@ def build_problem(
         # NoriPredictor owns missing-value handling on this path; imputing first would
         # change what the model sees relative to an ordinary predict() on the same rows.
         impute=False,
+        max_nori_calls=max_nori_calls,
     )
 
 
