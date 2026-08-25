@@ -1,8 +1,9 @@
 """Lightweight Nori client/serving data models.
 
 ``MemoryPolicy`` mirrors the authoritative model in ``synthefy-nori``. The
-large-context types below instead define the deliberately bounded client/wire
-subset of the library's broader local research API.
+large-context types below keep the client transport-neutral: local mode may forward
+a Python callable, while hosted modes send a policy-name string for the server's
+authoritative resolver to validate.
 
 **This is a copy, and the original is authoritative.** The policy is defined by
 ``synthefy_nori.inference.memory_policy.MemoryPolicy``, in the repo that also runs the
@@ -35,7 +36,7 @@ local mode gates separately on what is installed — see ``_local_memory_policy_
 
 from __future__ import annotations
 
-from typing import Any, List, Literal, Optional, Union
+from typing import Any, Callable, List, Literal, Optional, Union
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from typing_extensions import Annotated
@@ -46,25 +47,20 @@ MEMORY_PRESETS = ('exact', 'max_context', 'off')
 #: The fallback rungs the server may report, in decreasing memory cost.
 MEMORY_RUNGS = ('no_cache', 'resident_bf16', 'resident_int8', 'offload_bf16', 'offload_int8', 'context_row_chunk', 'plain_loop')
 
-#: Large-context policies safe to execute on a shared hosted endpoint. The local
-#: NoriRegressor deliberately accepts a much broader research extension surface
-#: (callables, module/file paths, parameter strings, gates and boosting policies).
-#: None of those are a network contract: callables/paths are code execution, while the
-#: unbounded policies can multiply model calls without a serving or billing cap.
-HOSTED_LARGE_CONTEXT_POLICIES = ('random', 'cluster_route', 'cluster_route_g4')
-
 #: The direct library's defaults, copied here because synthefy must remain usable
 #: without importing the heavyweight synthefy-nori package.
 DEFAULT_LARGE_CONTEXT_THRESHOLD = 50_000
 DEFAULT_LARGE_CONTEXT_SEED = 0
 
-#: Wire-level bounds. The policy menu caps model calls (1, 8 and 4 respectively);
-#: these cap the two remaining integer controls before a request is sent.
+#: Hosted serving owns its work bounds; these cap the two integer controls before
+#: a request is sent.
 MAX_LARGE_CONTEXT_THRESHOLD = 10_000_000
 MAX_LARGE_CONTEXT_SEED = 2**32 - 1
 
 MemoryPreset = Literal['exact', 'max_context', 'off']
-LargeContextPolicy = Literal['random', 'cluster_route', 'cluster_route_g4']
+#: Local mode also accepts callables; hosted modes require a policy-name string and
+#: let the server's installed synthefy-nori resolver decide whether it is valid.
+LargeContextPolicy = Union[str, Callable[..., Any]]
 
 
 class MemoryPolicy(BaseModel):
@@ -323,8 +319,10 @@ class LargeContextReport(BaseModel):
             "inference ran instead; see reason."
         )
     )
-    policy: LargeContextPolicy = Field(
-        description="Resolved built-in policy name honored by the server."
+    policy: str = Field(
+        description=(
+            "Resolved policy name when available; otherwise a display label for the skipped request."
+        )
     )
     threshold: int = Field(
         ge=1,
@@ -372,12 +370,7 @@ class LargeContextReport(BaseModel):
     gate_winner: Optional[str] = Field(
         None,
         description=(
-            "Winning policy for a local holdout gate. Hosted serving does not accept "
-            "gates, but the response model carries the field for local parity. Always "
-            "null today: none of HOSTED_LARGE_CONTEXT_POLICIES runs the gate path, so no "
-            "code path in this engine can set it to a real value. A future change that "
-            "exposes a hosted gate must add its own coverage for a non-null response -- "
-            "this field having a place in the schema already is not evidence that it works."
+            "Winning policy when a holdout gate was requested; otherwise null."
         ),
     )
 

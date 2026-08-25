@@ -44,7 +44,6 @@ from synthefy.data_models import NoriPredictRequest, NoriPredictResponse
 from synthefy.nori_data_models import (
     DEFAULT_LARGE_CONTEXT_SEED,
     DEFAULT_LARGE_CONTEXT_THRESHOLD,
-    HOSTED_LARGE_CONTEXT_POLICIES,
     LargeContextPolicy,
     LargeContextReport,
     MAX_LARGE_CONTEXT_SEED,
@@ -593,6 +592,7 @@ def _validate_large_context_controls(
     seed: Optional[int],
     output_type: str,
     model: Optional[str],
+    mode: str,
 ) -> None:
     """Fail before preprocessing, checkpoint load, or a paid hosted request.
 
@@ -615,13 +615,10 @@ def _validate_large_context_controls(
                 "both large_context_threshold and large_context_seed."
             )
         return
-    if not isinstance(policy, str) or policy not in HOSTED_LARGE_CONTEXT_POLICIES:
+    if not isinstance(policy, str) and (mode != "local" or not callable(policy)):
         raise ValueError(
-            f"large_context_policy must be one of "
-            f"{HOSTED_LARGE_CONTEXT_POLICIES}; got {policy!r}. Custom "
-            "callables/paths, gates, boosting policies, and parameter strings "
-            "remain available through NoriRegressor directly, not the shared "
-            "client/hosted contract."
+            "large_context_policy must be a policy name string; custom callables "
+            "are supported only in local mode."
         )
     if threshold is not None and (
         isinstance(threshold, bool)
@@ -677,7 +674,9 @@ def _normalized_large_context_report(
     if report is None:
         return LargeContextReport(
             applied=False,
-            policy=policy,
+            policy=(
+                policy if isinstance(policy, str) else getattr(policy, "__name__", repr(policy))
+            ),
             threshold=threshold,
             seed=seed,
             reason="below_threshold",
@@ -1426,26 +1425,14 @@ class SynthefyNoriClient:
             settings needs far more query rows than the hosted request-body limit allows
             (~64 MiB) -- so lowering ``elements_budget`` is what lets a hosted caller reach
             the cached path at all.
-        large_context_policy : {"random", "cluster_route", "cluster_route_g4"} or None
+        large_context_policy : str, callable, or None
             Select context rows explicitly when `len(X_train)` exceeds
-            `large_context_threshold`. Off by default. The same bounded menu
-            works in local, remote, and SageMaker modes:
-
-            - `random`: 1 internal Nori call. One shared context window, chosen
-              at random. The cheapest fallback; no routing, no accuracy upside.
-            - `cluster_route`: at most 8 internal Nori calls. Clusters query
-              rows into groups, each scored against its own local context
-              pool. **Recommended** -- the only policy with full coverage on
-              the validated benchmark sweep, and it never regressed below
-              `random`.
-            - `cluster_route_g4`: the same mechanism at a smaller group count
-              (at most 4 calls, cheaper). Best mean score on the tables it was
-              measured against, but that measurement covers a smaller subset
-              -- not a safe blanket default.
-
-            Direct `NoriRegressor` use retains the broader local research API
-            (callables, paths, parameter strings, gates and boosting
-            policies); those values are not a shared network contract.
+            `large_context_threshold`. Off by default. Remote and SageMaker
+            modes forward a policy-name string unchanged; the server accepts
+            every built-in in its installed Nori registry, including `random`,
+            `cluster_route`, `cluster_route_g4`, `safeboost`, and `boost`.
+            Parameter strings such as `safeboost[nu=0.25]` are supported.
+            Local mode additionally accepts a custom callable.
 
             Point output only: `mean` and `median` are supported;
             `quantiles`/`full` and Nori Thinking variants fail before
@@ -1576,6 +1563,7 @@ class SynthefyNoriClient:
             seed=large_context_seed,
             output_type=output_type,
             model=self.model,
+            mode=self.mode,
         )
         request_categorical_columns = categorical_columns
         if _has_declared_text_columns(text_columns):
@@ -1994,11 +1982,12 @@ class SynthefyNoriClient:
                 else DEFAULT_LARGE_CONTEXT_SEED
             )
             mismatches = []
-            if report.policy != request.large_context_policy:
+            expected_policy = request.large_context_policy.strip()
+            if report.policy != expected_policy:
                 mismatches.append(
-                    f"policy={report.policy!r}, expected "
-                    f"{request.large_context_policy!r}"
+                    f"policy={report.policy!r}, expected {expected_policy!r}"
                 )
+
             if report.threshold != expected_threshold:
                 mismatches.append(
                     f"threshold={report.threshold}, expected {expected_threshold}"

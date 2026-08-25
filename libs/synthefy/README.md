@@ -448,18 +448,21 @@ preds = client.predict(
 print(client.last_large_context_report)
 ```
 
-The client/hosted contract is deliberately narrower than direct
-`NoriRegressor` use:
+Here are some commonly used built-in policies:
 
-| policy | maximum internal Nori calls | hosted status |
-| --- | ---: | --- |
-| `"random"` | 1 | supported |
-| `"cluster_route"` | 8 | supported; recommended default when enabled |
-| `"cluster_route_g4"` | 4 | supported |
+| policy | hosted status |
+| --- | --- |
+| `"random"` | supported |
+| `"cluster_route"` | supported; recommended default when enabled |
+| `"cluster_route_g4"` | supported |
+| `"safeboost"` | supported |
+| `"boost"` | supported; prefer `safeboost` |
 
-Custom callables, module/file paths, parameter strings, holdout gates,
-`boost`, and `safeboost` remain local research APIs available through
-`NoriRegressor` directly. They are not serialized to a shared endpoint.
+Hosted and SageMaker support built-ins from the installed Nori version. See
+[`policies.py`](../../src/synthefy_nori/inference/policies.py) for the complete
+current list and configuration options. Hosted modes forward policy-name strings
+unchanged, including parameter strings such as `"safeboost[nu=0.25]"`. Custom
+callables and module/file policies remain local-only.
 `large_context_cache_entries` is also intentionally absent from the client:
 each client call is one-shot, fits the supplied `X_train` again, and hosted
 serving retains no customer context across requests.

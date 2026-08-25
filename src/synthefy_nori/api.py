@@ -190,6 +190,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         embedder="minilm",
         text_max_cardinality: int | None = None,
         text_normalize: bool | None = None,
+        large_context_max_calls: int | None = None,
     ) -> None:
         """Configure the estimator (arguments are stored verbatim; see class docs).
 
@@ -271,8 +272,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 See :mod:`synthefy_nori.inference.large_context` — and note that ``"boost"``
                 measured −0.229 worst-case, so prefer ``"safeboost"`` or a list.
 
-                The three bounded policies also available over the hosted API, and which
-                to reach for:
+                Three common built-in policies, and which to reach for:
 
                 * ``"random"`` — **1** Nori call. One shared context window, chosen at
                   random. The cheapest fallback; no routing, no accuracy upside.
@@ -295,6 +295,9 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 gets no cache hits at 1, since each pool evicts the previous one; raise
                 it to the pool count to keep the rotation. **Costs one full K/V cache
                 per entry**, which is why it is not raised automatically.
+            large_context_max_calls: optional ceiling on internal Nori calls made by one
+                policy prediction. None (default) leaves local use unlimited; hosted
+                serving supplies a bounded value.
 
         The discretize/categorical_levels pair are estimator-level defaults; the
         same-named ``predict`` kwargs override them per call. The text_* params take
@@ -347,6 +350,13 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         self.large_context_threshold = int(large_context_threshold)
         self.large_context_seed = int(large_context_seed)
         self.large_context_cache_entries = int(large_context_cache_entries)
+        if large_context_max_calls is not None and (
+            isinstance(large_context_max_calls, bool)
+            or not isinstance(large_context_max_calls, int)
+            or large_context_max_calls < 1
+        ):
+            raise ValueError("large_context_max_calls must be a positive integer or None")
+        self.large_context_max_calls = large_context_max_calls
         self._predictor = None
         self._feature_preprocessor = None
         # Legacy fitted-text slot retained for old pickles; new fits use the
@@ -721,6 +731,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
             self._large_context_budget_features = predictor.budget_n_features(self.X_train_)
         window = predictor.max_context_rows(
             self.X_train_, budget_n_features=self._large_context_budget_features)
+        max_nori_calls = getattr(self, "large_context_max_calls", None)
         if self._large_context_problem is None or self._large_context_problem.window != window:
             previous = self._large_context_problem
             self._large_context_problem = build_problem(
@@ -729,6 +740,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 y_norm,
                 window=window,
                 seed=self.large_context_seed,
+                max_nori_calls=max_nori_calls,
             )
             if previous is not None:
                 # The window changed, so the cached DECISIONS are stale (a chain's
@@ -736,6 +748,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 # re-deriving it per memory_policy change is the cost this path exists
                 # to avoid.
                 self._large_context_problem.adopt_train_state(previous)
+        self._large_context_problem.max_nori_calls = max_nori_calls
         # A train-cache decision depends on every outside input that can change
         # `predict_fn`, not just the decoder. MemoryPolicy's JSON is stable, hashable,
         # includes defaults, and follows in-place dict changes between calls.

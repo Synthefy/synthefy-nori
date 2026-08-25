@@ -6391,7 +6391,7 @@ wheels = [
 
 [[package]]
 name = "synthefy"
-version = "7.0.3"
+version = "7.0.4"
 source = { editable = "libs/synthefy" }
 dependencies = [
     { name = "httpx" },
