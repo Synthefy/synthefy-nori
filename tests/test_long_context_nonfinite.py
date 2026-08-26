@@ -39,13 +39,19 @@ FP16_OVERFLOW_START = 65520
 # 1. Root cause: log(n) must be computed before the cast, not after.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("key_len", [
-    65519,                  # last row count fp16 still rounds to a finite value
-    FP16_OVERFLOW_START,    # first row count that overflowed fp16
-    65535, 65536, 65537,    # the boundary named in the issue
-    70000,                  # a reported failing context
-    100000,                 # a reported failing context
-])
+
+@pytest.mark.parametrize(
+    "key_len",
+    [
+        65519,  # last row count fp16 still rounds to a finite value
+        FP16_OVERFLOW_START,  # first row count that overflowed fp16
+        65535,
+        65536,
+        65537,  # the boundary named in the issue
+        70000,  # a reported failing context
+        100000,  # a reported failing context
+    ],
+)
 def test_qassmax_finite_above_fp16_row_count_limit(key_len):
     """A context longer than fp16 can represent must not poison the q scale."""
     m = QASSMaxScaling(num_heads=2, head_dim=4).half()
@@ -111,6 +117,7 @@ def test_qassmax_respects_fp32_and_bf16():
 # 2. A non-finite forward must never become a silent constant prediction.
 # ---------------------------------------------------------------------------
 
+
 class _Stub:
     """Minimal carrier for the real unbound method under test."""
 
@@ -120,8 +127,7 @@ class _Stub:
 
 def test_finite_output_passes_through_untouched():
     out = torch.tensor([1.0, -2.5, 0.0])
-    got = _Stub()._reject_nonfinite_output(
-        out, path="cached", n_train=10, n_test=3)
+    got = _Stub()._reject_nonfinite_output(out, path="cached", n_train=10, n_test=3)
     assert got is out
 
 
@@ -130,8 +136,7 @@ def test_nonfinite_output_raises_instead_of_zero_filling(bad):
     out = torch.tensor([1.0, bad, 3.0])
 
     with pytest.raises(RuntimeError) as exc:
-        _Stub()._reject_nonfinite_output(
-            out, path="cached (resident_bf16)", n_train=93729, n_test=4096)
+        _Stub()._reject_nonfinite_output(out, path="cached (resident_bf16)", n_train=93729, n_test=4096)
 
     msg = str(exc.value)
     # The message has to carry enough to act on: where, how big, and why a
@@ -147,8 +152,7 @@ def test_partial_nonfinite_also_raises():
     out = torch.cat([torch.randn(4095), torch.tensor([float("nan")])])
 
     with pytest.raises(RuntimeError, match="1/4096 non-finite"):
-        _Stub()._reject_nonfinite_output(
-            out, path="plain chunked loop", n_train=70000, n_test=4096)
+        _Stub()._reject_nonfinite_output(out, path="plain chunked loop", n_train=70000, n_test=4096)
 
 
 def test_there_is_no_env_opt_out(monkeypatch):
@@ -157,19 +161,21 @@ def test_there_is_no_env_opt_out(monkeypatch):
     An opt-out here can only produce a number indistinguishable from a working
     prediction while carrying no signal, which is exactly the #439 failure mode.
     """
-    for name in ("SYNTHEFY_ALLOW_NONFINITE_PREDICTIONS",
-                 "SYNTHEFY_ALLOW_NONFINITE",
-                 "SYNTHEFY_DISABLE_NONFINITE_CHECK"):
+    for name in (
+        "SYNTHEFY_ALLOW_NONFINITE_PREDICTIONS",
+        "SYNTHEFY_ALLOW_NONFINITE",
+        "SYNTHEFY_DISABLE_NONFINITE_CHECK",
+    ):
         monkeypatch.setenv(name, "1")
 
     with pytest.raises(RuntimeError):
-        _Stub()._reject_nonfinite_output(
-            torch.tensor([float("nan")]), path="cached", n_train=70000, n_test=1)
+        _Stub()._reject_nonfinite_output(torch.tensor([float("nan")]), path="cached", n_train=70000, n_test=1)
 
 
 # ---------------------------------------------------------------------------
 # 3. End-to-end at the boundary (needs a GPU + the real checkpoint).
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.slow
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")

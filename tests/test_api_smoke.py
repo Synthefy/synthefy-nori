@@ -71,9 +71,7 @@ def test_fit_resolves_and_reuses_device_for_named_text_encoder(monkeypatch):
             pass
 
         def fit_transform(self, frame):
-            return pd.DataFrame(
-                np.zeros((len(frame), 2), dtype=np.float32), index=frame.index
-            )
+            return pd.DataFrame(np.zeros((len(frame), 2), dtype=np.float32), index=frame.index)
 
     monkeypatch.setattr(api, "_as_device", lambda device: torch.device("mps"))
     monkeypatch.setattr(api, "DataFramePreprocessor", FakePreprocessor)

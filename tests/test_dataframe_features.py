@@ -79,8 +79,7 @@ def test_documented_mixed_dataframe_example_runs_without_a_checkpoint(monkeypatc
                         len(value),
                         value.count(" "),
                         sum(map(ord, value)) % 97,
-                        sum((index + 1) * ord(char) for index, char in enumerate(value))
-                        % 101,
+                        sum((index + 1) * ord(char) for index, char in enumerate(value)) % 101,
                     ]
                     for value in texts
                 ],
@@ -99,9 +98,7 @@ def test_documented_mixed_dataframe_example_runs_without_a_checkpoint(monkeypatc
             return np.zeros(len(X_test), dtype=np.float32)
 
     monkeypatch.setattr(text_features_module, "_make_encoder", make_test_encoder)
-    monkeypatch.setattr(
-        NoriRegressor, "_get_predictor", lambda self: PredictorStub()
-    )
+    monkeypatch.setattr(NoriRegressor, "_get_predictor", lambda self: PredictorStub())
 
     X_train = pd.DataFrame(
         {
@@ -158,9 +155,7 @@ def test_direct_estimator_auto_encodes_raw_strings_without_text_runtime(monkeypa
 def test_estimator_strict_modes_and_query_schema_errors_are_actionable():
     frame = pd.DataFrame({"amount": [1.0, 2.0], "plan": ["free", "pro"], "note": ["a", "b"]})
     with pytest.raises(ValueError) as caught:
-        NoriRegressor(
-            model_path="unused.pt", categorical_columns=["plan"]
-        ).fit(frame, [1.0, 2.0])
+        NoriRegressor(model_path="unused.pt", categorical_columns=["plan"]).fit(frame, [1.0, 2.0])
     message = str(caught.value)
     assert "'note' (" in message
     assert "text_columns" in message
@@ -213,9 +208,7 @@ def test_dataframe_feature_configuration_survives_grid_search(monkeypatch):
 
     search.fit(X, np.arange(8, dtype=np.float64))
 
-    assert search.best_estimator_._feature_preprocessor.categorical_columns_ == [
-        "plan"
-    ]
+    assert search.best_estimator_._feature_preprocessor.categorical_columns_ == ["plan"]
 
 
 def test_deprecated_text_cardinality_alias_is_explicit_and_checked():

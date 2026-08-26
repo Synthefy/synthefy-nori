@@ -35,7 +35,7 @@ pytestmark = pytest.mark.slow
 def _embed_test_rows(X_train, y_train, X_test):
     """Fit on the context, return mean-over-ensemble test embeddings [n, dim]."""
     model = NoriRegressor(model="nori-6m").fit(X_train, y_train)
-    emb = model.get_embeddings(X_test, data_source="test")   # (n_est, n, dim)
+    emb = model.get_embeddings(X_test, data_source="test")  # (n_est, n, dim)
     return emb.mean(axis=0)
 
 
@@ -50,8 +50,7 @@ def test_binary_classification_embeddings_separate_by_class():
     encodes the (predicted) class — should separate the two moons much better."""
     X, y = make_moons(n_samples=500, noise=0.18, random_state=0)
     X = X.astype(np.float32)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.4, random_state=0, stratify=y)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.4, random_state=0, stratify=y)
 
     Z = _embed_test_rows(X_train, y_train.astype(np.float64), X_test)
     Xs = StandardScaler().fit_transform(X_test)  # fair raw baseline (scaled)
@@ -59,17 +58,16 @@ def test_binary_classification_embeddings_separate_by_class():
     sil_emb, sil_raw = silhouette_score(Z, y_test), silhouette_score(Xs, y_test)
     ari_emb, ari_raw = _kmeans_ari(Z, y_test, 2), _kmeans_ari(Xs, y_test, 2)
     # Unsupervised kNN probe on the embeddings (leave-one-out style via CV).
-    knn_acc = accuracy_score(
-        y_test, cross_val_predict(KNeighborsClassifier(15), Z, y_test, cv=5))
+    knn_acc = accuracy_score(y_test, cross_val_predict(KNeighborsClassifier(15), Z, y_test, cv=5))
 
     print(f"\n[moons] silhouette  embed={sil_emb:+.3f} raw={sil_raw:+.3f}")
     print(f"[moons] KMeans ARI  embed={ari_emb:+.3f} raw={ari_raw:+.3f}")
     print(f"[moons] kNN acc on embeddings = {knn_acc:.3f}")
 
-    assert sil_emb > sil_raw                 # embeddings are more clusterable
-    assert ari_emb > ari_raw + 0.10          # KMeans recovers classes far better
-    assert ari_emb > 0.5                      # and recovers them well in absolute terms
-    assert knn_acc > 0.9                      # near-perfectly class-separated
+    assert sil_emb > sil_raw  # embeddings are more clusterable
+    assert ari_emb > ari_raw + 0.10  # KMeans recovers classes far better
+    assert ari_emb > 0.5  # and recovers them well in absolute terms
+    assert knn_acc > 0.9  # near-perfectly class-separated
 
 
 def test_regression_embeddings_organize_by_target():
@@ -79,8 +77,7 @@ def test_regression_embeddings_organize_by_target():
     rng = np.random.default_rng(0)
     X = rng.uniform(-2.0, 2.0, size=(500, 5)).astype(np.float32)
     y = (np.sin(X[:, 0]) + X[:, 1] ** 2 + 0.5 * X[:, 2] * X[:, 3]).astype(np.float64)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.4, random_state=0)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.4, random_state=0)
 
     Z = _embed_test_rows(X_train, y_train, X_test)
     Xs = StandardScaler().fit_transform(X_test)
@@ -89,13 +86,12 @@ def test_regression_embeddings_organize_by_target():
     bins = np.digitize(y_test, np.quantile(y_test, [1 / 3, 2 / 3]))
     sil_emb, sil_raw = silhouette_score(Z, bins), silhouette_score(Xs, bins)
     ari_emb, ari_raw = _kmeans_ari(Z, bins, 3), _kmeans_ari(Xs, bins, 3)
-    knn_r2 = r2_score(
-        y_test, cross_val_predict(KNeighborsRegressor(15), Z, y_test, cv=5))
+    knn_r2 = r2_score(y_test, cross_val_predict(KNeighborsRegressor(15), Z, y_test, cv=5))
 
     print(f"\n[reg] silhouette(target-bins)  embed={sil_emb:+.3f} raw={sil_raw:+.3f}")
     print(f"[reg] KMeans ARI(target-bins)  embed={ari_emb:+.3f} raw={ari_raw:+.3f}")
     print(f"[reg] kNN-on-embeddings R2 = {knn_r2:.3f}")
 
-    assert sil_emb > sil_raw                 # embeddings group same-target points
-    assert ari_emb > ari_raw                 # and KMeans recovers target groups better
-    assert knn_r2 > 0.85                      # embedding neighbors share the target
+    assert sil_emb > sil_raw  # embeddings group same-target points
+    assert ari_emb > ari_raw  # and KMeans recovers target groups better
+    assert knn_r2 > 0.85  # embedding neighbors share the target

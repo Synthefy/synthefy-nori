@@ -8,6 +8,7 @@ shape-generic kernels, so it needs no palette and leaves the curriculum alone.
 inference and evaluation path reaches the model through it, while training
 builds via `build_model` and is therefore unaffected.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -24,7 +25,9 @@ from synthefy_nori.model.layer import RMSNorm
 def _run_cli(*args):
     return subprocess.run(
         [sys.executable, "-m", "synthefy_nori.training.cli", *args],
-        capture_output=True, text=True, timeout=180,
+        capture_output=True,
+        text=True,
+        timeout=180,
     )
 
 
@@ -58,8 +61,7 @@ class _TinyNet(nn.Module):
 def _patch_loader(monkeypatch, model):
     import synthefy_nori.utils.loading as loading
 
-    monkeypatch.setattr(loading, "_safe_torch_load",
-                        lambda *a, **k: {"config": {}, "state_dict": {}})
+    monkeypatch.setattr(loading, "_safe_torch_load", lambda *a, **k: {"config": {}, "state_dict": {}})
     monkeypatch.setattr(loading, "build_model", lambda cfg: model)
     monkeypatch.setattr(model, "load_state_dict", lambda *a, **k: None)
     return loading

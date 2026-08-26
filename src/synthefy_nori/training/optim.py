@@ -111,8 +111,11 @@ class MuonND(torch.optim.Optimizer):
         ns_steps: int = 5,
     ) -> None:
         defaults = dict(
-            lr=lr, momentum=momentum, nesterov=nesterov,
-            weight_decay=weight_decay, ns_steps=ns_steps,
+            lr=lr,
+            momentum=momentum,
+            nesterov=nesterov,
+            weight_decay=weight_decay,
+            ns_steps=ns_steps,
         )
         super().__init__(params, defaults)
 
@@ -124,13 +127,13 @@ class MuonND(torch.optim.Optimizer):
                 loss = closure()
 
         for group in self.param_groups:
-            lr = group['lr']
-            momentum = group['momentum']
-            nesterov = group['nesterov']
-            wd = group['weight_decay']
-            ns_steps = group['ns_steps']
+            lr = group["lr"]
+            momentum = group["momentum"]
+            nesterov = group["nesterov"]
+            wd = group["weight_decay"]
+            ns_steps = group["ns_steps"]
 
-            for p in group['params']:
+            for p in group["params"]:
                 if p.grad is None or p.ndim < 2:
                     continue
 
@@ -142,10 +145,10 @@ class MuonND(torch.optim.Optimizer):
                     grad2d = p.grad.reshape(-1, orig_shape[-1])
 
                 state = self.state[p]
-                if 'momentum_buffer' not in state:
-                    state['momentum_buffer'] = torch.zeros_like(grad2d)
+                if "momentum_buffer" not in state:
+                    state["momentum_buffer"] = torch.zeros_like(grad2d)
 
-                buf = state['momentum_buffer']
+                buf = state["momentum_buffer"]
                 buf.mul_(momentum).add_(grad2d)
                 if nesterov:
                     g_eff = grad2d.add(buf, alpha=momentum)
@@ -228,22 +231,26 @@ class HybridMuonAdamW(torch.optim.Optimizer):
                 two_d = [(n, p) for n, p in muon_named_params if p.ndim == 2]
                 nd = [(n, p) for n, p in muon_named_params if p.ndim > 2]
                 if two_d:
-                    self._sub_optimizers.append(torch.optim.Muon(
-                        two_d,
-                        lr=lr,
-                        weight_decay=weight_decay,
-                        momentum=muon_momentum,
-                        nesterov=muon_nesterov,
-                        adjust_lr_fn=muon_adjust_lr_fn,
-                    ))
+                    self._sub_optimizers.append(
+                        torch.optim.Muon(
+                            two_d,
+                            lr=lr,
+                            weight_decay=weight_decay,
+                            momentum=muon_momentum,
+                            nesterov=muon_nesterov,
+                            adjust_lr_fn=muon_adjust_lr_fn,
+                        )
+                    )
                 if nd:
-                    self._sub_optimizers.append(MuonND(
-                        nd,
-                        lr=lr,
-                        momentum=muon_momentum,
-                        nesterov=muon_nesterov,
-                        weight_decay=weight_decay,
-                    ))
+                    self._sub_optimizers.append(
+                        MuonND(
+                            nd,
+                            lr=lr,
+                            momentum=muon_momentum,
+                            nesterov=muon_nesterov,
+                            weight_decay=weight_decay,
+                        )
+                    )
             else:
                 raise ValueError(f"Unknown muon_backend: {muon_backend!r}")
         # Keep the historic .muon attribute for state_dict compatibility,

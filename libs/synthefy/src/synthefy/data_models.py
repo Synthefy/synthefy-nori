@@ -68,23 +68,15 @@ class NoriPredictRequest(BaseModel):
     output_type: Optional[str] = None
     quantiles: Optional[List[float]] = None
     large_context_policy: Optional[LargeContextPolicy] = None
-    large_context_threshold: Optional[int] = Field(
-        default=None, strict=True, ge=1, le=MAX_LARGE_CONTEXT_THRESHOLD
-    )
-    large_context_seed: Optional[int] = Field(
-        default=None, strict=True, ge=0, le=MAX_LARGE_CONTEXT_SEED
-    )
+    large_context_threshold: Optional[int] = Field(default=None, strict=True, ge=1, le=MAX_LARGE_CONTEXT_THRESHOLD)
+    large_context_seed: Optional[int] = Field(default=None, strict=True, ge=0, le=MAX_LARGE_CONTEXT_SEED)
 
     @model_validator(mode="after")
     def _large_context_parameters_need_a_policy(self):
         if self.large_context_policy is None and (
-            self.large_context_threshold is not None
-            or self.large_context_seed is not None
+            self.large_context_threshold is not None or self.large_context_seed is not None
         ):
-            raise ValueError(
-                "large_context_threshold/large_context_seed require "
-                "large_context_policy"
-            )
+            raise ValueError("large_context_threshold/large_context_seed require large_context_policy")
         return self
 
     def to_wire(self) -> Dict[str, Any]:

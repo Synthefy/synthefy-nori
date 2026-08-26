@@ -75,7 +75,7 @@ class DataPrefetcher:
 
     def start(self):
         """Spawn worker processes. Must be called before submit/get."""
-        ctx = mp.get_context('spawn')
+        ctx = mp.get_context("spawn")
         self._task_queue = ctx.Queue(maxsize=self.prefetch_count + self.num_workers)
         self._result_queue = ctx.Queue(maxsize=self.prefetch_count + self.num_workers)
         self._workers = []
@@ -133,8 +133,7 @@ class DataPrefetcher:
                     return _ErrorSentinel(err_type, err_msg, tb)
                 else:
                     # Cache the error for when that task_id is requested
-                    self._results_cache[task_id] = _ErrorSentinel(
-                        err_type, err_msg, tb)
+                    self._results_cache[task_id] = _ErrorSentinel(err_type, err_msg, tb)
                     continue
 
             if task_id == target_id:
@@ -173,6 +172,7 @@ class DataPrefetcher:
 
 class _ErrorSentinel:
     """Placeholder for worker errors cached out of order."""
+
     def __init__(self, err_type, err_msg, tb):
         self.err_type = err_type
         self.err_msg = err_msg

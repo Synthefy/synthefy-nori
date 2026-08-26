@@ -93,6 +93,7 @@ def test_shipped_config_enables_the_rule():
     import json
 
     from synthefy_nori.training.config import package_config_path
+
     cfg = json.loads(pathlib.Path(package_config_path("default_inference.json")).read_text())
     sels = [m["HighDimFeatureSelector"] for m in cfg if "HighDimFeatureSelector" in m]
     assert sels, "no HighDimFeatureSelector in the shipped config"

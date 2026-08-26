@@ -10,8 +10,7 @@ class DistributedInferenceDataset(Dataset):
     def __init__(self, x_test: torch.Tensor):
         if x_test.ndim != 2:
             raise ValueError(
-                "distributed inference expects X_test with shape "
-                f"[rows, features], got {tuple(x_test.shape)}"
+                f"distributed inference expects X_test with shape [rows, features], got {tuple(x_test.shape)}"
             )
         self.x_test = x_test
 

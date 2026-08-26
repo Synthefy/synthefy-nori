@@ -41,6 +41,7 @@ from synthefy_nori.inference.policies import (
     resolve_policy,
 )
 
+
 class LargeContextUnsupportedOutputError(NotImplementedError):
     """A large-context policy cannot produce the output the caller asked for.
 
@@ -189,7 +190,8 @@ def run_policy(
         # Reachable as predict(X) on an empty frame. Without this, cluster_route dies
         # inside MiniBatchKMeans on an empty query set with nothing naming the cause.
         return np.zeros(0, dtype=np.float64), _report(
-            name, problem, problem.window, full_context=False, reused_train_state=False)
+            name, problem, problem.window, full_context=False, reused_train_state=False
+        )
     window = problem.window
     if problem.n_train <= window:
         # Nothing to select: the whole table already fits one call. Every policy would
@@ -204,8 +206,7 @@ def run_policy(
             stacklevel=2,
         )
         preds = problem.predict_arrays(problem.X_train, problem.y_train, problem.X_test)
-        return preds, _report(name, problem, window, full_context=True,
-                              reused_train_state=False)
+        return preds, _report(name, problem, window, full_context=True, reused_train_state=False)
 
     # Whether THIS call actually read train-derived state, not merely whether some is
     # on hand. "Is the cache non-empty?" answers the wrong question in both directions:
@@ -228,8 +229,7 @@ def run_policy(
     return preds, report
 
 
-def _report(name: str, problem: Problem, window: int, *, full_context: bool,
-            reused_train_state: bool) -> dict:
+def _report(name: str, problem: Problem, window: int, *, full_context: bool, reused_train_state: bool) -> dict:
     return {
         "policy": name,
         "window": window,
@@ -253,9 +253,10 @@ def predictor_call_fn(predictor) -> Callable[..., np.ndarray]:
     Kept as a closure over the predictor alone (not the surrounding predict call) so a
     long-lived :class:`Problem` holding this does not pin a query block alive.
     """
+
     def one_call(X_context, y_context, X_query) -> np.ndarray:
         out = predictor.predict(X_context, y_context, X_query)
-        if hasattr(out, "detach"):       # a torch tensor: np.asarray() would raise on CUDA
+        if hasattr(out, "detach"):  # a torch tensor: np.asarray() would raise on CUDA
             out = out.detach().cpu().numpy()
         return np.asarray(out, dtype=np.float64).reshape(-1)
 

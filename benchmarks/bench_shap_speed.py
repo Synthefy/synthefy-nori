@@ -56,20 +56,16 @@ from synthefy_nori.interpretability.shapiq import get_nori_imputation_explainer
 
 # --- Benchmark configuration ------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = Path(
-    os.environ.get(
-        "NORI_BENCH_DATA_DIR", REPO_ROOT / "cache" / "eval_datasets" / "superconductivity"
-    )
-)
+DATA_DIR = Path(os.environ.get("NORI_BENCH_DATA_DIR", REPO_ROOT / "cache" / "eval_datasets" / "superconductivity"))
 TRAIN_CSV = DATA_DIR / "superconductivity_train.csv"
 TEST_CSV = DATA_DIR / "superconductivity_test.csv"
 PLOT_PATH = REPO_ROOT / "benchmarks" / "plots" / "shap_speed.png"
 
 DEVICE = "cuda:0"
-N_CONTEXT = 1500       # subsampled training context rows
-N_BACKGROUND = 64      # background/reference rows handed to the explainers
-N_FEATURES = 12        # small feature subset to keep Shapley tractable
-N_EXPLAIN = 5          # test rows explained per setting
+N_CONTEXT = 1500  # subsampled training context rows
+N_BACKGROUND = 64  # background/reference rows handed to the explainers
+N_FEATURES = 12  # small feature subset to keep Shapley tractable
+N_EXPLAIN = 5  # test rows explained per setting
 BUDGETS = [32, 64, 128, 256, 512]
 SEED = 0
 
@@ -90,7 +86,7 @@ def load_subset():
     test_idx = rng.choice(test.shape[0], size=N_EXPLAIN + N_BACKGROUND, replace=False)
     X_test_all = test[test_idx][:, feat_idx]
     X_background = X_test_all[:N_BACKGROUND]
-    X_explain = X_test_all[N_BACKGROUND:N_BACKGROUND + N_EXPLAIN]
+    X_explain = X_test_all[N_BACKGROUND : N_BACKGROUND + N_EXPLAIN]
     return X_train, y_train, X_background, X_explain
 
 
@@ -112,9 +108,7 @@ def time_shap_permutation(predict_fn, X_background, X_explain, max_evals):
 
 def time_shapiq(model, X_background, X_explain, budget):
     """Mean seconds per row for shapiq's imputation explainer (index='SV')."""
-    explainer = get_nori_imputation_explainer(
-        model, X_background, index="SV", max_order=1, imputer="baseline"
-    )
+    explainer = get_nori_imputation_explainer(model, X_background, index="SV", max_order=1, imputer="baseline")
     t0 = time.perf_counter()
     for row in X_explain:
         explainer.explain(row.reshape(1, -1), budget=budget)
@@ -124,10 +118,7 @@ def time_shapiq(model, X_background, X_explain, budget):
 def main():
     print(f"Loading superconductivity subset ({N_FEATURES} features)...")
     X_train, y_train, X_background, X_explain = load_subset()
-    print(
-        f"  context={X_train.shape}  background={X_background.shape}  "
-        f"explain={X_explain.shape}"
-    )
+    print(f"  context={X_train.shape}  background={X_background.shape}  explain={X_explain.shape}")
 
     print(f"Fitting NoriRegressor on {DEVICE} (first fit downloads checkpoint)...")
     model = NoriRegressor(device=DEVICE, model="nori-6m").fit(X_train, y_train)
@@ -158,10 +149,7 @@ def main():
     print("\n=== Mean seconds per explanation (per test row) ===")
     print(f"{'budget':>8} {'shap.Kernel':>14} {'shap.Permutation':>18} {'shapiq(SV)':>14}")
     for i, budget in enumerate(BUDGETS):
-        print(
-            f"{budget:>8} {kernel_times[i]:>14.3f} {perm_times[i]:>18.3f} "
-            f"{shapiq_times[i]:>14.3f}"
-        )
+        print(f"{budget:>8} {kernel_times[i]:>14.3f} {perm_times[i]:>18.3f} {shapiq_times[i]:>14.3f}")
 
     # --- Plot ---------------------------------------------------------------
     PLOT_PATH.parent.mkdir(parents=True, exist_ok=True)

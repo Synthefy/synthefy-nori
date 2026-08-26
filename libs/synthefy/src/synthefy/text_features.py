@@ -34,19 +34,18 @@ except ModuleNotFoundError as exc:
     if exc.name != "sklearn":
         raise
     raise ImportError(
-        'Text features need the optional scikit-learn package. Install it with '
-        '`pip install "synthefy[text]"`.'
+        'Text features need the optional scikit-learn package. Install it with `pip install "synthefy[text]"`.'
     ) from exc
 
 # short name -> HF model id (embedding backbones)
 MODELS = {
-    "minilm": "sentence-transformers/all-MiniLM-L6-v2",   # 384-d, fast baseline
-    "qwen0.6b": "Qwen/Qwen3-Embedding-0.6B",              # 1024-d, public, fast
-    "qwen4b": "Qwen/Qwen3-Embedding-4B",                  # 2560-d, powerful, public
-    "qwen8b": "Qwen/Qwen3-Embedding-8B",                  # 4096-d, public
-    "gemma": "google/embeddinggemma-300m",                # 768-d — GATED
-    "bge-m3": "BAAI/bge-m3",                              # 1024-d, public
-    "bge-large": "BAAI/bge-large-en-v1.5",               # 1024-d
+    "minilm": "sentence-transformers/all-MiniLM-L6-v2",  # 384-d, fast baseline
+    "qwen0.6b": "Qwen/Qwen3-Embedding-0.6B",  # 1024-d, public, fast
+    "qwen4b": "Qwen/Qwen3-Embedding-4B",  # 2560-d, powerful, public
+    "qwen8b": "Qwen/Qwen3-Embedding-8B",  # 4096-d, public
+    "gemma": "google/embeddinggemma-300m",  # 768-d — GATED
+    "bge-m3": "BAAI/bge-m3",  # 1024-d, public
+    "bge-large": "BAAI/bge-large-en-v1.5",  # 1024-d
 }
 
 # Kept for compatibility with the legacy ``synthefy_nori.text_features``
@@ -63,6 +62,7 @@ def _canon_cat(series: pd.Series) -> pd.Series:
         return str(value)
 
     return series.astype(object).map(canonicalize)
+
 
 def build_paragraphs(df: pd.DataFrame, text_columns) -> list[str]:
     """One column-prefixed paragraph per row: ``"col: value. col2: value2."``.
@@ -81,8 +81,9 @@ def build_paragraphs(df: pd.DataFrame, text_columns) -> list[str]:
     return (joined + ".").tolist()
 
 
-def _make_encoder(embedder, device=None, *, batch_size: int | None = None,
-                  normalize: bool | None = None) -> Callable[[list[str]], np.ndarray]:
+def _make_encoder(
+    embedder, device=None, *, batch_size: int | None = None, normalize: bool | None = None
+) -> Callable[[list[str]], np.ndarray]:
     """Resolve ``embedder`` to a ``texts -> (n, dim) float32 ndarray`` callable.
 
     Accepts a short name / HF id (str), a preloaded SentenceTransformer-like object
@@ -92,8 +93,10 @@ def _make_encoder(embedder, device=None, *, batch_size: int | None = None,
     # NB: check str first, since str has a (bytes) .encode method that would
     # otherwise masquerade as a SentenceTransformer-like encoder.
     if not isinstance(embedder, str) and callable(embedder) and not hasattr(embedder, "encode"):
+
         def _enc_call(texts):
             return np.asarray(embedder(texts), dtype=np.float32)
+
         return _enc_call
 
     st = embedder
@@ -118,15 +121,15 @@ def _make_encoder(embedder, device=None, *, batch_size: int | None = None,
         if "Qwen" in model_id or "gemma" in model_id.lower():
             st.max_seq_length = min(getattr(st, "max_seq_length", 512) or 512, 512)
 
-    is_llm = bool(model_id) and (
-        "Qwen" in model_id or "gemma" in model_id.lower() or "bge" in model_id.lower())
+    is_llm = bool(model_id) and ("Qwen" in model_id or "gemma" in model_id.lower() or "bge" in model_id.lower())
     bs = batch_size or (8 if (model_id and "Qwen" in model_id) else 32 if is_llm else 256)
     norm = normalize if normalize is not None else is_llm  # cosine-normalize LLM encoders
 
     def _enc_st(texts):
-        return st.encode(texts, batch_size=bs, convert_to_numpy=True,
-                         show_progress_bar=False,
-                         normalize_embeddings=norm).astype(np.float32)
+        return st.encode(
+            texts, batch_size=bs, convert_to_numpy=True, show_progress_bar=False, normalize_embeddings=norm
+        ).astype(np.float32)
+
     return _enc_st
 
 
@@ -154,10 +157,18 @@ class MultimodalPreprocessor:
         categorical_encoding: ``"ordinal"`` (default) or ``"onehot"``.
     """
 
-    def __init__(self, text_columns, svd_dim: int | None = 128, embedder="minilm",
-                 device=None, seed: int = 0, max_cardinality: int = 100,
-                 normalize: bool | None = None, categorical_columns="auto",
-                 categorical_encoding: str = "ordinal"):
+    def __init__(
+        self,
+        text_columns,
+        svd_dim: int | None = 128,
+        embedder="minilm",
+        device=None,
+        seed: int = 0,
+        max_cardinality: int = 100,
+        normalize: bool | None = None,
+        categorical_columns="auto",
+        categorical_encoding: str = "ordinal",
+    ):
         # kept raw (None / str / list / Index); resolved to self.text_columns_ at fit
         self.text_columns = text_columns
         self.svd_dim = None if svd_dim is None else int(svd_dim)
@@ -201,9 +212,7 @@ class MultimodalPreprocessor:
     def _transform_tabular(self, df: pd.DataFrame) -> np.ndarray:
         if self._tabular_preprocessor is None:
             return np.empty((len(df), 0), dtype=np.float32)
-        return self._tabular_preprocessor.transform(
-            df[self.nontext_columns_]
-        ).to_numpy(dtype=np.float32)
+        return self._tabular_preprocessor.transform(df[self.nontext_columns_]).to_numpy(dtype=np.float32)
 
     # -- text (embed + train-fit SVD) --
     def _embed(self, df: pd.DataFrame) -> np.ndarray:
@@ -223,8 +232,8 @@ class MultimodalPreprocessor:
         if tc is None:
             return []
         if isinstance(tc, str):
-            tc = [tc]                       # a lone column name, not chars to iterate
-        cols = list(tc)                     # handles pandas Index / tuple / ndarray
+            tc = [tc]  # a lone column name, not chars to iterate
+        cols = list(tc)  # handles pandas Index / tuple / ndarray
         missing = [c for c in cols if c not in df.columns]
         if missing:
             raise ValueError(f"text_columns not found in the DataFrame: {missing}")
@@ -234,7 +243,8 @@ class MultimodalPreprocessor:
         if not isinstance(df, pd.DataFrame):
             raise TypeError(
                 "MultimodalPreprocessor requires a pandas DataFrame (so text "
-                f"columns can be located by name); got {type(df).__name__}.")
+                f"columns can be located by name); got {type(df).__name__}."
+            )
         self._encoder = None
         self.svd_ = None
         self.text_columns_ = self._resolve_text_columns(df)
@@ -254,7 +264,8 @@ class MultimodalPreprocessor:
             # embedding — fail loudly rather than silently degrade to pure tabular.
             raise ValueError(
                 f"embedder produced a zero-width embedding for text columns "
-                f"{self.text_columns_}; check the encoder / that the text is non-empty.")
+                f"{self.text_columns_}; check the encoder / that the text is non-empty."
+            )
 
         if self.svd_dim is None:
             # raw mode: append the full embedding, no reduction
@@ -277,13 +288,13 @@ class MultimodalPreprocessor:
         if not isinstance(df, pd.DataFrame):
             raise TypeError(
                 "MultimodalPreprocessor.transform requires a pandas DataFrame with "
-                f"the same columns seen at fit; got {type(df).__name__}.")
-        missing = [c for c in (self.nontext_columns_ + self.text_columns_)
-                   if c not in df.columns]
+                f"the same columns seen at fit; got {type(df).__name__}."
+            )
+        missing = [c for c in (self.nontext_columns_ + self.text_columns_) if c not in df.columns]
         if missing:
             raise ValueError(f"transform() is missing columns seen at fit: {missing}")
         Xnum = self._transform_tabular(df)
-        if not self.text_columns_:          # no text at all -> tabular only
+        if not self.text_columns_:  # no text at all -> tabular only
             return Xnum
         E = self._embed(df)
         # raw mode (svd_dim=None) appends the embedding directly; else SVD-transform

@@ -73,6 +73,7 @@ imputes here to match `evaluation.harness._apply_impute`, while the production p
 passes `impute=False` — `NoriPredictor` owns missing-value handling there, and imputing
 first would change what the model sees relative to an ordinary `predict`.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -141,7 +142,7 @@ def r2(y_true, y_pred) -> float:
     y_true = np.asarray(y_true, dtype=np.float64)
     y_pred = np.asarray(y_pred, dtype=np.float64)
     mask = np.isfinite(y_true) & np.isfinite(y_pred)
-    if int(mask.sum()) < 2:      # R^2 needs the variance of >= 2 points
+    if int(mask.sum()) < 2:  # R^2 needs the variance of >= 2 points
         return float("nan")
     return float(r2_score(y_true[mask], y_pred[mask]))
 
@@ -219,7 +220,7 @@ class SharedTrainState(dict):
         return default
 
     def __getitem__(self, key):
-        value = dict.__getitem__(self, key)   # a miss raises before it can be counted
+        value = dict.__getitem__(self, key)  # a miss raises before it can be counted
         self._count(key)
         return value
 
@@ -252,9 +253,7 @@ def _nearest_centroid(points: np.ndarray, centroids: np.ndarray, chunk: int = 20
     out = np.empty(len(points), dtype=int)
     for s in range(0, len(points), chunk):
         block = points[s : s + chunk]
-        out[s : s + chunk] = np.argmin(
-            ((block[:, None, :] - centroids[None]) ** 2).sum(-1), axis=1
-        )
+        out[s : s + chunk] = np.argmin(((block[:, None, :] - centroids[None]) ** 2).sum(-1), axis=1)
     return out
 
 
@@ -293,9 +292,7 @@ class Problem:
         self.embedder, self.query_chunk = embedder, query_chunk
         self.impute = impute
         if max_nori_calls is not None and (
-            isinstance(max_nori_calls, bool)
-            or not isinstance(max_nori_calls, int)
-            or max_nori_calls < 1
+            isinstance(max_nori_calls, bool) or not isinstance(max_nori_calls, int) or max_nori_calls < 1
         ):
             raise ValueError("max_nori_calls must be a positive integer or None")
         self.max_nori_calls = max_nori_calls
@@ -381,13 +378,9 @@ class Problem:
         lineage = []
         problem = self
         while problem is not None:
-            if (
-                problem.max_nori_calls is not None
-                and problem.nori_calls >= problem.max_nori_calls
-            ):
+            if problem.max_nori_calls is not None and problem.nori_calls >= problem.max_nori_calls:
                 raise LargeContextCallLimitError(
-                    f"large-context policy exceeded the "
-                    f"{problem.max_nori_calls}-call limit"
+                    f"large-context policy exceeded the {problem.max_nori_calls}-call limit"
                 )
             lineage.append(problem)
             problem = problem._parent
@@ -405,9 +398,7 @@ class Problem:
         X_query = np.asarray(X_query)
         self._count_call()
         if len(X_query) <= self.query_chunk:
-            return np.asarray(
-                self.predict_fn(X_context, y_context, X_query), dtype=np.float64
-            ).reshape(-1)
+            return np.asarray(self.predict_fn(X_context, y_context, X_query), dtype=np.float64).reshape(-1)
         out = np.empty(len(X_query), dtype=np.float64)
         for s in range(0, len(X_query), self.query_chunk):
             out[s : s + self.query_chunk] = np.asarray(
@@ -482,8 +473,7 @@ class Problem:
         """
         view = self.train_state.get("select_view")
         if view is None:
-            view = self.train_state["select_view"] = apply_medians(
-                self.train_medians, self.X_train)
+            view = self.train_state["select_view"] = apply_medians(self.train_medians, self.X_train)
         return view
 
     def routing_space(self) -> tuple[np.ndarray, np.ndarray]:
@@ -498,13 +488,15 @@ class Problem:
             # select_view is the same array in the feature path, so share whichever
             # exists rather than allocating a second copy of the imputed train block.
             train = self.train_state["routing_train"] = (
-                self.embed("train") if self.embedder is not None else self.select_view)
+                self.embed("train") if self.embedder is not None else self.select_view
+            )
         if self._routing_test is None:
             # The cached train medians, applied to the query block only -- NOT
             # median_impute(X_train, X_test)[1], which re-derives them and builds a full
             # imputed copy of the train block for the caller to throw away.
-            self._routing_test = (self.embed("test") if self.embedder is not None
-                                  else apply_medians(self.train_medians, self.X_test))
+            self._routing_test = (
+                self.embed("test") if self.embedder is not None else apply_medians(self.train_medians, self.X_test)
+            )
         return train, self._routing_test
 
     def adopt_train_state(self, other: "Problem") -> None:
@@ -523,9 +515,9 @@ class Problem:
             )
         self.train_state = other.train_state
 
-    def with_queries(self, X_test: np.ndarray,
-                     run_seed: Optional[int] = None,
-                     cache_scope: Optional[tuple] = None) -> "Problem":
+    def with_queries(
+        self, X_test: np.ndarray, run_seed: Optional[int] = None, cache_scope: Optional[tuple] = None
+    ) -> "Problem":
         """This same fitted table, pointed at a new query block.
 
         Everything derived from `(X_train, y_train)` alone carries over — the imputed
@@ -553,10 +545,15 @@ class Problem:
         """
         fresh = Problem(
             self.predict_fn,
-            self.X_train, self.y_train,
-            np.asarray(X_test), None,
-            window=self.window, seed=self.seed, embedder=self.embedder,
-            query_chunk=self.query_chunk, impute=self.impute,
+            self.X_train,
+            self.y_train,
+            np.asarray(X_test),
+            None,
+            window=self.window,
+            seed=self.seed,
+            embedder=self.embedder,
+            query_chunk=self.query_chunk,
+            impute=self.impute,
             max_nori_calls=self.max_nori_calls,
         )
         # BY REFERENCE, both of them: the view is throwaway, so anything it derives
@@ -575,8 +572,7 @@ class Problem:
         only, never as regression input (embed-recycle postmortem)."""
         if self.embedder is None:
             raise ValueError("no embedder was supplied to this Problem")
-        cached = (self.train_state.get("embed_train") if which == "train"
-                  else self._embed_test)
+        cached = self.train_state.get("embed_train") if which == "train" else self._embed_test
         if cached is not None:
             return cached
         fit = getattr(self.embedder, "fit_context", None)
@@ -742,11 +738,9 @@ def _boost_stage(problem: Problem, shard, labels, later):
     forward so the next stage can grade it out-of-fold. Both are imputed from the SAME
     context statistics, which is why it is one call and one impute rather than two.
     """
-    X_ctx, X_test, X_later = problem.impute_from_context(
-        problem.X_train[shard], problem.X_test, problem.X_train[later]
-    )
+    X_ctx, X_test, X_later = problem.impute_from_context(problem.X_train[shard], problem.X_test, problem.X_train[later])
     h = problem.predict_arrays(X_ctx, labels, np.vstack([X_test, X_later]))
-    return h[: problem.n_test], h[problem.n_test:]
+    return h[: problem.n_test], h[problem.n_test :]
 
 
 def replay_chain(problem: Problem, stages) -> np.ndarray:
@@ -771,8 +765,7 @@ def replay_chain(problem: Problem, stages) -> np.ndarray:
 
 
 @register_policy("safeboost")
-def safeboost(problem: Problem, rng: np.random.Generator, nu: float = 0.5,
-              shards: Optional[int] = None) -> np.ndarray:
+def safeboost(problem: Problem, rng: np.random.Generator, nu: float = 0.5, shards: Optional[int] = None) -> np.ndarray:
     """Residual boosting with an out-of-fold guard on every correction.
 
     Shard the table, predict from shard 1 at full weight, then let each later shard
@@ -811,7 +804,7 @@ def safeboost(problem: Problem, rng: np.random.Generator, nu: float = 0.5,
     # have no later shard left to validate it, so it would go in unguarded.
     for k in range(len(chain) - 1):
         shard, nxt = chain[k], chain[k + 1]
-        later = np.concatenate(chain[k + 1:])
+        later = np.concatenate(chain[k + 1 :])
         labels = problem.y_train[shard] - F_train[shard]
         h_test, h_later = _boost_stage(problem, shard, labels, later)
         weight = 1.0 if k == 0 else nu
@@ -832,8 +825,9 @@ def safeboost(problem: Problem, rng: np.random.Generator, nu: float = 0.5,
 
 
 @register_policy("boost")
-def boost(problem: Problem, rng: np.random.Generator, nu: float = 0.5,
-          shards: Optional[int] = None, patience: int = 3) -> np.ndarray:
+def boost(
+    problem: Problem, rng: np.random.Generator, nu: float = 0.5, shards: Optional[int] = None, patience: int = 3
+) -> np.ndarray:
     """Plain residual boosting — **measured negative on the mean; prefer `safeboost`**.
 
     Each stage grades the running fit on a fresh shard, learns the residual pattern,
@@ -867,8 +861,7 @@ def boost(problem: Problem, rng: np.random.Generator, nu: float = 0.5,
     best_test, best_len, best_oof, stale = F_test.copy(), 0, -np.inf, 0
     for k, shard in enumerate(chain):
         labels = problem.y_train[shard] - F_train[shard]
-        later = (np.concatenate(chain[k + 1:]) if k + 1 < len(chain)
-                 else np.empty(0, dtype=int))
+        later = np.concatenate(chain[k + 1 :]) if k + 1 < len(chain) else np.empty(0, dtype=int)
         h_test, h_later = _boost_stage(problem, shard, labels, later)
         F_test = F_test + nu * h_test
         stages.append((shard, labels, nu))
@@ -1072,8 +1065,7 @@ def resolve_policy(spec: str | Policy) -> tuple[str, Policy]:
 
     if params:
         signature = inspect.signature(fn)
-        takes_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD
-                           for p in signature.parameters.values())
+        takes_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values())
         unknown = set() if takes_kwargs else set(params) - set(signature.parameters)
         if unknown:
             raise ValueError(f"policy {text!r} has no parameter(s) {sorted(unknown)}")

@@ -56,9 +56,7 @@ def _tiny_model(
         n_kernels=8,
     )
     if legacy_random_rbf_flag is not None:
-        config["encoder_config_x"]["RBF_config"]["use_random_kernels"] = (
-            legacy_random_rbf_flag
-        )
+        config["encoder_config_x"]["RBF_config"]["use_random_kernels"] = legacy_random_rbf_flag
     config["encoder_config_y"].update(
         embedding_size=12,
         nan_handling_y_encoder=nan_handling_y_encoder,
@@ -77,22 +75,28 @@ def test_valid_feature_count_uses_context_and_can_be_frozen():
     direct = encoder({"data": whole.clone(), "eval_pos": 2})
     assert direct["_valid_feature_num"].item() == 1
 
-    frozen = encoder({
-        "data": query.clone(),
-        "eval_pos": 1,
-        "_frozen_valid_feature_num": direct["_valid_feature_num"],
-    })
+    frozen = encoder(
+        {
+            "data": query.clone(),
+            "eval_pos": 1,
+            "_frozen_valid_feature_num": direct["_valid_feature_num"],
+        }
+    )
     torch.testing.assert_close(frozen["data"], direct["data"][:, 2:])
 
 
 def test_direct_preprocessing_and_prediction_do_not_depend_on_query_batch():
     model = _tiny_model()
-    context = torch.tensor([[
-        [0.0, 1.0, 1.0, 0.0, 4.0, 7.0],
-        [1.0, 1.0, 1.0, 1.0, 4.0, 7.0],
-        [2.0, 1.0, 1.0, 2.0, 4.0, 7.0],
-        [3.0, 1.0, 1.0, 3.0, 4.0, 7.0],
-    ]])
+    context = torch.tensor(
+        [
+            [
+                [0.0, 1.0, 1.0, 0.0, 4.0, 7.0],
+                [1.0, 1.0, 1.0, 1.0, 4.0, 7.0],
+                [2.0, 1.0, 1.0, 2.0, 4.0, 7.0],
+                [3.0, 1.0, 1.0, 3.0, 4.0, 7.0],
+            ]
+        ]
+    )
     common_query = torch.tensor([[[4.0, 10.0, 1.0, 4.0, 9.0, 7.0]]])
     extra_query = torch.tensor([[[5.0, 1.0, 20.0, 5.0, 8.0, 9.0]]])
     y_train = torch.arange(4.0).unsqueeze(0)
@@ -132,12 +136,16 @@ def test_features_per_group_three_padding_matches_direct_and_cache(num_features,
 
 def test_nan_encoder_excludes_every_nonfinite_value_and_keeps_signed_indicator():
     encoder = NanEncoder()
-    values = torch.tensor([[
-        [1.0, float("inf"), 1.0],
-        [3.0, float("-inf"), 2.0],
-        [float("inf"), float("nan"), 3.0],
-        [float("nan"), float("nan"), 4.0],
-    ]])
+    values = torch.tensor(
+        [
+            [
+                [1.0, float("inf"), 1.0],
+                [3.0, float("-inf"), 2.0],
+                [float("inf"), float("nan"), 3.0],
+                [float("nan"), float("nan"), 4.0],
+            ]
+        ]
+    )
 
     result = encoder({"data": values, "eval_pos": 4})
     torch.testing.assert_close(result["_nan_mean"], torch.tensor([[2.0, 0.0, 2.5]]))
@@ -160,14 +168,18 @@ def test_nonfinite_values_are_missing_and_direct_matches_cache(
         nan_handling_y_encoder=nan_handling_enabled,
         use_nan_indicator=use_nan_indicator,
     )
-    values = torch.tensor([[
-        [0.0, 1.0, 2.0, 3.0],
-        [1.0, 2.0, float("inf"), 4.0],
-        [2.0, float("nan"), 4.0, 5.0],
-        [3.0, 4.0, 5.0, 6.0],
-        [4.0, float("-inf"), 6.0, 7.0],
-        [5.0, 6.0, 7.0, float("inf")],
-    ]])
+    values = torch.tensor(
+        [
+            [
+                [0.0, 1.0, 2.0, 3.0],
+                [1.0, 2.0, float("inf"), 4.0],
+                [2.0, float("nan"), 4.0, 5.0],
+                [3.0, 4.0, 5.0, 6.0],
+                [4.0, float("-inf"), 6.0, 7.0],
+                [5.0, 6.0, 7.0, float("inf")],
+            ]
+        ]
+    )
     y_train = torch.tensor([[0.0, 1.0, 2.0, 3.0]])
 
     inputs, _ = model._build_x_preprocess_inputs(values, 4)
@@ -302,13 +314,17 @@ def test_nan_handling_disabled_has_no_nan_stage_and_mask_metadata_still_works():
         nan_handling_y_encoder=False,
     )
     assert not any(isinstance(stage, NanEncoder) for stage in model.x_preprocess)
-    values = torch.tensor([[
-        [0.0, 1.0, 2.0, 3.0],
-        [1.0, 1.0, 2.0, 4.0],
-        [2.0, float("inf"), 2.0, 5.0],
-        [3.0, 9.0, 8.0, 6.0],
-        [4.0, float("-inf"), 6.0, 7.0],
-    ]])
+    values = torch.tensor(
+        [
+            [
+                [0.0, 1.0, 2.0, 3.0],
+                [1.0, 1.0, 2.0, 4.0],
+                [2.0, float("inf"), 2.0, 5.0],
+                [3.0, 9.0, 8.0, 6.0],
+                [4.0, float("-inf"), 6.0, 7.0],
+            ]
+        ]
+    )
     y_train = torch.tensor([[0.0, 1.0, 2.0]])
 
     with torch.no_grad():
@@ -339,9 +355,11 @@ def test_mask_embedding_nan_to_zero_flag_uses_the_numeric_zero_path():
         },
     )
     values = torch.tensor([[[[float("nan")]], [[0.0]]]])
-    result = encoder({
-        "data": values,
-        "nan_encoding": torch.zeros_like(values),
-        "eval_pos": 1,
-    })["data"]
+    result = encoder(
+        {
+            "data": values,
+            "nan_encoding": torch.zeros_like(values),
+            "eval_pos": 1,
+        }
+    )["data"]
     torch.testing.assert_close(result[:, 0], result[:, 1])

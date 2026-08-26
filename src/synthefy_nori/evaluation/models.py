@@ -30,6 +30,7 @@ def package_config_path(filename: str) -> str:
 # Base model wrapper
 # ---------------------------------------------------------------------------
 
+
 class BaseModelWrapper(ABC):
     """Abstract base for all model wrappers in the eval pipeline."""
 
@@ -57,6 +58,7 @@ class BaseModelWrapper(ABC):
 # Model wrapper
 # ---------------------------------------------------------------------------
 
+
 class NoriWrapper(BaseModelWrapper):
     """Wrapper around NoriPredictor for unified eval."""
 
@@ -67,11 +69,11 @@ class NoriWrapper(BaseModelWrapper):
         device: str = "cuda:0",
         reg_config_path: str | None = None,
         base_config_path: Optional[str] = None,
-        augmentations: tuple|list|None = None,
+        augmentations: tuple | list | None = None,
         yj_skew_threshold: float = 10.0,
-        quantile_collapse: str = 'mean',
+        quantile_collapse: str = "mean",
         bar_temperature: float = 1.0,
-        bar_point_estimator: str = 'mean',
+        bar_point_estimator: str = "mean",
         memory_policy=None,
     ):
         self._name = model_name
@@ -144,11 +146,7 @@ class NoriWrapper(BaseModelWrapper):
         predictor.memory_report_ = None
         regression_head = getattr(predictor, "regression_head", None)
         if regression_head is None:
-            regression_head = (
-                "mse"
-                if int(getattr(predictor, "num_reg_quantiles", 1)) == 1
-                else "pinball"
-            )
+            regression_head = "mse" if int(getattr(predictor, "num_reg_quantiles", 1)) == 1 else "pinball"
         if regression_head != "pinball":
             raise NotImplementedError(
                 "predict_distribution needs the pinball (quantile-head) checkpoint; "
@@ -207,8 +205,7 @@ class NoriEnsembleWrapper(BaseModelWrapper):
     model-load overhead per dataset.
     """
 
-    def __init__(self, model_name: str, components: list,
-                 weights: list | None = None):
+    def __init__(self, model_name: str, components: list, weights: list | None = None):
         if not components:
             raise ValueError("NoriEnsembleWrapper requires at least one component")
         self._name = model_name
@@ -255,9 +252,11 @@ class NoriEnsembleWrapper(BaseModelWrapper):
 # Model Entry and Registry
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ModelEntry:
     """Metadata about a registered model."""
+
     name: str
     wrapper: BaseModelWrapper
     model_type: str  # "synthefy", "synthefy_ensemble", "custom"
@@ -295,9 +294,9 @@ class ModelRegistry:
         description="",
         augmentations=None,
         yj_skew_threshold: float = 10.0,
-        quantile_collapse: str = 'mean',
+        quantile_collapse: str = "mean",
         bar_temperature: float = 1.0,
-        bar_point_estimator: str = 'mean',
+        bar_point_estimator: str = "mean",
     ):
         device = device or self.device
         wrapper = NoriWrapper(
@@ -312,11 +311,15 @@ class ModelRegistry:
             bar_temperature=bar_temperature,
             bar_point_estimator=bar_point_estimator,
         )
-        self.register(ModelEntry(
-            name=name, wrapper=wrapper, model_type="synthefy",
-            description=description,
-            metadata={"model_path": model_path, "device": device},
-        ))
+        self.register(
+            ModelEntry(
+                name=name,
+                wrapper=wrapper,
+                model_type="synthefy",
+                description=description,
+                metadata={"model_path": model_path, "device": device},
+            )
+        )
 
     def add_synthefy_ensemble(
         self,
@@ -356,12 +359,18 @@ class ModelRegistry:
             components.append(wrapper)
 
         ens = NoriEnsembleWrapper(ensemble_name, components, weights=weights)
-        self.register(ModelEntry(
-            name=ensemble_name, wrapper=ens, model_type="synthefy_ensemble",
-            description=description or f"Ensemble of {len(components)} Synthefy checkpoints",
-            metadata={"components": [c.model_path for c in components],
-                      "weights": (weights if weights else [1.0/len(components)]*len(components))},
-        ))
+        self.register(
+            ModelEntry(
+                name=ensemble_name,
+                wrapper=ens,
+                model_type="synthefy_ensemble",
+                description=description or f"Ensemble of {len(components)} Synthefy checkpoints",
+                metadata={
+                    "components": [c.model_path for c in components],
+                    "weights": (weights if weights else [1.0 / len(components)] * len(components)),
+                },
+            )
+        )
 
     def cleanup_all(self):
         for entry in self._models.values():

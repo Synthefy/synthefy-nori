@@ -27,6 +27,7 @@ DEFAULT_INFERENCE_CONFIG = "default_inference.json"
 #: The bundled training/architecture config — a different phase, not an inference config.
 DEFAULT_MODEL_CONFIG = "model_base.json"
 
+
 def config_path(filename: str = DEFAULT_INFERENCE_CONFIG) -> str:
     """Return an absolute path for a bundled config file.
 

@@ -20,6 +20,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
+
 # Keep in sync with synthefy_nori.inference.predictor.NA_PLACEHOLDER (not
 # imported: this module must stay importable without pulling in torch).
 NA_PLACEHOLDER = "__MISSING__"
@@ -49,16 +50,12 @@ def encode_categorical_column(col, classes=None, *, unknown_value=None):
         codes = np.searchsorted(classes, arr)
         bounded = np.minimum(codes, max(len(classes) - 1, 0))
         known = (
-            np.zeros(arr.shape, dtype=bool)
-            if len(classes) == 0
-            else (codes < len(classes)) & (classes[bounded] == arr)
+            np.zeros(arr.shape, dtype=bool) if len(classes) == 0 else (codes < len(classes)) & (classes[bounded] == arr)
         )
         if not np.all(known):
             if unknown_value is None:
                 unknown = np.unique(arr[~known]).tolist()
-                raise ValueError(
-                    f"categorical values are absent from the fitted vocabulary: {unknown}"
-                )
+                raise ValueError(f"categorical values are absent from the fitted vocabulary: {unknown}")
             codes = np.where(known, codes, int(unknown_value))
     return codes.astype(np.int64), classes
 
@@ -66,6 +63,7 @@ def encode_categorical_column(col, classes=None, *, unknown_value=None):
 @dataclass
 class DatasetEntry:
     """A single evaluation dataset."""
+
     name: str
     source: str
     task_type: str  # always "regression"
@@ -89,17 +87,19 @@ class DatasetEntry:
 
     def summary(self):
         return {
-            "name": self.name, "source": self.source,
-            "task_type": self.task_type, "n_train": self.n_train,
-            "n_test": self.n_test, "n_features": self.n_features,
+            "name": self.name,
+            "source": self.source,
+            "task_type": self.task_type,
+            "n_train": self.n_train,
+            "n_test": self.n_test,
+            "n_features": self.n_features,
         }
 
 
 class DatasetRegistry:
     """Central registry that loads and caches datasets from multiple sources."""
 
-    def __init__(self, cache_dir="./cache/eval_datasets", max_train_samples=50000,
-                 random_state=42):
+    def __init__(self, cache_dir="./cache/eval_datasets", max_train_samples=50000, random_state=42):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.max_train_samples = max_train_samples
@@ -310,17 +310,12 @@ class DatasetRegistry:
 
             df = X
             df["target"] = y
-            train_df, test_df = train_test_split(
-                df, test_size=0.3, random_state=self.random_state
-            )
+            train_df, test_df = train_test_split(df, test_size=0.3, random_state=self.random_state)
 
             os.makedirs(dataset_dir, exist_ok=True)
             train_df.to_csv(train_path, index=False)
             test_df.to_csv(test_path, index=False)
-            print(
-                f"  [OK] {dataset_name}: {len(train_df)} train, "
-                f"{len(test_df)} test (did={did})"
-            )
+            print(f"  [OK] {dataset_name}: {len(train_df)} train, {len(test_df)} test (did={did})")
             return "downloaded"
         except Exception as e:
             print(f"  [FAIL] Error downloading {dataset_name} (did={did}): {e}")
@@ -345,6 +340,7 @@ class DatasetRegistry:
         if show_progress:
             try:
                 from tqdm import tqdm
+
                 it = tqdm(ids, desc="OpenML regression", unit="dataset")
             except ImportError:
                 pass
@@ -387,6 +383,7 @@ class DatasetRegistry:
             return list_path
         try:
             from importlib.resources import files
+
             packaged = files("synthefy_nori.evaluation.benchmark_lists") / packaged_name
             if packaged.is_file():
                 return str(packaged)
@@ -513,17 +510,17 @@ class DatasetRegistry:
             n_failed = numeric_y.isna().sum() - y_series.isna().sum()
             frac_failed = n_failed / max(len(y_series), 1)
             if frac_failed > 0.5:
-                print(f"  [FAIL] {dataset_name} (did={did}): {frac_failed:.0%} of "
-                      f"target values are non-numeric (got: {y_series.unique()[:5].tolist()}). "
-                      f"This is not a usable regression target.")
+                print(
+                    f"  [FAIL] {dataset_name} (did={did}): {frac_failed:.0%} of "
+                    f"target values are non-numeric (got: {y_series.unique()[:5].tolist()}). "
+                    f"This is not a usable regression target."
+                )
                 return "failed"
 
             df = X_df.copy()
             df["target"] = y_series.values
 
-            train_df, test_df = train_test_split(
-                df, test_size=0.3, random_state=self.random_state
-            )
+            train_df, test_df = train_test_split(df, test_size=0.3, random_state=self.random_state)
 
             os.makedirs(dataset_dir, exist_ok=True)
             train_df.to_csv(train_path, index=False)
@@ -551,14 +548,14 @@ class DatasetRegistry:
                 train_df, test_df = train_test_split(train_df, test_size=0.2, random_state=self.random_state)
             X_train, y_train = train_df.iloc[:, :-1], train_df.iloc[:, -1]
             X_test, y_test = test_df.iloc[:, :-1], test_df.iloc[:, -1]
-            return self._make_entry_from_df(X_train, y_train, name, source,
-                                            X_test=X_test, y_test=y_test)
+            return self._make_entry_from_df(X_train, y_train, name, source, X_test=X_test, y_test=y_test)
         except Exception as e:
             print(f"  [{source}] Error loading {name}: {e}")
             return None
 
     def _load_openml_dataset_by_id(self, dataset_id, source):
         import openml
+
         dataset = openml.datasets.get_dataset(dataset_id, download_data=True)
         target = dataset.default_target_attribute
         if target is None:
@@ -601,12 +598,7 @@ class DatasetRegistry:
         train_medians = X.median()
         X = X.fillna(train_medians).fillna(0.0).astype(np.float32)
         if X_test is not None:
-            X_test = (
-                X_test.apply(pd.to_numeric, errors="coerce")
-                .fillna(train_medians)
-                .fillna(0.0)
-                .astype(np.float32)
-            )
+            X_test = X_test.apply(pd.to_numeric, errors="coerce").fillna(train_medians).fillna(0.0).astype(np.float32)
 
         numeric_y = pd.to_numeric(y, errors="coerce")
         n_coerced = int(numeric_y.isna().sum() - y.isna().sum())
@@ -632,8 +624,7 @@ class DatasetRegistry:
                 frac_test = n_coerced_test / max(len(y_test), 1)
                 if frac_test > 0.5:
                     warnings.warn(
-                        f"[{source}/{name}] Skipping: {frac_test:.0%} of test regression "
-                        f"targets are non-numeric."
+                        f"[{source}/{name}] Skipping: {frac_test:.0%} of test regression targets are non-numeric."
                     )
                     return None
                 warnings.warn(
@@ -661,7 +652,8 @@ class DatasetRegistry:
 
         if X_test_arr is None:
             X_arr, X_test_arr, y_arr, y_test_arr = train_test_split(
-                X_arr, y_arr, test_size=0.2, random_state=self.random_state)
+                X_arr, y_arr, test_size=0.2, random_state=self.random_state
+            )
 
         if X_arr.shape[0] > self.max_train_samples:
             rng = np.random.RandomState(self.random_state)
@@ -672,8 +664,12 @@ class DatasetRegistry:
             return None
 
         return DatasetEntry(
-            name=name, source=source, task_type="regression",
-            X_train=X_arr, y_train=y_arr,
-            X_test=X_test_arr, y_test=y_test_arr,
+            name=name,
+            source=source,
+            task_type="regression",
+            X_train=X_arr,
+            y_train=y_arr,
+            X_test=X_test_arr,
+            y_test=y_test_arr,
             metadata={"n_train_original": X_arr.shape[0], "n_features_original": X_arr.shape[1]},
         )

@@ -45,16 +45,14 @@ from synthefy_nori import NoriRegressor
 from synthefy_nori.interpretability.shapiq import get_nori_imputation_explainer
 
 # --- Configuration -----------------------------------------------------------
-DATA_DIR = Path(
-    os.environ.get("NORI_BENCH_DATA_DIR", "cache/eval_datasets/superconductivity")
-)
+DATA_DIR = Path(os.environ.get("NORI_BENCH_DATA_DIR", "cache/eval_datasets/superconductivity"))
 TRAIN_CSV = DATA_DIR / "superconductivity_train.csv"
 TEST_CSV = DATA_DIR / "superconductivity_test.csv"
 PLOT_PATH = Path("benchmarks/plots/shapiq_speed.png")
 
-N_CONTEXT = 1500          # training context (also imputer background) rows
-N_FEATURES = 12           # top-variance feature subset for tractable coalitions
-N_EXPLAIN = 5             # test rows explained (mean per-explanation time reported)
+N_CONTEXT = 1500  # training context (also imputer background) rows
+N_FEATURES = 12  # top-variance feature subset for tractable coalitions
+N_EXPLAIN = 5  # test rows explained (mean per-explanation time reported)
 BUDGETS = [32, 64, 128, 256, 512]
 DEVICE = "cuda:0"
 SEED = 0
@@ -71,14 +69,10 @@ def main() -> None:
 
     X_train_full, y_train_full = load_csv(TRAIN_CSV)
     X_test_full, _ = load_csv(TEST_CSV)
-    print(
-        f"Loaded train {X_train_full.shape}, test {X_test_full.shape} "
-        f"({X_train_full.shape[1]} features)"
-    )
+    print(f"Loaded train {X_train_full.shape}, test {X_test_full.shape} ({X_train_full.shape[1]} features)")
 
     # Subsample the training context (and imputer background).
-    ctx_idx = rng.choice(X_train_full.shape[0], size=min(N_CONTEXT, X_train_full.shape[0]),
-                         replace=False)
+    ctx_idx = rng.choice(X_train_full.shape[0], size=min(N_CONTEXT, X_train_full.shape[0]), replace=False)
     X_ctx = X_train_full[ctx_idx]
     y_ctx = y_train_full[ctx_idx]
 
@@ -115,9 +109,7 @@ def main() -> None:
 
     results: dict[str, list[float]] = {}
     for label, cfg in settings:
-        explainer = get_nori_imputation_explainer(
-            model, X_ctx_sel, imputer="baseline", random_state=SEED, **cfg
-        )
+        explainer = get_nori_imputation_explainer(model, X_ctx_sel, imputer="baseline", random_state=SEED, **cfg)
         per_budget: list[float] = []
         for budget in BUDGETS:
             t0 = time.perf_counter()
@@ -134,9 +126,7 @@ def main() -> None:
     print(header)
     print("-" * len(header))
     for j, budget in enumerate(BUDGETS):
-        row = f"{budget:>8} | " + " | ".join(
-            f"{results[lbl][j]:>16.3f}" for lbl, _ in settings
-        )
+        row = f"{budget:>8} | " + " | ".join(f"{results[lbl][j]:>16.3f}" for lbl, _ in settings)
         print(row)
 
     # --- Plot ----------------------------------------------------------------

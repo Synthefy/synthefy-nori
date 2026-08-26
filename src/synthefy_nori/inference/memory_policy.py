@@ -67,6 +67,7 @@ the predictor. Resolution is pure arithmetic — no torch allocations, no device
 — so every rung boundary is unit-testable on CPU rather than only exercised by
 whoever happens to run a 500k-row table on a big card.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -88,14 +89,19 @@ CacheDtype = Literal["bf16", "int8"]
 CACHE_DTYPE_CHOICES: tuple[str, ...] = ("bf16", "int8")
 
 RUNGS: tuple[str, ...] = (
-    "no_cache", "resident_bf16", "resident_int8", "offload_bf16", "offload_int8",
-    "context_row_chunk", "plain_loop",
+    "no_cache",
+    "resident_bf16",
+    "resident_int8",
+    "offload_bf16",
+    "offload_int8",
+    "context_row_chunk",
+    "plain_loop",
 )
 
 # --- unit + shape constants (no bare numbers in the arithmetic below) ---------
 
 #: Bytes per GiB, for every GB figure in this module.
-BYTES_PER_GIB = 1024 ** 3
+BYTES_PER_GIB = 1024**3
 
 #: The cache stores one key AND one value vector per (layer, group, row).
 KV_TENSORS_PER_ROW = 2
@@ -126,14 +132,19 @@ FIT_ROW_CHUNK_ON_OOM = 2048
 #: dropped — the failure mode where a caller spells everything correctly and still
 #: gets none of what they asked for.
 CACHE_ONLY_FIELDS: tuple[str, ...] = (
-    "cache_dtype", "allow_quantization", "offload_to_host", "context_row_chunk",
+    "cache_dtype",
+    "allow_quantization",
+    "offload_to_host",
+    "context_row_chunk",
     # adaptive_query_chunk is passed only to forward_cached_regression, so it is
     # inert on the plain loop as well -- it belongs here for the same reason.
     "adaptive_query_chunk",
     # The budgets bound where the CACHE is placed. With no cache to place, tuning
     # them does nothing, which is the same silent no-op as the levers above.
-    "gpu_budget_frac", "gpu_budget_absolute_gb",
-    "host_budget_frac", "host_budget_absolute_gb",
+    "gpu_budget_frac",
+    "gpu_budget_absolute_gb",
+    "host_budget_frac",
+    "host_budget_absolute_gb",
 )
 
 #: Stand-in when the device cannot be introspected (CPU inference, or a device string
@@ -336,8 +347,8 @@ def int8_footprint_gb(est_cache_gb: float, *, bytes_per_element: int, head_dim: 
 #: cgroup v2 then v1. A container's memory ceiling lives here and NOWHERE that
 #: ``sysconf`` can see.
 _CGROUP_LIMIT_PATHS = (
-    "/sys/fs/cgroup/memory.max",                     # v2
-    "/sys/fs/cgroup/memory/memory.limit_in_bytes",   # v1
+    "/sys/fs/cgroup/memory.max",  # v2
+    "/sys/fs/cgroup/memory/memory.limit_in_bytes",  # v1
 )
 
 #: v1 spells "unlimited" as a huge sentinel rather than a word. Anything at or above
@@ -374,7 +385,7 @@ def _cgroup_memory_limit_gb() -> float:
                 raw = limit_file.read().strip()
         except (OSError, ValueError):
             continue
-        if raw == "max":            # v2's "no limit"
+        if raw == "max":  # v2's "no limit"
             continue
         try:
             value = int(raw)
@@ -424,133 +435,146 @@ class MemoryPolicy(BaseModel):
     cache: bool = Field(
         True,
         description="Build a key/value cache over the context rows at all. False re-reads "
-                    "the whole context for every batch of query rows instead: correct, but "
-                    "several times slower on a large query set, and it may have to drop "
-                    "context rows to fit.",
+        "the whole context for every batch of query rows instead: correct, but "
+        "several times slower on a large query set, and it may have to drop "
+        "context rows to fit.",
     )
     reuse_context_cache: bool = Field(
         True,
         description="Retain and reuse the encoded context across separate predict() calls "
-                    "on this estimator when the context and cache parameters are exactly "
-                    "unchanged. False still uses the K/V cache within each prediction, but "
-                    "does not retain context-derived state afterwards. Shared serving "
-                    "processes force this off; local fit-once/predict-many use keeps it on.",
+        "on this estimator when the context and cache parameters are exactly "
+        "unchanged. False still uses the K/V cache within each prediction, but "
+        "does not retain context-derived state afterwards. Shared serving "
+        "processes force this off; local fit-once/predict-many use keeps it on.",
     )
     cache_dtype: CacheDtype = Field(
         "bf16",
         description="Precision the K/V cache STARTS at. bf16 is bit-exact and is the "
-                    "default; set 'int8' to quantize from the outset (~1.9x smaller, "
-                    "|dR2| ~ 6e-6) when you would rather trade that for context. "
-                    "Whether bf16 may be downgraded under memory pressure is a "
-                    "separate question — see allow_quantization.",
+        "default; set 'int8' to quantize from the outset (~1.9x smaller, "
+        "|dR2| ~ 6e-6) when you would rather trade that for context. "
+        "Whether bf16 may be downgraded under memory pressure is a "
+        "separate question — see allow_quantization.",
     )
     allow_quantization: bool = Field(
         True,
         description="May the cache be quantized to int8 when full precision would "
-                    "NOT stay resident? This is the only way int8 gets used by "
-                    "default, and it is strictly better than offloading (which costs "
-                    "40-175% latency). False keeps every rung bit-exact — the "
-                    "'exact' preset — at the cost of offloading sooner.",
+        "NOT stay resident? This is the only way int8 gets used by "
+        "default, and it is strictly better than offloading (which costs "
+        "40-175% latency). False keeps every rung bit-exact — the "
+        "'exact' preset — at the cost of offloading sooner.",
     )
     gpu_budget_frac: float = Field(
-        DEFAULT_GPU_BUDGET_FRAC, gt=0, le=1,
+        DEFAULT_GPU_BUDGET_FRAC,
+        gt=0,
+        le=1,
         description="Share of TOTAL VRAM the resident cache may occupy before we "
-                    "offload. A fraction so one setting is portable across GPUs. "
-                    "Total rather than free VRAM: free is racy, and budgeting against "
-                    "it would make the same call take different rungs on different "
-                    "runs.",
+        "offload. A fraction so one setting is portable across GPUs. "
+        "Total rather than free VRAM: free is racy, and budgeting against "
+        "it would make the same call take different rungs on different "
+        "runs.",
     )
     gpu_budget_absolute_gb: float | None = Field(
-        None, ge=0,
+        None,
+        ge=0,
         description="Hard VRAM ceiling in GiB, overriding gpu_budget_frac. For a "
-                    "co-tenanted GPU, where a fixed cap is the requirement and a "
-                    "share of the card is the wrong unit. None = use the fraction; "
-                    "0 = never keep the cache in GPU memory. 0 is deliberately "
-                    "legal, not a typo guard: it is a real request, and it is also "
-                    "the value the resolved budget can take.",
+        "co-tenanted GPU, where a fixed cap is the requirement and a "
+        "share of the card is the wrong unit. None = use the fraction; "
+        "0 = never keep the cache in GPU memory. 0 is deliberately "
+        "legal, not a typo guard: it is a real request, and it is also "
+        "the value the resolved budget can take.",
     )
     offload_to_host: bool = Field(
         True,
         description="May the cache be moved to host RAM (streamed back per layer) "
-                    "when it cannot stay resident? Bit-exact transport, but 40-175% "
-                    "slower. False reproduces the legacy behaviour of skipping the "
-                    "cache entirely instead, which is slower still.",
+        "when it cannot stay resident? Bit-exact transport, but 40-175% "
+        "slower. False reproduces the legacy behaviour of skipping the "
+        "cache entirely instead, which is slower still.",
     )
     host_budget_frac: float = Field(
-        DEFAULT_HOST_BUDGET_FRAC, gt=0, le=1,
+        DEFAULT_HOST_BUDGET_FRAC,
+        gt=0,
+        le=1,
         description="Share of total physical RAM the offloaded cache may occupy. A "
-                    "fraction because a flat GB default is a latent bug: 128 GB "
-                    "'fits' on a 32 GB laptop by arithmetic, so offload proceeds and "
-                    "the kernel OOM-kills the process instead of the policy falling "
-                    "to the plain loop.",
+        "fraction because a flat GB default is a latent bug: 128 GB "
+        "'fits' on a 32 GB laptop by arithmetic, so offload proceeds and "
+        "the kernel OOM-kills the process instead of the policy falling "
+        "to the plain loop.",
     )
     host_budget_absolute_gb: float | None = Field(
-        None, ge=0,
+        None,
+        ge=0,
         description="Hard host-RAM ceiling in GiB, overriding host_budget_frac. "
-                    "None = use the fraction; 0 = never offload. 0 is deliberately "
-                    "legal: it is also what a platform that will not report its RAM "
-                    "resolves to, and that case has to degrade to 'no offload' rather "
-                    "than fail.",
+        "None = use the fraction; 0 = never offload. 0 is deliberately "
+        "legal: it is also what a platform that will not report its RAM "
+        "resolves to, and that case has to degrade to 'no offload' rather "
+        "than fail.",
     )
     context_row_chunk: int | None = Field(
         None,
         gt=0,
         description="Bound the fit-time build working set to this many context rows "
-                    f"(bit-exact). None = off, with {FIT_ROW_CHUNK_ON_OOM} engaged "
-                    "automatically after an OOM. Pinning a value uses it from the "
-                    "first attempt — which also costs you that escalation, since "
-                    "there is then nothing left to escalate to.",
+        f"(bit-exact). None = off, with {FIT_ROW_CHUNK_ON_OOM} engaged "
+        "automatically after an OOM. Pinning a value uses it from the "
+        "first attempt — which also costs you that escalation, since "
+        "there is then nothing left to escalate to.",
     )
     adaptive_query_chunk: bool = Field(
         True,
         description="On a decode OOM, halve the QUERY chunk and retry instead of "
-                    "raising. Distinct from context_row_chunk, which caps CONTEXT rows "
-                    "during prefill.",
+        "raising. Distinct from context_row_chunk, which caps CONTEXT rows "
+        "during prefill.",
     )
     elements_budget: int | None = Field(
         None,
         gt=0,
         description="Per-forward element cap driving query chunk size and context "
-                    "subsampling. None = derive it from available VRAM. Upstream of "
-                    "everything else here: the cached path engages only when the "
-                    "query set exceeds the chunk size this implies, so raising it far "
-                    "enough disables the cache knobs by making inference stop "
-                    "chunking at all.",
+        "subsampling. None = derive it from available VRAM. Upstream of "
+        "everything else here: the cached path engages only when the "
+        "query set exceeds the chunk size this implies, so raising it far "
+        "enough disables the cache knobs by making inference stop "
+        "chunking at all.",
     )
     allow_subsample: bool = Field(
         True,
         description="Permit dropping context rows when the request will not fit "
-                    "otherwise. False makes that an error instead of a silent "
-                    "accuracy loss.",
+        "otherwise. False makes that an error instead of a silent "
+        "accuracy loss.",
     )
 
     # --- populated by resolve(); None on an unresolved policy ----------------
     rung: str | None = Field(
         None,
         description="Which fallback the server used, in decreasing memory cost: "
-                    "resident_bf16 (cache in GPU memory, exact), resident_int8 (quantized), "
-                    "offload_bf16 / offload_int8 (cache in host RAM, streamed back per layer, "
-                    "exact transport), context_row_chunk (cache built in row chunks), "
-                    "plain_loop (no cache; the context re-read per query batch), no_cache "
-                    "(the cached path did not apply). Decided per request, not requestable.")
+        "resident_bf16 (cache in GPU memory, exact), resident_int8 (quantized), "
+        "offload_bf16 / offload_int8 (cache in host RAM, streamed back per layer, "
+        "exact transport), context_row_chunk (cache built in row chunks), "
+        "plain_loop (no cache; the context re-read per query batch), no_cache "
+        "(the cached path did not apply). Decided per request, not requestable.",
+    )
     est_cache_gb: float | None = Field(
-        None, ge=0,
-        description="Full-precision cache footprint for this request's context, in GiB. Reported, not set.")
+        None, ge=0, description="Full-precision cache footprint for this request's context, in GiB. Reported, not set."
+    )
     resident_gb: float | None = Field(
-        None, ge=0,
+        None,
+        ge=0,
         description="Footprint at the chosen precision (GiB) — the figure actually "
-                    "compared against the budget. Reported, not set.")
+        "compared against the budget. Reported, not set.",
+    )
     query_chunk: int | None = Field(
-        None, gt=0,
+        None,
+        gt=0,
         description="Query rows per decode forward, as the cached path was entered "
-                    "with. Reported, not set. NOTE: a decode OOM may halve this "
-                    "further inside the model, and that further reduction is not "
-                    "currently reported here.")
+        "with. Reported, not set. NOTE: a decode OOM may halve this "
+        "further inside the model, and that further reduction is not "
+        "currently reported here.",
+    )
     dropped_context_rows: int = Field(
-        0, ge=0,
+        0,
+        ge=0,
         description="Context rows the caller had to subsample away to fit. Non-zero "
-                    "only on the plain_loop rung; recorded so a shrunk context is "
-                    "visible in memory_report_ rather than inferred from the score.")
+        "only on the plain_loop rung; recorded so a shrunk context is "
+        "visible in memory_report_ rather than inferred from the score.",
+    )
 
     @model_validator(mode="after")
     def _check_rung(self) -> "MemoryPolicy":
@@ -583,8 +607,7 @@ class MemoryPolicy(BaseModel):
         """
         if self.rung is not None or self.cache:
             return self
-        if ("reuse_context_cache" in self.model_fields_set
-                and self.reuse_context_cache):
+        if "reuse_context_cache" in self.model_fields_set and self.reuse_context_cache:
             raise ValueError(
                 "cache=False cannot be combined with reuse_context_cache=True: "
                 "there is no K/V cache to retain across calls. Set "
@@ -626,8 +649,10 @@ class MemoryPolicy(BaseModel):
         if self.rung is not None:
             return self
         given = self.model_fields_set
-        for frac, absolute in (("gpu_budget_frac", "gpu_budget_absolute_gb"),
-                               ("host_budget_frac", "host_budget_absolute_gb")):
+        for frac, absolute in (
+            ("gpu_budget_frac", "gpu_budget_absolute_gb"),
+            ("host_budget_frac", "host_budget_absolute_gb"),
+        ):
             if frac in given and absolute in given:
                 warn_once(
                     f"{frac} is ignored because {absolute} is also set and takes "
@@ -635,8 +660,7 @@ class MemoryPolicy(BaseModel):
                     f"between GPUs, the absolute for a hard cap on a shared one.",
                 )
         if "offload_to_host" in given and not self.offload_to_host:
-            dead = sorted(f for f in ("host_budget_frac", "host_budget_absolute_gb")
-                          if f in given)
+            dead = sorted(f for f in ("host_budget_frac", "host_budget_absolute_gb") if f in given)
             if dead:
                 warn_once(
                     f"{dead} is ignored because offload_to_host=False disables host "
@@ -644,8 +668,7 @@ class MemoryPolicy(BaseModel):
                 )
         # A cache that is configured never to be usable: statically decidable, so say
         # so rather than letting every call quietly take the slowest rung.
-        if (self.cache and not self.offload_to_host
-                and self.gpu_budget_absolute_gb == 0):
+        if self.cache and not self.offload_to_host and self.gpu_budget_absolute_gb == 0:
             warn_once(
                 "cache=True but gpu_budget_absolute_gb=0 with offload_to_host=False "
                 "means the cache can never be placed, so every call will take the "
@@ -657,10 +680,12 @@ class MemoryPolicy(BaseModel):
         # and only succeeds within the host budget, so a host budget at or below the
         # GPU budget makes offload unreachable. The fractional case depends on the
         # box, so resolve() carries the same check for it.
-        if (self.offload_to_host
-                and self.gpu_budget_absolute_gb is not None
-                and self.host_budget_absolute_gb is not None
-                and self.host_budget_absolute_gb <= self.gpu_budget_absolute_gb):
+        if (
+            self.offload_to_host
+            and self.gpu_budget_absolute_gb is not None
+            and self.host_budget_absolute_gb is not None
+            and self.host_budget_absolute_gb <= self.gpu_budget_absolute_gb
+        ):
             warn_once(
                 f"offload_to_host=True cannot engage: host_budget_absolute_gb="
                 f"{self.host_budget_absolute_gb} is not above gpu_budget_absolute_gb="
@@ -668,8 +693,7 @@ class MemoryPolicy(BaseModel):
                 f"is also too big to offload. Raise the host budget above the GPU "
                 f"budget for offload to be reachable.",
             )
-        if ("allow_quantization" in given and not self.allow_quantization
-                and self.cache_dtype == "int8"):
+        if "allow_quantization" in given and not self.allow_quantization and self.cache_dtype == "int8":
             raise ValueError(
                 "allow_quantization=False with cache_dtype='int8' is contradictory: "
                 "the first forbids quantizing, the second asks for a quantized cache "
@@ -736,8 +760,7 @@ class MemoryPolicy(BaseModel):
         if isinstance(value, str):
             if value not in MEMORY_PRESETS:
                 raise ValueError(
-                    f"unknown memory preset {value!r}; expected one of "
-                    f"{MEMORY_PRESETS}, a dict, or a MemoryPolicy"
+                    f"unknown memory preset {value!r}; expected one of {MEMORY_PRESETS}, a dict, or a MemoryPolicy"
                 )
             if value == "exact":
                 # Never trade accuracy: offload (bit-exact) rather than quantize.
@@ -745,11 +768,8 @@ class MemoryPolicy(BaseModel):
             if value == "max_context":
                 # Fit the largest table possible; start quantized to free VRAM at once.
                 return cls(cache_dtype="int8")
-            return cls(cache=False, reuse_context_cache=False)     # "off"
-        raise TypeError(
-            f"memory must be a preset name, dict, MemoryPolicy or None, "
-            f"got {type(value).__name__}"
-        )
+            return cls(cache=False, reuse_context_cache=False)  # "off"
+        raise TypeError(f"memory must be a preset name, dict, MemoryPolicy or None, got {type(value).__name__}")
 
     @classmethod
     def coerce_for_service(
@@ -817,9 +837,8 @@ class MemoryPolicy(BaseModel):
         clamped: list[str] = []
         ceilings = {
             "host_budget_frac": max_host_budget_frac,
-            "host_budget_absolute_gb": max_host_budget_frac * (
-                total_host_ram_gb() if total_ram_gb is None else total_ram_gb
-            ),
+            "host_budget_absolute_gb": max_host_budget_frac
+            * (total_host_ram_gb() if total_ram_gb is None else total_ram_gb),
         }
         if isinstance(value, dict):
             value = dict(value)  # never mutate the caller's parsed request body
@@ -831,7 +850,7 @@ class MemoryPolicy(BaseModel):
                 # has already skipped them -- and `clamped` then came back empty, which the
                 # response documents as "honoured verbatim". A quote mark defeated the rail.
                 if numeric is None:
-                    continue                    # not numeric at all -> pydantic's error
+                    continue  # not numeric at all -> pydantic's error
                 if numeric > ceilings[field]:
                     value[field] = ceilings[field]
                     clamped.append(field)
@@ -926,17 +945,21 @@ class MemoryPolicy(BaseModel):
         gpu_budget_gb = self.gpu_budget(vram)
         host_budget_gb = self.host_budget(ram)
         bf16_gb = est_cache_gb
-        int8_gb = int8_footprint_gb(
-            est_cache_gb, bytes_per_element=bytes_per_element, head_dim=head_dim)
+        int8_gb = int8_footprint_gb(est_cache_gb, bytes_per_element=bytes_per_element, head_dim=head_dim)
 
-        def decided(rung: str, dtype: str, offload: bool, resident: float,
-                    cache: bool, budgets: bool = True) -> "MemoryPolicy":
+        def decided(
+            rung: str, dtype: str, offload: bool, resident: float, cache: bool, budgets: bool = True
+        ) -> "MemoryPolicy":
             return self._revalidated_copy(
-                cache=cache, cache_dtype=dtype, offload_to_host=offload,
+                cache=cache,
+                cache_dtype=dtype,
+                offload_to_host=offload,
                 reuse_context_cache=bool(cache and self.reuse_context_cache),
                 gpu_budget_absolute_gb=gpu_budget_gb if budgets else None,
                 host_budget_absolute_gb=host_budget_gb if budgets else None,
-                rung=rung, est_cache_gb=est_cache_gb, resident_gb=resident,
+                rung=rung,
+                est_cache_gb=est_cache_gb,
+                resident_gb=resident,
             )
 
         if not self.cache or not cache_eligible:
@@ -944,8 +967,7 @@ class MemoryPolicy(BaseModel):
             # consulted. Report the budgets as None rather than a number computed
             # from a VRAM figure nobody looked at -- a diagnostic that states
             # "budget 9.6 GiB" on an 80 GB card is worse than one that says nothing.
-            return decided("no_cache", self.cache_dtype, False, 0.0, cache=False,
-                           budgets=False)
+            return decided("no_cache", self.cache_dtype, False, 0.0, cache=False, budgets=False)
 
         # Precisions this request may use, cheapest-accuracy-cost first. Starting at
         # int8 means bf16 is not a candidate at all — the caller asked for the smaller
@@ -981,11 +1003,9 @@ class MemoryPolicy(BaseModel):
         # rule 6a compared them at construction time and warned there; saying it again
         # here makes one root cause produce two warnings.
         already_warned_at_construction = (
-            self.gpu_budget_absolute_gb is not None
-            and self.host_budget_absolute_gb is not None
+            self.gpu_budget_absolute_gb is not None and self.host_budget_absolute_gb is not None
         )
-        if (self.offload_to_host and host_budget_gb <= gpu_budget_gb
-                and not already_warned_at_construction):
+        if self.offload_to_host and host_budget_gb <= gpu_budget_gb and not already_warned_at_construction:
             warn_once(
                 f"This request needed to spill out of VRAM, but offload_to_host could "
                 f"not help: the host budget ({host_budget_gb:.1f} GiB) is not larger "
@@ -997,9 +1017,14 @@ class MemoryPolicy(BaseModel):
         worst_dtype, worst_footprint = candidates[-1]
         return decided("plain_loop", worst_dtype, False, worst_footprint, cache=False)
 
-    def escalated(self, rung: str, *, context_row_chunk: int | None = None,
-                  dropped_context_rows: int | None = None,
-                  query_chunk: int | None = None) -> "MemoryPolicy":
+    def escalated(
+        self,
+        rung: str,
+        *,
+        context_row_chunk: int | None = None,
+        dropped_context_rows: int | None = None,
+        query_chunk: int | None = None,
+    ) -> "MemoryPolicy":
         """Return a copy recording an escalation the caller made after an OOM.
 
         Args:

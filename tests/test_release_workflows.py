@@ -7,9 +7,7 @@ import yaml
 
 _ROOT = Path(__file__).resolve().parents[1]
 _WORKFLOW_ROOT = _ROOT / ".github" / "workflows"
-_PUBLIC_REPOSITORY_GATE = (
-    "github.repository == 'Synthefy/synthefy-nori'"
-)
+_PUBLIC_REPOSITORY_GATE = "github.repository == 'Synthefy/synthefy-nori'"
 _SPECS = {
     "synthefy": {
         "workflow": "publish-synthefy.yml",
@@ -40,18 +38,12 @@ def _load(name: str) -> dict:
 
 
 def _run_scripts(job: dict) -> str:
-    return "\n".join(
-        step["run"]
-        for step in job["steps"]
-        if isinstance(step, dict) and "run" in step
-    )
+    return "\n".join(step["run"] for step in job["steps"] if isinstance(step, dict) and "run" in step)
 
 
 def test_generic_publisher_is_removed_and_namespaced_publishers_are_complete():
     assert not (_WORKFLOW_ROOT / "publish.yml").exists()
-    assert {
-        path.name for path in _WORKFLOW_ROOT.glob("publish*.yml")
-    } == {spec["workflow"] for spec in _SPECS.values()}
+    assert {path.name for path in _WORKFLOW_ROOT.glob("publish*.yml")} == {spec["workflow"] for spec in _SPECS.values()}
 
     for distribution, spec in _SPECS.items():
         workflow = _load(spec["workflow"])
@@ -69,7 +61,7 @@ def test_generic_publisher_is_removed_and_namespaced_publishers_are_complete():
         build = workflow["jobs"]["build"]
         assert spec["tag_prefix"] in build["if"]
         scripts = _run_scripts(build)
-        assert f"expected_tag=\"{spec['tag_prefix']}$version\"" in scripts
+        assert f'expected_tag="{spec["tag_prefix"]}$version"' in scripts
         assert '"$GITHUB_REF" != "refs/tags/$tag"' in scripts
         assert 'git rev-parse "refs/tags/$tag^{}"' in scripts
         assert "git merge-base --is-ancestor" in scripts
@@ -95,16 +87,9 @@ def test_only_public_namespaced_jobs_can_publish_with_oidc():
     for distribution, spec in _SPECS.items():
         workflow = _load(spec["workflow"])
         build = workflow["jobs"]["build"]
-        artifact_names.add(
-            build["outputs"]["artifact"]
-            + distribution
-        )
+        artifact_names.add(build["outputs"]["artifact"] + distribution)
 
-        publish_jobs = {
-            name: job
-            for name, job in workflow["jobs"].items()
-            if name.startswith("publish-")
-        }
+        publish_jobs = {name: job for name, job in workflow["jobs"].items() if name.startswith("publish-")}
         assert set(publish_jobs) == spec["publish_jobs"]
         assert build.get("permissions") is None
 
@@ -117,20 +102,14 @@ def test_only_public_namespaced_jobs_can_publish_with_oidc():
             environment = job["environment"]["name"]
             environments.add(environment)
             assert environment in spec["environments"]
-            uses = [
-                step.get("uses", "")
-                for step in job["steps"]
-                if isinstance(step, dict)
-            ]
+            uses = [step.get("uses", "") for step in job["steps"] if isinstance(step, dict)]
             assert "pypa/gh-action-pypi-publish@release/v1" in uses
 
         for name, job in workflow["jobs"].items():
             if name not in publish_jobs:
                 assert job.get("permissions", {}).get("id-token") != "write"
 
-    assert environments == set().union(
-        *(spec["environments"] for spec in _SPECS.values())
-    )
+    assert environments == set().union(*(spec["environments"] for spec in _SPECS.values()))
     assert len(artifact_names) == 2
 
 

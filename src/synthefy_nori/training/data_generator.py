@@ -26,6 +26,7 @@ import numpy as np
 # Edge function factories
 # ---------------------------------------------------------------------------
 
+
 def _get_activations(expanded=False):
     """Return list of activation functions for MLP edge functions.
 
@@ -34,13 +35,13 @@ def _get_activations(expanded=False):
                   if False, return original 8 activations.
     """
     base = [
-        lambda x: x,                          # identity
-        np.tanh,                               # tanh
+        lambda x: x,  # identity
+        np.tanh,  # tanh
         lambda x: 1 / (1 + np.exp(-np.clip(x, -20, 20))),  # sigmoid
-        lambda x: np.log1p(np.abs(x)),         # log(1+|x|)
-        np.abs,                                # abs
-        np.sin,                                # sin
-        lambda x: x ** 2,                      # x^2
+        lambda x: np.log1p(np.abs(x)),  # log(1+|x|)
+        np.abs,  # abs
+        np.sin,  # sin
+        lambda x: x**2,  # x^2
         lambda x: x * (1 / (1 + np.exp(-1.702 * np.clip(x, -20, 20)))),  # approx gelu
     ]
     if not expanded:
@@ -52,19 +53,19 @@ def _get_activations(expanded=False):
         lambda x: 1.0507 * np.where(x > 0, x, 1.6733 * (np.exp(np.clip(x, -20, 20)) - 1)),  # SELU
         lambda x: x / (1 + np.exp(-np.clip(x, -20, 20))),  # SiLU / Swish
         lambda x: np.maximum(0, np.minimum(x, 6)),  # ReLU6
-        lambda x: np.clip(x, -1, 1),          # HardTanh
-        lambda x: np.sign(x),                  # signum
-        lambda x: (x > 0).astype(float),       # Heaviside
-        lambda x: np.exp(-x ** 2),             # Gaussian
+        lambda x: np.clip(x, -1, 1),  # HardTanh
+        lambda x: np.sign(x),  # signum
+        lambda x: (x > 0).astype(float),  # Heaviside
+        lambda x: np.exp(-(x**2)),  # Gaussian
         lambda x: np.log1p(np.exp(np.clip(x, -20, 20))),  # softplus
-        lambda x: np.maximum(x, 0),            # ReLU (explicit)
+        lambda x: np.maximum(x, 0),  # ReLU (explicit)
         # Non-standard / diverse
-        lambda x: np.cos(x),                   # cosine
+        lambda x: np.cos(x),  # cosine
         lambda x: np.sign(x) * np.sqrt(np.abs(x)),  # sqrt with sign
-        lambda x: np.clip(x, 0, 1),            # clamp 0-1
+        lambda x: np.clip(x, 0, 1),  # clamp 0-1
         lambda x: np.round(np.clip(x, -10, 10)),  # round
-        lambda x: np.mod(x, 1.0),              # modulo 1
-        lambda x: x ** 3,                      # cube
+        lambda x: np.mod(x, 1.0),  # modulo 1
+        lambda x: x**3,  # cube
         lambda x: np.sign(x) * (np.abs(x) ** 0.5),  # power 0.5
         lambda x: np.sign(x) * (np.abs(x) ** 1.5),  # power 1.5
         lambda x: np.where(x > 0, x, -0.5 * x),  # Leaky ReLU (0.5)
@@ -115,17 +116,17 @@ def _make_random_tree(rng, depth, max_depth):
     if depth >= max_depth or rng.random() < 0.3:
         # Leaf node
         value = rng.uniform(-2, 2)
-        return ('leaf', value)
+        return ("leaf", value)
     threshold = rng.uniform(-4, 4)
     left = _make_random_tree(rng, depth + 1, max_depth)
     right = _make_random_tree(rng, depth + 1, max_depth)
-    return ('split', threshold, left, right)
+    return ("split", threshold, left, right)
 
 
 def _eval_random_tree(tree, x):
     """Evaluate a random tree on scalar input x (vectorized)."""
     kind = tree[0]
-    if kind == 'leaf':
+    if kind == "leaf":
         return np.full(x.shape, tree[1])
     # split node
     _, threshold, left, right = tree
@@ -240,7 +241,7 @@ def _make_rbf_fn(rng):
 
     def rbf_fn(x):
         v = x.ravel()
-        return amplitude * np.exp(-((v - center) ** 2) / (2 * sigma ** 2))
+        return amplitude * np.exp(-((v - center) ** 2) / (2 * sigma**2))
 
     return rbf_fn
 
@@ -251,11 +252,13 @@ def _make_logexp_fn(rng):
     a = rng.uniform(0.5, 2.0)
 
     if use_log:
+
         def logexp_fn(x):
             v = x.ravel()
             return a * np.log1p(np.abs(v)) * np.sign(v)
     else:
         b = rng.uniform(0.3, 1.5)
+
         def logexp_fn(x):
             v = np.clip(x.ravel(), -5, 5)
             return a * (np.exp(b * v) - 1)
@@ -280,11 +283,13 @@ def _make_quadratic_fn(rng, in_dim=1):
     b = rng.uniform(-0.5, 0.5)
 
     if in_dim == 1:
+
         def quadratic_fn(x):
             v = np.clip(x.ravel(), -5, 5)
-            out = M[0, 0] * v ** 2 + w[0] * v + b
+            out = M[0, 0] * v**2 + w[0] * v + b
             return 50.0 * np.tanh(out / 50.0)
     else:
+
         def quadratic_fn(x):
             # x: [n_samples, in_dim]
             x_clipped = np.clip(x, -5, 5)
@@ -303,8 +308,14 @@ def _make_product_fn(rng, in_dim):
     interactions between two different random functions.
     """
     # Use simpler functions for the two factors (avoid recursion/slowness)
-    simple_makers = [_make_piecewise_fn, _make_poly_fn, _make_periodic_fn,
-                     _make_rbf_fn, _make_logexp_fn, _make_quadratic_fn]
+    simple_makers = [
+        _make_piecewise_fn,
+        _make_poly_fn,
+        _make_periodic_fn,
+        _make_rbf_fn,
+        _make_logexp_fn,
+        _make_quadratic_fn,
+    ]
     fn1 = simple_makers[int(rng.integers(0, len(simple_makers)))](rng)
     fn2 = simple_makers[int(rng.integers(0, len(simple_makers)))](rng)
 
@@ -321,7 +332,7 @@ def _make_multidim_scalar_fn(in_dim, rng, expanded=False):
     then applies a scalar edge function. Returns [n_samples].
     """
     proj = rng.standard_normal(in_dim)
-    proj /= (np.linalg.norm(proj) + 1e-8)
+    proj /= np.linalg.norm(proj) + 1e-8
     scalar_fn = _make_edge_fn(1, rng, expanded=expanded)
 
     def multidim_fn(x):
@@ -378,6 +389,7 @@ def _make_edge_fn(in_dim, rng, expanded=False):
 # Root node distribution sampling
 # ---------------------------------------------------------------------------
 
+
 def _sample_root(n_samples, rng):
     """Sample root node values from a random distribution."""
     choice = rng.integers(0, 7)
@@ -416,6 +428,7 @@ def _sample_root(n_samples, rng):
 # ---------------------------------------------------------------------------
 # Aggregation functions
 # ---------------------------------------------------------------------------
+
 
 def _aggregate(parent_values, rng, expanded=False):
     """Aggregate values from multiple parents.
@@ -467,12 +480,21 @@ def _aggregate(parent_values, rng, expanded=False):
 # Local Causal Structure (LCS)
 # ---------------------------------------------------------------------------
 
+
 class LocalCausalStructure:
     """A small causal graph with 3-8 nodes, topologically ordered."""
 
-    def __init__(self, n_nodes, external_parent_indices, rng, expanded=False,
-                 synth_v5=False, external_d_nodes=None, synth_v5_declone=True,
-                 max_parents=4):
+    def __init__(
+        self,
+        n_nodes,
+        external_parent_indices,
+        rng,
+        expanded=False,
+        synth_v5=False,
+        external_d_nodes=None,
+        synth_v5_declone=True,
+        max_parents=4,
+    ):
         """
         n_nodes: number of nodes in this LCS
         external_parent_indices: list of global indices of nodes from
@@ -518,8 +540,9 @@ class LocalCausalStructure:
 
             # Possible parents: internal nodes with idx < i, plus external nodes
             internal_candidates = list(range(i))
-            all_candidates = [(True, idx) for idx in internal_candidates] + \
-                             [(False, idx) for idx in external_parent_indices]
+            all_candidates = [(True, idx) for idx in internal_candidates] + [
+                (False, idx) for idx in external_parent_indices
+            ]
 
             if len(all_candidates) == 0:
                 # Root node
@@ -529,7 +552,7 @@ class LocalCausalStructure:
 
             # Randomly select 1..max_parents parents.  ``Generator.integers``
             # excludes its upper bound, so include it explicitly.
-            max_p = getattr(self, '_max_parents', 4)
+            max_p = getattr(self, "_max_parents", 4)
             n_parents = min(rng.integers(1, max_p + 1), len(all_candidates))
             chosen = rng.choice(len(all_candidates), size=n_parents, replace=False)
             parents = [all_candidates[c] for c in chosen]
@@ -542,18 +565,13 @@ class LocalCausalStructure:
                 return external_d_nodes.get(idx, 1)
 
             # Concat-then-transform mode: synth_v5, 2+ parents, 40% probability
-            use_concat = (synth_v5 and len(parents) >= 2
-                          and rng.random() < 0.4)
+            use_concat = synth_v5 and len(parents) >= 2 and rng.random() < 0.4
             self.concat_mode[i] = use_concat
 
             if use_concat:
                 # Single multivariate function for all parents concatenated
-                total_in_dim = sum(
-                    _parent_dim(is_internal, idx)
-                    for is_internal, idx in parents
-                )
-                self.edge_fns[i] = [_make_concat_edge_fn(
-                    total_in_dim, rng, expanded=expanded)]
+                total_in_dim = sum(_parent_dim(is_internal, idx) for is_internal, idx in parents)
+                self.edge_fns[i] = [_make_concat_edge_fn(total_in_dim, rng, expanded=expanded)]
             else:
                 # Per-parent edge functions (original behavior)
                 fns = []
@@ -561,8 +579,7 @@ class LocalCausalStructure:
                     parent_d = _parent_dim(is_internal, idx)
                     if synth_v5 and parent_d > 1:
                         # Multi-dim parent: project d->1 then scalar fn
-                        fns.append(_make_multidim_scalar_fn(parent_d, rng,
-                                                            expanded=expanded))
+                        fns.append(_make_multidim_scalar_fn(parent_d, rng, expanded=expanded))
                     else:
                         fns.append(_make_edge_fn(1, rng, expanded=expanded))
                 self.edge_fns[i] = fns
@@ -612,8 +629,7 @@ class LocalCausalStructure:
             base = result.reshape(-1, 1)
             # Clip scales to [0.3, 1.7] to prevent sign flips and
             # extreme amplification that caused cascading overflow
-            scales = np.clip(
-                self.rng.normal(loc=1.0, scale=0.35, size=d), 0.3, 1.7)
+            scales = np.clip(self.rng.normal(loc=1.0, scale=0.35, size=d), 0.3, 1.7)
             base = base * scales[None, :]
             sig = max(float(np.std(result)), 1e-6)
             noise_rel = sig * self.rng.uniform(0.20, 0.80)
@@ -682,13 +698,11 @@ class LocalCausalStructure:
                     if parent_val.ndim == 1:
                         parent_val = parent_val.reshape(-1, 1)
                     parent_contributions.append(fn(parent_val))
-                agg_result = _aggregate(parent_contributions, self.rng,
-                                        expanded=self.expanded)
+                agg_result = _aggregate(parent_contributions, self.rng, expanded=self.expanded)
                 # Standardize after aggregation
                 agg_result = self._robust_standardize(agg_result)
                 if d > 1:
-                    agg_result = self._expand_to_multidim(
-                        agg_result, d, n_samples)
+                    agg_result = self._expand_to_multidim(agg_result, d, n_samples)
                 values.append(agg_result)
         return values
 
@@ -697,8 +711,8 @@ class LocalCausalStructure:
 # Hierarchical SCM
 # ---------------------------------------------------------------------------
 
-def _build_hierarchical_scm(n_features, rng, expanded=False, synth_v5=False,
-                            synth_v5_declone=True, max_parents=4):
+
+def _build_hierarchical_scm(n_features, rng, expanded=False, synth_v5=False, synth_v5_declone=True, max_parents=4):
     """Build a hierarchical SCM with multiple LCS.
 
     Returns:
@@ -723,11 +737,16 @@ def _build_hierarchical_scm(n_features, rng, expanded=False, synth_v5=False,
         # External parents from previous LCS nodes
         external_parents = list(range(node_offset))
 
-        lcs = LocalCausalStructure(n_nodes, external_parents, rng,
-                                   expanded=expanded, synth_v5=synth_v5,
-                                   external_d_nodes=global_d_nodes,
-                                   synth_v5_declone=synth_v5_declone,
-                                   max_parents=max_parents)
+        lcs = LocalCausalStructure(
+            n_nodes,
+            external_parents,
+            rng,
+            expanded=expanded,
+            synth_v5=synth_v5,
+            external_d_nodes=global_d_nodes,
+            synth_v5_declone=synth_v5_declone,
+            max_parents=max_parents,
+        )
         lcs_list.append((lcs, node_offset))
         for j in range(n_nodes):
             global_idx = node_offset + j
@@ -758,9 +777,11 @@ def _finite_mean_std(values):
     scaled = finite_values / scale
     return float(np.mean(scaled) * scale), float(np.std(scaled) * scale)
 
+
 def _finite_std(values):
     """Return a warning-free finite-only standard deviation."""
     return _finite_mean_std(values)[1]
+
 
 def _finite_column_variation(values, tolerance=1e-8):
     """Identify columns with finite variation without all-NaN warnings."""
@@ -793,13 +814,12 @@ def _finite_column_variation(values, tolerance=1e-8):
     absolute_std = np.sqrt(variances) * scales
     return (counts >= 2) & (absolute_std > float(tolerance))
 
+
 def _finite_column_means(values):
     """Return finite-only column means, using zero for empty columns."""
     values = np.asarray(values, dtype=np.float64)
-    return np.asarray([
-        _finite_mean_std(values[:, col])[0]
-        for col in range(values.shape[1])
-    ], dtype=np.float64)
+    return np.asarray([_finite_mean_std(values[:, col])[0] for col in range(values.shape[1])], dtype=np.float64)
+
 
 def _finite_percentile(values, percentile):
     """Return a finite-only percentile, or None when no fit data exists."""
@@ -809,8 +829,8 @@ def _finite_percentile(values, percentile):
         return None
     return float(np.percentile(finite_values, percentile))
 
-def _calibrate_noise_to_target_r2(
-        signal, raw_noise, target_r2, context_rows=None):
+
+def _calibrate_noise_to_target_r2(signal, raw_noise, target_r2, context_rows=None):
     """Scale the complete sampled noise vector to an empirical target R².
 
     The noise shape (heteroskedasticity and sparse outliers) is sampled first.
@@ -844,22 +864,17 @@ def _calibrate_noise_to_target_r2(
     cross = float(np.dot(signal_centered, noise_reference))
     r2 = max(float(target_r2), 1e-8)
     residual_fraction = 1.0 - r2
-    discriminant = (
-        residual_fraction ** 2 * cross ** 2
-        + r2 * noise_ss * residual_fraction * signal_ss
-    )
-    scale = (
-        residual_fraction * cross + np.sqrt(max(discriminant, 0.0))
-    ) / (r2 * noise_ss)
+    discriminant = residual_fraction**2 * cross**2 + r2 * noise_ss * residual_fraction * signal_ss
+    scale = (residual_fraction * cross + np.sqrt(max(discriminant, 0.0))) / (r2 * noise_ss)
     noise *= max(float(scale), 0.0)
     noisy_reference = signal_reference + noise[:labeled_rows]
     noisy_centered = noisy_reference - np.mean(noisy_reference)
     total_ss = float(np.dot(noisy_centered, noisy_centered))
     realized_r2 = (
-        1.0 - float(np.dot(noise[:labeled_rows], noise[:labeled_rows])) / total_ss
-        if total_ss > 1e-12 else 1.0
+        1.0 - float(np.dot(noise[:labeled_rows], noise[:labeled_rows])) / total_ss if total_ss > 1e-12 else 1.0
     )
     return noise, float(np.clip(realized_r2, 0.0, 1.0))
+
 
 def _normalize_target_pair(y, y_clean, context_rows=None):
     """Normalize noisy/clean targets with one labeled-context affine map."""
@@ -872,8 +887,8 @@ def _normalize_target_pair(y, y_clean, context_rows=None):
         return (y - mu) / std, (y_clean - mu) / std, mu, std
     return y - mu, y_clean - mu, mu, std
 
-def _add_entity_lookup_signal(y_raw, entity_lookup_signal, rng, meta,
-                              context_rows=None):
+
+def _add_entity_lookup_signal(y_raw, entity_lookup_signal, rng, meta, context_rows=None):
     """Add categorical/group-relative signal at a controlled variance ratio."""
     labeled_rows = _resolve_context_rows(len(y_raw), context_rows)
     entity_std = np.std(entity_lookup_signal[:labeled_rows])
@@ -884,14 +899,12 @@ def _add_entity_lookup_signal(y_raw, entity_lookup_signal, rng, meta,
     if y_std_orig < 1e-8:
         y_std_orig = 1.0
     target_ratio = rng.uniform(0.25, 0.55)
-    entity_scale = (
-        np.sqrt(target_ratio / max(1 - target_ratio, 1e-6))
-        * y_std_orig / entity_std
-    )
+    entity_scale = np.sqrt(target_ratio / max(1 - target_ratio, 1e-6)) * y_std_orig / entity_std
     y_with_effect = y_raw + entity_lookup_signal * entity_scale
-    meta['entity_lookup_signal_std'] = float(entity_std)
-    meta['entity_lookup_target_ratio'] = float(target_ratio)
+    meta["entity_lookup_signal_std"] = float(entity_std)
+    meta["entity_lookup_target_ratio"] = float(target_ratio)
     return np.where(np.isfinite(y_with_effect), y_with_effect, 0.0)
+
 
 def _scale_rich_target_component(extra, y_raw, rng, context_rows=None):
     """Scale a rich-target component using labeled-context variance only."""
@@ -901,11 +914,9 @@ def _scale_rich_target_component(extra, y_raw, rng, context_rows=None):
     if extra_std <= 1e-8 or y_std_orig <= 1e-8:
         return extra
     target_ratio = float(rng.uniform(0.3, 0.7))
-    extra_scale = (
-        np.sqrt(target_ratio / (1.0 - target_ratio))
-        * y_std_orig / extra_std
-    )
+    extra_scale = np.sqrt(target_ratio / (1.0 - target_ratio)) * y_std_orig / extra_std
     return extra * extra_scale
+
 
 def _apply_feature_dependent_tail_missingness(X, rng, context_rows=None):
     """Mask feature columns from an observed covariate's context-fitted tail."""
@@ -940,6 +951,7 @@ def _apply_feature_dependent_tail_missingness(X, rng, context_rows=None):
     # control flow, even though they may still be masked row-locally above.
     return bool(np.any(tail_rows[:labeled_rows]))
 
+
 def _resolve_context_rows(n_samples, context_rows):
     """Return the labeled-row budget used to calibrate synth-v6 complexity."""
     if context_rows is None:
@@ -948,8 +960,8 @@ def _resolve_context_rows(n_samples, context_rows):
         raise ValueError("context_rows must be at least 1")
     return max(1, min(int(context_rows), int(n_samples)))
 
-def _sample_context_safe_duplicate_indices(
-        n_samples, n_duplicates, rng, context_rows=None):
+
+def _sample_context_safe_duplicate_indices(n_samples, n_duplicates, rng, context_rows=None):
     """Sample duplicates without ever copying a query row into context.
 
     Context-to-query copies remain possible because repeated measurements can
@@ -962,13 +974,12 @@ def _sample_context_safe_duplicate_indices(
     # Preserve the released draw order and exact no-split behavior. Only
     # redraw pairs whose original direction would copy query into context.
     src_idx = rng.choice(n_samples, size=size, replace=True)
-    dst_idx = rng.choice(
-        n_samples, size=size, replace=False)
+    dst_idx = rng.choice(n_samples, size=size, replace=False)
     unsafe = (src_idx >= labeled_rows) & (dst_idx < labeled_rows)
     if np.any(unsafe):
-        src_idx[unsafe] = rng.integers(
-            0, labeled_rows, size=int(np.sum(unsafe)))
+        src_idx[unsafe] = rng.integers(0, labeled_rows, size=int(np.sum(unsafe)))
     return src_idx, dst_idx
+
 
 def _context_prefix(values, context_rows):
     """Return the labeled prefix used to fit episode-level transforms."""
@@ -976,10 +987,12 @@ def _context_prefix(values, context_rows):
     labeled_rows = _resolve_context_rows(len(values), context_rows)
     return values[:labeled_rows]
 
+
 def _context_mean_std(values, context_rows):
     """Fit location and scale without inspecting query targets."""
     reference = _context_prefix(values, context_rows)
     return _finite_mean_std(reference)
+
 
 def _signed_expm1_with_linear_tails(values, scale, limit=20.0):
     """Apply signed expm1 without allowing query-only tails to overflow."""
@@ -992,6 +1005,7 @@ def _signed_expm1_with_linear_tails(values, scale, limit=20.0):
         warped[above] += np.exp(limit) * (magnitude[above] - limit)
     return np.sign(values) * warped
 
+
 def _signed_power_with_linear_tails(values, power, limit=20.0):
     """Apply a signed power centrally and linearize extreme query tails."""
     values = np.asarray(values, dtype=np.float64)
@@ -1003,6 +1017,7 @@ def _signed_power_with_linear_tails(values, power, limit=20.0):
         slope = float(power) * float(limit) ** (float(power) - 1.0)
         warped[above] += slope * (magnitude[above] - limit)
     return np.sign(values) * warped
+
 
 def _exp_with_linear_tails(values, limit=20.0):
     """Exponentiate centrally while keeping extreme tails injective."""
@@ -1019,6 +1034,7 @@ def _exp_with_linear_tails(values, limit=20.0):
     warped[above] = upper_value * (1.0 + z[above] - limit)
     result[finite] = warped
     return result
+
 
 def _sigmoid_with_linear_tails(values, limit=8.0):
     """Apply a sigmoid centrally with monotone non-saturating tails."""
@@ -1039,8 +1055,8 @@ def _sigmoid_with_linear_tails(values, limit=8.0):
     result[finite] = warped
     return result
 
-def _apply_invertible_feature_correlation(
-        X, cols, rng, rho, context_rows=None):
+
+def _apply_invertible_feature_correlation(X, cols, rng, rho, context_rows=None):
     """Correlate columns with a full-rank coordinate transform.
 
     Unlike adding an unobserved random shared factor after y is generated, this
@@ -1059,30 +1075,24 @@ def _apply_invertible_feature_correlation(
     labeled_rows = _resolve_context_rows(len(group), context_rows)
     reference = group[:labeled_rows]
     missing = ~np.isfinite(group)
-    means = np.asarray([
-        np.mean(column[np.isfinite(column)])
-        if np.isfinite(column).any() else 0.0
-        for column in reference.T
-    ])
+    means = np.asarray(
+        [np.mean(column[np.isfinite(column)]) if np.isfinite(column).any() else 0.0 for column in reference.T]
+    )
     filled = np.where(missing, means[None, :], group)
-    scales = np.asarray([
-        np.std(column[np.isfinite(column)])
-        if np.isfinite(column).any() else 0.0
-        for column in reference.T
-    ])
+    scales = np.asarray(
+        [np.std(column[np.isfinite(column)]) if np.isfinite(column).any() else 0.0 for column in reference.T]
+    )
     scales = np.where(scales > 1e-8, scales, 1.0)
     standardized = (filled - means[None, :]) / scales[None, :]
 
     signs = rng.choice(np.asarray([-1.0, 1.0]), size=len(cols))
-    covariance = (
-        (1.0 - rho) * np.eye(len(cols), dtype=np.float64)
-        + rho * np.outer(signs, signs)
-    )
+    covariance = (1.0 - rho) * np.eye(len(cols), dtype=np.float64) + rho * np.outer(signs, signs)
     transform = np.linalg.cholesky(covariance)
     mixed = standardized @ transform.T
     mixed[missing] = np.nan
     X[:, cols] = mixed
     return transform, means, scales
+
 
 def _affine_stabilize_feature_column(values, context_rows=None):
     """Return a finite-range affine reparameterization, preserving NaNs.
@@ -1107,8 +1117,8 @@ def _affine_stabilize_feature_column(values, context_rows=None):
         result[finite] = values[finite] - mean
     return result
 
-def _finalize_feature_batch(
-        X_batch, max_abs=1e4, context_rows=None):
+
+def _finalize_feature_batch(X_batch, max_abs=1e4, context_rows=None):
     """Apply context-stable numeric safety to every generated family.
 
     Context-wide affine corrections fit only the labeled prefix. Remaining
@@ -1122,8 +1132,7 @@ def _finalize_feature_batch(
     X_out = np.asarray(X_batch, dtype=np.float64).copy()
     labeled_rows = _resolve_context_rows(X_out.shape[1], context_rows)
     if np.isinf(X_out[:, :labeled_rows]).any():
-        raise SyntheticDataFilterError(
-            'final synthetic context contains infinity')
+        raise SyntheticDataFilterError("final synthetic context contains infinity")
     affine_changes = []
     bounded_changes = []
     for batch_idx in range(X_out.shape[0]):
@@ -1132,18 +1141,12 @@ def _finalize_feature_batch(
             reference = col[:labeled_rows]
             finite_reference = reference[np.isfinite(reference)]
             affine_changed = False
-            if (
-                len(finite_reference)
-                and float(np.max(np.abs(finite_reference))) > max_abs
-            ):
-                col = _affine_stabilize_feature_column(
-                    col, context_rows=labeled_rows)
+            if len(finite_reference) and float(np.max(np.abs(finite_reference))) > max_abs:
+                col = _affine_stabilize_feature_column(col, context_rows=labeled_rows)
                 finite_reference = col[:labeled_rows]
-                finite_reference = finite_reference[
-                    np.isfinite(finite_reference)]
+                finite_reference = finite_reference[np.isfinite(finite_reference)]
                 if len(finite_reference):
-                    remaining_max = float(
-                        np.max(np.abs(finite_reference)))
+                    remaining_max = float(np.max(np.abs(finite_reference)))
                     if remaining_max > max_abs:
                         col *= max_abs / remaining_max
                 affine_changed = True
@@ -1153,12 +1156,10 @@ def _finalize_feature_batch(
             # target oracle is not treated as exact.
             bounded = col.copy()
             finite = np.isfinite(col)
-            bounded[finite] = np.clip(
-                col[finite], -max_abs, max_abs)
+            bounded[finite] = np.clip(col[finite], -max_abs, max_abs)
             bounded[np.isposinf(col)] = max_abs
             bounded[np.isneginf(col)] = -max_abs
-            bounded_changed = not np.array_equal(
-                col, bounded, equal_nan=True)
+            bounded_changed = not np.array_equal(col, bounded, equal_nan=True)
             if bounded_changed:
                 col = bounded
             if affine_changed or bounded_changed:
@@ -1181,23 +1182,25 @@ def _is_numerical_scoreability_error(error):
     recognize the narrow messages emitted for non-finite or numerically
     overflowing data; callers must propagate every other exception.
     """
-    if isinstance(error, (FloatingPointError, OverflowError,
-                          np.linalg.LinAlgError)):
+    if isinstance(error, (FloatingPointError, OverflowError, np.linalg.LinAlgError)):
         return True
     if not isinstance(error, ValueError):
         return False
     message = str(error).lower()
-    return re.search(
-        r'\b(?:nan|nans|inf|infs|infinite|infinity|overflow|numerical)\b'
-        r'|\bnon[-_ ]?finite\b|\bnot finite\b|\bvalue too large\b',
-        message,
-    ) is not None
+    return (
+        re.search(
+            r"\b(?:nan|nans|inf|infs|infinite|infinity|overflow|numerical)\b"
+            r"|\bnon[-_ ]?finite\b|\bnot finite\b|\bvalue too large\b",
+            message,
+        )
+        is not None
+    )
 
 
 def _check_learnability(
     X,
     y,
-    task_type='reg',
+    task_type="reg",
     *,
     cls_min_score=0.60,
     cls_margin=0.10,
@@ -1219,15 +1222,14 @@ def _check_learnability(
     n, f = X.shape
     if n < 20:
         return False
-    if (not np.isfinite(y).all() or np.isinf(X).any()
-            or (context_rows is None and _finite_std(y) <= 1e-8)):
+    if not np.isfinite(y).all() or np.isinf(X).any() or (context_rows is None and _finite_std(y) <= 1e-8):
         return False
 
     # Subsample large tables to keep ExtraTrees fast in prefetch workers.
     # 1000 rows is enough for a reliable OOB signal; fitting on 4096×384
     # is ~16x slower and causes CPU starvation with multiple DDP workers.
     max_rows = 1000
-    split_mode = task_type == 'reg' and context_rows is not None
+    split_mode = task_type == "reg" and context_rows is not None
     if split_mode:
         labeled_rows = _resolve_context_rows(n, context_rows)
         query_rows = n - labeled_rows
@@ -1235,10 +1237,8 @@ def _check_learnability(
             return False
         context_count = min(labeled_rows, max_rows)
         query_count = min(query_rows, max_rows)
-        context_idx = np.linspace(
-            0, labeled_rows - 1, context_count).round().astype(np.int64)
-        query_idx = labeled_rows + np.linspace(
-            0, query_rows - 1, query_count).round().astype(np.int64)
+        context_idx = np.linspace(0, labeled_rows - 1, context_count).round().astype(np.int64)
+        query_idx = labeled_rows + np.linspace(0, query_rows - 1, query_count).round().astype(np.int64)
         X_fit, y_fit = X[context_idx], y[context_idx]
         X_test, y_test = X[query_idx], y[query_idx]
         if _finite_std(y_fit) <= 1e-8 or _finite_std(y_test) <= 1e-8:
@@ -1251,18 +1251,14 @@ def _check_learnability(
 
     # Use a fast model with limited depth
     model_kwargs = {
-        'n_estimators': 15,
-        'max_depth': 6,
-        'random_state': 0,
-        'n_jobs': 1,
+        "n_estimators": 15,
+        "max_depth": 6,
+        "random_state": 0,
+        "n_jobs": 1,
     }
     if not split_mode:
         model_kwargs.update(bootstrap=True, oob_score=True)
-    model = (
-        ExtraTreesClassifier(**model_kwargs)
-        if task_type == 'cls'
-        else ExtraTreesRegressor(**model_kwargs)
-    )
+    model = ExtraTreesClassifier(**model_kwargs) if task_type == "cls" else ExtraTreesRegressor(**model_kwargs)
 
     # Replace NaN with 0 for sklearn
     X_clean = np.nan_to_num(X_fit, nan=0.0)
@@ -1272,10 +1268,7 @@ def _check_learnability(
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             model.fit(X_clean, y_fit_clean)
-            score = (
-                model.score(np.nan_to_num(X_test, nan=0.0), y_test)
-                if split_mode else float(model.oob_score_)
-            )
+            score = model.score(np.nan_to_num(X_test, nan=0.0), y_test) if split_mode else float(model.oob_score_)
     except Exception as error:
         if _is_numerical_scoreability_error(error):
             return False
@@ -1283,7 +1276,7 @@ def _check_learnability(
     score = float(score)
     if not np.isfinite(score):
         return False
-    if task_type == 'cls':
+    if task_type == "cls":
         n_classes = len(np.unique(y_fit_clean))
         return score > max(1.0 / max(n_classes, 1) + cls_margin, cls_min_score)
     return score > reg_min_score
@@ -1292,7 +1285,7 @@ def _check_learnability(
 def _check_icl_scaling(
     X,
     y,
-    task_type='reg',
+    task_type="reg",
     *,
     reg_min_score=0.10,
     min_improvement=0.03,
@@ -1310,13 +1303,12 @@ def _check_icl_scaling(
     n, f = X.shape
     if n < 60:
         return False
-    if (not np.isfinite(y).all() or np.isinf(X).any()
-            or (context_rows is None and _finite_std(y) <= 1e-8)):
+    if not np.isfinite(y).all() or np.isinf(X).any() or (context_rows is None and _finite_std(y) <= 1e-8):
         return False
 
     max_rows = 1000
     rng = np.random.default_rng(1)
-    split_mode = task_type == 'reg' and context_rows is not None
+    split_mode = task_type == "reg" and context_rows is not None
     if split_mode:
         labeled_rows = _resolve_context_rows(n, context_rows)
         query_rows = n - labeled_rows
@@ -1328,11 +1320,13 @@ def _check_icl_scaling(
             query_count = min(query_rows, 20)
         context_idx = (
             rng.choice(labeled_rows, size=context_count, replace=False)
-            if labeled_rows > context_count else np.arange(labeled_rows)
+            if labeled_rows > context_count
+            else np.arange(labeled_rows)
         )
         query_idx = labeled_rows + (
             rng.choice(query_rows, size=query_count, replace=False)
-            if query_rows > query_count else np.arange(query_rows)
+            if query_rows > query_count
+            else np.arange(query_rows)
         )
         X_pool = np.nan_to_num(X[context_idx], nan=0.0)
         y_pool = y[context_idx]
@@ -1365,8 +1359,7 @@ def _check_icl_scaling(
     max_ctx = n_pool
     if max_ctx <= min_ctx:
         return False
-    context_sizes = np.unique(
-        np.geomspace(min_ctx, max_ctx, n_context_sizes).astype(int))
+    context_sizes = np.unique(np.geomspace(min_ctx, max_ctx, n_context_sizes).astype(int))
     if len(context_sizes) < 2:
         return False
 
@@ -1378,13 +1371,8 @@ def _check_icl_scaling(
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                model_cls = (
-                    ExtraTreesClassifier
-                    if task_type == 'cls' else ExtraTreesRegressor
-                )
-                model = model_cls(
-                    n_estimators=10, max_depth=5,
-                    random_state=0, n_jobs=1)
+                model_cls = ExtraTreesClassifier if task_type == "cls" else ExtraTreesRegressor
+                model = model_cls(n_estimators=10, max_depth=5, random_state=0, n_jobs=1)
                 model.fit(X_train, y_train)
                 score = model.score(X_test, y_test)
         except Exception as error:
@@ -1398,7 +1386,7 @@ def _check_icl_scaling(
         return False
     final_score = scores[-1]
     improvement = scores[-1] - scores[0]
-    if task_type == 'cls':
+    if task_type == "cls":
         chance = 1.0 / max(len(np.unique(y)), 2)
         return final_score > chance + 0.05 and improvement > min_improvement
     return final_score > reg_min_score and improvement > min_improvement
@@ -1420,10 +1408,12 @@ def _get_icl_filter_model(model_path):
         return _icl_filter_model
 
     import torch
+
     torch.set_num_threads(2)
     torch.set_num_interop_threads(1)
 
     from synthefy_nori.utils.loading import load_model
+
     model = load_model(model_path, mask_prediction=True)
     model.eval()
     for p in model.parameters():
@@ -1454,7 +1444,7 @@ def _check_learnability_icl(
     # task_type contract.
     if model_path is None:
         model_path = task_type
-        task_type = 'reg'
+        task_type = "reg"
 
     X = np.asarray(X)
     y = np.asarray(y)
@@ -1463,8 +1453,7 @@ def _check_learnability_icl(
     n, f = X.shape
     if n < 20:
         return False
-    if (not np.isfinite(y).all() or np.isinf(X).any()
-            or (context_rows is None and _finite_std(y) <= 1e-8)):
+    if not np.isfinite(y).all() or np.isinf(X).any() or (context_rows is None and _finite_std(y) <= 1e-8):
         return False
 
     model = _get_icl_filter_model(model_path)
@@ -1473,7 +1462,7 @@ def _check_learnability_icl(
         feat_idx = rng.choice(f, size=max_features, replace=False)
         X = X[:, feat_idx]
 
-    split_mode = task_type == 'reg' and context_rows is not None
+    split_mode = task_type == "reg" and context_rows is not None
     if split_mode:
         labeled_rows = _resolve_context_rows(n, context_rows)
         query_rows = n - labeled_rows
@@ -1482,20 +1471,15 @@ def _check_learnability_icl(
         n_ctx = min(max_context, labeled_rows)
         n_qry = min(max_query, query_rows)
         context_idx = (
-            rng.choice(labeled_rows, size=n_ctx, replace=False)
-            if labeled_rows > n_ctx else np.arange(labeled_rows)
+            rng.choice(labeled_rows, size=n_ctx, replace=False) if labeled_rows > n_ctx else np.arange(labeled_rows)
         )
         query_idx = labeled_rows + (
-            rng.choice(query_rows, size=n_qry, replace=False)
-            if query_rows > n_qry else np.arange(query_rows)
+            rng.choice(query_rows, size=n_qry, replace=False) if query_rows > n_qry else np.arange(query_rows)
         )
         idx = np.concatenate([context_idx, query_idx])
     else:
         total = min(n, max_context + max_query)
-        idx = (
-            rng.choice(n, size=total, replace=False)
-            if n > total else np.arange(n)
-        )
+        idx = rng.choice(n, size=total, replace=False) if n > total else np.arange(n)
         n_ctx = min(max_context, total - 10)
         n_qry = total - n_ctx
 
@@ -1503,20 +1487,18 @@ def _check_learnability_icl(
     y_sub = y[idx].copy()
     X_sub = np.nan_to_num(X_sub, nan=0.0).astype(np.float32)
 
-    if task_type == 'cls':
+    if task_type == "cls":
         classes = np.unique(y_sub[np.isfinite(y_sub)])
         n_classes = len(classes)
         if n_classes < 2:
             return False
         label_map = {c: i for i, c in enumerate(classes)}
-        y_sub = np.array(
-            [label_map.get(v, 0) for v in y_sub], dtype=np.float32)
+        y_sub = np.array([label_map.get(v, 0) for v in y_sub], dtype=np.float32)
         n_classes = min(n_classes, 10)
     else:
         y_sub = y_sub.astype(np.float32)
         ctx_mean, ctx_std = _finite_mean_std(y_sub[:n_ctx])
-        if (not np.isfinite(ctx_mean) or not np.isfinite(ctx_std)
-                or ctx_std < 1e-8):
+        if not np.isfinite(ctx_mean) or not np.isfinite(ctx_std) or ctx_std < 1e-8:
             return False
         y_sub = (y_sub - ctx_mean) / ctx_std
         n_classes = None
@@ -1525,20 +1507,23 @@ def _check_learnability_icl(
     y_t = torch.from_numpy(y_sub).unsqueeze(0)
     with torch.no_grad():
         out = model(
-            x_t, y_t, eval_pos=n_ctx, task_type=task_type,
-            y_type='cls' if task_type == 'cls' else 'reg',
+            x_t,
+            y_t,
+            eval_pos=n_ctx,
+            task_type=task_type,
+            y_type="cls" if task_type == "cls" else "reg",
         )
 
-    if task_type == 'cls':
-        logits = out['cls_output'][:, :n_qry, :n_classes]
+    if task_type == "cls":
+        logits = out["cls_output"][:, :n_qry, :n_classes]
         preds = logits.argmax(dim=-1).squeeze(0).numpy()
-        true = y_sub[n_ctx:n_ctx + n_qry]
+        true = y_sub[n_ctx : n_ctx + n_qry]
         acc = np.mean(preds == true)
         chance = 1.0 / n_classes
         return np.isfinite(acc) and acc > chance + (cls_min_auc - 0.5)
 
-    preds = out['reg_output'][:, :n_qry, 0].squeeze(0).numpy()
-    true = y_sub[n_ctx:n_ctx + n_qry]
+    preds = out["reg_output"][:, :n_qry, 0].squeeze(0).numpy()
+    true = y_sub[n_ctx : n_ctx + n_qry]
     if not np.isfinite(preds).all() or not np.isfinite(true).all():
         return False
     ss_res = np.sum((true - preds) ** 2)
@@ -1557,22 +1542,18 @@ def _extract_quality_task_rules(quality_rules, task_type):
     """
     if not quality_rules or not isinstance(quality_rules, dict):
         return None
-    task_map = quality_rules.get('task_rules', quality_rules)
-    if task_type == 'cls':
-        return task_map.get('classification') or task_map.get('cls')
-    return task_map.get('regression') or task_map.get('reg')
+    task_map = quality_rules.get("task_rules", quality_rules)
+    if task_type == "cls":
+        return task_map.get("classification") or task_map.get("cls")
+    return task_map.get("regression") or task_map.get("reg")
 
 
-def _compute_health_stats_fast(
-        X, y, task_type='reg', context_rows=None):
+def _compute_health_stats_fast(X, y, task_type="reg", context_rows=None):
     """Compute fast, training-time dataset health stats for filtering."""
     X = np.asarray(X)
     y = np.asarray(y)
     n_samples, n_features = X.shape
-    labeled_rows = (
-        _resolve_context_rows(n_samples, context_rows)
-        if task_type == 'reg' else n_samples
-    )
+    labeled_rows = _resolve_context_rows(n_samples, context_rows) if task_type == "reg" else n_samples
     X_reference = X[:labeled_rows]
     y_reference = y[:labeled_rows]
 
@@ -1586,58 +1567,56 @@ def _compute_health_stats_fast(
         const_frac = float(1.0 - (nonconst / max(n_features, 1)))
 
     stats = {
-        'nan_frac': nan_frac,
-        'const_feature_frac': const_frac,
-        'nonconstant_features': nonconst,
-        'n_samples': int(n_samples),
-        'n_features': int(n_features),
+        "nan_frac": nan_frac,
+        "const_feature_frac": const_frac,
+        "nonconstant_features": nonconst,
+        "n_samples": int(n_samples),
+        "n_features": int(n_features),
     }
 
-    if task_type == 'cls':
+    if task_type == "cls":
         y_int = y_reference.astype(np.int64, copy=False)
         vals, counts = np.unique(y_int, return_counts=True)
-        stats['y_unique'] = int(len(vals))
-        stats['minority_frac'] = float(counts.min() / max(len(y_int), 1)) if len(counts) > 0 else 0.0
+        stats["y_unique"] = int(len(vals))
+        stats["minority_frac"] = float(counts.min() / max(len(y_int), 1)) if len(counts) > 0 else 0.0
     else:
         y_f = y_reference.astype(np.float64, copy=False)
         y_f = np.nan_to_num(y_f, nan=0.0, posinf=0.0, neginf=0.0)
-        stats['y_std'] = _finite_std(y_f)
+        stats["y_std"] = _finite_std(y_f)
 
     return stats
 
 
-def _passes_quality_rules(
-        X, y, task_type, quality_rules, context_rows=None):
+def _passes_quality_rules(X, y, task_type, quality_rules, context_rows=None):
     """Return True if dataset passes mined quality rules."""
     task_rules = _extract_quality_task_rules(quality_rules, task_type)
     if task_rules is None:
         return True
 
-    stats = _compute_health_stats_fast(
-        X, y, task_type, context_rows=context_rows)
+    stats = _compute_health_stats_fast(X, y, task_type, context_rows=context_rows)
 
-    max_nan_frac = task_rules.get('max_nan_frac')
-    if max_nan_frac is not None and stats['nan_frac'] > float(max_nan_frac):
+    max_nan_frac = task_rules.get("max_nan_frac")
+    if max_nan_frac is not None and stats["nan_frac"] > float(max_nan_frac):
         return False
 
-    max_const_feature_frac = task_rules.get('max_const_feature_frac')
-    if max_const_feature_frac is not None and stats['const_feature_frac'] > float(max_const_feature_frac):
+    max_const_feature_frac = task_rules.get("max_const_feature_frac")
+    if max_const_feature_frac is not None and stats["const_feature_frac"] > float(max_const_feature_frac):
         return False
 
-    min_nonconstant_features = task_rules.get('min_nonconstant_features')
-    if min_nonconstant_features is not None and stats['nonconstant_features'] < int(min_nonconstant_features):
+    min_nonconstant_features = task_rules.get("min_nonconstant_features")
+    if min_nonconstant_features is not None and stats["nonconstant_features"] < int(min_nonconstant_features):
         return False
 
-    if task_type == 'cls':
-        min_y_unique = task_rules.get('min_y_unique')
-        if min_y_unique is not None and stats['y_unique'] < int(min_y_unique):
+    if task_type == "cls":
+        min_y_unique = task_rules.get("min_y_unique")
+        if min_y_unique is not None and stats["y_unique"] < int(min_y_unique):
             return False
-        min_minority_frac = task_rules.get('min_minority_frac')
-        if min_minority_frac is not None and stats['minority_frac'] < float(min_minority_frac):
+        min_minority_frac = task_rules.get("min_minority_frac")
+        if min_minority_frac is not None and stats["minority_frac"] < float(min_minority_frac):
             return False
     else:
-        min_y_std = task_rules.get('min_y_std')
-        if min_y_std is not None and stats['y_std'] < float(min_y_std):
+        min_y_std = task_rules.get("min_y_std")
+        if min_y_std is not None and stats["y_std"] < float(min_y_std):
             return False
 
     return True
@@ -1647,8 +1626,7 @@ class SyntheticDataFilterError(RuntimeError):
     """Raised when no valid episode is produced within the retry budget."""
 
 
-def _passes_basic_episode_health(
-        X, y, task_type='reg', context_rows=None):
+def _passes_basic_episode_health(X, y, task_type="reg", context_rows=None):
     """Family-independent invariants required for any training episode."""
     X = np.asarray(X)
     y = np.asarray(y)
@@ -1661,53 +1639,57 @@ def _passes_basic_episode_health(
     # NaN is a supported missing-value representation; infinity is not.
     if np.isinf(X).any():
         return False
-    labeled_rows = (
-        _resolve_context_rows(X.shape[0], context_rows)
-        if task_type == 'reg' else X.shape[0]
-    )
+    labeled_rows = _resolve_context_rows(X.shape[0], context_rows) if task_type == "reg" else X.shape[0]
     X_reference = X[:labeled_rows]
     y_reference = y[:labeled_rows]
     if labeled_rows == 1:
         return bool(np.isfinite(X_reference).any())
-    if task_type == 'reg' and _finite_std(y_reference) <= 1e-8:
+    if task_type == "reg" and _finite_std(y_reference) <= 1e-8:
         return False
-    if task_type == 'cls' and len(np.unique(y_reference)) < 2:
+    if task_type == "cls" and len(np.unique(y_reference)) < 2:
         return False
     return bool(np.any(_finite_column_variation(X_reference)))
 
 
 def _passes_requested_dataset_filters(
-        data, *, task_type='reg', quality_rules=None, learnability_filter=False,
-        learnability_filter_reg_min_score=0.10, icl_filter_model=None,
-        icl_filter_reg_min_r2=0.05, icl_scaling_filter=False,
-        icl_scaling_min_improvement=0.03, context_rows=None):
+    data,
+    *,
+    task_type="reg",
+    quality_rules=None,
+    learnability_filter=False,
+    learnability_filter_reg_min_score=0.10,
+    icl_filter_model=None,
+    icl_filter_reg_min_r2=0.05,
+    icl_scaling_filter=False,
+    icl_scaling_min_improvement=0.03,
+    context_rows=None,
+):
     """Apply health, quality, and optional learnability gates to final X/y."""
-    X, y = data['X'], data['y']
-    effective_context_rows = context_rows if task_type == 'reg' else None
-    if not _passes_basic_episode_health(
-            X, y, task_type, context_rows=effective_context_rows):
+    X, y = data["X"], data["y"]
+    effective_context_rows = context_rows if task_type == "reg" else None
+    if not _passes_basic_episode_health(X, y, task_type, context_rows=effective_context_rows):
         return False
     if quality_rules is not None and not _passes_quality_rules(
-            X, y, task_type, quality_rules,
-            context_rows=effective_context_rows):
+        X, y, task_type, quality_rules, context_rows=effective_context_rows
+    ):
         return False
 
     if icl_filter_model is not None:
         passed = _check_learnability_icl(
-            X, y, task_type, icl_filter_model,
-            reg_min_r2=icl_filter_reg_min_r2,
-            context_rows=effective_context_rows)
+            X, y, task_type, icl_filter_model, reg_min_r2=icl_filter_reg_min_r2, context_rows=effective_context_rows
+        )
     elif learnability_filter:
         passed = _check_learnability(
-            X, y, task_type,
-            reg_min_score=learnability_filter_reg_min_score,
-            context_rows=effective_context_rows)
+            X, y, task_type, reg_min_score=learnability_filter_reg_min_score, context_rows=effective_context_rows
+        )
     else:
         passed = True
 
     if passed and icl_scaling_filter:
         passed = _check_icl_scaling(
-            X, y, task_type,
+            X,
+            y,
+            task_type,
             reg_min_score=learnability_filter_reg_min_score,
             min_improvement=icl_scaling_min_improvement,
             context_rows=effective_context_rows,
@@ -1716,32 +1698,38 @@ def _passes_requested_dataset_filters(
 
 
 def _generate_filtered_episode(
-        generate_once, *, max_retries=3, quality_rules=None,
-        task_type='reg',
-        learnability_filter=False, learnability_filter_reg_min_score=0.10,
-        icl_filter_model=None, icl_filter_reg_min_r2=0.05,
-        icl_scaling_filter=False, icl_scaling_min_improvement=0.03,
-        context_rows=None):
+    generate_once,
+    *,
+    max_retries=3,
+    quality_rules=None,
+    task_type="reg",
+    learnability_filter=False,
+    learnability_filter_reg_min_score=0.10,
+    icl_filter_model=None,
+    icl_filter_reg_min_r2=0.05,
+    icl_scaling_filter=False,
+    icl_scaling_min_improvement=0.03,
+    context_rows=None,
+):
     """Regenerate until the actual episode passes every requested gate."""
     attempts = max(0, int(max_retries)) + 1
     for _attempt in range(attempts):
         data = generate_once()
         if _passes_requested_dataset_filters(
-                data,
-                task_type=task_type,
-                quality_rules=quality_rules,
-                learnability_filter=learnability_filter,
-                learnability_filter_reg_min_score=(
-                    learnability_filter_reg_min_score),
-                icl_filter_model=icl_filter_model,
-                icl_filter_reg_min_r2=icl_filter_reg_min_r2,
-                icl_scaling_filter=icl_scaling_filter,
-                icl_scaling_min_improvement=icl_scaling_min_improvement,
-                context_rows=context_rows):
-            data['filtered'] = False
+            data,
+            task_type=task_type,
+            quality_rules=quality_rules,
+            learnability_filter=learnability_filter,
+            learnability_filter_reg_min_score=(learnability_filter_reg_min_score),
+            icl_filter_model=icl_filter_model,
+            icl_filter_reg_min_r2=icl_filter_reg_min_r2,
+            icl_scaling_filter=icl_scaling_filter,
+            icl_scaling_min_improvement=icl_scaling_min_improvement,
+            context_rows=context_rows,
+        ):
+            data["filtered"] = False
             return data
-    raise SyntheticDataFilterError(
-        f"synthetic episode failed all filters after {attempts} attempts")
+    raise SyntheticDataFilterError(f"synthetic episode failed all filters after {attempts} attempts")
 
 
 def _apply_feature_importances(X, rng, mild=False):
@@ -1770,7 +1758,7 @@ def _apply_feature_importances(X, rng, mild=False):
     weights = np.abs(weights)
     # Floor: no feature gets fully zeroed (prevents constant-feature artifacts)
     weights = np.maximum(weights, 0.05 * weights.max())
-    weights /= (weights.sum() + 1e-8)
+    weights /= weights.sum() + 1e-8
     weights *= n_features  # normalize so mean weight = 1
 
     # Shuffle so importance isn't correlated with column order
@@ -1873,12 +1861,9 @@ def _create_repeated_entity_categorical(X, col, rng):
     n_groups = max(2, min(32, int(np.sqrt(cardinality))))
     entity_group = rng.integers(0, n_groups, size=cardinality)
     group_effect = rng.standard_normal(n_groups)
-    entity_effect = (
-        0.75 * group_effect[entity_group]
-        + 0.35 * rng.standard_normal(cardinality)
-    )
+    entity_effect = 0.75 * group_effect[entity_group] + 0.35 * rng.standard_normal(cardinality)
     entity_effect = entity_effect - entity_effect.mean()
-    entity_effect /= (np.std(entity_effect) + 1e-8)
+    entity_effect /= np.std(entity_effect) + 1e-8
     row_effect = entity_effect[entity_ids]
     counts = np.bincount(entity_ids, minlength=cardinality)
     observed = counts[counts > 0]
@@ -1892,21 +1877,18 @@ def _create_repeated_entity_categorical(X, col, rng):
 
     X[:, col] = entity_ids.astype(np.float64)
     entity_meta = {
-        'cardinality': int(cardinality),
-        'observed_entities': int(len(observed)),
-        'repeated_entity_fraction': float(
-            np.mean(observed >= 2) if len(observed) > 0 else 0.0
-        ),
-        'max_entity_fraction': float(counts.max() / max(n, 1)),
-        'mean_count_per_observed_entity': float(
-            observed.mean() if len(observed) > 0 else 0.0
-        ),
+        "cardinality": int(cardinality),
+        "observed_entities": int(len(observed)),
+        "repeated_entity_fraction": float(np.mean(observed >= 2) if len(observed) > 0 else 0.0),
+        "max_entity_fraction": float(counts.max() / max(n, 1)),
+        "mean_count_per_observed_entity": float(observed.mean() if len(observed) > 0 else 0.0),
     }
     return row_effect.astype(np.float64), entity_meta
 
 
-def _create_nominal_categorical(X, col, n_samples, rng, cardinality,
-                                task_type, n_features, discrete_cols, cat_cols_iter):
+def _create_nominal_categorical(
+    X, col, n_samples, rng, cardinality, task_type, n_features, discrete_cols, cat_cols_iter
+):
     """Create nominal (non-ordinal) categorical features with random effects.
 
     Two types:
@@ -1942,7 +1924,7 @@ def _create_nominal_categorical(X, col, n_samples, rng, cardinality,
     # from ordinal categoricals derived from continuous values)
     cat_effects = rng.standard_normal(cardinality)
     cat_effects -= cat_effects.mean()
-    cat_effects /= (np.std(cat_effects) + 1e-8)
+    cat_effects /= np.std(cat_effects) + 1e-8
     row_effect = cat_effects[cat_ids].astype(np.float64)
 
     X[:, col] = cat_ids.astype(np.float64)
@@ -1950,8 +1932,7 @@ def _create_nominal_categorical(X, col, n_samples, rng, cardinality,
     if use_crossed:
         # --- Crossed nominal: two columns interact ---
         # Find a second column that's not already categorified
-        available = [c for c in range(n_features)
-                     if c != col and c not in discrete_cols and c not in cat_cols_iter]
+        available = [c for c in range(n_features) if c != col and c not in discrete_cols and c not in cat_cols_iter]
         if not available:
             return row_effect, 1
 
@@ -1966,7 +1947,7 @@ def _create_nominal_categorical(X, col, n_samples, rng, cardinality,
         # Second column's main effect
         cat_effects2 = rng.standard_normal(K2)
         cat_effects2 -= cat_effects2.mean()
-        cat_effects2 /= (np.std(cat_effects2) + 1e-8)
+        cat_effects2 /= np.std(cat_effects2) + 1e-8
 
         # Sparse interaction: only ~30% of (K1 × K2) cells are nonzero
         interaction = np.zeros((cardinality, K2))
@@ -2003,7 +1984,7 @@ def _apply_kumaraswamy_warping(X, col, rng):
     v_scaled = (v - vmin) / (vmax - vmin)
     v_scaled = np.clip(v_scaled, 1e-8, 1 - 1e-8)
 
-    X[:, col] = 1 - (1 - v_scaled ** a) ** b
+    X[:, col] = 1 - (1 - v_scaled**a) ** b
 
 
 def _inject_heavy_tails(X, rng, causal_cols=None, exclude_cols=None):
@@ -2033,20 +2014,20 @@ def _inject_heavy_tails(X, rng, causal_cols=None, exclude_cols=None):
         causal_set = set(causal_cols)
         non_causal = [c for c in eligible_features if c not in causal_set]
         causal_elig = [c for c in eligible_features if c in causal_set]
-        n_from_non_causal = min(len(non_causal),
-                                max(1, int(n_cols_affected * 0.8)))
-        n_from_causal = min(len(causal_elig),
-                            n_cols_affected - n_from_non_causal)
-        affected_cols = np.concatenate([
-            rng.choice(non_causal, size=n_from_non_causal, replace=False)
-            if non_causal else np.array([], dtype=int),
-            rng.choice(causal_elig, size=n_from_causal, replace=False)
-            if causal_elig and n_from_causal > 0 else np.array([], dtype=int),
-        ]).astype(int)
+        n_from_non_causal = min(len(non_causal), max(1, int(n_cols_affected * 0.8)))
+        n_from_causal = min(len(causal_elig), n_cols_affected - n_from_non_causal)
+        affected_cols = np.concatenate(
+            [
+                rng.choice(non_causal, size=n_from_non_causal, replace=False)
+                if non_causal
+                else np.array([], dtype=int),
+                rng.choice(causal_elig, size=n_from_causal, replace=False)
+                if causal_elig and n_from_causal > 0
+                else np.array([], dtype=int),
+            ]
+        ).astype(int)
     else:
-        affected_cols = rng.choice(eligible_features,
-                                   size=min(n_cols_affected, len(eligible_features)),
-                                   replace=False)
+        affected_cols = rng.choice(eligible_features, size=min(n_cols_affected, len(eligible_features)), replace=False)
     for col in affected_cols:
         col_std = np.std(X[:, col])
         if col_std < 1e-8:
@@ -2056,18 +2037,17 @@ def _inject_heavy_tails(X, rng, causal_cols=None, exclude_cols=None):
         if rng.random() < 0.5:
             # Spike+slab mixture: produces realistic high kurtosis
             # Real kurtosis ~82 often comes from zero-inflation + rare extremes
-            p_zero = rng.uniform(0.6, 0.95)   # big spike at mode
-            p_out = rng.uniform(0.005, 0.03)   # rare extreme outliers
+            p_zero = rng.uniform(0.6, 0.95)  # big spike at mode
+            p_out = rng.uniform(0.005, 0.03)  # rare extreme outliers
 
             mask_zero = rng.random(n_samples) < p_zero
             X[mask_zero, col] = 0.0
 
             mask_out = (~mask_zero) & (rng.random(n_samples) < p_out)
             if np.any(mask_out):
-                df = rng.uniform(1.5, 3.0)     # heavier tails than original
-                amp = rng.uniform(8.0, 30.0)   # bigger amplification
-                X[mask_out, col] = mu + amp * col_std * rng.standard_t(
-                    df, size=int(mask_out.sum()))
+                df = rng.uniform(1.5, 3.0)  # heavier tails than original
+                amp = rng.uniform(8.0, 30.0)  # bigger amplification
+                X[mask_out, col] = mu + amp * col_std * rng.standard_t(df, size=int(mask_out.sum()))
         else:
             # Original: Student-t outlier injection
             outlier_frac = rng.uniform(0.01, 0.05)
@@ -2086,9 +2066,7 @@ def _inject_heavy_tails(X, rng, causal_cols=None, exclude_cols=None):
         # Only corrupt eligible (continuous) columns
         corrupt_pool = eligible_features if eligible_features else list(range(n_features))
         n_cols_corrupt = max(1, int(len(corrupt_pool) * rng.uniform(0.2, 0.6)))
-        corrupt_cols = rng.choice(corrupt_pool,
-                                  size=min(n_cols_corrupt, len(corrupt_pool)),
-                                  replace=False)
+        corrupt_cols = rng.choice(corrupt_pool, size=min(n_cols_corrupt, len(corrupt_pool)), replace=False)
         for col in corrupt_cols:
             col_std = np.std(X[:, col])
             if col_std < 1e-8:
@@ -2099,9 +2077,7 @@ def _inject_heavy_tails(X, rng, causal_cols=None, exclude_cols=None):
     return X
 
 
-def _add_latent_bayes_error(
-        X, y_raw, n_features, rng, task_type='reg', *,
-        protected_cols=None, metadata=None):
+def _add_latent_bayes_error(X, y_raw, n_features, rng, task_type="reg", *, protected_cols=None, metadata=None):
     """Add latent dimensions and hard negatives to create realistic Bayes error.
 
     Three mechanisms:
@@ -2111,9 +2087,7 @@ def _add_latent_bayes_error(
     """
     del task_type
     n_samples = X.shape[0]
-    protected_cols = set() if protected_cols is None else {
-        int(col) for col in protected_cols
-    }
+    protected_cols = set() if protected_cols is None else {int(col) for col in protected_cols}
 
     # 1. Latent influence: generate hidden features that affect y but aren't in X
     n_latent = max(1, int(n_features * rng.uniform(0.05, 0.2)))
@@ -2129,24 +2103,14 @@ def _add_latent_bayes_error(
         # Prefer causal sources: a hard negative should resemble signal, while
         # its destination must never destroy a column that the target uses.
         source_pool = sorted(protected_cols) or list(range(n_features))
-        source_pool = [
-            col for col in source_pool
-            if 0 <= col < n_features and np.isfinite(X[:, col]).sum() >= 2
-        ]
+        source_pool = [col for col in source_pool if 0 <= col < n_features and np.isfinite(X[:, col]).sum() >= 2]
         n_sources = min(n_hard, len(source_pool))
         src_cols = (
-            rng.choice(source_pool, size=n_sources, replace=False)
-            if n_sources else np.asarray([], dtype=np.int64)
+            rng.choice(source_pool, size=n_sources, replace=False) if n_sources else np.asarray([], dtype=np.int64)
         )
-        available = [
-            col for col in range(n_features)
-            if col not in protected_cols and col not in src_cols
-        ]
+        available = [col for col in range(n_features) if col not in protected_cols and col not in src_cols]
         n_pairs = min(len(src_cols), len(available))
-        tgt_cols = (
-            rng.choice(available, size=n_pairs, replace=False)
-            if n_pairs else np.asarray([], dtype=np.int64)
-        )
+        tgt_cols = rng.choice(available, size=n_pairs, replace=False) if n_pairs else np.asarray([], dtype=np.int64)
         modified = []
         modified_sources = []
         for src, tgt in zip(src_cols, tgt_cols):
@@ -2163,16 +2127,14 @@ def _add_latent_bayes_error(
                 continue
             source_filled = np.where(finite, src_values, src_median)
             noise_level = rng.uniform(0.5, 2.0)
-            hard_negative = source_filled + rng.normal(
-                0.0, col_std * noise_level, n_samples)
+            hard_negative = source_filled + rng.normal(0.0, col_std * noise_level, n_samples)
             missing_target = np.isnan(X[:, tgt])
             X[:, tgt] = np.where(missing_target, np.nan, hard_negative)
             modified.append(int(tgt))
             modified_sources.append(int(src))
         if metadata is not None and modified:
-            metadata.setdefault('hard_negative_cols', []).extend(modified)
-            metadata.setdefault('hard_negative_source_cols', []).extend(
-                modified_sources)
+            metadata.setdefault("hard_negative_cols", []).extend(modified)
+            metadata.setdefault("hard_negative_source_cols", []).extend(modified_sources)
 
     return X, y_raw
 
@@ -2227,8 +2189,7 @@ def _probabilistic_label(y_raw, X, n_classes, rng):
         exp_logits = np.exp(logits)
         probs = exp_logits / (exp_logits.sum(axis=1, keepdims=True) + 1e-8)
         # Sample from distribution
-        y = np.array([rng.choice(n_classes, p=p) for p in probs],
-                     dtype=np.float32)
+        y = np.array([rng.choice(n_classes, p=p) for p in probs], dtype=np.float32)
 
     elif strategy == 1:
         # --- Random tree labeler ---
@@ -2237,7 +2198,7 @@ def _probabilistic_label(y_raw, X, n_classes, rng):
         split_cols = rng.choice(n_features, size=n_split_feats, replace=False)
         depth = int(rng.integers(2, 5))
         # Build random splits: at each level, pick a feature and threshold
-        n_leaves = 2 ** depth
+        n_leaves = 2**depth
         leaf_labels = rng.integers(0, n_classes, size=n_leaves).astype(np.float32)
         # Assign each sample to a leaf via recursive splitting
         leaf_idx = np.zeros(n_samples, dtype=np.int64)
@@ -2270,8 +2231,7 @@ def _probabilistic_label(y_raw, X, n_classes, rng):
         # Random class centers
         centers = rng.standard_normal((n_classes, n_dims)) * 1.5
         # Compute distances and assign
-        dists = np.sum((X_sub[:, None, :] - centers[None, :, :]) ** 2,
-                       axis=2)  # [n_samples, n_classes]
+        dists = np.sum((X_sub[:, None, :] - centers[None, :, :]) ** 2, axis=2)  # [n_samples, n_classes]
         y = dists.argmin(axis=1).astype(np.float32)
 
     else:
@@ -2287,8 +2247,7 @@ def _probabilistic_label(y_raw, X, n_classes, rng):
             if vmax - vmin < 1e-8:
                 y = rng.integers(0, n_classes, size=n_samples).astype(np.float32)
             else:
-                thresholds = np.sort(rng.uniform(vmin, vmax,
-                                                 size=n_classes - 1))
+                thresholds = np.sort(rng.uniform(vmin, vmax, size=n_classes - 1))
                 region = np.digitize(col_vals, thresholds)
                 # Random permutation of region-to-class mapping
                 perm = rng.permutation(n_classes)
@@ -2352,13 +2311,20 @@ def _apply_heteroskedastic_label_noise(y, X, n_classes, rng):
     return y
 
 
-def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
-                               reg_dense=False, reg_deterministic_prob=0.20,
-                               pareto_importance_prob=0.0,
-                               latent_factor_prob=0.0,
-                               X_scm=None, X_scm_target=None,
-                               preserve_target_features=False,
-                               context_rows=None):
+def _generate_regression_prior(
+    n_samples,
+    n_features,
+    rng,
+    reg_denoise=False,
+    reg_dense=False,
+    reg_deterministic_prob=0.20,
+    pareto_importance_prob=0.0,
+    latent_factor_prob=0.0,
+    X_scm=None,
+    X_scm_target=None,
+    preserve_target_features=False,
+    context_rows=None,
+):
     """Generate regression dataset matching common real-world patterns.
 
     Covers regimes the SCM generator under-represents: real regression is
@@ -2385,9 +2351,9 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
     use_scm_features = X_scm is not None
     labeled_rows = _resolve_context_rows(n_samples, context_rows)
     prior_meta = {
-        'generator_family': 'regression_prior',
-        'use_scm_features': bool(use_scm_features),
-        'context_rows': labeled_rows,
+        "generator_family": "regression_prior",
+        "use_scm_features": bool(use_scm_features),
+        "context_rows": labeled_rows,
     }
     if use_scm_features:
         # Hybrid mode: use SCM-generated features with regression prior targets.
@@ -2458,17 +2424,21 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
     # multivariate priors for spatial, kinematic, and process-style targets.
     if reg_dense:
         # Dense mode favors target types where many features matter jointly.
-        reg_type = int(rng.choice(
-            [0, 2, 3, 4, 6, 7, 8, 9],
-            p=[0.06, 0.08, 0.10, 0.16, 0.22, 0.15, 0.13, 0.10],
-        ))
+        reg_type = int(
+            rng.choice(
+                [0, 2, 3, 4, 6, 7, 8, 9],
+                p=[0.06, 0.08, 0.10, 0.16, 0.22, 0.15, 0.13, 0.10],
+            )
+        )
     else:
         # Upweight smooth multivariate priors (RBF, Fourier, chained trig,
         # polynomial surface) to address spatial/kinematic/process gaps.
-        reg_type = int(rng.choice(
-            10,
-            p=[0.08, 0.07, 0.10, 0.08, 0.10, 0.05, 0.18, 0.15, 0.11, 0.08],
-        ))
+        reg_type = int(
+            rng.choice(
+                10,
+                p=[0.08, 0.07, 0.10, 0.08, 0.10, 0.05, 0.18, 0.15, 0.11, 0.08],
+            )
+        )
     # Latent-factor override: shared low-dim structure across many features.
     # Replaces the chosen reg_type with reg_type=10 so the branches below
     # remain unchanged.
@@ -2476,21 +2446,21 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         reg_type = 10
     smooth_joint_prior = reg_type in (6, 7, 8, 9)
     reg_type_names = {
-        0: 'dense_linear',
-        1: 'sparse_linear',
-        2: 'gam',
-        3: 'additive_pairwise',
-        4: 'random_mlp',
-        5: 'random_tree',
-        6: 'radial_distance',
-        7: 'fourier_features',
-        8: 'chained_trig',
-        9: 'polynomial_surface',
-        10: 'latent_factor',
+        0: "dense_linear",
+        1: "sparse_linear",
+        2: "gam",
+        3: "additive_pairwise",
+        4: "random_mlp",
+        5: "random_tree",
+        6: "radial_distance",
+        7: "fourier_features",
+        8: "chained_trig",
+        9: "polynomial_surface",
+        10: "latent_factor",
     }
-    prior_meta['reg_type_id'] = int(reg_type)
-    prior_meta['reg_type_name'] = reg_type_names[int(reg_type)]
-    prior_meta['smooth_joint_prior'] = bool(smooth_joint_prior)
+    prior_meta["reg_type_id"] = int(reg_type)
+    prior_meta["reg_type_name"] = reg_type_names[int(reg_type)]
+    prior_meta["smooth_joint_prior"] = bool(smooth_joint_prior)
 
     # Pareto feature-importance gate. Build a per-feature multiplier that
     # concentrates total importance on a few features (a few × 10–100 the
@@ -2506,8 +2476,8 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         raw = rng.pareto(alpha_pareto, size=n_features) + 1.0
         # Normalize so the average importance is 1.0 (preserves overall y scale).
         pareto_w = raw / raw.mean()
-        prior_meta['pareto_importance'] = True
-        prior_meta['pareto_alpha'] = alpha_pareto
+        prior_meta["pareto_importance"] = True
+        prior_meta["pareto_alpha"] = alpha_pareto
 
     if reg_type == 0:
         # Dense linear: many small effects (ridge-like)
@@ -2516,7 +2486,7 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         if pareto_w is not None:
             beta = beta * pareto_w
         y = X @ beta
-        prior_meta['active_dims'] = int(n_features)
+        prior_meta["active_dims"] = int(n_features)
 
     elif reg_type == 1:
         # Sparse linear: few strong effects
@@ -2529,7 +2499,7 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
             # is even more skewed (1 dominates among the active).
             beta = beta * pareto_w
         y = X @ beta
-        prior_meta['active_dims'] = int(k)
+        prior_meta["active_dims"] = int(k)
 
     elif reg_type == 2:
         # GAM: sum of smooth univariate functions
@@ -2545,9 +2515,9 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
             if fn_type == 0:
                 y += weight * x_col
             elif fn_type == 1:
-                y += weight * (x_col ** 2 - 1)
+                y += weight * (x_col**2 - 1)
             elif fn_type == 2:
-                y += weight * np.clip(x_col ** 3, -50, 50) * 0.1
+                y += weight * np.clip(x_col**3, -50, 50) * 0.1
             elif fn_type == 3:
                 y += weight * np.sign(x_col) * np.log1p(np.abs(x_col))
             elif fn_type == 4:
@@ -2562,8 +2532,8 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
                 y += weight * np.cos(freq * x_col)
             else:
                 # exp decay: exponential proximity patterns
-                y += weight * np.exp(-0.5 * x_col ** 2)
-        prior_meta['active_dims'] = int(n_active)
+                y += weight * np.exp(-0.5 * x_col**2)
+        prior_meta["active_dims"] = int(n_active)
 
     elif reg_type == 3:
         # Additive + pairwise interactions
@@ -2579,8 +2549,8 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
             i, j = rng.choice(n_features, size=2, replace=False)
             weight = rng.standard_normal() * 0.3 / max(np.sqrt(n_interactions), 1)
             y += weight * X[:, i] * X[:, j]
-        prior_meta['active_dims'] = int(n_features)
-        prior_meta['interaction_terms'] = int(n_interactions)
+        prior_meta["active_dims"] = int(n_features)
+        prior_meta["interaction_terms"] = int(n_interactions)
 
     elif reg_type == 4:
         # Random MLP: smooth nonlinear target (forward kinematics, spatial, etc.)
@@ -2598,7 +2568,7 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         # Smooth activations dominate (GELU/SiLU/tanh/softplus >> ReLU)
         act_roll = rng.random()
         if act_roll < 0.30:
-            act_fn = lambda h: np.tanh(h)       # smooth, bounded
+            act_fn = lambda h: np.tanh(h)  # smooth, bounded
         elif act_roll < 0.55:
             # GELU approximation: x * sigmoid(1.702 * x)
             act_fn = lambda h: h * (1.0 / (1.0 + np.exp(-1.702 * h)))
@@ -2623,9 +2593,9 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         # Final projection
         W_out = rng.standard_normal((in_dim, 1)) / np.sqrt(in_dim)
         y = (h @ W_out).ravel()
-        prior_meta['active_dims'] = int(n_active)
-        prior_meta['hidden_width'] = int(hid)
-        prior_meta['n_mlp_layers'] = int(n_layers)
+        prior_meta["active_dims"] = int(n_active)
+        prior_meta["hidden_width"] = int(hid)
+        prior_meta["n_mlp_layers"] = int(n_layers)
 
     elif reg_type == 6:
         # Radial / distance prior: smoother and more structured than a plain
@@ -2642,8 +2612,7 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         Z = Z / np.where(Z_std > 1e-8, Z_std, 1.0)
         n_basis = int(rng.integers(3, min(12, max(4, n_samples // 8 + 1)) + 1))
         if labeled_rows >= n_basis:
-            center_idx = rng.choice(
-                labeled_rows, size=n_basis, replace=False)
+            center_idx = rng.choice(labeled_rows, size=n_basis, replace=False)
             centers = Z[center_idx]
         else:
             centers = rng.standard_normal((n_basis, metric_dim))
@@ -2652,21 +2621,21 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
             amp = rng.standard_normal() / np.sqrt(n_basis)
             lengthscales = rng.uniform(0.6, 2.2, size=metric_dim)
             diff = (Z - centers[j]) / lengthscales[np.newaxis, :]
-            dist = np.sqrt(np.sum(diff ** 2, axis=1) + 1e-6)
+            dist = np.sqrt(np.sum(diff**2, axis=1) + 1e-6)
             kernel_roll = rng.random()
             if kernel_roll < 0.55:
-                basis = np.exp(-0.5 * dist ** 2)
+                basis = np.exp(-0.5 * dist**2)
             elif kernel_roll < 0.85:
-                basis = 1.0 / (1.0 + dist ** 2)
+                basis = 1.0 / (1.0 + dist**2)
             else:
                 basis = -np.log(dist + 0.15)
             y += amp * basis
         if rng.random() < 0.5:
             linear = rng.standard_normal(metric_dim) / np.sqrt(metric_dim)
             y += 0.2 * (Z @ linear)
-        prior_meta['active_dims'] = int(n_active)
-        prior_meta['latent_dim'] = int(metric_dim)
-        prior_meta['basis_count'] = int(n_basis)
+        prior_meta["active_dims"] = int(n_active)
+        prior_meta["latent_dim"] = int(metric_dim)
+        prior_meta["basis_count"] = int(n_basis)
 
     elif reg_type == 7:
         # Fourier features: low-dimensional smooth periodic structure with
@@ -2684,7 +2653,7 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         y = np.zeros(n_samples)
         for _ in range(n_terms):
             omega = rng.standard_normal(latent_dim)
-            omega /= (np.linalg.norm(omega) + 1e-8)
+            omega /= np.linalg.norm(omega) + 1e-8
             omega *= rng.uniform(0.25, 2.0)
             harmonic = int(rng.integers(1, 4))
             phase = rng.uniform(-np.pi, np.pi)
@@ -2692,9 +2661,9 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
             a = rng.standard_normal() / np.sqrt(n_terms)
             b = rng.standard_normal() / np.sqrt(n_terms)
             y += a * np.cos(proj) + b * np.sin(proj)
-        prior_meta['active_dims'] = int(n_active)
-        prior_meta['latent_dim'] = int(latent_dim)
-        prior_meta['term_count'] = int(n_terms)
+        prior_meta["active_dims"] = int(n_active)
+        prior_meta["latent_dim"] = int(latent_dim)
+        prior_meta["term_count"] = int(n_terms)
 
     elif reg_type == 8:
         # Kinematics-like chained trigonometric system. Unlike the original
@@ -2719,22 +2688,15 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
             freq = rng.uniform(0.6, 2.0)
             phase = rng.uniform(-np.pi, np.pi)
             coupling = rng.uniform(0.05, 0.30)
-            theta = theta + freq * joint_inputs[:, i] + phase + coupling * np.sin(
-                theta + 0.5 * joint_inputs[:, i]
-            )
+            theta = theta + freq * joint_inputs[:, i] + phase + coupling * np.sin(theta + 0.5 * joint_inputs[:, i])
             link = rng.uniform(0.6, 1.6) / np.sqrt(n_joints)
             x_pos += link * np.cos(theta)
             y_pos += link * np.sin(theta)
             aux += link * np.sin(rng.uniform(0.5, 1.5) * theta + phase)
         coeffs = rng.standard_normal(4)
-        y = (
-            coeffs[0] * x_pos
-            + coeffs[1] * y_pos
-            + coeffs[2] * aux
-            + coeffs[3] * np.sin(theta)
-        )
-        prior_meta['active_dims'] = int(n_active)
-        prior_meta['joint_count'] = int(n_joints)
+        y = coeffs[0] * x_pos + coeffs[1] * y_pos + coeffs[2] * aux + coeffs[3] * np.sin(theta)
+        prior_meta["active_dims"] = int(n_active)
+        prior_meta["joint_count"] = int(n_joints)
 
     elif reg_type == 9:
         # Full polynomial surface: smooth quadratic response over many features,
@@ -2750,9 +2712,9 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         y = quad + X_active @ w + b
         if rng.random() < 0.5:
             u = rng.standard_normal(n_active)
-            u /= (np.linalg.norm(u) + 1e-8)
+            u /= np.linalg.norm(u) + 1e-8
             y += 0.15 * np.clip(X_active @ u, -4, 4) ** 3
-        prior_meta['active_dims'] = int(n_active)
+        prior_meta["active_dims"] = int(n_active)
 
     elif reg_type == 10:
         # Latent-factor target: y = sum_j h_j(X @ V_j) where V is d×k random
@@ -2778,14 +2740,14 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
             elif fn_type == 1:
                 y += wj * np.tanh(z)
             elif fn_type == 2:
-                y += wj * (z ** 2 - 1)
+                y += wj * (z**2 - 1)
             elif fn_type == 3:
                 freq = rng.uniform(0.5, 2.0)
                 y += wj * np.sin(freq * z)
             else:
                 y += wj * np.sign(z) * np.log1p(np.abs(z))
-        prior_meta['active_dims'] = int(n_features)
-        prior_meta['latent_dim'] = int(k)
+        prior_meta["active_dims"] = int(n_features)
+        prior_meta["latent_dim"] = int(k)
 
     else:
         # Random tree-like: piecewise-constant target (insurance, pricing, etc.)
@@ -2798,8 +2760,8 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
             threshold = rng.standard_normal()
             weight = rng.standard_normal() / np.sqrt(n_rules)
             y += weight * (X[:, col] > threshold).astype(np.float64)
-        prior_meta['active_dims'] = int(n_active)
-        prior_meta['rule_count'] = int(n_rules)
+        prior_meta["active_dims"] = int(n_active)
+        prior_meta["rule_count"] = int(n_rules)
 
     # --- Smooth clipping for extreme y values (before adding noise) ---
     # Use tanh soft-clip instead of hard clip to avoid gradient cliffs
@@ -2829,8 +2791,8 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         # synthetic regression. Keep them moderately high-SNR without making
         # them fully deterministic.
         target_r2 = min(0.985, target_r2 + rng.uniform(0.04, 0.10))
-    prior_meta['target_r2'] = float(target_r2)
-    prior_meta['deterministic'] = bool(target_r2 >= 1.0)
+    prior_meta["target_r2"] = float(target_r2)
+    prior_meta["deterministic"] = bool(target_r2 >= 1.0)
 
     if target_r2 < 1.0:
         # Sample every noise component first.  Calibrating only the initial
@@ -2845,7 +2807,7 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         if n_features >= 2 and rng.random() < _het_prob:
             driver_col = int(rng.choice(n_features))
             het_scale = np.abs(X[:, driver_col])
-            het_scale /= (np.mean(het_scale[:labeled_rows]) + 1e-8)
+            het_scale /= np.mean(het_scale[:labeled_rows]) + 1e-8
             total_noise += rng.standard_normal(n_samples) * het_scale * 0.3
 
         # --- Occasional y outliers ---
@@ -2855,16 +2817,16 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         if rng.random() < _outlier_prob:
             n_outliers = max(1, int(n_samples * rng.uniform(0.01, 0.05)))
             outlier_idx = rng.choice(n_samples, size=n_outliers, replace=False)
-            total_noise[outlier_idx] += (
-                rng.standard_normal(n_outliers) * rng.uniform(3, 8))
+            total_noise[outlier_idx] += rng.standard_normal(n_outliers) * rng.uniform(3, 8)
 
         calibrated_noise, realized_target_r2 = _calibrate_noise_to_target_r2(
-            y_clean, total_noise, target_r2, context_rows=context_rows)
+            y_clean, total_noise, target_r2, context_rows=context_rows
+        )
         y = y_clean + calibrated_noise
     else:
         realized_target_r2 = 1.0
-    prior_meta['realized_target_r2'] = float(realized_target_r2)
-    prior_meta['context_realized_target_r2'] = float(realized_target_r2)
+    prior_meta["realized_target_r2"] = float(realized_target_r2)
+    prior_meta["context_realized_target_r2"] = float(realized_target_r2)
 
     # --- Discretize some features (30%) ---
     _disc_prob = 0.15 if smooth_joint_prior else 0.3
@@ -2872,14 +2834,13 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         n_disc = max(1, int(rng.integers(1, max(2, n_features // 3 + 1))))
         disc_cols = (
             np.asarray([], dtype=np.int64)
-            if preserve_target_features else
-            rng.choice(n_features, size=n_disc, replace=False)
+            if preserve_target_features
+            else rng.choice(n_features, size=n_disc, replace=False)
         )
         for col in disc_cols:
             n_bins = int(rng.integers(3, 15))
             col_vals = X[:, col]
-            edges = np.quantile(
-                col_vals[:labeled_rows], np.linspace(0, 1, n_bins + 1))
+            edges = np.quantile(col_vals[:labeled_rows], np.linspace(0, 1, n_bins + 1))
             X[:, col] = np.digitize(col_vals, edges[1:-1]).astype(np.float64)
 
     # --- Replace some features with noise ---
@@ -2891,8 +2852,8 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
         n_noise = max(1, int(rng.integers(1, max(2, n_features // 4 + 1))))
         noise_cols = (
             np.asarray([], dtype=np.int64)
-            if preserve_target_features else
-            rng.choice(n_features, size=n_noise, replace=False)
+            if preserve_target_features
+            else rng.choice(n_features, size=n_noise, replace=False)
         )
         for col in noise_cols:
             X[:, col] = rng.standard_normal(n_samples)
@@ -2932,29 +2893,37 @@ def _generate_regression_prior(n_samples, n_features, rng, reg_denoise=False,
     # Fit target normalization on labeled context only.
     if not np.all(np.isfinite(y)):
         y = np.where(np.isfinite(y), y, 0.0)
-    y, y_clean_out, _y_mean, _y_std = _normalize_target_pair(
-        y, y_clean, context_rows=context_rows)
+    y, y_clean_out, _y_mean, _y_std = _normalize_target_pair(y, y_clean, context_rows=context_rows)
     y = y.astype(np.float32)
     y_clean_out = y_clean_out.astype(np.float32)
 
-    prior_meta['oracle_exact'] = bool(preserve_target_features)
-    prior_meta['r2_oracle_bound'] = 0.0
+    prior_meta["oracle_exact"] = bool(preserve_target_features)
+    prior_meta["r2_oracle_bound"] = 0.0
 
     return {
-        'X': X_out,
-        'y': y,
-        'y_clean': y_clean_out,
-        'task_type': 'reg',
-        'n_classes': None,
-        'filtered': False,
-        'meta': prior_meta,
+        "X": X_out,
+        "y": y,
+        "y_clean": y_clean_out,
+        "task_type": "reg",
+        "n_classes": None,
+        "filtered": False,
+        "meta": prior_meta,
     }
 
 
-def _create_groupby_relative_numeric(X, cat_col, n_samples, rng, cardinality,
-                                     n_features, discrete_cols, cat_cols_iter,
-                                     signal_cols=None, context_rows=None,
-                                     excluded_cols=None):
+def _create_groupby_relative_numeric(
+    X,
+    cat_col,
+    n_samples,
+    rng,
+    cardinality,
+    n_features,
+    discrete_cols,
+    cat_cols_iter,
+    signal_cols=None,
+    context_rows=None,
+    excluded_cols=None,
+):
     """B-3 relative-GroupBy prior: target depends on a numeric feature's value
     RELATIVE to its category group (x - E[x|c], x/E[x|c], or within-group rank).
     Teaches the GroupBy / relative-aggregation ICL circuit (TabPrep Pattern B-3).
@@ -2967,7 +2936,8 @@ def _create_groupby_relative_numeric(X, cat_col, n_samples, rng, cardinality,
     # 1. Zipf categorical into cat_col
     alpha = rng.uniform(0.6, 1.4)
     ranks = np.arange(1, cardinality + 1, dtype=np.float64)
-    probs = ranks ** (-alpha); probs /= probs.sum()
+    probs = ranks ** (-alpha)
+    probs /= probs.sum()
     cat_ids = rng.choice(cardinality, size=n_samples, replace=True, p=probs)
     X[:, cat_col] = cat_ids.astype(np.float64, copy=False)
     if signal_cols is not None:
@@ -2976,13 +2946,14 @@ def _create_groupby_relative_numeric(X, cat_col, n_samples, rng, cardinality,
     # 2. pick a continuous numeric column (not already discrete/categorical)
     excluded_cols = set() if excluded_cols is None else set(excluded_cols)
     available = [
-        c for c in range(n_features)
-        if c != cat_col and c not in discrete_cols
-        and c not in cat_cols_iter and c not in excluded_cols
+        c
+        for c in range(n_features)
+        if c != cat_col and c not in discrete_cols and c not in cat_cols_iter and c not in excluded_cols
     ]
     if not available:
         eff = rng.standard_normal(cardinality)
-        eff -= eff.mean(); eff /= (eff.std() + 1e-8)
+        eff -= eff.mean()
+        eff /= eff.std() + 1e-8
         return eff[cat_ids].astype(np.float64, copy=False), 1
     num_col = int(rng.choice(available))
     if signal_cols is not None:
@@ -2996,10 +2967,8 @@ def _create_groupby_relative_numeric(X, cat_col, n_samples, rng, cardinality,
     context_ids = cat_ids[:labeled_rows]
     context_x = x[:labeled_rows]
     global_mean = float(np.mean(context_x)) if len(context_x) else 0.0
-    grp_sum = np.bincount(
-        context_ids, weights=context_x, minlength=cardinality)
-    grp_cnt = np.bincount(
-        context_ids, minlength=cardinality).astype(np.float64)
+    grp_sum = np.bincount(context_ids, weights=context_x, minlength=cardinality)
+    grp_cnt = np.bincount(context_ids, minlength=cardinality).astype(np.float64)
     group_means = np.full(cardinality, global_mean, dtype=np.float64)
     seen_groups = grp_cnt > 0
     group_means[seen_groups] = grp_sum[seen_groups] / grp_cnt[seen_groups]
@@ -3007,14 +2976,14 @@ def _create_groupby_relative_numeric(X, cat_col, n_samples, rng, cardinality,
 
     # 4. relative op
     op = int(rng.integers(0, 3))
-    if op == 0:                       # x - E[x|c]
+    if op == 0:  # x - E[x|c]
         rel = x - grp_mean
-    elif op == 1:                     # x / E[x|c], denominator-guarded (repro lesson)
+    elif op == 1:  # x / E[x|c], denominator-guarded (repro lesson)
         denom = grp_mean.copy()
         small = np.abs(denom) < 1e-3
         denom[small] = np.where(denom[small] >= 0, 1e-3, -1e-3)
         rel = np.clip(x / denom, -10.0, 10.0)
-    else:                             # within-group empirical CDF in [0,1]
+    else:  # within-group empirical CDF in [0,1]
         rel = np.full(n_samples, 0.5, dtype=np.float64)
         global_sorted = np.sort(context_x)
         for g in np.unique(cat_ids):
@@ -3024,8 +2993,8 @@ def _create_groupby_relative_numeric(X, cat_col, n_samples, rng, cardinality,
                 reference = global_sorted
             if len(reference) > 1:
                 # Mid-rank ECDF evaluated against context values only.
-                left = np.searchsorted(reference, x[row_mask], side='left')
-                right = np.searchsorted(reference, x[row_mask], side='right')
+                left = np.searchsorted(reference, x[row_mask], side="left")
+                right = np.searchsorted(reference, x[row_mask], side="right")
                 rel[row_mask] = (left + right) / (2.0 * len(reference))
 
     # 5. standardize -> target effect with random sign/scale
@@ -3038,15 +3007,30 @@ def _create_groupby_relative_numeric(X, cat_col, n_samples, rng, cardinality,
     return row_effect.astype(np.float64, copy=False), 1
 
 
-def generate_dataset(n_samples, n_features, task_type, n_classes=None,
-                     rng=None, augment=False, augment_v3=False,
-                     rich_reg_targets=True, scale_variation=True,
-                     augment_v4=False, v4_filter=True, v4_no_edge_noise=True,
-                     synth_v5=False, synth_v5_denoise=True,
-                     synth_v5_declone=True, synth_v5_mixture=False,
-                     reg_denoise=False, reg_dense=False,
-                     probabilistic_labels=False, nominal_categoricals=False,
-                     enhanced_missingness=False, context_rows=None):
+def generate_dataset(
+    n_samples,
+    n_features,
+    task_type,
+    n_classes=None,
+    rng=None,
+    augment=False,
+    augment_v3=False,
+    rich_reg_targets=True,
+    scale_variation=True,
+    augment_v4=False,
+    v4_filter=True,
+    v4_no_edge_noise=True,
+    synth_v5=False,
+    synth_v5_denoise=True,
+    synth_v5_declone=True,
+    synth_v5_mixture=False,
+    reg_denoise=False,
+    reg_dense=False,
+    probabilistic_labels=False,
+    nominal_categoricals=False,
+    enhanced_missingness=False,
+    context_rows=None,
+):
     """Generate a synthetic dataset using hierarchical SCM.
 
     Args:
@@ -3094,12 +3078,12 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
     if rng is None:
         rng = np.random.default_rng()
     meta = {
-        'generator_family': 'scm',
-        'task_type': task_type,
-        'repeated_entity_cols': [],
-        'repeated_entity_stats': [],
-        'entity_lookup_signal_std': 0.0,
-        'entity_lookup_target_ratio': 0.0,
+        "generator_family": "scm",
+        "task_type": task_type,
+        "repeated_entity_cols": [],
+        "repeated_entity_stats": [],
+        "entity_lookup_signal_std": 0.0,
+        "entity_lookup_target_ratio": 0.0,
     }
 
     # Mixture prior: randomly select v4/v5a/v5c-like mode per dataset
@@ -3122,10 +3106,15 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
             synth_v5_declone = False
 
     # Build SCM (expanded edge fns/aggregation if synth_v4)
-    _max_parents = 7 if (reg_dense and task_type == 'reg') else 4
+    _max_parents = 7 if (reg_dense and task_type == "reg") else 4
     lcs_list, global_nodes, global_parents = _build_hierarchical_scm(
-        n_features, rng, expanded=augment_v4, synth_v5=synth_v5,
-        synth_v5_declone=synth_v5_declone, max_parents=_max_parents)
+        n_features,
+        rng,
+        expanded=augment_v4,
+        synth_v5=synth_v5,
+        synth_v5_declone=synth_v5_declone,
+        max_parents=_max_parents,
+    )
 
     # Track causal column indices (synth_v5: protected from noise overwrite)
     _causal_col_indices = []
@@ -3169,13 +3158,10 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
         # then remaining non-ancestor nodes
         direct_parents = set(global_parents.get(target_idx, []))
         other_ancestors = ancestors - direct_parents
-        non_ancestors = [i for i in all_indices
-                         if i != target_idx and i not in ancestors]
+        non_ancestors = [i for i in all_indices if i != target_idx and i not in ancestors]
         rng.shuffle(non_ancestors)
 
-        priority_order = (sorted(direct_parents)
-                          + sorted(other_ancestors)
-                          + list(non_ancestors))
+        priority_order = sorted(direct_parents) + sorted(other_ancestors) + list(non_ancestors)
 
         # Extract feature columns, respecting priority
         feature_cols = []
@@ -3210,8 +3196,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                         _causal_col_indices.append(n_cols_so_far + k)
                 n_cols_so_far += n_observe
 
-        X = np.column_stack(feature_cols) if feature_cols else \
-            rng.standard_normal((n_samples, 1))
+        X = np.column_stack(feature_cols) if feature_cols else rng.standard_normal((n_samples, 1))
 
         # Trim or pad to exactly n_features
         if X.shape[1] > n_features:
@@ -3223,16 +3208,12 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
             keep = sorted(causal_set)[:n_keep]
             remaining_budget = n_keep - len(keep)
             if remaining_budget > 0 and other_cols:
-                keep.extend(rng.choice(
-                    other_cols,
-                    size=min(remaining_budget, len(other_cols)),
-                    replace=False).tolist())
+                keep.extend(rng.choice(other_cols, size=min(remaining_budget, len(other_cols)), replace=False).tolist())
             keep = sorted(keep)[:n_features]
             X = X[:, keep]
             # Remap causal indices
             keep_set = set(keep)
-            _causal_col_indices = [i for i, k in enumerate(keep)
-                                   if k in causal_set]
+            _causal_col_indices = [i for i, k in enumerate(keep) if k in causal_set]
         elif X.shape[1] < n_features:
             extra = n_features - X.shape[1]
             X = np.column_stack([X, rng.standard_normal((n_samples, extra))])
@@ -3241,7 +3222,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
         target_val = all_values[target_idx]
         if target_val.ndim > 1:
             w = rng.standard_normal(target_val.shape[1])
-            w /= (np.linalg.norm(w) + 1e-8)
+            w /= np.linalg.norm(w) + 1e-8
             y_raw = target_val @ w
         else:
             y_raw = target_val
@@ -3268,7 +3249,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
     # Safety: ensure y_raw is 1D
     if y_raw.ndim > 1:
         w = rng.standard_normal(y_raw.shape[1])
-        w /= (np.linalg.norm(w) + 1e-8)
+        w /= np.linalg.norm(w) + 1e-8
         y_raw = y_raw @ w
     y_raw = y_raw.ravel()
     entity_lookup_signal = np.zeros(n_samples, dtype=np.float64)
@@ -3284,15 +3265,15 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
     # CLS v4 gets more noise features to dilute MI (real CLS MI median=0.021)
     # synth_v5+denoise: reduced range — multi-dim hidden columns already suppress learnability
     if augment and n_features >= 2:
-        if augment_v4 and task_type == 'cls':
+        if augment_v4 and task_type == "cls":
             if synth_v5 and synth_v5_denoise:
                 noise_frac = rng.uniform(0.05, 0.25)
             else:
                 noise_frac = rng.uniform(0.15, 0.55)
         else:
-            if reg_dense and task_type == 'reg':
+            if reg_dense and task_type == "reg":
                 noise_frac = rng.uniform(0, 0.15)
-            elif reg_denoise and task_type == 'reg':
+            elif reg_denoise and task_type == "reg":
                 noise_frac = rng.uniform(0, 0.2)
             else:
                 noise_frac = rng.uniform(0, 0.5)
@@ -3365,16 +3346,16 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
     # --- 3.7 Feature importances [synth_v4] ---
     # CLS uses milder importances to avoid MI overshoot (real CLS MI median=0.021)
     # reg_dense: skip power-law importances 60% of the time (flat importance profile)
-    _imp_prob = 0.35 if (reg_dense and task_type == 'reg') else 0.85
+    _imp_prob = 0.35 if (reg_dense and task_type == "reg") else 0.85
     if augment_v4 and n_features >= 2 and rng.random() < _imp_prob:
-        X = _apply_feature_importances(X, rng, mild=(task_type == 'cls'))
+        X = _apply_feature_importances(X, rng, mild=(task_type == "cls"))
 
     # --- 4. Add Gaussian noise to features (existing) ---
     # synth_v4: reduced noise (TabICLv2 found no benefit from full noise,
     # but removing it entirely makes MI too high vs real data)
     # CLS gets more noise since real CLS has very low MI (median 0.021)
     if augment_v4 and v4_no_edge_noise:
-        if task_type == 'cls':
+        if task_type == "cls":
             # synth_v5+denoise: less noise needed (multi-dim hidden dims already suppress MI)
             if synth_v5 and synth_v5_denoise:
                 noise_scale = rng.uniform(0.05, 0.25)
@@ -3386,9 +3367,9 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
             else:
                 noise_scale = rng.uniform(0.02, 0.15)
     else:
-        if reg_dense and task_type == 'reg':
+        if reg_dense and task_type == "reg":
             noise_scale = rng.uniform(0.005, 0.08)
-        elif reg_denoise and task_type == 'reg':
+        elif reg_denoise and task_type == "reg":
             noise_scale = rng.uniform(0.01, 0.15)
         else:
             noise_scale = rng.uniform(0.01, 0.3)
@@ -3415,7 +3396,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
         elif augment_v4:
             disc_frac = rng.uniform(0.4, 0.98)
         else:
-            if reg_denoise and task_type == 'reg':
+            if reg_denoise and task_type == "reg":
                 disc_frac = rng.uniform(0, 0.4)
             else:
                 disc_frac = rng.uniform(0, 0.8)
@@ -3440,8 +3421,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                     thresholds = np.nanpercentile(X[:, col], percentiles)
                     # Remove duplicate thresholds
                     thresholds = np.unique(thresholds)
-                    X[:, col] = np.digitize(X[:, col], thresholds).astype(
-                        np.float64)
+                    X[:, col] = np.digitize(X[:, col], thresholds).astype(np.float64)
                 else:
                     # Round to 0-2 decimal places, then rank to integer
                     decimals = int(rng.integers(0, 3))
@@ -3449,12 +3429,10 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                     # Map unique values to integer ranks
                     unique_vals = np.unique(rounded)
                     rank_map = {v: i for i, v in enumerate(unique_vals)}
-                    X[:, col] = np.array(
-                        [rank_map[v] for v in rounded], dtype=np.float64)
+                    X[:, col] = np.array([rank_map[v] for v in rounded], dtype=np.float64)
                 discrete_cols.add(int(col))
             if len(causal_disc_cols):
-                meta['coarsened_signal_cols'] = sorted(
-                    int(col) for col in causal_disc_cols)
+                meta["coarsened_signal_cols"] = sorted(int(col) for col in causal_disc_cols)
 
     # --- 5.5 True categorical features [synth_v3] ---
     # Unlike discretization (which bins continuous values preserving order),
@@ -3474,32 +3452,26 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
             if nominal_categoricals and rng.random() < 0.4:
                 cardinality = int(rng.integers(3, min(31, max(4, n_samples // 8))))
                 row_effect, n_used = _create_nominal_categorical(
-                    X, col, n_samples, rng, cardinality,
-                    task_type, n_features, discrete_cols, cat_cols_set)
+                    X, col, n_samples, rng, cardinality, task_type, n_features, discrete_cols, cat_cols_set
+                )
                 entity_lookup_signal += row_effect
                 discrete_cols.add(int(col))
                 cat_cardinality[int(col)] = cardinality
                 if n_used == 2:
                     # Crossed nominal consumed a second column
-                    meta.setdefault('nominal_crossed_cols', []).append(int(col))
+                    meta.setdefault("nominal_crossed_cols", []).append(int(col))
                 else:
-                    meta.setdefault('nominal_independent_cols', []).append(int(col))
+                    meta.setdefault("nominal_independent_cols", []).append(int(col))
                 continue
 
             entity_prob = 0.55 if (n_samples >= 1024 and n_features <= 64) else 0.35
-            use_repeated_entity = (
-                task_type == 'cls'
-                and n_samples >= 64
-                and rng.random() < entity_prob
-            )
+            use_repeated_entity = task_type == "cls" and n_samples >= 64 and rng.random() < entity_prob
             if use_repeated_entity:
-                row_effect, entity_meta = _create_repeated_entity_categorical(
-                    X, col, rng
-                )
+                row_effect, entity_meta = _create_repeated_entity_categorical(X, col, rng)
                 entity_lookup_signal += row_effect
-                cardinality = int(entity_meta['cardinality'])
-                meta['repeated_entity_cols'].append(int(col))
-                meta['repeated_entity_stats'].append(entity_meta)
+                cardinality = int(entity_meta["cardinality"])
+                meta["repeated_entity_cols"].append(int(col))
+                meta["repeated_entity_stats"].append(entity_meta)
             else:
                 cardinality = int(rng.integers(2, 31))
                 if synth_v5 and rng.random() < 0.7:
@@ -3507,8 +3479,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                     _create_informative_categorical(X, col, rng, cardinality)
                 else:
                     # Random noise categorical (original behavior)
-                    X[:, col] = rng.integers(0, cardinality,
-                                             size=n_samples).astype(np.float64)
+                    X[:, col] = rng.integers(0, cardinality, size=n_samples).astype(np.float64)
             discrete_cols.add(int(col))
             cat_cardinality[int(col)] = cardinality
 
@@ -3519,8 +3490,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
         if continuous_cols:
             warp_frac = rng.uniform(0.05, 0.3)
             n_warp = max(1, int(len(continuous_cols) * warp_frac))
-            warp_cols = rng.choice(continuous_cols, size=min(n_warp, len(continuous_cols)),
-                                   replace=False)
+            warp_cols = rng.choice(continuous_cols, size=min(n_warp, len(continuous_cols)), replace=False)
             for col in warp_cols:
                 if not np.any(np.isnan(X[:, col])):
                     _apply_kumaraswamy_warping(X, col, rng)
@@ -3541,15 +3511,14 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
     # Only inject into continuous columns — discrete cols get kurtosis from spike distributions
     if augment_v4 and n_features >= 2 and rng.random() < 0.6:
         _ht_causal = _causal_col_indices if synth_v5 else None
-        X = _inject_heavy_tails(X, rng, causal_cols=_ht_causal,
-                                exclude_cols=discrete_cols)
+        X = _inject_heavy_tails(X, rng, causal_cols=_ht_causal, exclude_cols=discrete_cols)
 
     # Regression targets should be generated from the clean feature values
     # before structural missingness is applied to the observed table.
-    X_target = X.copy() if task_type == 'reg' else None
+    X_target = X.copy() if task_type == "reg" else None
 
     # --- 6. Structural missingness (Change 5) ---
-    _miss_prob = 0.15 if (reg_denoise and task_type == 'reg') else 0.3
+    _miss_prob = 0.15 if (reg_denoise and task_type == "reg") else 0.3
     if augment and n_features >= 2 and rng.random() < _miss_prob:
         # Enhanced missingness: row-level and block patterns applied first
         # (these affect multiple columns at once, not per-column)
@@ -3564,8 +3533,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                 n_drop_cols = max(1, int(n_features * col_frac))
                 drop_rows = rng.choice(n_samples, size=n_drop_rows, replace=False)
                 for row in drop_rows:
-                    drop_cols_r = rng.choice(n_features, size=n_drop_cols,
-                                             replace=False)
+                    drop_cols_r = rng.choice(n_features, size=n_drop_cols, replace=False)
                     X[row, drop_cols_r] = np.nan
                 _did_enhanced = True
             elif _enh_type == 1:
@@ -3582,14 +3550,12 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                 # Covariate-dependent tail censoring. The historical variant
                 # read realized y for every row, exposing query labels through
                 # the missingness mask.
-                _did_enhanced = _apply_feature_dependent_tail_missingness(
-                    X, rng, context_rows=context_rows)
+                _did_enhanced = _apply_feature_dependent_tail_missingness(X, rng, context_rows=context_rows)
             elif _enh_type == 3 and discrete_cols:
                 # Categorical missing-as-category: replace NaN with new level
                 # for discrete columns. The model learns that "missing" is a
                 # meaningful category, not just absence of data.
-                mac_cols = [c for c in discrete_cols
-                            if c in cat_cardinality]
+                mac_cols = [c for c in discrete_cols if c in cat_cardinality]
                 if mac_cols:
                     n_mac = min(len(mac_cols), int(rng.integers(1, 4)))
                     mac_selected = rng.choice(mac_cols, size=n_mac, replace=False)
@@ -3636,14 +3602,14 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
     # too hard (oob_auc/oob_r2 far below real data).
     if augment_v4 and not synth_v5 and n_features >= 4 and rng.random() < 0.4:
         X, y_raw = _add_latent_bayes_error(
-            X, y_raw, n_features, rng, task_type,
-            protected_cols=_causal_col_indices, metadata=meta)
+            X, y_raw, n_features, rng, task_type, protected_cols=_causal_col_indices, metadata=meta
+        )
 
     # --- 7. Create target y ---
     y_raw = _add_entity_lookup_signal(
-        y_raw, entity_lookup_signal, rng, meta,
-        context_rows=context_rows if task_type == 'reg' else None)
-    if task_type == 'cls':
+        y_raw, entity_lookup_signal, rng, meta, context_rows=context_rows if task_type == "reg" else None
+    )
+    if task_type == "cls":
         if n_classes is None:
             n_classes = int(rng.integers(2, 11))
 
@@ -3659,8 +3625,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                     alpha = rng.uniform(0.5, 3.0)
                     proportions = rng.dirichlet(np.full(n_classes, alpha))
                     cumulative = np.cumsum(proportions)
-                    percentiles = np.concatenate(
-                        [[0.0], cumulative[:-1] * 100, [100.0]])
+                    percentiles = np.concatenate([[0.0], cumulative[:-1] * 100, [100.0]])
                 else:
                     # Extreme: one dominant class at 80-95% (toned down)
                     dominant = int(rng.integers(0, n_classes))
@@ -3669,8 +3634,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                     proportions = np.full(n_classes, remaining / max(n_classes - 1, 1))
                     proportions[dominant] = dominant_pct
                     cumulative = np.cumsum(proportions)
-                    percentiles = np.concatenate(
-                        [[0.0], cumulative[:-1] * 100, [100.0]])
+                    percentiles = np.concatenate([[0.0], cumulative[:-1] * 100, [100.0]])
             else:
                 # 30% balanced, 30% moderate Dirichlet, 40% extreme imbalance
                 if imbalance_roll < 0.3:
@@ -3680,8 +3644,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                     alpha = rng.uniform(0.3, 1.0)
                     proportions = rng.dirichlet(np.full(n_classes, alpha))
                     cumulative = np.cumsum(proportions)
-                    percentiles = np.concatenate(
-                        [[0.0], cumulative[:-1] * 100, [100.0]])
+                    percentiles = np.concatenate([[0.0], cumulative[:-1] * 100, [100.0]])
                 else:
                     # Extreme: one dominant class at 85-99%
                     dominant = int(rng.integers(0, n_classes))
@@ -3690,8 +3653,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                     proportions = np.full(n_classes, remaining / max(n_classes - 1, 1))
                     proportions[dominant] = dominant_pct
                     cumulative = np.cumsum(proportions)
-                    percentiles = np.concatenate(
-                        [[0.0], cumulative[:-1] * 100, [100.0]])
+                    percentiles = np.concatenate([[0.0], cumulative[:-1] * 100, [100.0]])
         else:
             # Original: 50% balanced, 50% moderate Dirichlet
             if rng.random() < 0.5:
@@ -3700,8 +3662,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                 alpha = rng.uniform(0.3, 1.0)
                 proportions = rng.dirichlet(np.full(n_classes, alpha))
                 cumulative = np.cumsum(proportions)
-                percentiles = np.concatenate(
-                    [[0.0], cumulative[:-1] * 100, [100.0]])
+                percentiles = np.concatenate([[0.0], cumulative[:-1] * 100, [100.0]])
 
         # --- Probabilistic labelers: non-percentile classification targets ---
         # When enabled, ~50% of episodes use a feature-based labeler instead
@@ -3726,8 +3687,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
                 n_flip = int(n_samples * flip_rate)
                 if n_flip > 0:
                     flip_idx = rng.choice(n_samples, size=n_flip, replace=False)
-                    y[flip_idx] = rng.integers(0, n_classes, size=n_flip).astype(
-                        np.float32)
+                    y[flip_idx] = rng.integers(0, n_classes, size=n_flip).astype(np.float32)
 
     else:
         # --- Rich regression target [synth_v3]: more feature dependencies ---
@@ -3744,7 +3704,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
             for col in dep_cols:
                 edge_fn = _make_edge_fn(1, rng)
                 weight = rng.normal(0, 1.0)
-                extra = extra + weight * edge_fn(target_features[:, col:col+1]).ravel()
+                extra = extra + weight * edge_fn(target_features[:, col : col + 1]).ravel()
 
             # Add feature interaction terms to target (x_i * x_j, ratios, etc.)
             if rng.random() < 0.5:
@@ -3763,8 +3723,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
             # Scale extra terms to contribute 30-70% of total y variance.
             # Without this, n_extra terms with weight~N(0,1) can have
             # variance ~50x the original SCM target, drowning it out.
-            extra = _scale_rich_target_component(
-                extra, y_raw, rng, context_rows=context_rows)
+            extra = _scale_rich_target_component(extra, y_raw, rng, context_rows=context_rows)
             y_raw = y_raw + extra
 
             # Safety clip after adding dependencies
@@ -3881,21 +3840,22 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
             dup_frac = min(rng.exponential(0.20), 0.50)
         n_dup = max(1, int(n_samples * dup_frac))
         # Sample rows to duplicate (with replacement — same row can appear 3+x)
-        src_idx, dst_idx = _sample_context_safe_duplicate_indices(
-            n_samples, n_dup, rng, context_rows=context_rows)
+        src_idx, dst_idx = _sample_context_safe_duplicate_indices(n_samples, n_dup, rng, context_rows=context_rows)
         X[dst_idx] = X[src_idx]
         y[dst_idx] = y[src_idx]
         if X_target is not None:
             X_target[dst_idx] = X_target[src_idx]
 
     return {
-        'X': X,
-        'y': y,
-        'task_type': task_type,
-        'n_classes': n_classes if task_type == 'cls' else None,
-        'filtered': False,
-        'meta': meta,
-        'X_target': None if X_target is None else np.where(
+        "X": X,
+        "y": y,
+        "task_type": task_type,
+        "n_classes": n_classes if task_type == "cls" else None,
+        "filtered": False,
+        "meta": meta,
+        "X_target": None
+        if X_target is None
+        else np.where(
             np.isfinite(X_target),
             X_target,
             0.0,
@@ -3903,9 +3863,7 @@ def generate_dataset(n_samples, n_features, task_type, n_classes=None,
     }
 
 
-def _random_decision_tree_predict(
-        X, feature_cols, rng, depth=4, n_classes_leaf=0,
-        context_rows=None):
+def _random_decision_tree_predict(X, feature_cols, rng, depth=4, n_classes_leaf=0, context_rows=None):
     """Generate predictions from a random (unfitted) decision tree.
 
     Procedurally generates random axis-aligned splits and random leaf values.
@@ -3923,7 +3881,7 @@ def _random_decision_tree_predict(
         predictions: [n_samples] (float)
     """
     n_samples = X.shape[0]
-    n_leaves = 2 ** depth
+    n_leaves = 2**depth
     if n_classes_leaf > 0:
         leaf_values = rng.integers(0, n_classes_leaf, size=n_leaves).astype(np.float64)
     else:
@@ -3949,10 +3907,9 @@ def _random_decision_tree_predict(
     return leaf_values[leaf_idx]
 
 
-def _generate_tree_prior_episode(n_samples, n_features, task_type,
-                                 n_classes, rng,
-                                 probabilistic_labels=False,
-                                 context_rows=None):
+def _generate_tree_prior_episode(
+    n_samples, n_features, task_type, n_classes, rng, probabilistic_labels=False, context_rows=None
+):
     """Generate a dataset with tree-ensemble targets.
 
     Produces piecewise-constant targets from random decision tree ensembles.
@@ -3997,22 +3954,19 @@ def _generate_tree_prior_episode(n_samples, n_features, task_type,
     for _ in range(n_trees):
         # Each tree uses a random feature subset
         tree_feats = rng.choice(n_features, size=n_active, replace=False)
-        y += _random_decision_tree_predict(
-            X, tree_feats, rng, depth=tree_depth,
-            context_rows=context_rows)
+        y += _random_decision_tree_predict(X, tree_feats, rng, depth=tree_depth, context_rows=context_rows)
 
     y /= n_trees  # Average
 
     # --- Add noise + create final target ---
-    if task_type == 'reg':
+    if task_type == "reg":
         y_clean = y.copy()
         target_r2 = rng.uniform(0.4, 0.95)
         noise, realized_r2 = _calibrate_noise_to_target_r2(
-            y_clean, rng.standard_normal(n_samples), target_r2,
-            context_rows=context_rows)
+            y_clean, rng.standard_normal(n_samples), target_r2, context_rows=context_rows
+        )
         y = y_clean + noise
-        y, y_clean_out, _mu, _std = _normalize_target_pair(
-            y, y_clean, context_rows=context_rows)
+        y, y_clean_out, _mu, _std = _normalize_target_pair(y, y_clean, context_rows=context_rows)
         y = y.astype(np.float32)
         actual_n_classes = None
     else:
@@ -4036,27 +3990,25 @@ def _generate_tree_prior_episode(n_samples, n_features, task_type,
             X[:, col] = rng.standard_normal(n_samples)
 
     return {
-        'X': X,
-        'y': y.astype(np.float32),
-        'task_type': task_type,
-        'n_classes': actual_n_classes,
-        'filtered': False,
-        'y_clean': y_clean_out.astype(np.float32) if task_type == 'reg' else None,
-        'meta': {
-            'tree_prior': True,
-            'generator_family': 'tree_prior',
-            'n_trees': n_trees,
-            'tree_depth': tree_depth,
-            'realized_target_r2': float(realized_r2) if task_type == 'reg' else None,
+        "X": X,
+        "y": y.astype(np.float32),
+        "task_type": task_type,
+        "n_classes": actual_n_classes,
+        "filtered": False,
+        "y_clean": y_clean_out.astype(np.float32) if task_type == "reg" else None,
+        "meta": {
+            "tree_prior": True,
+            "generator_family": "tree_prior",
+            "n_trees": n_trees,
+            "tree_depth": tree_depth,
+            "realized_target_r2": float(realized_r2) if task_type == "reg" else None,
         },
     }
 
 
-def _generate_gp_prior_episode(n_samples, n_features, task_type,
-                               n_classes, rng,
-                               reg_denoise=False,
-                               probabilistic_labels=False,
-                               context_rows=None):
+def _generate_gp_prior_episode(
+    n_samples, n_features, task_type, n_classes, rng, reg_denoise=False, probabilistic_labels=False, context_rows=None
+):
     """Generate a dataset with a Gaussian Process smooth function target.
 
     Uses Random Fourier Features (RFF) to approximate GP samples:
@@ -4070,9 +4022,8 @@ def _generate_gp_prior_episode(n_samples, n_features, task_type,
     Directly produces smooth joint multivariate functions — the data shape
     of sulfur, debutanizer, space_ga, kin8nm, houses, physiochemical_protein.
     """
-    regression_context_rows = context_rows if task_type == 'reg' else None
-    labeled_rows = _resolve_context_rows(
-        n_samples, regression_context_rows)
+    regression_context_rows = context_rows if task_type == "reg" else None
+    labeled_rows = _resolve_context_rows(n_samples, regression_context_rows)
     # --- Generate features ---
     X = np.zeros((n_samples, n_features), dtype=np.float64)
 
@@ -4139,7 +4090,7 @@ def _generate_gp_prior_episode(n_samples, n_features, task_type,
         X[:, active] = X_active
 
     # --- GP kernel parameters ---
-    kernel_type = rng.choice(['rbf', 'matern32', 'matern52', 'rbf', 'matern52'])
+    kernel_type = rng.choice(["rbf", "matern32", "matern52", "rbf", "matern52"])
 
     # Per-feature lengthscales — use LONGER lengthscales for smoother functions
     # Real gap datasets (sulfur, debutanizer) have very smooth targets.
@@ -4160,16 +4111,13 @@ def _generate_gp_prior_episode(n_samples, n_features, task_type,
     else:
         max_rff = max(4, min(64, labeled_rows // 4))
         min_rff = min(32, max_rff)
-        n_rff = (
-            min_rff if min_rff == max_rff
-            else int(rng.integers(min_rff, max_rff + 1))
-        )
+        n_rff = min_rff if min_rff == max_rff else int(rng.integers(min_rff, max_rff + 1))
 
     # --- Sample spectral frequencies from kernel's spectral density ---
-    if kernel_type == 'rbf':
+    if kernel_type == "rbf":
         # RBF kernel: spectral density is Gaussian
         omega = rng.standard_normal((n_rff, n_active)) / lengthscales
-    elif kernel_type == 'matern32':
+    elif kernel_type == "matern32":
         # Matern-3/2: spectral density is Student-t(df=2*nu) = Student-t(3)
         omega = rng.standard_t(3, size=(n_rff, n_active)) / lengthscales
     else:  # matern52
@@ -4198,16 +4146,14 @@ def _generate_gp_prior_episode(n_samples, n_features, task_type,
     remaining = n_features - n_active
     if remaining >= 2 and rng.random() < 0.5:
         n_corr = min(int(rng.integers(2, min(8, remaining) + 1)), remaining)
-        corr_targets = rng.choice(
-            [i for i in range(n_features) if i not in active],
-            size=n_corr, replace=False)
+        corr_targets = rng.choice([i for i in range(n_features) if i not in active], size=n_corr, replace=False)
         for ct in corr_targets:
             src = rng.choice(active)
             rho = rng.uniform(0.3, 0.8)
             X[:, ct] = rho * X[:, src] + np.sqrt(1 - rho**2) * rng.standard_normal(n_samples)
 
     # --- Noise + normalization ---
-    if task_type == 'reg':
+    if task_type == "reg":
         y_clean = y.copy()
         y_std = float(np.std(y[:labeled_rows]))
         target_r2 = 1.0
@@ -4224,15 +4170,14 @@ def _generate_gp_prior_episode(n_samples, n_features, task_type,
             raw_noise += rng.standard_normal(n_samples) * het_scale * 0.1
         if target_r2 < 1.0:
             calibrated_noise, realized_target_r2 = _calibrate_noise_to_target_r2(
-                y_clean, raw_noise, target_r2,
-                context_rows=regression_context_rows)
+                y_clean, raw_noise, target_r2, context_rows=regression_context_rows
+            )
             y = y_clean + calibrated_noise
         else:
             calibrated_noise = np.zeros_like(y_clean)
             realized_target_r2 = 1.0
             y = y_clean.copy()
-        y, y_clean, _mu, _std = _normalize_target_pair(
-            y, y_clean, context_rows=regression_context_rows)
+        y, y_clean, _mu, _std = _normalize_target_pair(y, y_clean, context_rows=regression_context_rows)
         y = y.astype(np.float32)
         y_clean = y_clean.astype(np.float32)
         actual_n_classes = None
@@ -4259,49 +4204,48 @@ def _generate_gp_prior_episode(n_samples, n_features, task_type,
                 X[:, col] = rng.standard_normal(n_samples)
 
     meta = {
-        'gp_prior': True,
-        'generator_family': 'gp_prior',
-        'kernel': kernel_type,
-        'n_active': n_active,
-        'n_rff': n_rff,
+        "gp_prior": True,
+        "generator_family": "gp_prior",
+        "kernel": kernel_type,
+        "n_active": n_active,
+        "n_rff": n_rff,
     }
-    if task_type == 'reg':
-        meta.update({
-            'context_rows': labeled_rows,
-            'target_r2': float(target_r2),
-            'context_realized_target_r2': float(realized_target_r2),
-            'noise_std': float(np.std(calibrated_noise[:labeled_rows])),
-            'oracle_exact': True,
-            'r2_oracle_bound': 0.0,
-        })
+    if task_type == "reg":
+        meta.update(
+            {
+                "context_rows": labeled_rows,
+                "target_r2": float(target_r2),
+                "context_realized_target_r2": float(realized_target_r2),
+                "noise_std": float(np.std(calibrated_noise[:labeled_rows])),
+                "oracle_exact": True,
+                "r2_oracle_bound": 0.0,
+            }
+        )
 
     out = {
-        'X': X,
-        'y': y.astype(np.float32),
-        'task_type': task_type,
-        'n_classes': actual_n_classes,
-        'filtered': False,
-        'meta': meta,
+        "X": X,
+        "y": y.astype(np.float32),
+        "task_type": task_type,
+        "n_classes": actual_n_classes,
+        "filtered": False,
+        "meta": meta,
     }
-    if task_type == 'reg':
-        out['y_clean'] = y_clean
+    if task_type == "reg":
+        out["y_clean"] = y_clean
     return out
 
 
-def _generate_quadratic_surface_episode(n_samples, n_features, task_type,
-                                        n_classes, rng,
-                                        reg_denoise=False,
-                                        probabilistic_labels=False,
-                                        context_rows=None):
+def _generate_quadratic_surface_episode(
+    n_samples, n_features, task_type, n_classes, rng, reg_denoise=False, probabilistic_labels=False, context_rows=None
+):
     """Generate a dataset with a quadratic response surface target.
 
     y = x^T M x + w^T x + b over a random subset of 4-20 features.
     Covers smooth coupled multivariate interactions (industrial process
     control, kinematics, response surfaces).
     """
-    regression_context_rows = context_rows if task_type == 'reg' else None
-    labeled_rows = _resolve_context_rows(
-        n_samples, regression_context_rows)
+    regression_context_rows = context_rows if task_type == "reg" else None
+    labeled_rows = _resolve_context_rows(n_samples, regression_context_rows)
     X = np.zeros((n_samples, n_features), dtype=np.float64)
     for j in range(n_features):
         dist = int(rng.integers(0, 4))
@@ -4328,9 +4272,7 @@ def _generate_quadratic_surface_episode(n_samples, n_features, task_type,
         min_active = min(4, n_features)
     else:
         max_quadratic_terms = max(1, labeled_rows // 5)
-        context_active_cap = int(
-            np.floor((np.sqrt(1.0 + 8.0 * max_quadratic_terms) - 1.0) / 2.0)
-        )
+        context_active_cap = int(np.floor((np.sqrt(1.0 + 8.0 * max_quadratic_terms) - 1.0) / 2.0))
         max_active = min(20, n_features, max(1, context_active_cap))
         min_active = min(2, max_active)
     n_active = int(rng.integers(min_active, max_active + 1))
@@ -4363,15 +4305,13 @@ def _generate_quadratic_surface_episode(n_samples, n_features, task_type,
     if rng.random() < 0.5 and remaining >= 2:
         n_corr = min(int(rng.integers(2, min(6, remaining) + 1)), remaining)
         if n_corr > 0:
-            corr_targets = rng.choice(
-                [i for i in range(n_features) if i not in active],
-                size=n_corr, replace=False)
+            corr_targets = rng.choice([i for i in range(n_features) if i not in active], size=n_corr, replace=False)
             for ct in corr_targets:
                 src = rng.choice(active)
                 rho = rng.uniform(0.5, 0.95)
                 X[:, ct] = rho * X[:, src] + np.sqrt(1 - rho**2) * rng.standard_normal(n_samples)
 
-    if task_type == 'reg':
+    if task_type == "reg":
         y_clean = y.copy()
         y_std = float(np.std(y[:labeled_rows]))
         target_r2 = 1.0
@@ -4386,15 +4326,14 @@ def _generate_quadratic_surface_episode(n_samples, n_features, task_type,
             raw_noise += rng.standard_normal(n_samples) * het_scale * 0.1
         if target_r2 < 1.0:
             calibrated_noise, realized_target_r2 = _calibrate_noise_to_target_r2(
-                y_clean, raw_noise, target_r2,
-                context_rows=regression_context_rows)
+                y_clean, raw_noise, target_r2, context_rows=regression_context_rows
+            )
             y = y_clean + calibrated_noise
         else:
             calibrated_noise = np.zeros_like(y_clean)
             realized_target_r2 = 1.0
             y = y_clean.copy()
-        y, y_clean, _mu, _std = _normalize_target_pair(
-            y, y_clean, context_rows=regression_context_rows)
+        y, y_clean, _mu, _std = _normalize_target_pair(y, y_clean, context_rows=regression_context_rows)
         y = y.astype(np.float32)
         y_clean = y_clean.astype(np.float32)
         actual_n_classes = None
@@ -4414,45 +4353,45 @@ def _generate_quadratic_surface_episode(n_samples, n_features, task_type,
     n_noise = int(n_features * noise_frac)
     if n_noise > 0:
         noise_cols = rng.choice(
-            [i for i in range(n_features) if i not in active],
-            size=min(n_noise, n_features - n_active), replace=False)
+            [i for i in range(n_features) if i not in active], size=min(n_noise, n_features - n_active), replace=False
+        )
         for col in noise_cols:
             X[:, col] = rng.standard_normal(n_samples)
 
     meta = {
-        'quadratic_surface': True,
-        'generator_family': 'quadratic_surface',
-        'n_active': n_active,
-        'quadratic_terms': n_active * (n_active + 1) // 2,
+        "quadratic_surface": True,
+        "generator_family": "quadratic_surface",
+        "n_active": n_active,
+        "quadratic_terms": n_active * (n_active + 1) // 2,
     }
-    if task_type == 'reg':
-        meta.update({
-            'context_rows': labeled_rows,
-            'target_r2': float(target_r2),
-            'context_realized_target_r2': float(realized_target_r2),
-            'noise_std': float(np.std(calibrated_noise[:labeled_rows])),
-            'oracle_exact': True,
-            'r2_oracle_bound': 0.0,
-        })
+    if task_type == "reg":
+        meta.update(
+            {
+                "context_rows": labeled_rows,
+                "target_r2": float(target_r2),
+                "context_realized_target_r2": float(realized_target_r2),
+                "noise_std": float(np.std(calibrated_noise[:labeled_rows])),
+                "oracle_exact": True,
+                "r2_oracle_bound": 0.0,
+            }
+        )
 
     out = {
-        'X': X,
-        'y': y.astype(np.float32),
-        'task_type': task_type,
-        'n_classes': actual_n_classes,
-        'filtered': False,
-        'meta': meta,
+        "X": X,
+        "y": y.astype(np.float32),
+        "task_type": task_type,
+        "n_classes": actual_n_classes,
+        "filtered": False,
+        "meta": meta,
     }
-    if task_type == 'reg':
-        out['y_clean'] = y_clean
+    if task_type == "reg":
+        out["y_clean"] = y_clean
     return out
 
 
-def _generate_sparse_nonlinear_episode(n_samples, n_features, task_type,
-                                       n_classes, rng,
-                                       reg_denoise=False,
-                                       probabilistic_labels=False,
-                                       context_rows=None):
+def _generate_sparse_nonlinear_episode(
+    n_samples, n_features, task_type, n_classes, rng, reg_denoise=False, probabilistic_labels=False, context_rows=None
+):
     """QSAR/MIP-inspired high-dim sparse nonlinear with realistic correlation structure.
 
     Real chemistry/genomics datasets have:
@@ -4471,9 +4410,8 @@ def _generate_sparse_nonlinear_episode(n_samples, n_features, task_type,
     - Remaining features are redundant proxies (correlated via blocks) or distractors
     - 30% of episodes add a threshold effect; 50% use heteroskedastic noise
     """
-    regression_context_rows = context_rows if task_type == 'reg' else None
-    labeled_rows = _resolve_context_rows(
-        n_samples, regression_context_rows)
+    regression_context_rows = context_rows if task_type == "reg" else None
+    labeled_rows = _resolve_context_rows(n_samples, regression_context_rows)
 
     # === 1. Feature blocks with multicollinearity ===
     # n_blocks: roughly n_features / avg_block_size, clipped to [max(1, n/10), min(80, n/2)]
@@ -4576,11 +4514,11 @@ def _generate_sparse_nonlinear_episode(n_samples, n_features, task_type,
         else:
             h = np.sin(h)
         y = h @ W2
-        fn_name = 'mlp'
+        fn_name = "mlp"
     elif fn_type == 1:
         fn_bank = [
             lambda x, r=rng: x,
-            lambda x, r=rng: x ** 2,
+            lambda x, r=rng: x**2,
             lambda x, r=rng: np.log1p(np.abs(x)) * np.sign(x),
             lambda x, r=rng: np.tanh(x * r.uniform(0.5, 2.0)),
             lambda x, r=rng: np.sin(x * r.uniform(1.0, 4.0)),
@@ -4592,7 +4530,7 @@ def _generate_sparse_nonlinear_episode(n_samples, n_features, task_type,
         for k in range(n_strong):
             fn = fn_bank[int(rng.integers(0, len(fn_bank)))]
             y += coefs[k] * fn(X_strong[:, k])
-        fn_name = 'gam'
+        fn_name = "gam"
     elif fn_type == 2:
         A = rng.standard_normal((n_strong, n_strong))
         M = (A + A.T) / 2.0
@@ -4602,7 +4540,7 @@ def _generate_sparse_nonlinear_episode(n_samples, n_features, task_type,
         M = (eigvecs * eigvals[None, :]) @ eigvecs.T
         w = rng.standard_normal(n_strong) * 0.5
         y = np.sum((X_strong @ M) * X_strong, axis=1) + X_strong @ w
-        fn_name = 'quadratic'
+        fn_name = "quadratic"
     elif fn_type == 3:
         n_centers = int(rng.integers(3, min(12, n_samples // 10 + 1)))
         centers = rng.standard_normal((n_centers, n_strong))
@@ -4611,9 +4549,9 @@ def _generate_sparse_nonlinear_episode(n_samples, n_features, task_type,
         y = np.zeros(n_samples, dtype=np.float64)
         for c_idx in range(n_centers):
             diffs = X_strong - centers[c_idx]
-            dists_sq = np.sum(diffs ** 2, axis=1)
+            dists_sq = np.sum(diffs**2, axis=1)
             y += weights[c_idx] * np.exp(-dists_sq / (2 * sigmas[c_idx] ** 2))
-        fn_name = 'rbf'
+        fn_name = "rbf"
     else:
         w = rng.standard_normal(n_strong)
         y = X_strong @ w
@@ -4623,7 +4561,7 @@ def _generate_sparse_nonlinear_episode(n_samples, n_features, task_type,
             i, j = rng.choice(n_strong, size=2, replace=False)
             coef = rng.standard_normal() * 0.5
             y += coef * X_strong[:, i] * X_strong[:, j]
-        fn_name = 'interactions'
+        fn_name = "interactions"
 
     # Smooth cap on strong signal
     y = 50.0 * np.tanh(y / 50.0)
@@ -4635,21 +4573,19 @@ def _generate_sparse_nonlinear_episode(n_samples, n_features, task_type,
         X_weak = X[:, weak_indices]
         weak_coefs = rng.standard_normal(n_weak)
         y_weak_raw = X_weak @ weak_coefs
-        y_weak_std = max(
-            float(np.std(y_weak_raw[:labeled_rows])), 1e-8)
+        y_weak_std = max(float(np.std(y_weak_raw[:labeled_rows])), 1e-8)
         y = y + y_weak_raw * (weak_scale_frac * y_strong_std / y_weak_std)
 
     # === 5. Occasional threshold effect (30%) ===
     if rng.random() < 0.30 and n_strong > 0:
         idx = int(rng.integers(0, n_strong))
         threshold = rng.uniform(-1.0, 1.0)
-        effect_scale = max(
-            float(np.std(y[:labeled_rows])), 1e-8) * rng.uniform(0.2, 0.6)
+        effect_scale = max(float(np.std(y[:labeled_rows])), 1e-8) * rng.uniform(0.2, 0.6)
         above = (X_strong[:, idx] > threshold).astype(np.float64) * 2.0 - 1.0
         y = y + above * effect_scale
 
     # === 6. Noise (heteroskedastic 50% / homoscedastic 50%) ===
-    if task_type == 'reg':
+    if task_type == "reg":
         y_clean = y.copy()
         y_std = float(np.std(y[:labeled_rows]))
         target_r2 = 1.0
@@ -4658,32 +4594,26 @@ def _generate_sparse_nonlinear_episode(n_samples, n_features, task_type,
             if regression_context_rows is not None:
                 target_r2 = rng.uniform(0.65, 0.95)
             else:
-                target_r2 = (
-                    rng.uniform(0.5, 0.95)
-                    if reg_denoise else rng.uniform(0.3, 0.90)
-                )
+                target_r2 = rng.uniform(0.5, 0.95) if reg_denoise else rng.uniform(0.3, 0.90)
             base_noise_std = y_std * np.sqrt((1.0 - target_r2) / max(target_r2, 1e-6))
 
             if rng.random() < 0.5 and n_strong > 0:
                 driver_idx = int(rng.integers(0, n_strong))
                 driver = X_strong[:, driver_idx]
                 noise_scale = np.abs(driver) + 0.5
-                noise_scale = noise_scale / max(
-                    float(np.mean(noise_scale[:labeled_rows])), 1e-8)
-                raw_noise = (
-                    rng.standard_normal(n_samples) * base_noise_std * noise_scale)
+                noise_scale = noise_scale / max(float(np.mean(noise_scale[:labeled_rows])), 1e-8)
+                raw_noise = rng.standard_normal(n_samples) * base_noise_std * noise_scale
             else:
                 raw_noise = rng.standard_normal(n_samples) * base_noise_std
             calibrated_noise, realized_target_r2 = _calibrate_noise_to_target_r2(
-                y_clean, raw_noise, target_r2,
-                context_rows=regression_context_rows)
+                y_clean, raw_noise, target_r2, context_rows=regression_context_rows
+            )
             y = y_clean + calibrated_noise
         else:
             realized_target_r2 = 1.0
             y = y_clean.copy()
 
-        y, y_clean, _mu, _std = _normalize_target_pair(
-            y, y_clean, context_rows=regression_context_rows)
+        y, y_clean, _mu, _std = _normalize_target_pair(y, y_clean, context_rows=regression_context_rows)
         y = y.astype(np.float32)
         y_clean = y_clean.astype(np.float32)
         actual_n_classes = None
@@ -4700,40 +4630,41 @@ def _generate_sparse_nonlinear_episode(n_samples, n_features, task_type,
         actual_n_classes = n_classes
 
     meta = {
-        'sparse_nonlinear_v2': True,
-        'generator_family': 'sparse_nonlinear',
-        'n_strong': n_strong,
-        'n_weak': n_weak,
-        'n_blocks': n_blocks,
-        'fn_type': fn_name,
+        "sparse_nonlinear_v2": True,
+        "generator_family": "sparse_nonlinear",
+        "n_strong": n_strong,
+        "n_weak": n_weak,
+        "n_blocks": n_blocks,
+        "fn_type": fn_name,
     }
-    if task_type == 'reg':
-        meta.update({
-            'context_rows': labeled_rows,
-            'target_r2': float(target_r2),
-            'context_realized_target_r2': float(realized_target_r2),
-            'noise_std': float(np.std(calibrated_noise[:labeled_rows])),
-            'oracle_exact': True,
-            'r2_oracle_bound': 0.0,
-        })
+    if task_type == "reg":
+        meta.update(
+            {
+                "context_rows": labeled_rows,
+                "target_r2": float(target_r2),
+                "context_realized_target_r2": float(realized_target_r2),
+                "noise_std": float(np.std(calibrated_noise[:labeled_rows])),
+                "oracle_exact": True,
+                "r2_oracle_bound": 0.0,
+            }
+        )
 
     out = {
-        'X': X.astype(np.float32),
-        'y': y.astype(np.float32),
-        'task_type': task_type,
-        'n_classes': actual_n_classes,
-        'filtered': False,
-        'meta': meta,
+        "X": X.astype(np.float32),
+        "y": y.astype(np.float32),
+        "task_type": task_type,
+        "n_classes": actual_n_classes,
+        "filtered": False,
+        "meta": meta,
     }
-    if task_type == 'reg':
-        out['y_clean'] = y_clean
+    if task_type == "reg":
+        out["y_clean"] = y_clean
     return out
 
 
-def _generate_lookup_prior_episode(n_samples, n_features, task_type,
-                                   n_classes, rng,
-                                   probabilistic_labels=False,
-                                   context_rows=None):
+def _generate_lookup_prior_episode(
+    n_samples, n_features, task_type, n_classes, rng, probabilistic_labels=False, context_rows=None
+):
     """Generate a dataset with categorical lookup targets.
 
     Produces data where y = f(entity_ids) + continuous_signal + noise.
@@ -4744,23 +4675,20 @@ def _generate_lookup_prior_episode(n_samples, n_features, task_type,
     Target depends primarily on entity-specific effects.
     """
     X = np.zeros((n_samples, n_features), dtype=np.float64)
-    regression_context_rows = context_rows if task_type == 'reg' else None
-    labeled_rows = _resolve_context_rows(
-        n_samples, regression_context_rows)
+    regression_context_rows = context_rows if task_type == "reg" else None
+    labeled_rows = _resolve_context_rows(n_samples, regression_context_rows)
 
     # --- Categorical ID columns (1-3) ---
-    if task_type == 'reg':
+    if task_type == "reg":
         # Retain an ID column even for explicit one- and two-feature episodes.
         if n_features <= 1:
             n_id_cols, n_cont = 1, 0
         else:
-            n_id_cols = min(
-                int(rng.integers(1, 4)), max(1, n_features - 1))
+            n_id_cols = min(int(rng.integers(1, 4)), max(1, n_features - 1))
             n_cont = n_features - n_id_cols
     else:
         # Preserve the released classification geometry.
-        n_id_cols = min(
-            int(rng.integers(1, 4)), max(1, n_features // 3))
+        n_id_cols = min(int(rng.integers(1, 4)), max(1, n_features // 3))
         n_cont = max(2, n_features - n_id_cols)
         n_id_cols = n_features - n_cont
 
@@ -4780,23 +4708,17 @@ def _generate_lookup_prior_episode(n_samples, n_features, task_type,
             min_K = 3 if has_query and labeled_rows >= 2 else 2
             max_K = max(min_K, min(200, max(1, labeled_rows // 8)))
             min_K = min(10, max_K)
-            K = (
-                max_K if min_K == max_K
-                else int(np.exp(rng.uniform(
-                    np.log(float(min_K)), np.log(float(max_K)))))
-            )
+            K = max_K if min_K == max_K else int(np.exp(rng.uniform(np.log(float(min_K)), np.log(float(max_K)))))
             K = int(np.clip(K, min_K, max_K))
         elif rng.random() < 0.40:
             # High-cardinality (near-unique IDs): K close to n_samples
             max_K = int(min(300, max(20, n_samples // 2)))
-            K = int(np.exp(rng.uniform(
-                np.log(10.0), np.log(float(max_K)))))
+            K = int(np.exp(rng.uniform(np.log(10.0), np.log(float(max_K)))))
             K = int(np.clip(K, 10, max_K))
         else:
             # Moderate cardinality (counts more useful)
             max_K = int(min(200, max(10, n_samples // 4)))
-            K = int(np.exp(rng.uniform(
-                np.log(10.0), np.log(float(max_K)))))
+            K = int(np.exp(rng.uniform(np.log(10.0), np.log(float(max_K)))))
             K = int(np.clip(K, 10, max_K))
 
         # Zipf-like frequency. Stronger long-tail (alpha 1.0-3.0 vs old
@@ -4812,8 +4734,7 @@ def _generate_lookup_prior_episode(n_samples, n_features, task_type,
             n_query = n_samples - labeled_rows
             min_seen = min(2, labeled_rows)
             if n_query > 0 and K > min_seen:
-                desired_unseen = max(
-                    1, int(np.ceil(K * rng.uniform(0.10, 0.25))))
+                desired_unseen = max(1, int(np.ceil(K * rng.uniform(0.10, 0.25))))
                 n_unseen = min(desired_unseen, K - min_seen)
             else:
                 n_unseen = 0
@@ -4822,52 +4743,41 @@ def _generate_lookup_prior_episode(n_samples, n_features, task_type,
             seen_ids = id_order[n_unseen:]
             seen_probs = probs[seen_ids]
             seen_probs /= seen_probs.sum()
-            cat_ids[:labeled_rows] = rng.choice(
-                seen_ids, size=labeled_rows, replace=True, p=seen_probs)
+            cat_ids[:labeled_rows] = rng.choice(seen_ids, size=labeled_rows, replace=True, p=seen_probs)
             coverage_size = min(len(seen_ids), labeled_rows)
-            coverage_positions = rng.choice(
-                labeled_rows, size=coverage_size, replace=False)
-            cat_ids[coverage_positions] = rng.permutation(
-                seen_ids)[:coverage_size]
+            coverage_positions = rng.choice(labeled_rows, size=coverage_size, replace=False)
+            cat_ids[coverage_positions] = rng.permutation(seen_ids)[:coverage_size]
             if n_query > 0:
-                cat_ids[labeled_rows:] = rng.choice(
-                    seen_ids, size=n_query, replace=True, p=seen_probs)
+                cat_ids[labeled_rows:] = rng.choice(seen_ids, size=n_query, replace=True, p=seen_probs)
                 if n_unseen:
                     cold_fraction = rng.uniform(0.05, 0.20)
                     n_cold = max(1, int(round(n_query * cold_fraction)))
-                    cold_positions = labeled_rows + rng.choice(
-                        n_query, size=min(n_cold, n_query), replace=False)
+                    cold_positions = labeled_rows + rng.choice(n_query, size=min(n_cold, n_query), replace=False)
                     unseen_probs = probs[unseen_ids]
                     unseen_probs /= unseen_probs.sum()
                     cat_ids[cold_positions] = rng.choice(
-                        unseen_ids, size=len(cold_positions), replace=True,
-                        p=unseen_probs)
-            context_counts = np.bincount(
-                cat_ids[:labeled_rows], minlength=K)
+                        unseen_ids, size=len(cold_positions), replace=True, p=unseen_probs
+                    )
+            context_counts = np.bincount(cat_ids[:labeled_rows], minlength=K)
             query_ids = cat_ids[labeled_rows:]
             unseen = (
-                ~np.isin(query_ids, np.flatnonzero(context_counts))
-                if len(query_ids) else np.asarray([], dtype=bool)
+                ~np.isin(query_ids, np.flatnonzero(context_counts)) if len(query_ids) else np.asarray([], dtype=bool)
             )
-            minimum_context_counts.append(
-                int(context_counts[seen_ids].min()) if len(seen_ids) else 0)
-            query_unseen_fractions.append(
-                float(unseen.mean()) if len(unseen) else 0.0)
+            minimum_context_counts.append(int(context_counts[seen_ids].min()) if len(seen_ids) else 0)
+            query_unseen_fractions.append(float(unseen.mean()) if len(unseen) else 0.0)
             unseen_cardinalities.append(int(n_unseen))
         cardinalities.append(K)
 
         # Force some IDs to appear EXACTLY ONCE (rare singleton pattern).
         # Real high-card datasets have ~5-25% singleton rate. Pick random
         # rows to overwrite with rare-IDs (drawn from the tail of K).
-        if (regression_context_rows is None
-                and rng.random() < 0.50 and K > 30):
+        if regression_context_rows is None and rng.random() < 0.50 and K > 30:
             singleton_frac = rng.uniform(0.05, 0.25)
             n_singletons = max(1, int(n_samples * singleton_frac))
             # IDs in the tail (less common already) — promote to singletons
             tail_start = max(K - n_singletons, K // 2)
             singleton_ids = rng.choice(
-                np.arange(tail_start, K), size=n_singletons,
-                replace=(K - tail_start < n_singletons)
+                np.arange(tail_start, K), size=n_singletons, replace=(K - tail_start < n_singletons)
             )
             singleton_rows = rng.choice(n_samples, size=n_singletons, replace=False)
             cat_ids[singleton_rows] = singleton_ids
@@ -4876,12 +4786,9 @@ def _generate_lookup_prior_episode(n_samples, n_features, task_type,
         n_groups = max(2, min(20, int(np.sqrt(K))))
         entity_group = rng.integers(0, n_groups, size=K)
         group_effect = rng.standard_normal(n_groups) * 1.5
-        entity_effect = (
-            0.7 * group_effect[entity_group]
-            + 0.4 * rng.standard_normal(K)
-        )
+        entity_effect = 0.7 * group_effect[entity_group] + 0.4 * rng.standard_normal(K)
         entity_effect -= entity_effect.mean()
-        entity_effect /= (np.std(entity_effect) + 1e-8)
+        entity_effect /= np.std(entity_effect) + 1e-8
 
         # Weight decreases for secondary ID columns
         weight = 1.0 if j == 0 else rng.uniform(0.3, 0.7)
@@ -4903,22 +4810,19 @@ def _generate_lookup_prior_episode(n_samples, n_features, task_type,
     # Weak continuous signal (1-3 features)
     n_active_cont = min(int(rng.integers(1, 4)), n_cont) if n_cont else 0
     active_cols = (
-        rng.choice(range(n_id_cols, n_features),
-                   size=n_active_cont, replace=False)
-        if n_active_cont else np.asarray([], dtype=np.int64)
+        rng.choice(range(n_id_cols, n_features), size=n_active_cont, replace=False)
+        if n_active_cont
+        else np.asarray([], dtype=np.int64)
     )
     beta = rng.standard_normal(n_active_cont) * 0.5
-    cont_signal = (
-        X[:, active_cols] @ beta
-        if n_active_cont else np.zeros(n_samples, dtype=np.float64)
-    )
+    cont_signal = X[:, active_cols] @ beta if n_active_cont else np.zeros(n_samples, dtype=np.float64)
 
     # Combined signal: entity dominant, continuous secondary
     entity_weight = rng.uniform(0.6, 0.9)
     y_raw = entity_weight * entity_signal + (1 - entity_weight) * cont_signal
 
     # --- Create final target ---
-    if task_type == 'reg':
+    if task_type == "reg":
         y_clean = y_raw.copy()
         y_std = float(np.std(y_raw[:labeled_rows]))
         target_r2 = 1.0
@@ -4926,13 +4830,12 @@ def _generate_lookup_prior_episode(n_samples, n_features, task_type,
         if y_std > 1e-8:
             target_r2 = rng.uniform(0.4, 0.90)
             calibrated_noise, realized_target_r2 = _calibrate_noise_to_target_r2(
-                y_clean, rng.standard_normal(n_samples), target_r2,
-                context_rows=regression_context_rows)
+                y_clean, rng.standard_normal(n_samples), target_r2, context_rows=regression_context_rows
+            )
             y_raw = y_clean + calibrated_noise
         else:
             realized_target_r2 = 1.0
-        y_raw, y_clean, _mu, _std = _normalize_target_pair(
-            y_raw, y_clean, context_rows=regression_context_rows)
+        y_raw, y_clean, _mu, _std = _normalize_target_pair(y_raw, y_clean, context_rows=regression_context_rows)
         y = y_raw.astype(np.float32, copy=False)
         y_clean = y_clean.astype(np.float32)
         actual_n_classes = None
@@ -4953,42 +4856,49 @@ def _generate_lookup_prior_episode(n_samples, n_features, task_type,
             X[:, j] = rng.standard_normal(n_samples)
 
     meta = {
-        'lookup_prior': True,
-        'generator_family': 'lookup_prior',
-        'n_id_cols': n_id_cols,
+        "lookup_prior": True,
+        "generator_family": "lookup_prior",
+        "n_id_cols": n_id_cols,
     }
-    if task_type == 'reg':
-        meta.update({
-            'cardinalities': cardinalities,
-            'minimum_context_counts': minimum_context_counts,
-            'query_unseen_fractions': query_unseen_fractions,
-            'unseen_cardinalities': unseen_cardinalities,
-            'context_rows': labeled_rows,
-            'target_r2': float(target_r2),
-            'context_realized_target_r2': float(realized_target_r2),
-            'noise_std': float(np.std(calibrated_noise[:labeled_rows])),
-            'oracle_exact': True,
-            'r2_oracle_bound': 0.0,
-        })
+    if task_type == "reg":
+        meta.update(
+            {
+                "cardinalities": cardinalities,
+                "minimum_context_counts": minimum_context_counts,
+                "query_unseen_fractions": query_unseen_fractions,
+                "unseen_cardinalities": unseen_cardinalities,
+                "context_rows": labeled_rows,
+                "target_r2": float(target_r2),
+                "context_realized_target_r2": float(realized_target_r2),
+                "noise_std": float(np.std(calibrated_noise[:labeled_rows])),
+                "oracle_exact": True,
+                "r2_oracle_bound": 0.0,
+            }
+        )
 
     out = {
-        'X': X,
-        'y': y.astype(np.float32),
-        'task_type': task_type,
-        'n_classes': actual_n_classes,
-        'filtered': False,
-        'meta': meta,
+        "X": X,
+        "y": y.astype(np.float32),
+        "task_type": task_type,
+        "n_classes": actual_n_classes,
+        "filtered": False,
+        "meta": meta,
     }
-    if task_type == 'reg':
-        out['y_clean'] = y_clean
+    if task_type == "reg":
+        out["y_clean"] = y_clean
     return out
 
 
-def _generate_clean_lowdim_episode(n_samples, n_features_batch, task_type,
-                                   n_classes, rng,
-                                   probabilistic_labels=False,
-                                   nominal_categoricals=False,
-                                   context_rows=None):
+def _generate_clean_lowdim_episode(
+    n_samples,
+    n_features_batch,
+    task_type,
+    n_classes,
+    rng,
+    probabilistic_labels=False,
+    nominal_categoricals=False,
+    context_rows=None,
+):
     """Generate a clean, low-dimensional episode with high categorical fraction.
 
     Covers real-world tabular datasets with 5-30 features, mostly categorical,
@@ -5038,7 +4948,7 @@ def _generate_clean_lowdim_episode(n_samples, n_features_batch, task_type,
             # Nominal: random effects per category
             effects = rng.standard_normal(cardinality)
             effects -= effects.mean()
-            effects /= (np.std(effects) + 1e-8)
+            effects /= np.std(effects) + 1e-8
             cat_effects_list.append(effects[cat_ids])
         else:
             # Ordinal: category ID is the value (preserves ordering)
@@ -5047,7 +4957,7 @@ def _generate_clean_lowdim_episode(n_samples, n_features_batch, task_type,
         X[:, j] = cat_ids.astype(np.float64)
 
     # --- Generate target y ---
-    if task_type == 'reg':
+    if task_type == "reg":
         # Simple target: sparse linear on continuous + categorical effects
         y = np.zeros(n_samples, dtype=np.float64)
         n_active = min(int(rng.integers(1, 6)), n_features)
@@ -5120,18 +5030,16 @@ def _generate_clean_lowdim_episode(n_samples, n_features_batch, task_type,
                 X[finite, col] = np.clip(col_vals[finite], lo, hi)
 
     return {
-        'X': X.astype(np.float64),
-        'y': y.astype(np.float32),
-        'task_type': task_type,
-        'n_classes': actual_n_classes,
-        'filtered': False,
-        'meta': {'clean_lowdim': True, 'actual_n_features': n_features},
+        "X": X.astype(np.float64),
+        "y": y.astype(np.float32),
+        "task_type": task_type,
+        "n_classes": actual_n_classes,
+        "filtered": False,
+        "meta": {"clean_lowdim": True, "actual_n_features": n_features},
     }
 
 
-def _generate_cat_dominant_episode(n_samples, n_features, task_type,
-                                    n_classes, rng,
-                                    probabilistic_labels=False):
+def _generate_cat_dominant_episode(n_samples, n_features, task_type, n_classes, rng, probabilistic_labels=False):
     """Generate a categorical-dominant regression dataset.
 
     Fills the gap between SCM (mostly continuous, only 1-3 cat cols via
@@ -5242,15 +5150,14 @@ def _generate_cat_dominant_episode(n_samples, n_features, task_type,
     # Small continuous-feature signal (cat dominant)
     if n_cont > 0:
         n_active_cont = min(n_cont, int(rng.integers(1, max(2, n_cont // 2 + 1))))
-        active_cont_cols = rng.choice(range(n_cat, n_features),
-                                        size=n_active_cont, replace=False)
+        active_cont_cols = rng.choice(range(n_cat, n_features), size=n_active_cont, replace=False)
         beta = rng.standard_normal(n_active_cont) * 0.4
         cont_signal = X[:, active_cont_cols] @ beta
         if np.std(y_raw) > 1e-8 and np.std(cont_signal) > 1e-8:
             y_raw = (y_raw / np.std(y_raw)) + 0.3 * (cont_signal / np.std(cont_signal))
 
     # Calibrated noise + standardize
-    if task_type == 'reg':
+    if task_type == "reg":
         y_std = float(np.std(y_raw))
         if y_std > 1e-8:
             target_r2 = float(rng.uniform(0.45, 0.92))
@@ -5282,24 +5189,19 @@ def _generate_cat_dominant_episode(n_samples, n_features, task_type,
             median = sorted_vals[n_fin // 2]
             mad = np.median(np.abs(sorted_vals - median))
             if mad > 1e-12:
-                X[finite, col] = np.clip(col_vals[finite],
-                                           median - 6 * mad,
-                                           median + 6 * mad)
+                X[finite, col] = np.clip(col_vals[finite], median - 6 * mad, median + 6 * mad)
 
     return {
-        'X': X.astype(np.float64),
-        'y': y.astype(np.float32),
-        'task_type': task_type,
-        'n_classes': actual_n_classes,
-        'filtered': False,
-        'meta': {'cat_dominant': True, 'n_cat': n_cat,
-                 'cat_frac': float(n_cat) / max(n_features, 1)},
+        "X": X.astype(np.float64),
+        "y": y.astype(np.float32),
+        "task_type": task_type,
+        "n_classes": actual_n_classes,
+        "filtered": False,
+        "meta": {"cat_dominant": True, "n_cat": n_cat, "cat_frac": float(n_cat) / max(n_features, 1)},
     }
 
 
-def _generate_binary_fingerprint_episode(n_samples, n_features, task_type,
-                                          n_classes, rng,
-                                          probabilistic_labels=False):
+def _generate_binary_fingerprint_episode(n_samples, n_features, task_type, n_classes, rng, probabilistic_labels=False):
     """Generate a binary-fingerprint regression episode.
 
     Targets the QSAR-TID-11 archetype: a high-dimensional binary feature
@@ -5325,12 +5227,10 @@ def _generate_binary_fingerprint_episode(n_samples, n_features, task_type,
     for j in range(n_features):
         s = int(X[:, j].sum())
         if s == 0:
-            flip_idx = rng.choice(n_samples, size=max(1, n_samples // 100),
-                                    replace=False)
+            flip_idx = rng.choice(n_samples, size=max(1, n_samples // 100), replace=False)
             X[flip_idx, j] = 1.0
         elif s == n_samples:
-            flip_idx = rng.choice(n_samples, size=max(1, n_samples // 100),
-                                    replace=False)
+            flip_idx = rng.choice(n_samples, size=max(1, n_samples // 100), replace=False)
             X[flip_idx, j] = 0.0
 
     # --- Active subset (signal-bearing bits) ---
@@ -5392,7 +5292,7 @@ def _generate_binary_fingerprint_episode(n_samples, n_features, task_type,
     # Smooth clip before noise
     y_raw = 50.0 * np.tanh(y_raw / 50.0)
 
-    if task_type == 'reg':
+    if task_type == "reg":
         y_std = float(np.std(y_raw))
         if y_std > 1e-8:
             target_r2 = float(rng.uniform(0.40, 0.90))
@@ -5415,19 +5315,16 @@ def _generate_binary_fingerprint_episode(n_samples, n_features, task_type,
         actual_n_classes = n_classes
 
     return {
-        'X': X.astype(np.float64),
-        'y': y.astype(np.float32),
-        'task_type': task_type,
-        'n_classes': actual_n_classes,
-        'filtered': False,
-        'meta': {'binary_fingerprint': True, 'n_active': n_active,
-                 'mean_on_rate': float(on_rates.mean())},
+        "X": X.astype(np.float64),
+        "y": y.astype(np.float32),
+        "task_type": task_type,
+        "n_classes": actual_n_classes,
+        "filtered": False,
+        "meta": {"binary_fingerprint": True, "n_active": n_active, "mean_on_rate": float(on_rates.mean())},
     }
 
 
-def _generate_temporal_prior_episode(n_samples, n_features, task_type,
-                                      n_classes, rng,
-                                      probabilistic_labels=False):
+def _generate_temporal_prior_episode(n_samples, n_features, task_type, n_classes, rng, probabilistic_labels=False):
     """Generate a temporally-structured regression episode.
 
     The generated rows are in TEMPORAL ORDER. Since the trainer's eval_pos
@@ -5468,7 +5365,7 @@ def _generate_temporal_prior_episode(n_samples, n_features, task_type,
         rho = rng.uniform(0.3, 0.95, size=n_features)
         X = np.zeros((n_samples, n_features), dtype=np.float64)
         X[0] = rng.standard_normal(n_features)
-        noise_scale = np.sqrt(1.0 - rho ** 2)
+        noise_scale = np.sqrt(1.0 - rho**2)
         for ti in range(1, n_samples):
             X[ti] = rho * X[ti - 1] + noise_scale * rng.standard_normal(n_features)
     elif mode == 1:
@@ -5577,7 +5474,7 @@ def _generate_temporal_prior_episode(n_samples, n_features, task_type,
     y_raw = 50.0 * np.tanh(y_raw / 50.0)
 
     # Calibrated noise + standardize
-    if task_type == 'reg':
+    if task_type == "reg":
         y_std = float(np.std(y_raw))
         if y_std > 1e-8:
             target_r2 = float(rng.uniform(0.45, 0.92))
@@ -5611,44 +5508,37 @@ def _generate_temporal_prior_episode(n_samples, n_features, task_type,
             median = sorted_vals[n_fin // 2]
             mad = np.median(np.abs(sorted_vals - median))
             if mad > 1e-12:
-                X[finite, col] = np.clip(col_vals[finite],
-                                          median - 8 * mad,
-                                          median + 8 * mad)
+                X[finite, col] = np.clip(col_vals[finite], median - 8 * mad, median + 8 * mad)
 
     return {
-        'X': X.astype(np.float64),
-        'y': y.astype(np.float32),
-        'task_type': task_type,
-        'n_classes': actual_n_classes,
-        'filtered': False,
-        'meta': {'temporal_prior': True, 'mode': int(mode)},
+        "X": X.astype(np.float64),
+        "y": y.astype(np.float32),
+        "task_type": task_type,
+        "n_classes": actual_n_classes,
+        "filtered": False,
+        "meta": {"temporal_prior": True, "mode": int(mode)},
     }
 
 
-def generate_dataset_filtered(n_samples, n_features, task_type, n_classes=None,
-                              rng=None, max_retries=3, quality_rules=None, **kwargs):
+def generate_dataset_filtered(
+    n_samples, n_features, task_type, n_classes=None, rng=None, max_retries=3, quality_rules=None, **kwargs
+):
     """Generate until the actual public episode passes requested filters."""
-    v4_filter = kwargs.get('augment_v4', False) and kwargs.get(
-        'v4_filter', True)
-    learnability_filter = (
-        kwargs.pop('learnability_filter', False) or v4_filter)
-    learnability_filter_reg_min_score = kwargs.pop(
-        'learnability_filter_reg_min_score', 0.10)
+    v4_filter = kwargs.get("augment_v4", False) and kwargs.get("v4_filter", True)
+    learnability_filter = kwargs.pop("learnability_filter", False) or v4_filter
+    learnability_filter_reg_min_score = kwargs.pop("learnability_filter_reg_min_score", 0.10)
     # Keep public classification knobs accepted even though the shared helper
     # dispatches them through staging's task-aware filter implementation.
-    kwargs.pop('learnability_filter_cls_min_score', 0.60)
-    kwargs.pop('learnability_filter_cls_margin', 0.10)
-    icl_filter_model = kwargs.pop('icl_filter_model', None)
-    kwargs.pop('icl_filter_cls_min_auc', 0.55)
-    icl_filter_reg_min_r2 = kwargs.pop('icl_filter_reg_min_r2', 0.05)
-    icl_scaling_filter = kwargs.pop('icl_scaling_filter', False)
-    icl_scaling_min_improvement = kwargs.pop(
-        'icl_scaling_min_improvement', 0.03)
-    context_rows = kwargs.get('context_rows')
+    kwargs.pop("learnability_filter_cls_min_score", 0.60)
+    kwargs.pop("learnability_filter_cls_margin", 0.10)
+    icl_filter_model = kwargs.pop("icl_filter_model", None)
+    kwargs.pop("icl_filter_cls_min_auc", 0.55)
+    icl_filter_reg_min_r2 = kwargs.pop("icl_filter_reg_min_r2", 0.05)
+    icl_scaling_filter = kwargs.pop("icl_scaling_filter", False)
+    icl_scaling_min_improvement = kwargs.pop("icl_scaling_min_improvement", 0.03)
+    context_rows = kwargs.get("context_rows")
     return _generate_filtered_episode(
-        lambda: generate_dataset(
-            n_samples, n_features, task_type,
-            n_classes=n_classes, rng=rng, **kwargs),
+        lambda: generate_dataset(n_samples, n_features, task_type, n_classes=n_classes, rng=rng, **kwargs),
         max_retries=max_retries,
         task_type=task_type,
         quality_rules=quality_rules,
@@ -5662,8 +5552,7 @@ def generate_dataset_filtered(n_samples, n_features, task_type, n_classes=None,
     )
 
 
-def _apply_train_feature_augmentation(X_batch, rng, p_episode=0.6,
-                                       p_col=0.40):
+def _apply_train_feature_augmentation(X_batch, rng, p_episode=0.6, p_col=0.40):
     """Train-time per-column feature distribution augmentation.
 
     Closes the synth/real distribution-shape gap. The literature consensus
@@ -5719,8 +5608,7 @@ def _apply_train_feature_augmentation(X_batch, rng, p_episode=0.6,
             if unique_count < cat_threshold_unique:
                 continue
             # Also skip if col looks integer-encoded
-            if np.allclose(col[finite], np.round(col[finite]), atol=1e-6) \
-                    and unique_count < N // 4:
+            if np.allclose(col[finite], np.round(col[finite]), atol=1e-6) and unique_count < N // 4:
                 continue
 
             if rng.random() >= p_col:
@@ -5776,8 +5664,7 @@ def _apply_train_feature_augmentation(X_batch, rng, p_episode=0.6,
                     continue
 
                 # Sanity: replace bad values
-                new_col = np.nan_to_num(new_col, nan=0.0,
-                                         posinf=0.0, neginf=0.0)
+                new_col = np.nan_to_num(new_col, nan=0.0, posinf=0.0, neginf=0.0)
 
                 # CRITICAL: re-standardize per-col after transform. YJ + log +
                 # exp produce wildly-different scales; encoder assumes z-scored
@@ -5798,47 +5685,67 @@ def _apply_train_feature_augmentation(X_batch, rng, p_episode=0.6,
     return X_aug
 
 
-def generate_batch(batch_size, n_samples, n_features, task_type,
-                   n_classes=None, rng=None, augment=False, augment_v3=False,
-                   rich_reg_targets=True, scale_variation=True,
-                   augment_v4=False, v4_filter=True, v4_no_edge_noise=True,
-                   synth_v5=False, synth_v5_denoise=True,
-                   synth_v5_declone=True, synth_v5_mixture=False,
-                   reg_prior_prob=0.0, reg_denoise=False,
-                   reg_deterministic_prob=0.20,
-                   reg_dense=False,
-                   scm_prior=False, scm_prior_prob=0.5,
-                   probabilistic_labels=False, nominal_categoricals=False,
-                   enhanced_missingness=False,
-                   clean_lowdim_prob=0.0,
-                   tree_prior_prob=0.0, lookup_prior_prob=0.0,
-                   quadratic_surface_prob=0.0, sparse_nonlinear_prob=0.0,
-                   gp_prior_prob=0.0,
-                   cat_dominant_prob=0.0,
-                   binary_fingerprint_prob=0.0,
-                   temporal_prior_prob=0.0,
-                   train_feature_augment_prob=0.0,
-                   context_missingness_prob=0.0,
-                   realistic_augmentation_prob=0.0,
-                   y_transform_prob=0.0,
-                   cap_injection_prob=0.0,
-                   heavy_tail_prior_prob=0.0,
-                   pareto_importance_prob=0.0,
-                   latent_factor_prob=0.0,
-                   high_cap_prob=0.0,
-                   low_unique_y_prob=0.0,
-                   learnability_filter=False,
-                   learnability_filter_cls_min_score=0.60,
-                   learnability_filter_cls_margin=0.10,
-                   learnability_filter_reg_min_score=0.10,
-                   icl_filter_model=None,
-                   icl_filter_cls_min_auc=0.55,
-                   icl_filter_reg_min_r2=0.05,
-                   icl_scaling_filter=False,
-                   icl_scaling_min_improvement=0.03,
-                   quality_rules=None, filter_max_retries=3,
-                   context_rows=None, oracle_sink=None,
-                   cap_high_fraction_prob=0.0):
+def generate_batch(
+    batch_size,
+    n_samples,
+    n_features,
+    task_type,
+    n_classes=None,
+    rng=None,
+    augment=False,
+    augment_v3=False,
+    rich_reg_targets=True,
+    scale_variation=True,
+    augment_v4=False,
+    v4_filter=True,
+    v4_no_edge_noise=True,
+    synth_v5=False,
+    synth_v5_denoise=True,
+    synth_v5_declone=True,
+    synth_v5_mixture=False,
+    reg_prior_prob=0.0,
+    reg_denoise=False,
+    reg_deterministic_prob=0.20,
+    reg_dense=False,
+    scm_prior=False,
+    scm_prior_prob=0.5,
+    probabilistic_labels=False,
+    nominal_categoricals=False,
+    enhanced_missingness=False,
+    clean_lowdim_prob=0.0,
+    tree_prior_prob=0.0,
+    lookup_prior_prob=0.0,
+    quadratic_surface_prob=0.0,
+    sparse_nonlinear_prob=0.0,
+    gp_prior_prob=0.0,
+    cat_dominant_prob=0.0,
+    binary_fingerprint_prob=0.0,
+    temporal_prior_prob=0.0,
+    train_feature_augment_prob=0.0,
+    context_missingness_prob=0.0,
+    realistic_augmentation_prob=0.0,
+    y_transform_prob=0.0,
+    cap_injection_prob=0.0,
+    heavy_tail_prior_prob=0.0,
+    pareto_importance_prob=0.0,
+    latent_factor_prob=0.0,
+    high_cap_prob=0.0,
+    low_unique_y_prob=0.0,
+    learnability_filter=False,
+    learnability_filter_cls_min_score=0.60,
+    learnability_filter_cls_margin=0.10,
+    learnability_filter_reg_min_score=0.10,
+    icl_filter_model=None,
+    icl_filter_cls_min_auc=0.55,
+    icl_filter_reg_min_r2=0.05,
+    icl_scaling_filter=False,
+    icl_scaling_min_improvement=0.03,
+    quality_rules=None,
+    filter_max_retries=3,
+    context_rows=None,
+    oracle_sink=None,
+    cap_high_fraction_prob=0.0,
+):
     """Generate a batch of synthetic datasets with the same dimensions.
 
     Args:
@@ -5883,7 +5790,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
     """
     if rng is None:
         rng = np.random.default_rng()
-    v6_context_rows = context_rows if task_type == 'reg' else None
+    v6_context_rows = context_rows if task_type == "reg" else None
     if cap_high_fraction_prob > 0:
         high_cap_prob = cap_high_fraction_prob
 
@@ -5893,70 +5800,100 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
     actual_n_classes = n_classes
 
     for _ in range(batch_size):
-        selected_family = 'other'
+        selected_family = "other"
         # --- Clean low-dim regime ---
         # Simple 5-30 feature datasets with high categorical fraction,
         # low noise. Covers Amazon-like tabular tasks.
         if clean_lowdim_prob > 0 and rng.random() < clean_lowdim_prob:
             data = _generate_clean_lowdim_episode(
-                n_samples, n_features, task_type, n_classes, rng,
+                n_samples,
+                n_features,
+                task_type,
+                n_classes,
+                rng,
                 probabilistic_labels=probabilistic_labels,
                 nominal_categoricals=nominal_categoricals,
-                context_rows=v6_context_rows)
+                context_rows=v6_context_rows,
+            )
         # --- Tree-ensemble prior ---
         # Piecewise-constant targets from random decision tree ensembles.
         elif tree_prior_prob > 0 and rng.random() < tree_prior_prob:
-            selected_family = 'tree_prior'
+            selected_family = "tree_prior"
             data = _generate_tree_prior_episode(
-                n_samples, n_features, task_type, n_classes, rng,
+                n_samples,
+                n_features,
+                task_type,
+                n_classes,
+                rng,
                 probabilistic_labels=probabilistic_labels,
-                context_rows=v6_context_rows)
+                context_rows=v6_context_rows,
+            )
         # --- Categorical lookup prior ---
         # Entity-lookup data: y = f(entity_id) + noise.
         elif lookup_prior_prob > 0 and rng.random() < lookup_prior_prob:
             data = _generate_lookup_prior_episode(
-                n_samples, n_features, task_type, n_classes, rng,
+                n_samples,
+                n_features,
+                task_type,
+                n_classes,
+                rng,
                 probabilistic_labels=probabilistic_labels,
-                context_rows=v6_context_rows)
+                context_rows=v6_context_rows,
+            )
         # --- Quadratic response surface prior ---
         elif quadratic_surface_prob > 0 and rng.random() < quadratic_surface_prob:
             data = _generate_quadratic_surface_episode(
-                n_samples, n_features, task_type, n_classes, rng,
+                n_samples,
+                n_features,
+                task_type,
+                n_classes,
+                rng,
                 reg_denoise=reg_denoise,
                 probabilistic_labels=probabilistic_labels,
-                context_rows=v6_context_rows)
+                context_rows=v6_context_rows,
+            )
         # --- Sparse nonlinear high-dim prior ---
         elif sparse_nonlinear_prob > 0 and rng.random() < sparse_nonlinear_prob:
             data = _generate_sparse_nonlinear_episode(
-                n_samples, n_features, task_type, n_classes, rng,
+                n_samples,
+                n_features,
+                task_type,
+                n_classes,
+                rng,
                 reg_denoise=reg_denoise,
                 probabilistic_labels=probabilistic_labels,
-                context_rows=v6_context_rows)
+                context_rows=v6_context_rows,
+            )
         # --- GP smooth function prior ---
         # y sampled from Gaussian Process with RBF/Matern kernels.
         # Produces smooth joint multivariate functions (sulfur, debutanizer,
         # space_ga, kin8nm, houses, physiochemical_protein patterns).
         elif gp_prior_prob > 0 and rng.random() < gp_prior_prob:
             data = _generate_gp_prior_episode(
-                n_samples, n_features, task_type, n_classes, rng,
+                n_samples,
+                n_features,
+                task_type,
+                n_classes,
+                rng,
                 reg_denoise=reg_denoise,
                 probabilistic_labels=probabilistic_labels,
-                context_rows=v6_context_rows)
+                context_rows=v6_context_rows,
+            )
         # --- Categorical-dominant prior ---
         # 60-95% of cols are categorical (cardinalities 2-50, biased small).
         # Targets cat-heavy benchmarks (Ailerons, Buzzinsocialmedia,
         # Food_Delivery_Time, MIP-2016) where SCM under-generates.
         elif cat_dominant_prob > 0 and rng.random() < cat_dominant_prob:
             data = _generate_cat_dominant_episode(
-                n_samples, n_features, task_type, n_classes, rng,
-                probabilistic_labels=probabilistic_labels)
+                n_samples, n_features, task_type, n_classes, rng, probabilistic_labels=probabilistic_labels
+            )
         # --- Binary fingerprint prior ---
         # All-binary high-dim data with sparse signal. Targets QSAR-TID-11
         # archetype (chemical fingerprints, drug-binding affinity).
         elif binary_fingerprint_prob > 0 and rng.random() < binary_fingerprint_prob:
             data = _generate_binary_fingerprint_episode(
-                n_samples, n_features, task_type, n_classes, rng,
-                probabilistic_labels=probabilistic_labels)
+                n_samples, n_features, task_type, n_classes, rng, probabilistic_labels=probabilistic_labels
+            )
         # --- Temporal prior ---
         # Rows generated in temporal order with one of 5 patterns:
         # AR(1) autocorrelated features, lagged-y, concept drift, trend+seasonal,
@@ -5965,29 +5902,32 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
         # (Food_Delivery_Time, NASA_PHM, Allstate, dataset_sales, etc.).
         elif temporal_prior_prob > 0 and rng.random() < temporal_prior_prob:
             data = _generate_temporal_prior_episode(
-                n_samples, n_features, task_type, n_classes, rng,
-                probabilistic_labels=probabilistic_labels)
+                n_samples, n_features, task_type, n_classes, rng, probabilistic_labels=probabilistic_labels
+            )
         # TabICL prior: MLP/Tree SCM with rich activations and meta-distribution
         # HP sampling. For cls, applies Reg2Cls to convert continuous targets to
         # class labels. For reg, uses raw SCM output (standardized continuous y).
-        elif (scm_prior and rng.random() < scm_prior_prob):
+        elif scm_prior and rng.random() < scm_prior_prob:
             from synthefy_nori.training.scm_prior_generator import generate_scm_prior_dataset
+
             data = generate_scm_prior_dataset(
-                n_samples, n_features, task_type,
-                n_classes=n_classes, rng=rng,
-                context_rows=v6_context_rows)
+                n_samples, n_features, task_type, n_classes=n_classes, rng=rng, context_rows=v6_context_rows
+            )
         # For regression, use the regression-specific prior with probability
         # reg_prior_prob. These cover real-world regimes (dense linear, GAM,
         # interactions) that the SCM generator under-represents.
-        elif (task_type == 'reg' and reg_prior_prob > 0
-                and rng.random() < reg_prior_prob):
+        elif task_type == "reg" and reg_prior_prob > 0 and rng.random() < reg_prior_prob:
             # 50/50 split: rich SCM X vs pure Gaussian X.
             # SCM X teaches: messy features can have clean additive targets.
             # Gaussian X teaches: clean PCA'd data needs simple Ridge/Lasso/GAM.
             if rng.random() < 0.5:
                 base_data = generate_dataset_filtered(
-                    n_samples, n_features, task_type,
-                    n_classes=n_classes, rng=rng, max_retries=filter_max_retries,
+                    n_samples,
+                    n_features,
+                    task_type,
+                    n_classes=n_classes,
+                    rng=rng,
+                    max_retries=filter_max_retries,
                     quality_rules=quality_rules,
                     learnability_filter=learnability_filter,
                     learnability_filter_cls_min_score=learnability_filter_cls_min_score,
@@ -6002,7 +5942,8 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                     augment_v3=augment_v3,
                     rich_reg_targets=False,
                     scale_variation=False,
-                    augment_v4=augment_v4, v4_filter=v4_filter,
+                    augment_v4=augment_v4,
+                    v4_filter=v4_filter,
                     v4_no_edge_noise=v4_no_edge_noise,
                     synth_v5=synth_v5,
                     synth_v5_denoise=synth_v5_denoise,
@@ -6012,31 +5953,43 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                     reg_dense=reg_dense,
                     nominal_categoricals=nominal_categoricals,
                     enhanced_missingness=enhanced_missingness,
-                    context_rows=v6_context_rows)
+                    context_rows=v6_context_rows,
+                )
                 data = _generate_regression_prior(
-                    n_samples, n_features, rng,
+                    n_samples,
+                    n_features,
+                    rng,
                     reg_denoise=reg_denoise,
                     reg_deterministic_prob=reg_deterministic_prob,
                     reg_dense=reg_dense,
                     pareto_importance_prob=pareto_importance_prob,
                     latent_factor_prob=latent_factor_prob,
-                    X_scm=base_data['X'],
-                    X_scm_target=base_data.get('X_target'),
+                    X_scm=base_data["X"],
+                    X_scm_target=base_data.get("X_target"),
                     preserve_target_features=True,
-                    context_rows=v6_context_rows)
+                    context_rows=v6_context_rows,
+                )
             else:
-                data = _generate_regression_prior(n_samples, n_features, rng,
-                                                  reg_denoise=reg_denoise,
-                                                  reg_deterministic_prob=reg_deterministic_prob,
-                                                  reg_dense=reg_dense,
-                                                  pareto_importance_prob=pareto_importance_prob,
-                                                  latent_factor_prob=latent_factor_prob,
-                                                  preserve_target_features=True,
-                                                  context_rows=v6_context_rows)
+                data = _generate_regression_prior(
+                    n_samples,
+                    n_features,
+                    rng,
+                    reg_denoise=reg_denoise,
+                    reg_deterministic_prob=reg_deterministic_prob,
+                    reg_dense=reg_dense,
+                    pareto_importance_prob=pareto_importance_prob,
+                    latent_factor_prob=latent_factor_prob,
+                    preserve_target_features=True,
+                    context_rows=v6_context_rows,
+                )
         else:
             data = generate_dataset_filtered(
-                n_samples, n_features, task_type,
-                n_classes=n_classes, rng=rng, max_retries=filter_max_retries,
+                n_samples,
+                n_features,
+                task_type,
+                n_classes=n_classes,
+                rng=rng,
+                max_retries=filter_max_retries,
                 quality_rules=quality_rules,
                 learnability_filter=learnability_filter,
                 learnability_filter_cls_min_score=learnability_filter_cls_min_score,
@@ -6051,7 +6004,8 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                 augment_v3=augment_v3,
                 rich_reg_targets=rich_reg_targets,
                 scale_variation=scale_variation,
-                augment_v4=augment_v4, v4_filter=v4_filter,
+                augment_v4=augment_v4,
+                v4_filter=v4_filter,
                 v4_no_edge_noise=v4_no_edge_noise,
                 synth_v5=synth_v5,
                 synth_v5_denoise=synth_v5_denoise,
@@ -6062,40 +6016,45 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                 probabilistic_labels=probabilistic_labels,
                 nominal_categoricals=nominal_categoricals,
                 enhanced_missingness=enhanced_missingness,
-                context_rows=v6_context_rows)
+                context_rows=v6_context_rows,
+            )
         filter_attempt = 0
         while not _passes_requested_dataset_filters(
-                data,
-                task_type=task_type,
-                quality_rules=quality_rules,
-                learnability_filter=learnability_filter,
-                learnability_filter_reg_min_score=(
-                    learnability_filter_reg_min_score),
-                icl_filter_model=icl_filter_model,
-                icl_filter_reg_min_r2=icl_filter_reg_min_r2,
-                icl_scaling_filter=icl_scaling_filter,
-                icl_scaling_min_improvement=icl_scaling_min_improvement,
-                context_rows=v6_context_rows):
+            data,
+            task_type=task_type,
+            quality_rules=quality_rules,
+            learnability_filter=learnability_filter,
+            learnability_filter_reg_min_score=(learnability_filter_reg_min_score),
+            icl_filter_model=icl_filter_model,
+            icl_filter_reg_min_r2=icl_filter_reg_min_r2,
+            icl_scaling_filter=icl_scaling_filter,
+            icl_scaling_min_improvement=icl_scaling_min_improvement,
+            context_rows=v6_context_rows,
+        ):
             if filter_attempt >= max(0, int(filter_max_retries)):
                 raise SyntheticDataFilterError(
-                    "synthetic episode failed all filters after "
-                    f"{filter_attempt + 1} attempts")
+                    f"synthetic episode failed all filters after {filter_attempt + 1} attempts"
+                )
             filter_attempt += 1
-            if selected_family == 'tree_prior':
+            if selected_family == "tree_prior":
                 data = _generate_tree_prior_episode(
-                    n_samples, n_features, task_type, n_classes, rng,
+                    n_samples,
+                    n_features,
+                    task_type,
+                    n_classes,
+                    rng,
                     probabilistic_labels=probabilistic_labels,
-                    context_rows=v6_context_rows)
+                    context_rows=v6_context_rows,
+                )
                 continue
             # The general SCM path already exhausted its own retry budget.
-            raise SyntheticDataFilterError(
-                "synthetic episode failed health after regeneration")
+            raise SyntheticDataFilterError("synthetic episode failed health after regeneration")
 
-        X_list.append(data['X'])
-        y_list.append(data['y'])
+        X_list.append(data["X"])
+        y_list.append(data["y"])
         episode_data.append(data)
-        if actual_n_classes is None and task_type == 'cls':
-            actual_n_classes = data['n_classes']
+        if actual_n_classes is None and task_type == "cls":
+            actual_n_classes = data["n_classes"]
 
     # Debug: detect shape mismatch before np.stack fails
     shapes = [x.shape for x in X_list]
@@ -6104,7 +6063,8 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
         raise ValueError(
             f"X shape mismatch in batch: {shapes}, y shapes: {y_shapes}, "
             f"n_samples={n_samples}, n_features={n_features}, "
-            f"task_type={task_type}, meta={[d.get('meta',{}) for d in [data]]}")
+            f"task_type={task_type}, meta={[d.get('meta', {}) for d in [data]]}"
+        )
 
     X_batch = np.stack(X_list, axis=0)
     y_batch = np.stack(y_list, axis=0)
@@ -6117,8 +6077,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
     # Skips integer-valued / low-unique cols (cat protection) — same heuristic
     # used by inference cat detection.
     if train_feature_augment_prob > 0.0:
-        X_batch = _apply_train_feature_augmentation(
-            X_batch, rng, p_episode=train_feature_augment_prob)
+        X_batch = _apply_train_feature_augmentation(X_batch, rng, p_episode=train_feature_augment_prob)
 
     # Context missingness augmentation: inject 1-8% random NaN cells across
     # the full feature matrix. Real benchmark datasets have NaN in both
@@ -6135,6 +6094,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
     # Suppress numpy warnings from realistic augmentation (nanstd on
     # columns with ≤1 non-NaN value, exp overflow before clipping).
     import warnings as _warnings
+
     _warning_filters_before = list(_warnings.filters)
     # Realistic augmentation: applies to all priors post-generation.
     # Addresses three gaps vs real data identified in benchmark analysis:
@@ -6143,7 +6103,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
     #   3. Skewed feature distributions (real features are often log-normal)
     if realistic_augmentation_prob > 0:
         B, N, F = X_batch.shape
-        _warnings.filterwarnings('ignore', category=RuntimeWarning)
+        _warnings.filterwarnings("ignore", category=RuntimeWarning)
         for b in range(B):
             if rng.random() >= realistic_augmentation_prob:
                 continue
@@ -6165,15 +6125,13 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                     y = _signed_power_with_linear_tails(y, power)
                 elif transform == 2:
                     # Log-normal: y → exp(y) (always positive)
-                    y = _exp_with_linear_tails(
-                        y * rng.uniform(0.5, 1.5))
+                    y = _exp_with_linear_tails(y * rng.uniform(0.5, 1.5))
                 else:
                     # Asymmetric clip: heavy right tail
                     clip_lo = rng.uniform(-3, -1)
                     y = np.clip(y, clip_lo, None)
-                    context_median = float(np.median(
-                        _context_prefix(y, v6_context_rows)))
-                    y = y ** 2 * np.sign(y - context_median)
+                    context_median = float(np.median(_context_prefix(y, v6_context_rows)))
+                    y = y**2 * np.sign(y - context_median)
 
                 # Soft clip extreme values, re-standardize
                 y = 50.0 * np.tanh(y / 50.0)
@@ -6196,8 +6154,8 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                         continue
                     rho = rng.uniform(0.2, 0.7)
                     _apply_invertible_feature_correlation(
-                        X, np.arange(start, end), rng, rho,
-                        context_rows=v6_context_rows)
+                        X, np.arange(start, end), rng, rho, context_rows=v6_context_rows
+                    )
 
             # --- Skewed feature distributions (30% of augmented episodes) ---
             # Real features are often log-normal, power-law, or bounded.
@@ -6213,31 +6171,24 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                         continue
                     ft = int(rng.integers(0, 3))
                     finite_col = context_col[np.isfinite(context_col)]
-                    max_abs = (
-                        float(np.max(np.abs(finite_col)))
-                        if len(finite_col) else 0.0
-                    )
+                    max_abs = float(np.max(np.abs(finite_col))) if len(finite_col) else 0.0
                     if ft == 0:
                         # Positive and skewed centrally, with linear tails so
                         # extreme query values cannot underflow together.
                         raw_scale = rng.uniform(0.3, 0.8)
-                        scale = min(
-                            raw_scale, 20.0 / max(max_abs, 1e-8))
+                        scale = min(raw_scale, 20.0 / max(max_abs, 1e-8))
                         transformed = _exp_with_linear_tails(col * scale)
                     elif ft == 1:
                         # Signed square is heavy-tailed and exactly invertible.
                         col64 = col.astype(np.float64, copy=False)
-                        transformed = np.sign(col64) * col64 ** 2
+                        transformed = np.sign(col64) * col64**2
                     else:
                         # Sigmoid-shaped centrally, with linear tails instead
                         # of floating-point saturation at zero or one.
                         raw_scale = rng.uniform(0.5, 2.0)
-                        scale = min(
-                            raw_scale, 8.0 / max(max_abs, 1e-8))
-                        transformed = _sigmoid_with_linear_tails(
-                            col * scale)
-                    X[:, col_idx] = _affine_stabilize_feature_column(
-                        transformed, context_rows=v6_context_rows)
+                        scale = min(raw_scale, 8.0 / max(max_abs, 1e-8))
+                        transformed = _sigmoid_with_linear_tails(col * scale)
+                    X[:, col_idx] = _affine_stabilize_feature_column(transformed, context_rows=v6_context_rows)
 
     # --- Realistic y-target transforms ---
     # Real-world regression targets often have distributions our smooth SCM /
@@ -6247,8 +6198,8 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
     # 11 unique values, half-integer spacing), bounded rating averages
     # (Goodreads 0-5 with quarter-step), and zero-inflated counts (socmob).
     # Each transform is followed by re-standardization (mean=0, std=1).
-    if y_transform_prob > 0 and task_type == 'reg':
-        _warnings.filterwarnings('ignore', category=RuntimeWarning)
+    if y_transform_prob > 0 and task_type == "reg":
+        _warnings.filterwarnings("ignore", category=RuntimeWarning)
         B = y_batch.shape[0]
         for b in range(B):
             if rng.random() >= y_transform_prob:
@@ -6273,13 +6224,11 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                 # MIP-2016 solve-time timeout at 72000). No rounding, just
                 # percentile-based clipping.
                 cap_pct = float(rng.uniform(80.0, 97.0))
-                cap_val = float(np.percentile(
-                    _context_prefix(y, v6_context_rows), cap_pct))
+                cap_val = float(np.percentile(_context_prefix(y, v6_context_rows), cap_pct))
                 y = np.minimum(y, cap_val)
                 if rng.random() < 0.4:
                     floor_pct = float(rng.uniform(3.0, 15.0))
-                    floor_val = float(np.percentile(
-                        _context_prefix(y, v6_context_rows), floor_pct))
+                    floor_val = float(np.percentile(_context_prefix(y, v6_context_rows), floor_pct))
                     y = np.maximum(y, floor_val)
 
             elif t < 0.60:
@@ -6288,10 +6237,8 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                 # resolution like 0-100 scores or multi-panel averaged ratings.
                 n_levels = int(rng.integers(15, 41))
                 reference = _context_prefix(y, v6_context_rows)
-                edges = np.quantile(
-                    reference, np.linspace(0.0, 1.0, n_levels + 1))
-                y = np.searchsorted(
-                    edges[1:-1], y, side='right').astype(np.float64)
+                edges = np.quantile(reference, np.linspace(0.0, 1.0, n_levels + 1))
+                y = np.searchsorted(edges[1:-1], y, side="right").astype(np.float64)
                 step = float(rng.choice([0.1, 0.25, 0.5, 1.0]))
                 offset = rng.uniform(-5.0, 15.0)
                 y = y * step + offset
@@ -6352,7 +6299,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
     # targets (Wine_Quality: 6 levels, sensory: 1-10 ratings, ordinal scales).
     # Runs BEFORE cap_injection so cap patterns can stack on top of a discrete
     # target distribution if both fire. Re-standardizes for episode sanity.
-    if low_unique_y_prob > 0 and task_type == 'reg':
+    if low_unique_y_prob > 0 and task_type == "reg":
         B = y_batch.shape[0]
         for b in range(B):
             if rng.random() >= low_unique_y_prob:
@@ -6361,12 +6308,10 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
             n_levels = int(rng.integers(5, 16))
             # Quantile-bucket so each level has roughly equal mass; preserves
             # the original target ordering and rough scale.
-            edges = np.quantile(
-                _context_prefix(y, v6_context_rows),
-                np.linspace(0, 1, n_levels + 1))
+            edges = np.quantile(_context_prefix(y, v6_context_rows), np.linspace(0, 1, n_levels + 1))
             edges[0] -= 1e-6  # ensure inclusive lower bound
             edges[-1] += 1e-6
-            level_idx = np.clip(np.searchsorted(edges, y, side='right') - 1, 0, n_levels - 1)
+            level_idx = np.clip(np.searchsorted(edges, y, side="right") - 1, 0, n_levels - 1)
             # Use bucket midpoints as the level value.
             mids = 0.5 * (edges[:-1] + edges[1:])
             y = mids[level_idx]
@@ -6375,7 +6320,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                 y = (y - mu) / sd
             y_batch[b] = y.astype(np.float32)
 
-    if cap_injection_prob > 0 and task_type == 'reg':
+    if cap_injection_prob > 0 and task_type == "reg":
         B = y_batch.shape[0]
         for b in range(B):
             if rng.random() >= cap_injection_prob:
@@ -6385,15 +6330,14 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
             # cap, SAT11 algo cutoff). When triggered, the cap percentile is
             # drawn from [50, 80] so 20-50% of values sit at the cap, vs
             # the default [80, 97] saturation pattern.
-            use_high_cap = (high_cap_prob > 0 and rng.random() < high_cap_prob)
+            use_high_cap = high_cap_prob > 0 and rng.random() < high_cap_prob
             # Upper cap (more common: boston, MIP-2016, Goodreads)
             if rng.random() < 0.75:
                 if use_high_cap:
                     cap_pct = float(rng.uniform(50.0, 80.0))
                 else:
                     cap_pct = float(rng.uniform(80.0, 97.0))
-                cap_val = float(np.percentile(
-                    _context_prefix(y, v6_context_rows), cap_pct))
+                cap_val = float(np.percentile(_context_prefix(y, v6_context_rows), cap_pct))
                 y = np.minimum(y, cap_val)
             # Lower floor (less common)
             if rng.random() < 0.30:
@@ -6401,8 +6345,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                     floor_pct = float(rng.uniform(20.0, 50.0))
                 else:
                     floor_pct = float(rng.uniform(3.0, 20.0))
-                floor_val = float(np.percentile(
-                    _context_prefix(y, v6_context_rows), floor_pct))
+                floor_val = float(np.percentile(_context_prefix(y, v6_context_rows), floor_pct))
                 y = np.maximum(y, floor_val)
             # Re-standardize (context-only re-norm happens in trainer, but
             # ensure episode-level sanity)
@@ -6424,7 +6367,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
     #   3. Stronger outlier injection: 5-10% at 3-15x scale (vs default 1-5% at 3-8x)
     #
     # Re-standardized after transform to keep trainer's context-norm sane.
-    if heavy_tail_prior_prob > 0 and task_type == 'reg':
+    if heavy_tail_prior_prob > 0 and task_type == "reg":
         B = y_batch.shape[0]
         for b in range(B):
             if rng.random() >= heavy_tail_prior_prob:
@@ -6445,8 +6388,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                 # on top of existing signal. Targets sulfur/debutanizer style
                 # heavy-right-tail distributions.
                 alpha = rng.uniform(1.5, 4.0)  # lower alpha = heavier tail
-                _mean, context_std = _context_mean_std(
-                    y, v6_context_rows)
+                _mean, context_std = _context_mean_std(y, v6_context_rows)
                 y_std = max(context_std, 1e-8)
                 tail_noise = rng.pareto(alpha, size=len(y)) * y_std
                 # Apply to positive side only, randomly
@@ -6456,8 +6398,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
             elif t < 0.80:
                 # Stronger outlier injection: larger fraction, larger magnitude
                 # Represents rare extreme events (measurement errors, tail events)
-                _mean, context_std = _context_mean_std(
-                    y, v6_context_rows)
+                _mean, context_std = _context_mean_std(y, v6_context_rows)
                 y_std = max(context_std, 1e-8)
                 n_out = max(1, int(len(y) * rng.uniform(0.05, 0.10)))
                 out_idx = rng.choice(len(y), size=n_out, replace=False)
@@ -6473,8 +6414,7 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                 # real failure mode (Job_Profitability has ~0.2% of rows at
                 # ~1500× the bulk std). One-sided to mimic real data where
                 # the catastrophic tail is usually directional.
-                _mean, context_std = _context_mean_std(
-                    y, v6_context_rows)
+                _mean, context_std = _context_mean_std(y, v6_context_rows)
                 y_std = max(context_std, 1e-8)
                 n_out = max(1, int(len(y) * rng.uniform(0.005, 0.02)))
                 out_idx = rng.choice(len(y), size=n_out, replace=False)
@@ -6489,24 +6429,25 @@ def generate_batch(batch_size, n_samples, n_features, task_type,
                 y = (y - mu) / sd
             y_batch[b] = y.astype(np.float32)
 
-    X_batch, _affine_changes, bounded_changes = _finalize_feature_batch(
-        X_batch, context_rows=v6_context_rows)
+    X_batch, _affine_changes, bounded_changes = _finalize_feature_batch(X_batch, context_rows=v6_context_rows)
     if oracle_sink is not None:
         bounded_episodes = {batch_idx for batch_idx, _col in bounded_changes}
         for batch_idx, data in enumerate(episode_data):
-            meta = dict(data.get('meta') or {})
-            lineage = list(meta.get('transformation_lineage') or [])
-            y_clean = data.get('y_clean')
-            oracle_exact = meta.get('oracle_exact')
+            meta = dict(data.get("meta") or {})
+            lineage = list(meta.get("transformation_lineage") or [])
+            y_clean = data.get("y_clean")
+            oracle_exact = meta.get("oracle_exact")
             if batch_idx in bounded_episodes:
-                lineage.append('final_feature_bound')
+                lineage.append("final_feature_bound")
                 y_clean = None
                 oracle_exact = None
-            oracle_sink.append({
-                **meta,
-                'oracle_exact': oracle_exact,
-                'y_clean': y_clean,
-                'transformation_lineage': lineage,
-            })
+            oracle_sink.append(
+                {
+                    **meta,
+                    "oracle_exact": oracle_exact,
+                    "y_clean": y_clean,
+                    "transformation_lineage": lineage,
+                }
+            )
     _warnings.filters[:] = _warning_filters_before
     return X_batch, y_batch, actual_n_classes

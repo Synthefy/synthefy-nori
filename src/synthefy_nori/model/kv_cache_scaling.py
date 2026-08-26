@@ -17,6 +17,7 @@ GPU high-water-mark stays ~flat in N (weights + per-chunk activations + a staged
 slice), while the O(N) cache lives in host RAM. Compute is unchanged; this is a
 memory lever only.
 """
+
 from __future__ import annotations
 
 import torch
@@ -45,9 +46,16 @@ class ScalableSeqKV:
     the GPU copy is transient. ``self["batch"]``/``self["groups"]`` are plain ints.
     """
 
-    def __init__(self, kv: torch.Tensor, batch: int, groups: int, *,
-                 quantize: bool = False, offload: bool = False,
-                 device: torch.device | None = None):
+    def __init__(
+        self,
+        kv: torch.Tensor,
+        batch: int,
+        groups: int,
+        *,
+        quantize: bool = False,
+        offload: bool = False,
+        device: torch.device | None = None,
+    ):
         self.batch = int(batch)
         self.groups = int(groups)
         self.device = torch.device(device) if device is not None else kv.device
@@ -79,10 +87,17 @@ class ScalableSeqKV:
         raise KeyError(key)
 
     @classmethod
-    def from_row_slices(cls, slices, batch: int, groups: int, *,
-                        quantize: bool = False, offload: bool = False,
-                        device: torch.device | None = None,
-                        dtype: torch.dtype | None = None) -> "ScalableSeqKV":
+    def from_row_slices(
+        cls,
+        slices,
+        batch: int,
+        groups: int,
+        *,
+        quantize: bool = False,
+        offload: bool = False,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> "ScalableSeqKV":
         """Build from row-axis slices, folding each one in as it arrives.
 
         ``__init__`` takes the finished tensor, which means the fit-time row-chunked
@@ -151,7 +166,6 @@ class ScalableSeqKV:
             obj._kv = torch.cat(kv_parts, dim=1)
         return obj
 
-
     def resident_gpu_bytes(self) -> int:
         """Bytes this cache holds resident on the GPU (0 if offloaded)."""
         if self.offloaded:
@@ -161,8 +175,9 @@ class ScalableSeqKV:
         return self._kv.numel() * self._kv.element_size()
 
 
-def scale_caches(caches: list[dict], *, quantize: bool = False, offload: bool = False,
-                 device: torch.device | None = None) -> list[dict]:
+def scale_caches(
+    caches: list[dict], *, quantize: bool = False, offload: bool = False, device: torch.device | None = None
+) -> list[dict]:
     """Wrap each layer cache's ``seq_kv`` in a ScalableSeqKV (in place). No-op
     when quantize=offload=False. Returns the same list for convenience."""
     if not (quantize or offload):
@@ -171,10 +186,14 @@ def scale_caches(caches: list[dict], *, quantize: bool = False, offload: bool = 
         skv = layer_cache.get("seq_kv")
         if skv is None or isinstance(skv, ScalableSeqKV):
             continue
-        if "kv" not in skv:   # delta/isab cache is the O(M) landmark memory, already tiny
+        if "kv" not in skv:  # delta/isab cache is the O(M) landmark memory, already tiny
             continue
         layer_cache["seq_kv"] = ScalableSeqKV(
-            skv["kv"], skv["batch"], skv["groups"],
-            quantize=quantize, offload=offload, device=device,
+            skv["kv"],
+            skv["batch"],
+            skv["groups"],
+            quantize=quantize,
+            offload=offload,
+            device=device,
         )
     return caches

@@ -10,6 +10,7 @@ it encodes the decision that int8 is *not* charged to requests with no memory
 problem. That is exactly the kind of default that regresses silently a year later,
 because "int8 is basically free" is true per-request and wrong as a policy.
 """
+
 from __future__ import annotations
 
 import io
@@ -30,8 +31,8 @@ from synthefy_nori.inference.memory_policy import (
 # The deployed ~5.87M checkpoint's shape, as used by the WS1 Stage 2 matrix.
 NORI_6M = dict(nlayers=16, embed_dim=128, bytes_per_element=2)
 H100_80GB_VRAM = 79.6
-H100_BUDGET = DEFAULT_GPU_BUDGET_FRAC * H100_80GB_VRAM          # ~31.8 GiB at the default fraction
-HEAD_DIM = 64                                # embed_dim 128 / nhead 2
+H100_BUDGET = DEFAULT_GPU_BUDGET_FRAC * H100_80GB_VRAM  # ~31.8 GiB at the default fraction
+HEAD_DIM = 64  # embed_dim 128 / nhead 2
 BIG_RAM = 1024.0
 
 
@@ -58,16 +59,14 @@ def resolve(est_gb: float, policy: MemoryPolicy | None = None, **kwargs) -> Memo
     """Resolve a policy for the 6M model on an 80 GB H100 with ample host RAM."""
     kwargs.setdefault("total_vram_gb", H100_80GB_VRAM)
     kwargs.setdefault("total_ram_gb", BIG_RAM)
-    return (policy or MemoryPolicy()).resolve(
-        est_cache_gb=est_gb, bytes_per_element=2, head_dim=HEAD_DIM, **kwargs
-    )
+    return (policy or MemoryPolicy()).resolve(est_cache_gb=est_gb, bytes_per_element=2, head_dim=HEAD_DIM, **kwargs)
 
 
 class TestFootprintArithmetic:
     def test_cache_scales_with_layers_rows_groups_and_width(self):
         # One key and one value vector of width embed_dim per (layer, group, row)
         # -> the factor 2.
-        expected = (16 * 8 * 50_000 * 2 * 128 * 2) / (1024 ** 3)
+        expected = (16 * 8 * 50_000 * 2 * 128 * 2) / (1024**3)
         assert cache_gb(50_000, 8) == pytest.approx(expected)
 
     def test_int8_saves_about_1_9x_against_bf16_not_4x(self):
@@ -75,7 +74,7 @@ class TestFootprintArithmetic:
         # scale (one per head_dim vector) -> ~1.9x. Over-claiming here is exactly
         # what makes a resident budget optimistic.
         int8_gb = int8_footprint_gb(8.0, bytes_per_element=2, head_dim=HEAD_DIM)
-        assert int8_gb == pytest.approx(4.25)          # 4.0 payload + 0.25 scale
+        assert int8_gb == pytest.approx(4.25)  # 4.0 payload + 0.25 scale
         assert 8.0 / int8_gb == pytest.approx(1.88, abs=0.01)
 
     def test_scale_overhead_shrinks_as_head_dim_grows(self):
@@ -96,9 +95,7 @@ class TestFootprintArithmetic:
         assert _mp._cgroup_memory_limit_gb() == 2.0
         assert limit_file.closed
 
-    def test_cgroup_limit_does_not_leak_resource_warning_into_notes(
-        self, monkeypatch, tmp_path
-    ):
+    def test_cgroup_limit_does_not_leak_resource_warning_into_notes(self, monkeypatch, tmp_path):
         limit_path = tmp_path / "memory.max"
         limit_path.write_text(str(2 * _mp.BYTES_PER_GIB), encoding="utf-8")
         monkeypatch.setattr(_mp, "_CGROUP_LIMIT_PATHS", (str(limit_path),))
@@ -131,7 +128,7 @@ class TestBudgets:
 
     def test_out_of_range_fractions_are_rejected(self):
         with pytest.raises(ValidationError):
-            MemoryPolicy(gpu_budget_frac=40)        # 40x VRAM, surely a typo
+            MemoryPolicy(gpu_budget_frac=40)  # 40x VRAM, surely a typo
         with pytest.raises(ValidationError):
             MemoryPolicy(gpu_budget_frac=0)
         with pytest.raises(ValidationError):
@@ -198,8 +195,7 @@ class TestAutoLadder:
         # Growing the table may only move us down the ladder, never back up. These
         # four row counts walk every rung in order on an 80 GB card.
         expected = ["resident_bf16", "resident_int8", "offload_bf16", "plain_loop"]
-        seen = [resolve(cache_gb(n, 8)).rung
-                for n in (10_000, 655_000, 2_000_000, 20_000_000)]
+        seen = [resolve(cache_gb(n, 8)).rung for n in (10_000, 655_000, 2_000_000, 20_000_000)]
         assert seen == expected
 
     def test_ineligible_request_reports_no_cache(self):
@@ -285,7 +281,7 @@ class TestConfigSurface:
         with pytest.raises(ValidationError):
             MemoryPolicy.coerce({"gpu_budget": 20})
         with pytest.raises(ValidationError):
-            MemoryPolicy.coerce({"offload": True})       # renamed to offload_to_host
+            MemoryPolicy.coerce({"offload": True})  # renamed to offload_to_host
 
     def test_unknown_preset_and_wrong_type_are_rejected(self):
         with pytest.raises(ValueError, match="unknown memory preset"):
@@ -325,8 +321,7 @@ class TestEscalation:
     def test_subsample_count_is_recorded(self):
         # The reviewer's question: where does a dropped context show up? Here, so it
         # survives past the log line into memory_report_.
-        policy = resolve(cache_gb(50_000, 8)).escalated(
-            "plain_loop", dropped_context_rows=1234)
+        policy = resolve(cache_gb(50_000, 8)).escalated("plain_loop", dropped_context_rows=1234)
         assert policy.dropped_context_rows == 1234
         assert "DROPPED 1234 context rows" in policy.describe()
 
@@ -348,10 +343,10 @@ class TestPermissionsInsteadOfSentinels:
         # The reviewer's point: reading the signature should tell you what happens
         # without looking anything up. No field defaults to "auto".
         policy = MemoryPolicy()
-        assert policy.cache_dtype == "bf16"          # a precision, not "auto"
+        assert policy.cache_dtype == "bf16"  # a precision, not "auto"
         assert policy.allow_quantization is True
         assert policy.offload_to_host is True
-        assert policy.context_row_chunk is None          # off, plainly
+        assert policy.context_row_chunk is None  # off, plainly
         assert policy.gpu_budget_frac == DEFAULT_GPU_BUDGET_FRAC
         for field in MemoryPolicy.model_fields.values():
             assert field.default != "auto", "an 'auto' sentinel crept back in"
@@ -378,7 +373,7 @@ class TestPermissionsInsteadOfSentinels:
     def test_offload_prefers_the_smallest_candidate_that_host_can_hold(self):
         # bf16 (128 GiB) will not fit a 100 GiB host budget but int8 (~68 GiB) will.
         est = H100_BUDGET * 4
-        policy = resolve(est, total_ram_gb=400.0)     # host budget = 100 GiB
+        policy = resolve(est, total_ram_gb=400.0)  # host budget = 100 GiB
         assert policy.rung == "offload_int8"
 
     def test_offload_stays_bf16_when_quantization_is_forbidden(self):
@@ -395,14 +390,20 @@ class TestPredictorEnvSurface:
         # _coerced_memory_policy() touches only self.memory_policy and the environment, so a bare
         # instance is enough — no checkpoint load required.
         from synthefy_nori.inference.predictor import NoriPredictor
+
         predictor = NoriPredictor.__new__(NoriPredictor)
         predictor.memory_policy = memory_policy
         return predictor._coerced_memory_policy()
 
     def test_no_env_var_configures_the_policy(self, monkeypatch):
-        for name in ("SYNTHEFY_KV_CACHE_DTYPE", "SYNTHEFY_KV_INT8",
-                     "SYNTHEFY_KV_OFFLOAD", "SYNTHEFY_KV_GPU_BUDGET_FRAC",
-                     "SYNTHEFY_CACHE_HOST_MAX_GB", "SYNTHEFY_FIT_ROW_CHUNK"):
+        for name in (
+            "SYNTHEFY_KV_CACHE_DTYPE",
+            "SYNTHEFY_KV_INT8",
+            "SYNTHEFY_KV_OFFLOAD",
+            "SYNTHEFY_KV_GPU_BUDGET_FRAC",
+            "SYNTHEFY_CACHE_HOST_MAX_GB",
+            "SYNTHEFY_FIT_ROW_CHUNK",
+        ):
             monkeypatch.setenv(name, "int8" if "DTYPE" in name else "1")
         policy = self._policy_of()
         assert policy == MemoryPolicy(), "an env var leaked into the policy"
@@ -441,12 +442,15 @@ class TestIncoherentConfigsAreRejected:
         with pytest.raises(ValidationError, match="not a\n?\\s*reachable configuration"):
             MemoryPolicy(cache=False, context_row_chunk=2048)
 
-    @pytest.mark.parametrize("lever", [
-        {"context_row_chunk": 2048},
-        {"cache_dtype": "int8"},
-        {"offload_to_host": True},
-        {"allow_quantization": False},
-    ])
+    @pytest.mark.parametrize(
+        "lever",
+        [
+            {"context_row_chunk": 2048},
+            {"cache_dtype": "int8"},
+            {"offload_to_host": True},
+            {"allow_quantization": False},
+        ],
+    )
     def test_every_cache_only_lever_is_rejected_with_cache_off(self, lever):
         with pytest.raises(ValidationError, match="cache=False cannot be combined"):
             MemoryPolicy(cache=False, **lever)
@@ -474,12 +478,12 @@ class TestIncoherentConfigsAreRejected:
     def test_every_combination_either_works_or_raises_clearly(self):
         """Sweep the field space: no combination may silently drop a lever."""
         from itertools import product
+
         checked = rejected = 0
         for cache, dtype, allow_q, offload, chunk in product(
-                [True, False], ["bf16", "int8"], [True, False], [True, False],
-                [None, 2048]):
-            kwargs = dict(cache=cache, cache_dtype=dtype,
-                          allow_quantization=allow_q, offload_to_host=offload)
+            [True, False], ["bf16", "int8"], [True, False], [True, False], [None, 2048]
+        ):
+            kwargs = dict(cache=cache, cache_dtype=dtype, allow_quantization=allow_q, offload_to_host=offload)
             if chunk is not None:
                 kwargs["context_row_chunk"] = chunk
             checked += 1
@@ -489,8 +493,7 @@ class TestIncoherentConfigsAreRejected:
             except ValidationError:
                 rejected += 1
                 # Every rejection must have one of the two documented reasons.
-                assert (not cache) or contradictory, (
-                    f"unexplained rejection: {kwargs}")
+                assert (not cache) or contradictory, f"unexplained rejection: {kwargs}"
                 continue
             assert cache and not contradictory, f"should have been rejected: {kwargs}"
             # Accepted => the cache is on, so every lever can actually take effect.
@@ -511,8 +514,7 @@ class TestResolutionIsValidated:
 
     def test_escalated_rejects_a_negative_row_count(self):
         with pytest.raises(ValidationError):
-            resolve(cache_gb(50_000, 8)).escalated("plain_loop",
-                                                   dropped_context_rows=-5)
+            resolve(cache_gb(50_000, 8)).escalated("plain_loop", dropped_context_rows=-5)
 
     def test_resolved_policy_may_report_cache_false_with_a_concrete_dtype(self):
         # The coherence check must NOT fire on outputs: plain_loop legitimately has
@@ -522,8 +524,7 @@ class TestResolutionIsValidated:
         assert policy.cache is False and policy.cache_dtype in ("bf16", "int8")
 
     def test_escalating_a_resolved_policy_round_trips(self):
-        policy = resolve(cache_gb(50_000, 8)).escalated("context_row_chunk",
-                                                        context_row_chunk=2048)
+        policy = resolve(cache_gb(50_000, 8)).escalated("context_row_chunk", context_row_chunk=2048)
         assert MemoryPolicy(**policy.model_dump()) == policy
 
 
@@ -531,15 +532,13 @@ class TestNoCacheReportsNoBudget:
     def test_no_cache_does_not_invent_a_budget(self):
         # Previously reported 9.6 GiB (0.4 x ASSUMED_VRAM_GB) even on an 80 GB card,
         # for a decision where no budget was consulted at all.
-        policy = MemoryPolicy().resolve(
-            est_cache_gb=0.0, bytes_per_element=1, head_dim=1, cache_eligible=False)
+        policy = MemoryPolicy().resolve(est_cache_gb=0.0, bytes_per_element=1, head_dim=1, cache_eligible=False)
         assert policy.rung == "no_cache"
         assert policy.gpu_budget_absolute_gb is None
         assert policy.host_budget_absolute_gb is None
 
     def test_describe_survives_absent_budgets(self):
-        policy = MemoryPolicy().resolve(
-            est_cache_gb=0.0, bytes_per_element=1, head_dim=1, cache_eligible=False)
+        policy = MemoryPolicy().resolve(est_cache_gb=0.0, bytes_per_element=1, head_dim=1, cache_eligible=False)
         assert policy.describe() == "no_cache"
 
     def test_a_real_rung_still_reports_both_budgets(self):
@@ -602,32 +601,44 @@ class TestOffloadReachability:
         # request needs to spill and offload cannot help, so say so.
         policy = MemoryPolicy(gpu_budget_absolute_gb=70.0)
         with pytest.warns(UserWarning, match="offload_to_host could not help"):
-            policy.resolve(est_cache_gb=200.0, bytes_per_element=2, head_dim=HEAD_DIM,
-                           total_vram_gb=H100_80GB_VRAM, total_ram_gb=200.0)
+            policy.resolve(
+                est_cache_gb=200.0,
+                bytes_per_element=2,
+                head_dim=HEAD_DIM,
+                total_vram_gb=H100_80GB_VRAM,
+                total_ram_gb=200.0,
+            )
 
     def test_silent_on_untouched_defaults_even_when_ram_is_small(self):
         # The regression this replaced: warning up-front fired for anyone whose RAM is
         # under ~1.6x their VRAM, on a request that never left the GPU.
         import warnings as _w
+
         with _w.catch_warnings():
             _w.simplefilter("error")
-            MemoryPolicy().resolve(est_cache_gb=0.2, bytes_per_element=2,
-                                   head_dim=HEAD_DIM, total_vram_gb=80.0,
-                                   total_ram_gb=128.0)
+            MemoryPolicy().resolve(
+                est_cache_gb=0.2, bytes_per_element=2, head_dim=HEAD_DIM, total_vram_gb=80.0, total_ram_gb=128.0
+            )
 
     def test_silent_when_offload_can_actually_rescue_something(self):
         import warnings as _w
+
         with _w.catch_warnings():
-            _w.simplefilter("error")            # any warning fails the test
-            resolve(cache_gb(50_000, 8))        # host 256 GiB > gpu 31.8 GiB
+            _w.simplefilter("error")  # any warning fails the test
+            resolve(cache_gb(50_000, 8))  # host 256 GiB > gpu 31.8 GiB
 
     def test_no_warning_when_offload_is_disabled(self):
         import warnings as _w
+
         with _w.catch_warnings():
             _w.simplefilter("error")
             MemoryPolicy(offload_to_host=False).resolve(
-                est_cache_gb=1.0, bytes_per_element=2, head_dim=HEAD_DIM,
-                total_vram_gb=H100_80GB_VRAM, total_ram_gb=200.0)
+                est_cache_gb=1.0,
+                bytes_per_element=2,
+                head_dim=HEAD_DIM,
+                total_vram_gb=H100_80GB_VRAM,
+                total_ram_gb=200.0,
+            )
 
 
 class TestOffloadReachabilityAtConstruction:
@@ -645,6 +656,7 @@ class TestOffloadReachabilityAtConstruction:
 
     def test_host_above_gpu_is_silent(self):
         import warnings as _w
+
         with _w.catch_warnings():
             _w.simplefilter("error")
             MemoryPolicy(gpu_budget_absolute_gb=20.0, host_budget_absolute_gb=200.0)
@@ -652,6 +664,7 @@ class TestOffloadReachabilityAtConstruction:
     def test_fraction_case_is_deferred_to_resolve(self):
         # Cannot be decided here: 0.25 x RAM vs 0.4 x VRAM depends on the box.
         import warnings as _w
+
         with _w.catch_warnings():
             _w.simplefilter("error")
             MemoryPolicy(gpu_budget_frac=0.9, host_budget_frac=0.05)

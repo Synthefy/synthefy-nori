@@ -204,10 +204,7 @@ def _load_aws_sdk() -> Tuple[Any, Any]:
         import boto3
         from botocore.config import Config
     except ImportError as exc:  # pragma: no cover - exercised without the extra
-        raise ImportError(
-            "A SageMaker deployment needs the AWS extra: install "
-            "`pip install \"synthefy[aws]\"`."
-        ) from exc
+        raise ImportError('A SageMaker deployment needs the AWS extra: install `pip install "synthefy[aws]"`.') from exc
     return boto3, Config
 
 
@@ -267,11 +264,7 @@ def _reject_non_numeric_columns(frame: pd.DataFrame, name: str) -> None:
     This helper runs after public DataFrame preprocessing, so any remaining
     categorical/text/temporal column means the schema was not resolved.
     """
-    non_numeric = [
-        str(col)
-        for col in frame.columns
-        if not pd.api.types.is_numeric_dtype(frame[col])
-    ]
+    non_numeric = [str(col) for col in frame.columns if not pd.api.types.is_numeric_dtype(frame[col])]
     if non_numeric:
         raise ValueError(
             f"{name} has unresolved non-numeric column(s) {non_numeric}. Pass raw "
@@ -303,8 +296,7 @@ def _coerce_matrix(arr: MatrixLike, name: str) -> np.ndarray:
             ) from exc
     if matrix.ndim != 2:
         raise ValueError(
-            f"{name} must be 2D with shape (n_rows, n_features); "
-            f"got {matrix.ndim}D with shape {matrix.shape}"
+            f"{name} must be 2D with shape (n_rows, n_features); got {matrix.ndim}D with shape {matrix.shape}"
         )
     return matrix
 
@@ -326,26 +318,16 @@ def _coerce_vector(arr: VectorLike, name: str) -> np.ndarray:
         vector = arr.to_numpy(dtype=float).reshape(-1)
     elif isinstance(arr, pd.Series):
         if not pd.api.types.is_numeric_dtype(arr):
-            raise ValueError(
-                f"{name} must be numeric; got a non-numeric Series "
-                f"(dtype {arr.dtype})."
-            )
+            raise ValueError(f"{name} must be numeric; got a non-numeric Series (dtype {arr.dtype}).")
         vector = arr.to_numpy(dtype=float)
     else:
         try:
             vector = np.asarray(arr, dtype=float)
         except (ValueError, TypeError) as exc:
-            raise ValueError(
-                f"{name} must be a numeric 1D array/list; got error: {exc}"
-            ) from exc
+            raise ValueError(f"{name} must be a numeric 1D array/list; got error: {exc}") from exc
     if vector.ndim != 1:
-        raise ValueError(
-            f"{name} must be 1D with shape (n_rows,); "
-            f"got {vector.ndim}D with shape {vector.shape}"
-        )
+        raise ValueError(f"{name} must be 1D with shape (n_rows,); got {vector.ndim}D with shape {vector.shape}")
     return vector
-
-
 
 
 def _build_nori_request(
@@ -400,17 +382,11 @@ def _build_nori_request(
     if n_features == 0:
         raise ValueError("X_train must contain at least one feature column")
     if y_train_arr.shape[0] != n_context:
-        raise ValueError(
-            f"X_train has {n_context} rows but y_train has "
-            f"{y_train_arr.shape[0]}; they must match"
-        )
+        raise ValueError(f"X_train has {n_context} rows but y_train has {y_train_arr.shape[0]}; they must match")
     if X_test_arr.shape[0] == 0:
         raise ValueError("X_test must contain at least one query row")
     if X_test_arr.shape[1] != n_features:
-        raise ValueError(
-            f"X_test has {X_test_arr.shape[1]} features but X_train has "
-            f"{n_features}; they must match"
-        )
+        raise ValueError(f"X_test has {X_test_arr.shape[1]} features but X_train has {n_features}; they must match")
     if not isinstance(task, str) or not task.strip():
         raise ValueError("task must be a non-empty string")
 
@@ -460,7 +436,7 @@ def _load_local_predict() -> Any:
             raise
         raise ImportError(
             "Local nori inference requires the optional 'synthefy-nori' "
-            'package. Install it with: pip install synthefy-nori.'
+            "package. Install it with: pip install synthefy-nori."
         ) from exc
     return local_predict
 
@@ -481,9 +457,7 @@ def _validate_output_type(
     levels were given.
     """
     if output_type not in _OUTPUT_TYPES:
-        raise ValueError(
-            f"output_type must be one of {_OUTPUT_TYPES}; got {output_type!r}."
-        )
+        raise ValueError(f"output_type must be one of {_OUTPUT_TYPES}; got {output_type!r}.")
     if discretizing and (output_type != DEFAULT_OUTPUT_TYPE or quantiles is not None):
         raise ValueError(
             "categorical output (discretize=/categorical_levels=) returns "
@@ -492,10 +466,7 @@ def _validate_output_type(
             "chooses the summary), not with output_type/quantiles."
         )
     if quantiles is not None and output_type != "quantiles":
-        raise ValueError(
-            "quantiles= is only valid with output_type='quantiles'; got "
-            f"output_type={output_type!r}."
-        )
+        raise ValueError(f"quantiles= is only valid with output_type='quantiles'; got output_type={output_type!r}.")
     if output_type != "quantiles":
         return None
     if quantiles is None:
@@ -511,9 +482,7 @@ def _validate_output_type(
             "tau level in (0, 1); got an empty sequence."
         )
     if not np.all(np.isfinite(levels)) or np.any((levels <= 0.0) | (levels >= 1.0)):
-        raise ValueError(
-            f"quantiles must lie strictly in (0, 1); got {quantiles!r}."
-        )
+        raise ValueError(f"quantiles must lie strictly in (0, 1); got {quantiles!r}.")
     return [float(level) for level in levels]
 
 
@@ -532,7 +501,7 @@ def _load_local_regressor() -> Any:
             raise
         raise ImportError(
             "Local nori inference requires the optional 'synthefy-nori' "
-            'package. Install it with: pip install synthefy-nori.'
+            "package. Install it with: pip install synthefy-nori."
         ) from exc
     return NoriRegressor
 
@@ -617,8 +586,7 @@ def _validate_large_context_controls(
         return
     if not isinstance(policy, str) and (mode != "local" or not callable(policy)):
         raise ValueError(
-            "large_context_policy must be a policy name string; custom callables "
-            "are supported only in local mode."
+            "large_context_policy must be a policy name string; custom callables are supported only in local mode."
         )
     if threshold is not None and (
         isinstance(threshold, bool)
@@ -630,13 +598,10 @@ def _validate_large_context_controls(
             f"{MAX_LARGE_CONTEXT_THRESHOLD:,}; got {threshold!r}."
         )
     if seed is not None and (
-        isinstance(seed, bool)
-        or not isinstance(seed, Integral)
-        or not 0 <= int(seed) <= MAX_LARGE_CONTEXT_SEED
+        isinstance(seed, bool) or not isinstance(seed, Integral) or not 0 <= int(seed) <= MAX_LARGE_CONTEXT_SEED
     ):
         raise ValueError(
-            "large_context_seed must be an integer between 0 and "
-            f"{MAX_LARGE_CONTEXT_SEED:,}; got {seed!r}."
+            f"large_context_seed must be an integer between 0 and {MAX_LARGE_CONTEXT_SEED:,}; got {seed!r}."
         )
     if output_type in _DISTRIBUTION_OUTPUT_TYPES:
         raise ValueError(
@@ -654,9 +619,7 @@ def _validate_large_context_controls(
         )
 
 
-def _normalized_large_context_report(
-    request: NoriPredictRequest, report: Optional[Dict[str, Any]]
-) -> Dict[str, Any]:
+def _normalized_large_context_report(request: NoriPredictRequest, report: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Give local mode the same typed per-call report as hosted modes."""
     policy = request.large_context_policy
     if policy is None:
@@ -666,17 +629,11 @@ def _normalized_large_context_report(
         if request.large_context_threshold is not None
         else DEFAULT_LARGE_CONTEXT_THRESHOLD
     )
-    seed = (
-        request.large_context_seed
-        if request.large_context_seed is not None
-        else DEFAULT_LARGE_CONTEXT_SEED
-    )
+    seed = request.large_context_seed if request.large_context_seed is not None else DEFAULT_LARGE_CONTEXT_SEED
     if report is None:
         return LargeContextReport(
             applied=False,
-            policy=(
-                policy if isinstance(policy, str) else getattr(policy, "__name__", repr(policy))
-            ),
+            policy=(policy if isinstance(policy, str) else getattr(policy, "__name__", repr(policy))),
             threshold=threshold,
             seed=seed,
             reason="below_threshold",
@@ -724,7 +681,7 @@ def _resolve_remote_levels(
             "distribution — the hosted endpoint returns only point "
             'predictions. Pass discretize="snap-mean" explicitly (nearest '
             "level to the point prediction), or use local mode "
-            '(pip install synthefy-nori) for the full strategy set.'
+            "(pip install synthefy-nori) for the full strategy set."
         )
     if discretize != _REMOTE_DISCRETIZE_METHOD:
         raise ValueError(
@@ -732,22 +689,20 @@ def _resolve_remote_levels(
             "distribution, which the hosted endpoint does not return; "
             'remote mode supports discretize="snap-mean" (nearest level to '
             "the returned point prediction). For the full strategy set, use "
-            'local mode (pip install synthefy-nori).'
+            "local mode (pip install synthefy-nori)."
         )
     if categorical_levels is None:
         levels = np.unique(np.asarray(y_train, dtype=float))
         levels = levels[np.isfinite(levels)]
         if levels.size == 0:
             raise ValueError(
-                "y_train has no finite values to derive categorical levels "
-                "from; pass categorical_levels explicitly."
+                "y_train has no finite values to derive categorical levels from; pass categorical_levels explicitly."
             )
     else:
         levels = np.unique(np.asarray(categorical_levels, dtype=float).reshape(-1))
         if levels.size == 0 or not np.all(np.isfinite(levels)):
             raise ValueError(
-                "categorical_levels must be a non-empty sequence of finite "
-                f"numbers; got {categorical_levels!r}"
+                f"categorical_levels must be a non-empty sequence of finite numbers; got {categorical_levels!r}"
             )
     return levels
 
@@ -766,6 +721,7 @@ def _snap_to_levels(predictions: List[float], levels: "np.ndarray") -> List[floa
 # --------------------------------------------------------------------------- #
 # Distribution output shaping (output_type="quantiles" / "full")
 # --------------------------------------------------------------------------- #
+
 
 def _quantile_frame(
     values: "np.ndarray",
@@ -804,10 +760,7 @@ def _nullable_rows_to_array(rows: Sequence[Sequence[Optional[float]]]) -> "np.nd
     except (ValueError, TypeError) as exc:
         # Ragged rows: numpy >= 2 rejects an inhomogeneous shape. Report it as a
         # malformed response rather than letting the raw numpy message surface.
-        raise ValueError(
-            "The server returned a malformed quantile block (rows of unequal "
-            f"length): {exc}"
-        ) from exc
+        raise ValueError(f"The server returned a malformed quantile block (rows of unequal length): {exc}") from exc
     if arr.ndim != 2:
         raise ValueError(
             "The server returned a malformed quantile block: expected a 2D "
@@ -855,9 +808,7 @@ def _shape_full(
     """
     if as_pandas:
         return {
-            "quantiles": _quantile_frame(
-                q_by_row, taus.tolist(), X_test=X_test, y_train=y_train
-            ),
+            "quantiles": _quantile_frame(q_by_row, taus.tolist(), X_test=X_test, y_train=y_train),
             "taus": taus.tolist(),
             "mean": pd.Series(
                 mean,
@@ -928,9 +879,7 @@ def _widen_text_columns(
     ``X_train``. Both inputs must be DataFrames; their indexes are preserved for
     ``as_pandas`` output.
     """
-    resolved_text_device = (
-        _resolve_text_device(text_device) if isinstance(embedder, str) else None
-    )
+    resolved_text_device = _resolve_text_device(text_device) if isinstance(embedder, str) else None
     return _align_and_featurize(
         X_train,
         X_test,
@@ -1088,24 +1037,13 @@ class SynthefyNoriClient:
     ) -> None:
         if mode == "auto":
             raise ValueError(
-                "mode='auto' has been removed; choose one explicit execution "
-                "mode: 'remote', 'sagemaker', or 'local'"
+                "mode='auto' has been removed; choose one explicit execution mode: 'remote', 'sagemaker', or 'local'"
             )
         if mode not in _VALID_MODES:
-            raise ValueError(
-                f"mode must be one of {_VALID_MODES}; got {mode!r}"
-            )
+            raise ValueError(f"mode must be one of {_VALID_MODES}; got {mode!r}")
         if auth_scheme not in _VALID_AUTH_SCHEMES:
-            raise ValueError(
-                f"auth_scheme must be one of {_VALID_AUTH_SCHEMES}; "
-                f"got {auth_scheme!r}"
-            )
-        if (
-            isinstance(timeout, bool)
-            or not isinstance(timeout, Real)
-            or not np.isfinite(timeout)
-            or timeout <= 0
-        ):
+            raise ValueError(f"auth_scheme must be one of {_VALID_AUTH_SCHEMES}; got {auth_scheme!r}")
+        if isinstance(timeout, bool) or not isinstance(timeout, Real) or not np.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be a finite number greater than zero")
         if isinstance(max_retries, bool) or not isinstance(max_retries, Integral) or max_retries < 0:
             raise ValueError("max_retries must be a non-negative integer")
@@ -1116,14 +1054,9 @@ class SynthefyNoriClient:
                     "SigV4-signs with the standard AWS credential chain"
                 )
             if not endpoint_name or not endpoint_name.strip():
-                raise ValueError(
-                    "endpoint_name is required with mode='sagemaker'"
-                )
+                raise ValueError("endpoint_name is required with mode='sagemaker'")
         elif endpoint_name is not None or region_name is not None:
-            raise ValueError(
-                "endpoint_name and region_name are only valid with "
-                "mode='sagemaker'"
-            )
+            raise ValueError("endpoint_name and region_name are only valid with mode='sagemaker'")
         if model is _MODEL_REQUIRED or model is None:
             raise ValueError(
                 "model is required -- there is no default; every request names a size. "
@@ -1189,9 +1122,7 @@ class SynthefyNoriClient:
                     "environment variable when mode='remote'"
                 )
             self.api_key: Optional[str] = api_key
-            self.client: Optional[httpx.Client] = httpx.Client(
-                base_url=self.base_url
-            )
+            self.client: Optional[httpx.Client] = httpx.Client(base_url=self.base_url)
         else:  # local
             self.api_key = api_key  # unused in local mode; may be None
             self.client = None
@@ -1542,8 +1473,7 @@ class SynthefyNoriClient:
         # text_columns, a checkpoint, or a paid network round-trip).
         if self.mode == "sagemaker" and extra_headers is not None:
             raise ValueError(
-                "extra_headers is only valid for HTTP remote mode; SageMaker "
-                "requests are SigV4-signed by boto3"
+                "extra_headers is only valid for HTTP remote mode; SageMaker requests are SigV4-signed by boto3"
             )
         if self.mode == "sagemaker" and timeout is not None:
             warnings.warn(
@@ -1571,8 +1501,14 @@ class SynthefyNoriClient:
             # send the widened numeric matrix through the normal request path
             # (works identically for local / remote / AWS backends).
             X_train, X_test = _widen_text_columns(
-                X_train, X_test, text_columns, svd_dim, embedder,
-                max_categorical_cardinality, categorical_encoding, text_device,
+                X_train,
+                X_test,
+                text_columns,
+                svd_dim,
+                embedder,
+                max_categorical_cardinality,
+                categorical_encoding,
+                text_device,
                 categorical_columns,
             )
             # The widened frames are already numeric; do not resolve the original
@@ -1589,20 +1525,19 @@ class SynthefyNoriClient:
         # values that actually ran, never leaving the caller to infer them.
         if large_context_policy is not None:
             resolved_large_context_threshold = (
-                DEFAULT_LARGE_CONTEXT_THRESHOLD
-                if large_context_threshold is None
-                else int(large_context_threshold)
+                DEFAULT_LARGE_CONTEXT_THRESHOLD if large_context_threshold is None else int(large_context_threshold)
             )
             resolved_large_context_seed = (
-                DEFAULT_LARGE_CONTEXT_SEED
-                if large_context_seed is None
-                else int(large_context_seed)
+                DEFAULT_LARGE_CONTEXT_SEED if large_context_seed is None else int(large_context_seed)
             )
         else:
             resolved_large_context_threshold = None
             resolved_large_context_seed = None
         request = _build_nori_request(
-            X_train, y_train, X_test, task,
+            X_train,
+            y_train,
+            X_test,
+            task,
             categorical_columns=request_categorical_columns,
             max_categorical_cardinality=max_categorical_cardinality,
             categorical_encoding=categorical_encoding,
@@ -1641,8 +1576,12 @@ class SynthefyNoriClient:
                     y_train=y_train,
                 )
             return _shape_full(
-                q_by_row, taus, mean,
-                as_pandas=as_pandas, X_test=X_test, y_train=y_train,
+                q_by_row,
+                taus,
+                mean,
+                as_pandas=as_pandas,
+                X_test=X_test,
+                y_train=y_train,
             )
 
         if self.mode == "local":
@@ -1655,9 +1594,7 @@ class SynthefyNoriClient:
         else:
             remote_levels = None
             if discretize is not None or categorical_levels is not None:
-                remote_levels = _resolve_remote_levels(
-                    request.y_train, discretize, categorical_levels
-                )
+                remote_levels = _resolve_remote_levels(request.y_train, discretize, categorical_levels)
             if self.mode == "sagemaker":
                 predictions = self._predict_aws(
                     request,
@@ -1710,7 +1647,7 @@ class SynthefyNoriClient:
             raise ImportError(
                 f"output_type={output_type!r} requires a newer synthefy-nori (with "
                 "output_type= on NoriRegressor.predict, added in 0.6.0). Upgrade "
-                'with: pip install -U synthefy-nori.'
+                "with: pip install -U synthefy-nori."
             )
         init_kwargs: Dict[str, Any] = {}
         if self._local_variant is not None:
@@ -1720,14 +1657,14 @@ class SynthefyNoriClient:
                 raise ImportError(
                     f"Local Nori variant {self._local_variant!r} requires a newer "
                     "synthefy-nori (with the model= selector). Upgrade with: "
-                    'pip install -U synthefy-nori.'
+                    "pip install -U synthefy-nori."
                 )
             init_kwargs["model"] = self._local_variant
         if request.memory_policy is not None:
             if not _local_memory_policy_available():
                 raise ImportError(
                     "memory_policy= requires synthefy-nori >= 0.13.0 (the serving-memory policy). "
-                    'Upgrade with: pip install -U synthefy-nori.'
+                    "Upgrade with: pip install -U synthefy-nori."
                 )
             # NoriRegressor belongs to another package and expects its own MemoryPolicy
             # class (or a plain input), not this client's equivalent pydantic class.
@@ -1827,9 +1764,7 @@ class SynthefyNoriClient:
         (``(n_levels, n_query)``) but ``"full"`` row-major; both are normalized to
         row-major here so one shaping path serves local and remote alike.
         """
-        result = self._local_regressor_predict(
-            request, output_type=output_type, quantile_levels=quantile_levels
-        )
+        result = self._local_regressor_predict(request, output_type=output_type, quantile_levels=quantile_levels)
         n_query = len(request.X_test)
         if output_type == "quantiles":
             levels = quantile_levels or []
@@ -1860,16 +1795,11 @@ class SynthefyNoriClient:
         discretize: Optional[str] = None,
         categorical_levels: Optional[VectorLike] = None,
     ) -> List[float]:
-        if (
-            output_type != DEFAULT_OUTPUT_TYPE
-            or request.large_context_policy is not None
-        ):
+        if output_type != DEFAULT_OUTPUT_TYPE or request.large_context_policy is not None:
             # "median" is a point output but still needs the estimator API
             # (see _local_regressor_predict). Discretization cannot reach here:
             # _validate_output_type rejects that combination up front.
-            if (
-                discretize is not None or categorical_levels is not None
-            ) and not _local_discretize_available():
+            if (discretize is not None or categorical_levels is not None) and not _local_discretize_available():
                 raise ImportError(
                     "Categorical-target discretization (discretize=/"
                     "categorical_levels=) requires a newer synthefy-nori. "
@@ -1891,7 +1821,7 @@ class SynthefyNoriClient:
                 raise ImportError(
                     "Categorical-target discretization (discretize=/"
                     "categorical_levels=) requires a newer synthefy-nori. "
-                    'Upgrade with: pip install -U synthefy-nori.'
+                    "Upgrade with: pip install -U synthefy-nori."
                 )
             if discretize is not None:
                 extra["discretize"] = discretize
@@ -1901,7 +1831,7 @@ class SynthefyNoriClient:
             if not _local_memory_policy_available():
                 raise ImportError(
                     "memory_policy= requires synthefy-nori >= 0.13.0 (the serving-memory policy). "
-                    'Upgrade with: pip install -U synthefy-nori.'
+                    "Upgrade with: pip install -U synthefy-nori."
                 )
             # A dict, not our MemoryPolicy instance: the library's coerce() accepts its OWN
             # class, a dict, a preset name or None -- a same-named class from this package is
@@ -1920,7 +1850,7 @@ class SynthefyNoriClient:
             if "model" not in inspect.signature(local_predict).parameters:
                 raise ImportError(
                     f"Local Nori variant {self._local_variant!r} requires a newer synthefy-nori "
-                    '(with the model= selector). Upgrade with: pip install -U synthefy-nori.'
+                    "(with the model= selector). Upgrade with: pip install -U synthefy-nori."
                 )
             extra["model"] = self._local_variant
         result = local_predict(
@@ -1977,21 +1907,15 @@ class SynthefyNoriClient:
                 else DEFAULT_LARGE_CONTEXT_THRESHOLD
             )
             expected_seed = (
-                request.large_context_seed
-                if request.large_context_seed is not None
-                else DEFAULT_LARGE_CONTEXT_SEED
+                request.large_context_seed if request.large_context_seed is not None else DEFAULT_LARGE_CONTEXT_SEED
             )
             mismatches = []
             expected_policy = request.large_context_policy.strip()
             if report.policy != expected_policy:
-                mismatches.append(
-                    f"policy={report.policy!r}, expected {expected_policy!r}"
-                )
+                mismatches.append(f"policy={report.policy!r}, expected {expected_policy!r}")
 
             if report.threshold != expected_threshold:
-                mismatches.append(
-                    f"threshold={report.threshold}, expected {expected_threshold}"
-                )
+                mismatches.append(f"threshold={report.threshold}, expected {expected_threshold}")
             if report.seed != expected_seed:
                 mismatches.append(f"seed={report.seed}, expected {expected_seed}")
             if mismatches:
@@ -2003,8 +1927,7 @@ class SynthefyNoriClient:
             self.last_large_context_report = report.model_dump()
         if output_type != DEFAULT_OUTPUT_TYPE and parsed.output_type != output_type:
             honored = (
-                "omitted the output_type field entirely, so it predates "
-                "distribution output"
+                "omitted the output_type field entirely, so it predates distribution output"
                 if parsed.output_type is None
                 else f"honored output_type={parsed.output_type!r} instead"
             )
@@ -2013,7 +1936,7 @@ class SynthefyNoriClient:
                 f"it {honored}. Such a deployment answers with the distribution "
                 f"mean, which is indistinguishable from a real {output_type!r} "
                 "result, so this is raised rather than returning means as if they "
-                'were what you asked for. Use local mode (pip install '
+                "were what you asked for. Use local mode (pip install "
                 'synthefy-nori, then mode="local"), or point at a deployment '
                 "that serves distribution output."
             )
@@ -2034,9 +1957,7 @@ class SynthefyNoriClient:
         if status < 400 or status > 599:
             status = 500
         message = (
-            aws_response.get("OriginalMessage")
-            or error.get("Message")
-            or "SageMaker endpoint returned a model error"
+            aws_response.get("OriginalMessage") or error.get("Message") or "SageMaker endpoint returned a model error"
         )
         details = {
             "error": {
@@ -2092,16 +2013,13 @@ class SynthefyNoriClient:
         """Invoke the configured SageMaker endpoint with a SigV4-signed request."""
         if self._aws_client is None or self.endpoint_name is None:
             raise RuntimeError(
-                "SageMaker transport is not initialized; construct the client with "
-                "mode='sagemaker' and endpoint_name"
+                "SageMaker transport is not initialized; construct the client with mode='sagemaker' and endpoint_name"
             )
         if self._sagemaker_model is None:
             raise RuntimeError("SageMaker transport has no resolved model identity")
         payload = request.to_wire()
         payload["model"] = self._sagemaker_model
-        body = json.dumps(payload, separators=(",", ":"), allow_nan=False).encode(
-            "utf-8"
-        )
+        body = json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8")
         if len(body) > SAGEMAKER_MAX_BODY_BYTES:
             raise ValueError(
                 "The SageMaker request body is "
@@ -2128,9 +2046,7 @@ class SynthefyNoriClient:
         raw = self._read_sagemaker_stream(response_body)
         response_data = json.loads(raw)
         if not isinstance(response_data, dict):
-            raise ValueError(
-                "SageMaker endpoint returned JSON that was not an object"
-            )
+            raise ValueError("SageMaker endpoint returned JSON that was not an object")
         stream_error = response_data.get("error")
         if isinstance(stream_error, dict) and "status_code" in stream_error:
             status = int(stream_error.get("status_code", 500))
@@ -2139,13 +2055,7 @@ class SynthefyNoriClient:
             _raise_for_status(
                 httpx.Response(
                     status,
-                    json={
-                        "error": {
-                            "message": stream_error.get(
-                                "message", "SageMaker streaming inference failed"
-                            )
-                        }
-                    },
+                    json={"error": {"message": stream_error.get("message", "SageMaker streaming inference failed")}},
                 )
             )
         actual_model = response_data.get("model")
@@ -2243,9 +2153,7 @@ class SynthefyNoriClient:
             timeout=timeout,
             extra_headers=extra_headers,
         )
-        return self._parse_hosted_distribution(
-            request, parsed=parsed, output_type=output_type
-        )
+        return self._parse_hosted_distribution(request, parsed=parsed, output_type=output_type)
 
     def _predict_aws_distribution(
         self,
@@ -2254,9 +2162,7 @@ class SynthefyNoriClient:
         output_type: str,
     ) -> Tuple["np.ndarray", "np.ndarray", "np.ndarray"]:
         parsed = self._invoke_sagemaker_predict(request, output_type=output_type)
-        return self._parse_hosted_distribution(
-            request, parsed=parsed, output_type=output_type
-        )
+        return self._parse_hosted_distribution(request, parsed=parsed, output_type=output_type)
 
     def _parse_hosted_distribution(
         self,
@@ -2286,22 +2192,18 @@ class SynthefyNoriClient:
             requested = np.asarray(request.quantiles, dtype=float)
             if taus.shape[0] != requested.shape[0]:
                 raise ValueError(
-                    f"Requested {requested.shape[0]} quantile level(s) but the "
-                    f"server returned {taus.shape[0]}."
+                    f"Requested {requested.shape[0]} quantile level(s) but the server returned {taus.shape[0]}."
                 )
             # The returned levels must be the requested ones, in order: the
             # columns are labeled from the request, so levels that drifted would
             # mean data at one tau labeled with another.
             if not np.allclose(taus, requested, rtol=0.0, atol=1e-9):
                 raise ValueError(
-                    f"Requested quantile levels {requested.tolist()} but the "
-                    f"server returned {taus.tolist()}."
+                    f"Requested quantile levels {requested.tolist()} but the server returned {taus.tolist()}."
                 )
         return q_by_row, taus, np.asarray(parsed.predictions, dtype=float)
 
-    def _headers(
-        self, *, extra_headers: Optional[Dict[str, str]] = None
-    ) -> Dict[str, str]:
+    def _headers(self, *, extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         headers: Dict[str, str] = {
             "User-Agent": self.user_agent,
             "Content-Type": "application/json",
@@ -2311,28 +2213,19 @@ class SynthefyNoriClient:
             headers.update(extra_headers)
         return headers
 
-    def _should_retry(
-        self, response: Optional[httpx.Response], exc: Optional[Exception]
-    ) -> bool:
+    def _should_retry(self, response: Optional[httpx.Response], exc: Optional[Exception]) -> bool:
         if exc is not None:
             # Connection errors/timeouts are retryable
             return True
         if response is None:
             return False
-        if (
-            response.status_code in (408, 409, 425, 429)
-            or 500 <= response.status_code <= 599
-        ):
+        if response.status_code in (408, 409, 425, 429) or 500 <= response.status_code <= 599:
             return True
         return False
 
-    def _compute_backoff(
-        self, attempt: int, response: Optional[httpx.Response]
-    ) -> float:
+    def _compute_backoff(self, attempt: int, response: Optional[httpx.Response]) -> float:
         if response is not None:
-            retry_after = response.headers.get(
-                "retry-after"
-            ) or response.headers.get("Retry-After")
+            retry_after = response.headers.get("retry-after") or response.headers.get("Retry-After")
             if retry_after is not None:
                 try:
                     parsed_retry_after = float(retry_after)
@@ -2392,9 +2285,7 @@ class SynthefyNoriClient:
                 last_exc = APIConnectionError(str(exc))
 
             # Decide to retry
-            if attempt < attempts - 1 and self._should_retry(
-                response, last_exc
-            ):
+            if attempt < attempts - 1 and self._should_retry(response, last_exc):
                 delay = self._compute_backoff(attempt, response)
                 time.sleep(delay)
                 continue

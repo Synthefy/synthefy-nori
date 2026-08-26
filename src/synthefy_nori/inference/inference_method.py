@@ -55,11 +55,7 @@ class DistributedInference:
         mix_precision: bool = True,
     ):
         self.model = load_model(model) if isinstance(model, str) else model
-        self.requested_device = (
-            torch.device(f"cuda:{device}")
-            if isinstance(device, int)
-            else torch.device(device)
-        )
+        self.requested_device = torch.device(f"cuda:{device}") if isinstance(device, int) else torch.device(device)
         if self.requested_device.type != "cuda":
             raise ValueError("distributed inference requires a CUDA device")
         self.mix_precision = bool(mix_precision)
@@ -125,8 +121,7 @@ class DistributedInference:
             y_train = y_train[:, 0]
         if y_train.ndim != 1 or y_train.shape[0] != x_train.shape[0]:
             raise ValueError(
-                "distributed inference labels must have shape [rows] or [rows, 1] "
-                "and match the context rows"
+                "distributed inference labels must have shape [rows] or [rows, 1] and match the context rows"
             )
         if x_train.shape[1] != x_test.shape[1]:
             raise ValueError("distributed inference train/test feature counts must match")
@@ -179,10 +174,13 @@ class DistributedInference:
                 x_context_batch = x_context.unsqueeze(0).expand(batch, -1, -1)
                 y_context_batch = y_context.unsqueeze(0).expand(batch, -1)
                 x_all = torch.cat((x_context_batch, x_query.unsqueeze(1)), dim=1)
-                with torch.autocast(
-                    self.device.type,
-                    enabled=self.mix_precision,
-                ), torch.inference_mode():
+                with (
+                    torch.autocast(
+                        self.device.type,
+                        enabled=self.mix_precision,
+                    ),
+                    torch.inference_mode(),
+                ):
                     output = model(
                         x=x_all,
                         y=y_context_batch,
@@ -198,11 +196,7 @@ class DistributedInference:
                 torch.cuda.empty_cache()
 
             local_outputs = torch.cat(outputs, dim=0) if outputs else None
-            local_indices = (
-                torch.cat(indices, dim=0)
-                if indices
-                else torch.empty(0, dtype=torch.long)
-            )
+            local_indices = torch.cat(indices, dim=0) if indices else torch.empty(0, dtype=torch.long)
             gathered_outputs = [None for _ in range(self.world_size)]
             gathered_indices = [None for _ in range(self.world_size)]
             dist.all_gather_object(gathered_outputs, local_outputs)

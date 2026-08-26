@@ -42,8 +42,9 @@ _UNSAFE_ACCELERATOR_RUNTIME_MARKERS = (
 )
 
 
-def _pinball_loss(pred: torch.Tensor, target: torch.Tensor, quantiles: torch.Tensor,
-                   tail_weight: float = 0.0) -> torch.Tensor:
+def _pinball_loss(
+    pred: torch.Tensor, target: torch.Tensor, quantiles: torch.Tensor, tail_weight: float = 0.0
+) -> torch.Tensor:
     """Pinball loss for predicted quantiles.
 
     Args:
@@ -235,10 +236,7 @@ def _apply_pinball_objective(
         monotonicity_weight,
         mse_weight,
     )
-    if (
-        not _compiled_pinball_requested(pred, compile_pinball_loss)
-        or _pinball_compile_failed
-    ):
+    if not _compiled_pinball_requested(pred, compile_pinball_loss) or _pinball_compile_failed:
         return _pinball_objective_per_episode(*args)
 
     with _pinball_compile_lock:
@@ -279,8 +277,7 @@ def _apply_pinball_objective(
         return _pinball_objective_per_episode(*args)
 
 
-def _bar_distribution_loss(logits: torch.Tensor, target: torch.Tensor,
-                            borders: torch.Tensor) -> torch.Tensor:
+def _bar_distribution_loss(logits: torch.Tensor, target: torch.Tensor, borders: torch.Tensor) -> torch.Tensor:
     """Cross-entropy loss over arbitrary (possibly non-uniform) bin borders.
 
     The model head outputs [..., num_bars] logits. Targets (already
@@ -307,13 +304,13 @@ def _bar_distribution_loss(logits: torch.Tensor, target: torch.Tensor,
     return F.cross_entropy(
         logits.reshape(-1, logits.shape[-1]).float(),
         idx.reshape(-1),
-        reduction='none',
+        reduction="none",
     ).reshape(target.shape)
 
 
-def _bar_distribution_soft_loss(logits: torch.Tensor, target: torch.Tensor,
-                                 borders: torch.Tensor, sigma_y: float
-                                 ) -> torch.Tensor:
+def _bar_distribution_soft_loss(
+    logits: torch.Tensor, target: torch.Tensor, borders: torch.Tensor, sigma_y: float
+) -> torch.Tensor:
     """Soft cross-entropy with Gaussian-smoothed bin targets in y-space.
 
     Hard CE has K categorical cliffs in the loss landscape — predicting
@@ -339,15 +336,14 @@ def _bar_distribution_soft_loss(logits: torch.Tensor, target: torch.Tensor,
     """
     bin_centers = 0.5 * (borders[:-1] + borders[1:])  # [num_bars]
     diff = target.float().unsqueeze(-1) - bin_centers
-    log_target = -(diff ** 2) / (2.0 * float(sigma_y) ** 2 + 1e-12)
+    log_target = -(diff**2) / (2.0 * float(sigma_y) ** 2 + 1e-12)
     target_dist = torch.softmax(log_target, dim=-1)
     log_pred = torch.log_softmax(logits.float(), dim=-1)
     loss = -(target_dist * log_pred).sum(dim=-1)
     return loss
 
 
-def _bar_aux_mse_loss(logits: torch.Tensor, target: torch.Tensor,
-                      borders: torch.Tensor) -> torch.Tensor:
+def _bar_aux_mse_loss(logits: torch.Tensor, target: torch.Tensor, borders: torch.Tensor) -> torch.Tensor:
     """Auxiliary MSE on the bar head's expected-value point estimate.
 
     Bar CE is satisfied as long as the right BIN gets high mass — but the
@@ -364,20 +360,29 @@ def _bar_aux_mse_loss(logits: torch.Tensor, target: torch.Tensor,
     return (expected - target.float()) ** 2
 
 
-def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
-                      task_type, n_classes=None, feature_loss_weight=0.5,
-                      regression_loss='mse', regression_loss_beta=1.0,
-                      regression_quantiles=None, pinball_tail_weight=0.0,
-                      pinball_monotonicity_weight: float = 0.0,
-                      pinball_mse_weight: float = 0.0,
-                      num_bars: int = 5000,
-                      bar_borders_low: float = -10.0,
-                      bar_borders_high: float = 10.0,
-                      bar_target_sigma: float = 0.0,
-                      bar_borders: torch.Tensor | None = None,
-                      bar_target_sigma_y: float = 0.0,
-                      bar_aux_mse_weight: float = 0.0,
-                      compile_pinball_loss: bool = True):
+def compute_ccmm_loss(
+    model_output,
+    y_true,
+    x_original,
+    feature_mask,
+    task_type,
+    n_classes=None,
+    feature_loss_weight=0.5,
+    regression_loss="mse",
+    regression_loss_beta=1.0,
+    regression_quantiles=None,
+    pinball_tail_weight=0.0,
+    pinball_monotonicity_weight: float = 0.0,
+    pinball_mse_weight: float = 0.0,
+    num_bars: int = 5000,
+    bar_borders_low: float = -10.0,
+    bar_borders_high: float = 10.0,
+    bar_target_sigma: float = 0.0,
+    bar_borders: torch.Tensor | None = None,
+    bar_target_sigma_y: float = 0.0,
+    bar_aux_mse_weight: float = 0.0,
+    compile_pinball_loss: bool = True,
+):
     """Compute the unified CCMM loss.
 
     Args:
@@ -400,24 +405,24 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
         total_loss: scalar
         loss_dict: dict with individual loss components for logging
     """
-    process_config = model_output['process_config']
-    n_x_padding = process_config['n_x_padding']
+    process_config = model_output["process_config"]
+    n_x_padding = process_config["n_x_padding"]
     # num_used_features: [B, n_groups, 1]
-    num_used_features = process_config['num_used_features']
+    num_used_features = process_config["num_used_features"]
     if num_used_features is not None:
         num_used_features = num_used_features.detach()
     # mean_norm: [B, n_groups, fpg], std_norm: [B, n_groups, fpg]
-    mean_norm = process_config['mean_for_normalization']
+    mean_norm = process_config["mean_for_normalization"]
     if mean_norm is not None:
         mean_norm = mean_norm.detach()
-    std_norm = process_config['std_for_normalization']
+    std_norm = process_config["std_for_normalization"]
     if std_norm is not None:
         std_norm = std_norm.detach()
     # features_per_group: actual ValidFeatureEncoder num_features (a scalar-like tensor).
     # By construction (cli.py propagates features_per_group into the encoder's
     # num_features), this equals the model's reshape grouping dimension, so we
     # derive the grouping size `fpg` from it rather than hardcoding 2.
-    model_fpg = process_config['features_per_group']
+    model_fpg = process_config["features_per_group"]
     fpg = int(model_fpg.item()) if isinstance(model_fpg, torch.Tensor) else int(model_fpg)
 
     batch_size = y_true.shape[0]
@@ -428,8 +433,8 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
     y_loss = torch.tensor(0.0, device=y_true.device)
     n_y_cells = 0
 
-    if task_type == 'cls':
-        cls_output = model_output['cls_output']  # [B, n_query, max_classes]
+    if task_type == "cls":
+        cls_output = model_output["cls_output"]  # [B, n_query, max_classes]
         if cls_output.shape[0] > 0:
             max_classes = cls_output.shape[-1]
             if n_classes is not None:
@@ -437,44 +442,42 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
                 cls_output = cls_output[..., :max_classes]
             y_true_long = y_true.long().clamp(0, max_classes - 1)
             y_loss = F.cross_entropy(
-                cls_output.float().reshape(-1, cls_output.shape[-1]),
-                y_true_long.reshape(-1),
-                reduction='sum'
+                cls_output.float().reshape(-1, cls_output.shape[-1]), y_true_long.reshape(-1), reduction="sum"
             )
             n_y_cells = batch_size * n_query
     else:
-        reg_output = model_output['reg_output']  # [B, n_query, 1]
+        reg_output = model_output["reg_output"]  # [B, n_query, 1]
         if reg_output.shape[0] > 0:
-            pred = reg_output.float()             # [B, n_query, Q]
-            target = y_true.float()               # [B, n_query]
+            pred = reg_output.float()  # [B, n_query, Q]
+            target = y_true.float()  # [B, n_query]
             # Normalize per-episode losses so all regression datasets contribute
             # comparably even when query-target scale varies across episodes.
             per_ep_var = target.var(dim=1, unbiased=False).clamp(min=0.01)  # [B]
-            if regression_loss == 'mse':
+            if regression_loss == "mse":
                 pred = pred.squeeze(-1)
                 per_ep_loss = ((pred - target) ** 2).mean(dim=1)
                 per_ep_loss = per_ep_loss / per_ep_var
-            elif regression_loss == 'smooth_l1':
+            elif regression_loss == "smooth_l1":
                 pred = pred.squeeze(-1)
                 beta = max(float(regression_loss_beta), 1e-6)
                 per_ep_loss = F.smooth_l1_loss(
                     pred,
                     target,
-                    reduction='none',
+                    reduction="none",
                     beta=beta,
                 ).mean(dim=1)
                 per_ep_loss = per_ep_loss / torch.sqrt(per_ep_var)
-            elif regression_loss == 'huber':
+            elif regression_loss == "huber":
                 pred = pred.squeeze(-1)
                 delta = max(float(regression_loss_beta), 1e-6)
                 per_ep_loss = F.huber_loss(
                     pred,
                     target,
-                    reduction='none',
+                    reduction="none",
                     delta=delta,
                 ).mean(dim=1)
                 per_ep_loss = per_ep_loss / torch.sqrt(per_ep_var)
-            elif regression_loss == 'pinball':
+            elif regression_loss == "pinball":
                 if regression_quantiles is None:
                     regression_quantiles = (0.1, 0.25, 0.5, 0.75, 0.9)
                 quantiles = torch.as_tensor(
@@ -500,7 +503,7 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
                     pinball_mse_weight,
                     compile_pinball_loss,
                 )
-            elif regression_loss == 'bar_distribution':
+            elif regression_loss == "bar_distribution":
                 # pred: [B, n_query, num_bars] logits (no squeeze)
                 if pred.shape[-1] != num_bars:
                     raise ValueError(
@@ -514,8 +517,11 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
                     borders_t = bar_borders.to(pred.device)
                 else:
                     borders_t = torch.linspace(
-                        bar_borders_low, bar_borders_high, num_bars + 1,
-                        device=pred.device, dtype=torch.float32,
+                        bar_borders_low,
+                        bar_borders_high,
+                        num_bars + 1,
+                        device=pred.device,
+                        dtype=torch.float32,
                     )
                 # Resolve sigma_y: prefer explicit y-space sigma; else convert
                 # legacy sigma_bins to sigma_y via mean bin width (only well-
@@ -531,11 +537,16 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
                 # Soft CE when sigma_y>0; hard CE otherwise.
                 if sigma_y > 0:
                     per_ex_loss = _bar_distribution_soft_loss(
-                        pred, target, borders_t, sigma_y=sigma_y,
+                        pred,
+                        target,
+                        borders_t,
+                        sigma_y=sigma_y,
                     )
                 else:
                     per_ex_loss = _bar_distribution_loss(
-                        pred, target, borders_t,
+                        pred,
+                        target,
+                        borders_t,
                     )  # [B, n_query]
                 per_ep_loss = per_ex_loss.mean(dim=1)
                 # bar_distribution loss is CE in log-space: not episode-variance
@@ -556,7 +567,7 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
             else:
                 raise ValueError(f"Unsupported regression_loss: {regression_loss}")
 
-            if regression_loss not in ('pinball', 'bar_distribution'):
+            if regression_loss not in ("pinball", "bar_distribution"):
                 # If the model is dramatically worse than predicting the mean, the
                 # gradient is usually dominated by noise rather than useful signal.
                 # Not applied to pinball (raw quantile loss) or bar_distribution
@@ -568,19 +579,17 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
     if feature_loss_weight <= 0:
         y_loss_avg = y_loss / max(n_y_cells, 1)
         loss_dict = {
-            'total_loss': y_loss_avg.item(),
-            'y_loss': y_loss_avg.item(),
-            'feat_loss': 0.0,
-            'n_y_cells': n_y_cells,
-            'n_feat_cells': 0,
+            "total_loss": y_loss_avg.item(),
+            "y_loss": y_loss_avg.item(),
+            "feat_loss": 0.0,
+            "n_y_cells": n_y_cells,
+            "n_feat_cells": 0,
         }
         return y_loss_avg, loss_dict
 
-    feature_pred = model_output.get('feature_pred')
+    feature_pred = model_output.get("feature_pred")
     if feature_pred is None:
-        raise ValueError(
-            "feature_pred is required when feature_loss_weight is positive"
-        )
+        raise ValueError("feature_pred is required when feature_loss_weight is positive")
 
     # ------------------------------------------------------------------
     # 2. Feature reconstruction loss (masked cells only)
@@ -598,16 +607,24 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
     # Pad x_original and feature_mask to be divisible by fpg
     pad_amount = n_x_padding
     if pad_amount > 0:
-        x_padded = torch.cat([
-            x_original,
-            torch.zeros(batch_size, x_original.shape[1], pad_amount,
-                        device=x_original.device, dtype=x_original.dtype)
-        ], dim=-1)
-        mask_padded = torch.cat([
-            feature_mask,
-            torch.zeros(batch_size, feature_mask.shape[1], pad_amount,
-                        device=feature_mask.device, dtype=feature_mask.dtype).bool()
-        ], dim=-1)
+        x_padded = torch.cat(
+            [
+                x_original,
+                torch.zeros(
+                    batch_size, x_original.shape[1], pad_amount, device=x_original.device, dtype=x_original.dtype
+                ),
+            ],
+            dim=-1,
+        )
+        mask_padded = torch.cat(
+            [
+                feature_mask,
+                torch.zeros(
+                    batch_size, feature_mask.shape[1], pad_amount, device=feature_mask.device, dtype=feature_mask.dtype
+                ).bool(),
+            ],
+            dim=-1,
+        )
     else:
         x_padded = x_original
         mask_padded = feature_mask
@@ -652,7 +669,7 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
         valid = ~torch.isnan(masked_true)
         n_valid = valid.sum()
         if n_valid > 0:
-            feat_loss = F.mse_loss(masked_pred[valid], masked_true[valid], reduction='sum')
+            feat_loss = F.mse_loss(masked_pred[valid], masked_true[valid], reduction="sum")
             n_feat_cells = n_valid.item()
 
     # ------------------------------------------------------------------
@@ -663,11 +680,11 @@ def compute_ccmm_loss(model_output, y_true, x_original, feature_mask,
     total_loss = y_loss_avg + feature_loss_weight * feat_loss_avg
 
     loss_dict = {
-        'total_loss': total_loss.item(),
-        'y_loss': y_loss_avg.item(),
-        'feat_loss': feat_loss_avg.item(),
-        'n_y_cells': n_y_cells,
-        'n_feat_cells': n_feat_cells,
+        "total_loss": total_loss.item(),
+        "y_loss": y_loss_avg.item(),
+        "feat_loss": feat_loss_avg.item(),
+        "n_y_cells": n_y_cells,
+        "n_feat_cells": n_feat_cells,
     }
 
     return total_loss, loss_dict

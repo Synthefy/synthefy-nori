@@ -33,9 +33,7 @@ class FeatureTransformer:
 
         self._validate_input(train_tsdf, test_tsdf, target_column)
 
-        static_features = self._merge_static_features(
-            train_tsdf.static_features, test_tsdf.static_features
-        )
+        static_features = self._merge_static_features(train_tsdf.static_features, test_tsdf.static_features)
 
         # Input columns (target + covariates) keep their dtype; only generated columns
         # are downcast to float32 below. The whole featurized frame lives in host RAM
@@ -61,11 +59,7 @@ class FeatureTransformer:
         # The generated features (calendar, seasonal, running index) are bounded and
         # exactly representable in float32, so the downcast is lossless.
         generated_float_cols = [
-            c
-            for c in tsdf.columns
-            if c not in input_columns
-            and c != "_is_train"
-            and tsdf[c].dtype == np.float64
+            c for c in tsdf.columns if c not in input_columns and c != "_is_train" and tsdf[c].dtype == np.float64
         ]
         if generated_float_cols:
             tsdf = tsdf.astype({c: np.float32 for c in generated_float_cols})
@@ -75,16 +69,10 @@ class FeatureTransformer:
         test_slice = tsdf[~tsdf["_is_train"]].drop(columns=["_is_train"])
         del tsdf
 
-        train_tsdf = TimeSeriesDataFrame(
-            pd.DataFrame(train_slice), static_features=static_features
-        )
-        test_tsdf = TimeSeriesDataFrame(
-            pd.DataFrame(test_slice), static_features=static_features
-        )
+        train_tsdf = TimeSeriesDataFrame(pd.DataFrame(train_slice), static_features=static_features)
+        test_tsdf = TimeSeriesDataFrame(pd.DataFrame(test_slice), static_features=static_features)
 
-        assert not train_tsdf[target_column].isna().any(), (
-            "All target values in train_tsdf should be non-NaN"
-        )
+        assert not train_tsdf[target_column].isna().any(), "All target values in train_tsdf should be non-NaN"
         assert test_tsdf[target_column].isna().all()
 
         return train_tsdf, test_tsdf
@@ -111,9 +99,7 @@ class FeatureTransformer:
         target_column: str,
     ):
         if target_column not in train_tsdf.columns:
-            raise ValueError(
-                f"Target column '{target_column}' not found in training data"
-            )
+            raise ValueError(f"Target column '{target_column}' not found in training data")
 
         if not test_tsdf[target_column].isna().all():
             raise ValueError("Test data should not contain target values")

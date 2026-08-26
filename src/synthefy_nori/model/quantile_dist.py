@@ -23,17 +23,10 @@ def _enforce_monotone(q: torch.Tensor) -> torch.Tensor:
 def _validate_tau_numpy(tau: np.ndarray, quantile_count: int) -> np.ndarray:
     tau = np.asarray(tau)
     if tau.shape != (quantile_count,):
-        raise ValueError(
-            f"tau must have shape ({quantile_count},), got {tau.shape}"
-        )
+        raise ValueError(f"tau must have shape ({quantile_count},), got {tau.shape}")
     if quantile_count < 1:
         raise ValueError("q must contain at least one quantile")
-    if (
-        not np.isfinite(tau).all()
-        or np.any(tau <= 0.0)
-        or np.any(tau >= 1.0)
-        or np.any(np.diff(tau) <= 0.0)
-    ):
+    if not np.isfinite(tau).all() or np.any(tau <= 0.0) or np.any(tau >= 1.0) or np.any(np.diff(tau) <= 0.0):
         raise ValueError("tau must be finite, strictly increasing values in (0, 1)")
     return tau
 
@@ -45,9 +38,7 @@ def _validate_tau_torch(
     device: torch.device,
 ) -> torch.Tensor:
     if tau.shape != (quantile_count,):
-        raise ValueError(
-            f"tau must have shape ({quantile_count},), got {tuple(tau.shape)}"
-        )
+        raise ValueError(f"tau must have shape ({quantile_count},), got {tuple(tau.shape)}")
     if quantile_count < 1:
         raise ValueError("q must contain at least one quantile")
     if not tau.is_floating_point():
@@ -97,9 +88,7 @@ def quantile_dist_mean_numpy(
 
     left_area = tau[0] * q[..., 0]
     right_area = (1.0 - tau[-1]) * q[..., -1]
-    mid_area = (
-        0.5 * (q[..., :-1] + q[..., 1:]) * np.diff(tau)
-    ).sum(axis=-1)
+    mid_area = (0.5 * (q[..., :-1] + q[..., 1:]) * np.diff(tau)).sum(axis=-1)
     return left_area + mid_area + right_area
 
 

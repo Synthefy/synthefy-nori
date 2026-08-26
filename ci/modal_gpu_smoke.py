@@ -25,6 +25,7 @@ Note: pin the ``modal`` version and verify the image/GPU API against your
 installed client -- this targets modal 1.x (``App`` / ``add_local_dir`` /
 ``gpu=`` / ``max_containers``).
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -59,8 +60,16 @@ image = (
         "/src",
         # Keep the upload lean and never ship local build/venv/data artifacts.
         ignore=[
-            ".git", ".venv", "dist", "build", "*.png",
-            "data", "checkpoints", "results", "wandb", "cache",
+            ".git",
+            ".venv",
+            "dist",
+            "build",
+            "*.png",
+            "data",
+            "checkpoints",
+            "results",
+            "wandb",
+            "cache",
         ],
     )
 )
@@ -111,8 +120,14 @@ def gpu_smoke(torch_version: str = "locked") -> None:
         )
         subprocess.run(
             [
-                "uv", "pip", "install", "--no-config", "--python", python,
-                f"torch=={torch_version}", "--torch-backend=cu130",
+                "uv",
+                "pip",
+                "install",
+                "--no-config",
+                "--python",
+                python,
+                f"torch=={torch_version}",
+                "--torch-backend=cu130",
             ],
             cwd=repo,
             env=env,
@@ -120,8 +135,14 @@ def gpu_smoke(torch_version: str = "locked") -> None:
         )
         subprocess.run(
             [
-                "uv", "pip", "install", "--no-config", "--python", python,
-                "-e", ".[dev]",
+                "uv",
+                "pip",
+                "install",
+                "--no-config",
+                "--python",
+                python,
+                "-e",
+                ".[dev]",
             ],
             cwd=repo,
             env=env,
@@ -130,12 +151,17 @@ def gpu_smoke(torch_version: str = "locked") -> None:
 
     # Fail fast with a clear message if the GPU / driver isn't usable.
     subprocess.run(
-        [python, "-c",
-         "import torch; assert torch.cuda.is_available(), 'no CUDA device on the Modal runner';"
-         " print('GPU:', torch.cuda.get_device_name(0));"
-         " print('torch:', torch.__version__, 'CUDA:', torch.version.cuda,"
-         " 'cuDNN:', torch.backends.cudnn.version())"],
-        cwd=repo, env=env, check=True,
+        [
+            python,
+            "-c",
+            "import torch; assert torch.cuda.is_available(), 'no CUDA device on the Modal runner';"
+            " print('GPU:', torch.cuda.get_device_name(0));"
+            " print('torch:', torch.__version__, 'CUDA:', torch.version.cuda,"
+            " 'cuDNN:', torch.backends.cudnn.version())",
+        ],
+        cwd=repo,
+        env=env,
+        check=True,
     )
     # OPTIONAL flash-attn coverage (A100 is sm80, so FA2 is supported). Left off
     # because the codebase currently has no flash path; enable only once flash
@@ -144,10 +170,16 @@ def gpu_smoke(torch_version: str = "locked") -> None:
     #                cwd=repo, env=env, check=True)
     subprocess.run(
         [
-            pytest, "-m", "slow",
-            "tests/test_inference_e2e.py", "tests/test_training_smoke.py", "-q",
+            pytest,
+            "-m",
+            "slow",
+            "tests/test_inference_e2e.py",
+            "tests/test_training_smoke.py",
+            "-q",
         ],
-        cwd=repo, env=env, check=True,
+        cwd=repo,
+        env=env,
+        check=True,
     )
 
 

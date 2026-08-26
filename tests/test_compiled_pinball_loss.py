@@ -386,11 +386,15 @@ def test_preflight_cache_keys_exact_shape_stride_and_weights(monkeypatch):
     )
     assert len(preflight_calls) == 2
 
-    strided_pred = torch.randn(
-        args[0].shape[0],
-        args[0].shape[2],
-        args[0].shape[1],
-    ).transpose(1, 2).requires_grad_(True)
+    strided_pred = (
+        torch.randn(
+            args[0].shape[0],
+            args[0].shape[2],
+            args[0].shape[1],
+        )
+        .transpose(1, 2)
+        .requires_grad_(True)
+    )
     assert strided_pred.shape == args[0].shape
     assert strided_pred.stride() != args[0].stride()
     stride_args = (strided_pred, *args[1:])
@@ -511,9 +515,7 @@ def test_real_cuda_inductor_pinball_forward_and_backward():
         per_ep_var,
         *weights,
     )
-    signature = loss_module._pinball_preflight_signature(
-        (compiled_pred, target, quantiles, per_ep_var, *weights)
-    )
+    signature = loss_module._pinball_preflight_signature((compiled_pred, target, quantiles, per_ep_var, *weights))
     assert loss_module._pinball_compile_failed is False
     assert loss_module._compiled_pinball_objective is not None
     assert signature in loss_module._compiled_pinball_preflight_signatures

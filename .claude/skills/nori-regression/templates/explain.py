@@ -8,6 +8,7 @@ over a sample of query rows, plus optional PDP and feature selection.
 
 Needs the interpretability extra:  pip install "synthefy-nori[interpretability]"
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,9 +23,7 @@ from synthefy_nori import NoriRegressor
 try:
     from synthefy_nori.interpretability.shapiq import get_nori_imputation_explainer
 except ImportError as e:  # pragma: no cover - env-dependent
-    raise SystemExit(
-        'interpretability extra missing — pip install "synthefy-nori[interpretability]"'
-    ) from e
+    raise SystemExit('interpretability extra missing — pip install "synthefy-nori[interpretability]"') from e
 
 
 def first_order_vector(iv, n_features: int) -> np.ndarray:
@@ -47,8 +46,9 @@ def first_order_vector(iv, n_features: int) -> np.ndarray:
     return vec
 
 
-def shap_importance(reg, X_context: np.ndarray, X_query: np.ndarray,
-                    feature_names: list[str], *, budget: int = 128) -> pd.DataFrame:
+def shap_importance(
+    reg, X_context: np.ndarray, X_query: np.ndarray, feature_names: list[str], *, budget: int = 128
+) -> pd.DataFrame:
     """Per-feature mean(|Shapley|) over the query rows, sorted descending."""
     explainer = get_nori_imputation_explainer(reg, X_context, index="SV", max_order=1)
     acc = np.zeros(len(feature_names), dtype=float)
@@ -67,10 +67,21 @@ def main() -> None:
     ap.add_argument("--k", type=int, default=8, help="query rows to explain (Shapley is per-row)")
     ap.add_argument("--budget", type=int, default=128, help="coalitions per row; see interpretability.md")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--pdp", nargs="+", type=int, default=None, metavar="FEAT",
-                    help="feature indices to draw partial-dependence plots for")
-    ap.add_argument("--feature-selection", type=int, default=None, metavar="N",
-                    help="run sequential selection down to N features (slow)")
+    ap.add_argument(
+        "--pdp",
+        nargs="+",
+        type=int,
+        default=None,
+        metavar="FEAT",
+        help="feature indices to draw partial-dependence plots for",
+    )
+    ap.add_argument(
+        "--feature-selection",
+        type=int,
+        default=None,
+        metavar="N",
+        help="run sequential selection down to N features (slow)",
+    )
     args = ap.parse_args()
 
     if args.data is None:
@@ -87,23 +98,28 @@ def main() -> None:
     reg = NoriRegressor(device=args.device, model="nori-30m")
     reg.fit(X_train.values, y_train.values)
 
-    imp = shap_importance(reg, X_train.values, X_test.values[: args.k],
-                          list(X.columns), budget=args.budget)
+    imp = shap_importance(reg, X_train.values, X_test.values[: args.k], list(X.columns), budget=args.budget)
     print(f"mean(|SHAP|) over {min(args.k, len(X_test))} query rows (budget={args.budget}):")
     print(imp.to_string(index=False))
 
     if args.pdp:
         from synthefy_nori.interpretability.pdp import partial_dependence_plots
+
         partial_dependence_plots(reg, X_test.values, features=args.pdp, kind="average")
 
     if args.feature_selection:
         from synthefy_nori.interpretability.feature_selection import feature_selection
-        res = feature_selection(reg, X_train.values, y_train.values,
-                                n_features_to_select=args.feature_selection, cv=3,
-                                feature_names=list(X.columns))
+
+        res = feature_selection(
+            reg,
+            X_train.values,
+            y_train.values,
+            n_features_to_select=args.feature_selection,
+            cv=3,
+            feature_names=list(X.columns),
+        )
         print("selected:", res.selected_names)
-        print(f"CV R²: all-features {res.baseline_score_mean:.3f} -> "
-              f"selected {res.selected_score_mean:.3f}")
+        print(f"CV R²: all-features {res.baseline_score_mean:.3f} -> selected {res.selected_score_mean:.3f}")
 
 
 if __name__ == "__main__":

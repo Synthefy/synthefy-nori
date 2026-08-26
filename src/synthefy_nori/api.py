@@ -63,16 +63,12 @@ def _as_device(device):
     resolved = torch.device(device)
     if resolved.type == "cuda":
         if not torch.cuda.is_available():
-            raise RuntimeError(
-                f"device={str(resolved)!r} was requested, but CUDA is not "
-                "available to PyTorch."
-            )
+            raise RuntimeError(f"device={str(resolved)!r} was requested, but CUDA is not available to PyTorch.")
         if resolved.index is not None:
             device_count = torch.cuda.device_count()
             if resolved.index >= device_count:
                 raise RuntimeError(
-                    f"device={str(resolved)!r} was requested, but only "
-                    f"{device_count} CUDA device(s) are visible."
+                    f"device={str(resolved)!r} was requested, but only {device_count} CUDA device(s) are visible."
                 )
     if resolved.type == "mps" and not _mps_available():
         mps = getattr(torch.backends, "mps", None)
@@ -86,8 +82,7 @@ def _as_device(device):
     return resolved
 
 
-def _resolve_model_path(model_path: str | None, token: str | bool | None = None,
-                        model: str | None = None) -> str:
+def _resolve_model_path(model_path: str | None, token: str | bool | None = None, model: str | None = None) -> str:
     if model_path is not None:
         return model_path
     from synthefy_nori.hf import download_checkpoint
@@ -537,9 +532,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         if self._predictor is None:
             from synthefy_nori.inference.predictor import NoriPredictor
 
-            resolved_device = (
-                self.device_ if hasattr(self, "device_") else _as_device(self.device)
-            )
+            resolved_device = self.device_ if hasattr(self, "device_") else _as_device(self.device)
             self._predictor = NoriPredictor(
                 device=resolved_device,
                 model_path=_resolve_model_path(self.model_path, self.token, self.model),
@@ -635,18 +628,14 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
             return self._predict_distribution(X, output_type=output_type, quantiles=quantiles)
         if output_type == "main":
             raise NotImplementedError(
-                "output_type='main' is not supported. Use 'mean', 'median', "
-                "'mode', 'quantiles', or 'full'."
+                "output_type='main' is not supported. Use 'mean', 'median', 'mode', 'quantiles', or 'full'."
             )
         if output_type not in ("mean", "median", "mode"):
             raise ValueError(
-                f"Unknown output_type={output_type!r}; expected one of "
-                "'mean', 'median', 'mode', 'quantiles', 'full'."
+                f"Unknown output_type={output_type!r}; expected one of 'mean', 'median', 'mode', 'quantiles', 'full'."
             )
         if quantiles is not None:
-            raise ValueError(
-                "quantiles= is only valid with output_type='quantiles'."
-            )
+            raise ValueError("quantiles= is only valid with output_type='quantiles'.")
 
         # Drive the predictor's distribution-collapse from output_type. "mean"
         # uses the regressor's configured collapse so the default path is
@@ -659,8 +648,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 quantile_collapse=self.quantile_collapse,
                 bar_point_estimator=self.bar_point_estimator,
             )
-        return self._predict_point(
-            X, quantile_collapse="median", bar_point_estimator=output_type)
+        return self._predict_point(X, quantile_collapse="median", bar_point_estimator=output_type)
 
     def _predict_point(self, X, *, quantile_collapse: str, bar_point_estimator: str):
         """One point-prediction pass with an explicit collapse, predictor state
@@ -680,11 +668,10 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         try:
             predictor.quantile_collapse = quantile_collapse
             predictor.bar_point_estimator = bar_point_estimator
-            if large_context_applies(len(self.X_train_), self.large_context_policy,
-                               self.large_context_threshold):
+            if large_context_applies(len(self.X_train_), self.large_context_policy, self.large_context_threshold):
                 pred = self._large_context_predict(
-                    predictor, X_test, y_norm,
-                    decoder=(quantile_collapse, bar_point_estimator))
+                    predictor, X_test, y_norm, decoder=(quantile_collapse, bar_point_estimator)
+                )
             else:
                 pred = predictor.predict(self.X_train_, y_norm, X_test)
         finally:
@@ -694,8 +681,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         pred = np.asarray(pred, dtype=np.float64).squeeze()
         return pred * self.y_std_ + self.y_mean_
 
-    def _large_context_predict(self, predictor, X_test: np.ndarray, y_norm: np.ndarray,
-                         *, decoder: tuple):
+    def _large_context_predict(self, predictor, X_test: np.ndarray, y_norm: np.ndarray, *, decoder: tuple):
         """Predict through ``large_context_policy`` instead of one full-context call.
 
         The :class:`~synthefy_nori.inference.policies.Problem` is built once per ``fit``
@@ -729,8 +715,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # repetition the rest of this path exists to remove.
         if self._large_context_budget_features is None:
             self._large_context_budget_features = predictor.budget_n_features(self.X_train_)
-        window = predictor.max_context_rows(
-            self.X_train_, budget_n_features=self._large_context_budget_features)
+        window = predictor.max_context_rows(self.X_train_, budget_n_features=self._large_context_budget_features)
         max_nori_calls = getattr(self, "large_context_max_calls", None)
         if self._large_context_problem is None or self._large_context_problem.window != window:
             previous = self._large_context_problem
@@ -754,8 +739,10 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # includes defaults, and follows in-place dict changes between calls.
         memory_scope = MemoryPolicy.coerce(self.memory_policy).model_dump_json()
         pred, self.large_context_report_ = run_policy(
-            self._large_context_problem, X_test,
-            policy_spec=self.large_context_policy, seed=self.large_context_seed,
+            self._large_context_problem,
+            X_test,
+            policy_spec=self.large_context_policy,
+            seed=self.large_context_seed,
             cache_scope=("decoder", decoder, "memory_policy", memory_scope),
         )
         return pred
@@ -785,14 +772,11 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
             # X is ignored for context embeddings; do not touch it so a
             # missing/mismatched X cannot raise. The predictor synthesizes a
             # dummy query from the context.
-            return predictor.get_embeddings(
-                self.X_train_, y_norm, None, data_source=data_source)
+            return predictor.get_embeddings(self.X_train_, y_norm, None, data_source=data_source)
         if X is None:
-            raise ValueError(
-                "get_embeddings requires X for data_source='test'.")
+            raise ValueError("get_embeddings requires X for data_source='test'.")
         X_test = self._prepare_query_features(X)
-        return predictor.get_embeddings(
-            self.X_train_, y_norm, X_test, data_source=data_source)
+        return predictor.get_embeddings(self.X_train_, y_norm, X_test, data_source=data_source)
 
     def _predict_distribution(self, X, *, output_type: str, quantiles: list[float] | None):
         """Return the model's predictive distribution as quantiles.
@@ -811,8 +795,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # combine their quantile banks. Silently ignoring the policy and answering from
         # a memory-trimmed full context would hand back numbers the caller believes
         # came from their policy.
-        if large_context_applies(len(self.X_train_), self.large_context_policy,
-                           self.large_context_threshold):
+        if large_context_applies(len(self.X_train_), self.large_context_policy, self.large_context_threshold):
             raise LargeContextUnsupportedOutputError(
                 f"large_context_policy={self.large_context_policy!r} cannot serve "
                 f"output_type={output_type!r} (nor a discretize strategy that decodes "
@@ -825,8 +808,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         if output_type == "quantiles":
             if not quantiles:
                 raise ValueError(
-                    "output_type='quantiles' requires quantiles=[...] with at "
-                    "least one tau level in (0, 1)."
+                    "output_type='quantiles' requires quantiles=[...] with at least one tau level in (0, 1)."
                 )
             q_levels = np.asarray(quantiles, dtype=np.float64)
             if np.any((q_levels <= 0.0) | (q_levels >= 1.0)):
@@ -859,8 +841,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         taus = np.asarray(predictor.regression_quantiles, dtype=np.float64)
         if taus.shape != (K,):
             raise RuntimeError(
-                "Checkpoint quantile metadata does not match decoder output: "
-                f"{taus.shape[0]} levels for {K} columns."
+                f"Checkpoint quantile metadata does not match decoder output: {taus.shape[0]} levels for {K} columns."
             )
 
         if output_type == "full":
@@ -868,7 +849,9 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 "quantiles": Q,
                 "taus": taus,
                 "mean": quantile_dist_mean_numpy(
-                    Q, taus, enforce_monotone_first=False,
+                    Q,
+                    taus,
+                    enforce_monotone_first=False,
                 ),
             }
 
@@ -898,19 +881,14 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # validate before the (expensive) forward pass; discretize_predictions
         # re-checks as the canonical gate for direct module users
         if method not in DISCRETIZE_METHODS:
-            raise ValueError(
-                f"Unknown discretize method {method!r}; expected one of "
-                f"{DISCRETIZE_METHODS}."
-            )
+            raise ValueError(f"Unknown discretize method {method!r}; expected one of {DISCRETIZE_METHODS}.")
         if not hasattr(self, "X_train_"):
             raise ValueError("Call fit(X, y) before predict(X).")
         lattice = target_levels(self.y_train_ if levels is None else levels)
         if method in SNAP_METHODS or method == "prior-match":
             collapse = "median" if method == "snap-median" else "mean"
-            point = self._predict_point(
-                X, quantile_collapse=collapse, bar_point_estimator=collapse)
-            return discretize_predictions(
-                method, lattice, point=point, y_train=self.y_train_)
+            point = self._predict_point(X, quantile_collapse=collapse, bar_point_estimator=collapse)
+            return discretize_predictions(method, lattice, point=point, y_train=self.y_train_)
         try:
             dist = self._predict_distribution(X, output_type="full", quantiles=None)
         except LargeContextUnsupportedOutputError:
@@ -924,8 +902,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 "bar_distribution checkpoint does not expose. Use "
                 "discretize='snap-mean', 'snap-median', or 'prior-match' instead."
             ) from err
-        return discretize_predictions(
-            method, lattice, Q=dist["quantiles"], taus=dist["taus"])
+        return discretize_predictions(method, lattice, Q=dist["quantiles"], taus=dist["taus"])
 
 
 def infer(

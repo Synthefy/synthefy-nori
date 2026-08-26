@@ -44,6 +44,7 @@ class ContextCache:
     on nori-6m) for finite, NaN- and Inf-bearing tables alike; it is bit-identical to
     ``forward_cached_regression``, which is literally this build/apply pair.
     """
+
     caches: list
     feature_pos_emb: torch.Tensor | None
     norm_stats: dict | None
@@ -51,45 +52,47 @@ class ContextCache:
     eval_pos: int
     nan_mean: torch.Tensor | None = None
     valid_feature_num: torch.Tensor | None = None
+
+
 from synthefy_nori.model.encoders import get_x_encoder, get_cls_y_encoder, get_reg_y_encoder, preprocesss_4_x
 from torch.amp import autocast
 
 
 class FeaturesTransformer(nn.Module):
     def __init__(
-                self,
-                *,
-                preprocess_config_x:dict[str, Any],
-                encoder_config_x:dict[str, Any],
-                encoder_config_y:dict[str, Any],
-                decoder_config:dict[str, Any],
-                nlayers:int,
-                nhead: int, 
-                embed_dim: int, 
-                hid_dim:int,
-                feature_positional_embedding_type:Literal['none','subortho','learned'] = 'subortho',
-                feature_positional_embedding_num_slots:int = 1000,
-                mask_prediction: bool = False,
-                features_per_group:int = 2,
-                dropout: float=0,
-                pre_norm: bool=False,
-                activation: str='gelu',
-                layer_norm_eps: float=1e-5,
-                device: torch.device|None=None,
-                dtype: torch.dtype|None=None,
-                recompute_attn: bool=False,
-                mlp_use_residual:bool=False,
-                layer_arch: str = 'fmfmsm',
-                norm_type: str = 'layernorm',
-                deepnorm_alpha: float|None = None,
-                use_target_aware_embedding: bool = False,
-                use_column_specific_y_aware: bool = False,
-                use_logn_attention: bool = False,
-                use_learnable_attn_temperature: bool = False,
-                attn_n_ref: float = 1024.0,
-                omit_feature_decoder: bool = False,
-                **layer_kwargs:Any
-                ):
+        self,
+        *,
+        preprocess_config_x: dict[str, Any],
+        encoder_config_x: dict[str, Any],
+        encoder_config_y: dict[str, Any],
+        decoder_config: dict[str, Any],
+        nlayers: int,
+        nhead: int,
+        embed_dim: int,
+        hid_dim: int,
+        feature_positional_embedding_type: Literal["none", "subortho", "learned"] = "subortho",
+        feature_positional_embedding_num_slots: int = 1000,
+        mask_prediction: bool = False,
+        features_per_group: int = 2,
+        dropout: float = 0,
+        pre_norm: bool = False,
+        activation: str = "gelu",
+        layer_norm_eps: float = 1e-5,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+        recompute_attn: bool = False,
+        mlp_use_residual: bool = False,
+        layer_arch: str = "fmfmsm",
+        norm_type: str = "layernorm",
+        deepnorm_alpha: float | None = None,
+        use_target_aware_embedding: bool = False,
+        use_column_specific_y_aware: bool = False,
+        use_logn_attention: bool = False,
+        use_learnable_attn_temperature: bool = False,
+        attn_n_ref: float = 1024.0,
+        omit_feature_decoder: bool = False,
+        **layer_kwargs: Any,
+    ):
         super().__init__()
         if mlp_use_residual:
             raise ValueError(
@@ -97,7 +100,7 @@ class FeaturesTransformer(nn.Module):
                 "uses the transformer's outer residual connection. This legacy "
                 "flag was a no-op; leave it false or remove it from the config."
             )
-        
+
         self.preprocess_config_x = preprocess_config_x
         self.encoder_config_x = encoder_config_x
         self.encoder_config_y = encoder_config_y
@@ -123,30 +126,27 @@ class FeaturesTransformer(nn.Module):
         self.norm_type = norm_type
         self.deepnorm_alpha = deepnorm_alpha
         self.omit_feature_decoder = bool(omit_feature_decoder)
-        self.num_reg_quantiles = int(decoder_config.get('num_reg_quantiles', 1))
+        self.num_reg_quantiles = int(decoder_config.get("num_reg_quantiles", 1))
         # Bar-distribution metadata (persisted via decoder_config at training).
         # When regression_loss == 'bar_distribution', the K reg_y_decoder outputs
         # are interpreted as K bin logits over [bar_borders_low, bar_borders_high]
         # at inference time.
-        configured_regression_loss = decoder_config.get('regression_loss')
+        configured_regression_loss = decoder_config.get("regression_loss")
         if configured_regression_loss is None:
             # Legacy configs persisted only the decoder width. Historically a
             # scalar head was the MSE default and wider heads were pinball.
             # A one-level pinball head is inherently indistinguishable here;
             # new checkpoints persist regression_loss and avoid that ambiguity.
-            configured_regression_loss = (
-                'mse' if self.num_reg_quantiles == 1 else 'pinball'
-            )
+            configured_regression_loss = "mse" if self.num_reg_quantiles == 1 else "pinball"
         self.regression_loss = str(configured_regression_loss)
-        configured_quantiles = decoder_config.get('regression_quantiles')
-        if self.regression_loss == 'pinball':
+        configured_quantiles = decoder_config.get("regression_quantiles")
+        if self.regression_loss == "pinball":
             if configured_quantiles is None:
                 # Legacy checkpoints recorded only the decoder width. Those
                 # runs used the historical evenly-spaced grid, so reconstruct
                 # that grid exactly as the old inference path did.
                 self.regression_quantiles = tuple(
-                    (index + 1.0) / (self.num_reg_quantiles + 1.0)
-                    for index in range(self.num_reg_quantiles)
+                    (index + 1.0) / (self.num_reg_quantiles + 1.0) for index in range(self.num_reg_quantiles)
                 )
             else:
                 self.regression_quantiles = tuple(float(q) for q in configured_quantiles)
@@ -156,39 +156,34 @@ class FeaturesTransformer(nn.Module):
                         f"{len(self.regression_quantiles)} does not match "
                         f"num_reg_quantiles={self.num_reg_quantiles}"
                     )
-                if any(
-                    not math.isfinite(q) or q <= 0.0 or q >= 1.0
-                    for q in self.regression_quantiles
-                ) or any(
+                if any(not math.isfinite(q) or q <= 0.0 or q >= 1.0 for q in self.regression_quantiles) or any(
                     left >= right
                     for left, right in zip(
                         self.regression_quantiles,
                         self.regression_quantiles[1:],
                     )
                 ):
-                    raise ValueError(
-                        "decoder_config.regression_quantiles must be strictly "
-                        "increasing values in (0, 1)"
-                    )
+                    raise ValueError("decoder_config.regression_quantiles must be strictly increasing values in (0, 1)")
         else:
             self.regression_quantiles = ()
-        self.num_bars = int(decoder_config.get('num_bars', self.num_reg_quantiles))
-        self.bar_borders_low = float(decoder_config.get('bar_borders_low', -10.0))
-        self.bar_borders_high = float(decoder_config.get('bar_borders_high', 10.0))
+        self.num_bars = int(decoder_config.get("num_bars", self.num_reg_quantiles))
+        self.bar_borders_low = float(decoder_config.get("bar_borders_low", -10.0))
+        self.bar_borders_high = float(decoder_config.get("bar_borders_high", 10.0))
         # Bar-borders mode: 'uniform' (linspace over [low, high]) or
         # 'normal_quantile' (N(0,1) quantile-spaced for equal mass per bin
         # under standard normal). Normal-quantile concentrates ~3-4× more
         # bins near y=0 where context-normalized targets actually live;
         # eliminates wasted tail bins. Borders are persisted as a buffer so
         # inference uses the exact same edges.
-        self.bar_borders_mode = str(decoder_config.get('bar_borders_mode', 'uniform'))
-        if self.regression_loss == 'bar_distribution':
-            if self.bar_borders_mode == 'normal_quantile':
+        self.bar_borders_mode = str(decoder_config.get("bar_borders_mode", "uniform"))
+        if self.regression_loss == "bar_distribution":
+            if self.bar_borders_mode == "normal_quantile":
                 # N(0,1) quantile spacing — bins are equal-mass under standard
                 # normal. Replace ±inf at the edges with finite extreme values
                 # (±8 std covers all real ctx-normalized data).
                 try:
                     from scipy.stats import norm as _norm
+
                     qs = torch.linspace(0.0, 1.0, self.num_bars + 1, dtype=torch.float32)
                     edges_np = _norm.ppf(qs.numpy())
                     edges_np[0] = -8.0
@@ -197,16 +192,20 @@ class FeaturesTransformer(nn.Module):
                 except ImportError:
                     # Fallback: uniform if scipy isn't available.
                     bar_borders = torch.linspace(
-                        self.bar_borders_low, self.bar_borders_high,
-                        self.num_bars + 1, dtype=torch.float32,
+                        self.bar_borders_low,
+                        self.bar_borders_high,
+                        self.num_bars + 1,
+                        dtype=torch.float32,
                     )
             else:
                 bar_borders = torch.linspace(
-                    self.bar_borders_low, self.bar_borders_high,
-                    self.num_bars + 1, dtype=torch.float32,
+                    self.bar_borders_low,
+                    self.bar_borders_high,
+                    self.num_bars + 1,
+                    dtype=torch.float32,
                 )
             # register_buffer makes it part of state_dict and follows .to()
-            self.register_buffer('bar_borders_buffer', bar_borders, persistent=True)
+            self.register_buffer("bar_borders_buffer", bar_borders, persistent=True)
         else:
             self.bar_borders_buffer = None
         self.use_target_aware_embedding = use_target_aware_embedding
@@ -229,9 +228,7 @@ class FeaturesTransformer(nn.Module):
         else:
             self.column_y_aware_alpha = None
         self.target_aware_scale = 1.0
-        self.max_num_classes = int(
-            encoder_config_y.get('max_num_classes', decoder_config.get('num_classes', 10))
-        )
+        self.max_num_classes = int(encoder_config_y.get("max_num_classes", decoder_config.get("num_classes", 10)))
 
         # logN attention scaling + learnable per-layer temperature.
         # Plumbed through EncoderBaseLayer to all per-layer MultiheadAttentions.
@@ -245,22 +242,22 @@ class FeaturesTransformer(nn.Module):
             nhead=self.nhead,
             dropout=self.dropout,
             pre_norm=self.pre_norm,
-            activation=self.activation, # type: ignore
+            activation=self.activation,  # type: ignore
             layer_norm_eps=self.layer_norm_eps,
             device=self.device,
             dtype=self.dtype,
             recompute_attn=self.recompute_attn,
             mlp_use_residual=self.mlp_use_residual,
-            layer_arch=self.layer_arch, # type: ignore
+            layer_arch=self.layer_arch,  # type: ignore
             norm_type=self.norm_type,
             deepnorm_alpha=self.deepnorm_alpha,
             use_logn_attention=self.use_logn_attention,
             use_learnable_attn_temperature=self.use_learnable_attn_temperature,
             attn_n_ref=self.attn_n_ref,
-            **layer_kwargs
+            **layer_kwargs,
         )
 
-        self.encoder_x = get_x_encoder( **encoder_config_x)
+        self.encoder_x = get_x_encoder(**encoder_config_x)
         self.cls_y_encoder = get_cls_y_encoder(**encoder_config_y)
         self.reg_y_encoder = get_reg_y_encoder(**encoder_config_y)
         if self.use_target_aware_embedding:
@@ -285,7 +282,7 @@ class FeaturesTransformer(nn.Module):
 
         self.transformer_encoder = LayerStack([layer_creator() for _ in range(self.nlayers)])
         if pre_norm:
-            if norm_type == 'rmsnorm':
+            if norm_type == "rmsnorm":
                 self.encoder_out_norm = RMSNorm(self.embed_dim, eps=1e-5, elementwise_affine=False)
             else:
                 self.encoder_out_norm = nn.LayerNorm(self.embed_dim, eps=1e-5, elementwise_affine=False)
@@ -293,17 +290,17 @@ class FeaturesTransformer(nn.Module):
             self.encoder_out_norm = nn.Identity()
 
         self.cls_y_decoder = nn.Sequential(
-                                            nn.Linear(self.embed_dim, self.hid_dim),
-                                            nn.GELU(),
-                                            nn.Linear(self.hid_dim, decoder_config['num_classes']),
-                                            )
-        
+            nn.Linear(self.embed_dim, self.hid_dim),
+            nn.GELU(),
+            nn.Linear(self.hid_dim, decoder_config["num_classes"]),
+        )
+
         self.reg_y_decoder = nn.Sequential(
-                                        nn.Linear(self.embed_dim, self.hid_dim),
-                                        nn.LayerNorm(self.hid_dim),
-                                        nn.GELU(),
-                                        nn.Linear(self.hid_dim, self.num_reg_quantiles),
-                                        )
+            nn.Linear(self.embed_dim, self.hid_dim),
+            nn.LayerNorm(self.hid_dim),
+            nn.GELU(),
+            nn.Linear(self.hid_dim, self.num_reg_quantiles),
+        )
         self.feature_decoder = (
             None
             if self.omit_feature_decoder
@@ -314,53 +311,54 @@ class FeaturesTransformer(nn.Module):
                 nn.Linear(self.hid_dim, self.features_per_group),
             )
         )
-        
+
         if feature_positional_embedding_type == "learned":
-            self.feature_positional_embedding = nn.Embedding(
-                feature_positional_embedding_num_slots, self.embed_dim
-            )
+            self.feature_positional_embedding = nn.Embedding(feature_positional_embedding_num_slots, self.embed_dim)
             nn.init.normal_(self.feature_positional_embedding.weight, std=0.02)
             self.feature_positional_embedding_num_slots = feature_positional_embedding_num_slots
         elif feature_positional_embedding_type == "subortho":
             self.feature_positional_embedding = nn.Linear(self.embed_dim // 4, self.embed_dim)
-        
+
         self.x_preprocess = preprocesss_4_x(**preprocess_config_x)
 
-
-    def forward(self, x: torch.Tensor, 
-                y: torch.Tensor, 
-                eval_pos: int, 
-                y_type: torch.Tensor = None,
-                task_type: Literal['reg', 'cls'] = 'cls',
-                calculate_sample_attention: bool = False,
-                calculate_feature_attention: bool = False,
-                return_embeddings: bool = False,
-                **kwargs
-                ) -> torch.Tensor | dict[str, torch.Tensor] | tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
-        '''
-            x: The input x, which includes both train x and test x, Shape: [batch, sequence, feature]
-            y: The input y, which includes both train y and test y, Shape: [batch, label]
-            eval_pos: Train x and train y split point
-            task_type: Type of task, options: cls(classification), reg(regression)
-            return_embeddings: when True, skip the decoder head and return the
-                per-row target-token representation from the final encoder layer
-                (post encoder_out_norm), shape [batch, seq, embed_dim]. Callers
-                slice context (``:eval_pos``) vs query (``eval_pos:``) themselves.
-        '''
+    def forward(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        eval_pos: int,
+        y_type: torch.Tensor = None,
+        task_type: Literal["reg", "cls"] = "cls",
+        calculate_sample_attention: bool = False,
+        calculate_feature_attention: bool = False,
+        return_embeddings: bool = False,
+        **kwargs,
+    ) -> torch.Tensor | dict[str, torch.Tensor] | tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        """
+        x: The input x, which includes both train x and test x, Shape: [batch, sequence, feature]
+        y: The input y, which includes both train y and test y, Shape: [batch, label]
+        eval_pos: Train x and train y split point
+        task_type: Type of task, options: cls(classification), reg(regression)
+        return_embeddings: when True, skip the decoder head and return the
+            per-row target-token representation from the final encoder layer
+            (post encoder_out_norm), shape [batch, seq, embed_dim]. Callers
+            slice context (``:eval_pos``) vs query (``eval_pos:``) themselves.
+        """
         assert x is not None and y is not None, "x and y must not be none"
         assert eval_pos > 0, "eval_pos must be a positive number"
-        assert len(x.shape)==3, "x must be [Batch, seq, Feature]"
-        assert len(y.shape)==2, "y must be [Batch, label]"
-        assert eval_pos < x.shape[1] and eval_pos <= y.shape[1], "The split point between train x and test x must be less than the feature dimension of x, and less than or equal to the label dimension of y"
-        
+        assert len(x.shape) == 3, "x must be [Batch, seq, Feature]"
+        assert len(y.shape) == 2, "y must be [Batch, label]"
+        assert eval_pos < x.shape[1] and eval_pos <= y.shape[1], (
+            "The split point between train x and test x must be less than the feature dimension of x, and less than or equal to the label dimension of y"
+        )
+
         _, seq_len, _ = x.shape
         x, feature_to_add = self._build_x_preprocess_inputs(x, eval_pos)
-        y = {'data':y}
+        y = {"data": y}
         preprocessed_x = self.x_preprocess(x)
         preprocessed_x = self.process_4_x(preprocessed_x)
         x_encoder_result = self.encoder_x(preprocessed_x)
-        x_emb_result = x_encoder_result['data']
-        
+        x_emb_result = x_encoder_result["data"]
+
         for k in y:
             # Extend the label dimension of y when it is insufficient
             y[k] = y[k].unsqueeze(-1)
@@ -377,25 +375,25 @@ class FeaturesTransformer(nn.Module):
                             dtype=y[k].dtype,
                         ),
                     ),
-                    dim=1
+                    dim=1,
                 )
         target_aware_y = y["data"].squeeze(-1).clone()
         # Mask the test y — functional (no in-place mutation of the input dict)
         seq_positions = torch.arange(y["data"].shape[1], device=y["data"].device)
         y_data_masked = torch.where(
             seq_positions.view(1, -1, 1) >= eval_pos,
-            torch.tensor(float('nan'), device=y["data"].device, dtype=y["data"].dtype),
+            torch.tensor(float("nan"), device=y["data"].device, dtype=y["data"].dtype),
             y["data"],
         )
 
         # Embed y — direct encoder call (avoids mixed_y_embedding graph break).
         # Encoder output may be 4-D [B, S, 1, E] because y has a trailing
         # dim of 1; squeeze it to [B, S, E] to match the old contract.
-        y_enc_input = {'data': y_data_masked, 'eval_pos': eval_pos}
-        if task_type == 'cls':
-            embedded_y = self.cls_y_encoder(y_enc_input)['data'].squeeze(2)
+        y_enc_input = {"data": y_data_masked, "eval_pos": eval_pos}
+        if task_type == "cls":
+            embedded_y = self.cls_y_encoder(y_enc_input)["data"].squeeze(2)
         else:
-            embedded_y = self.reg_y_encoder(y_enc_input)['data'].squeeze(2)
+            embedded_y = self.reg_y_encoder(y_enc_input)["data"].squeeze(2)
 
         embedded_x = self.add_embeddings(x_emb_result)
         embedded_x = self.apply_target_aware_embedding(
@@ -406,9 +404,14 @@ class FeaturesTransformer(nn.Module):
         )
         embedded_all = torch.cat((embedded_x, embedded_y.unsqueeze(2)), dim=2)
         if calculate_sample_attention or calculate_feature_attention:
-            return self.transformer_encoder(embedded_all, feature_atten_mask=None, eval_pos=eval_pos,
-                                            calculate_sample_attention=calculate_sample_attention,
-                                            calculate_feature_attention=calculate_feature_attention, **kwargs)
+            return self.transformer_encoder(
+                embedded_all,
+                feature_atten_mask=None,
+                eval_pos=eval_pos,
+                calculate_sample_attention=calculate_sample_attention,
+                calculate_feature_attention=calculate_feature_attention,
+                **kwargs,
+            )
         else:
             pass
         encoder_out = self.transformer_encoder(embedded_all, feature_atten_mask=None, eval_pos=eval_pos, **kwargs)[0]
@@ -426,22 +429,19 @@ class FeaturesTransformer(nn.Module):
         encoder_out_4_feature = encoder_out[:, :, :-1, :]
         if self.mask_prediction:
             # Direct decoder call (avoids y_decoder graph break)
-            if task_type == 'cls':
+            if task_type == "cls":
                 cls_output = self.cls_y_decoder(test_encoder_out)
                 reg_output = test_encoder_out.new_zeros(
-                    test_encoder_out.shape[0], test_encoder_out.shape[1],
-                    self.num_reg_quantiles)
+                    test_encoder_out.shape[0], test_encoder_out.shape[1], self.num_reg_quantiles
+                )
             else:
                 cls_output = test_encoder_out.new_zeros(
-                    test_encoder_out.shape[0], test_encoder_out.shape[1],
-                    self.cls_y_decoder[-1].out_features)
+                    test_encoder_out.shape[0], test_encoder_out.shape[1], self.cls_y_decoder[-1].out_features
+                )
                 reg_output = self.reg_y_decoder(test_encoder_out)
             feature_pred = (
                 None
-                if (
-                    self.feature_decoder is None
-                    or getattr(self, "_skip_feature_decoder", False)
-                )
+                if (self.feature_decoder is None or getattr(self, "_skip_feature_decoder", False))
                 else self.feature_decoder(encoder_out_4_feature)
             )
             output_decoded = {
@@ -451,36 +451,35 @@ class FeaturesTransformer(nn.Module):
                 "process_config": {
                     "n_x_padding": feature_to_add,
                     "features_per_group": self.features_per_group,
-                    "num_used_features": preprocessed_x.get('_valid_feature_num'),
-                    "mean_for_normalization": preprocessed_x.get('_norm_mean'),
-                    "std_for_normalization": preprocessed_x.get('_norm_std'),
-                }
+                    "num_used_features": preprocessed_x.get("_valid_feature_num"),
+                    "mean_for_normalization": preprocessed_x.get("_norm_mean"),
+                    "std_for_normalization": preprocessed_x.get("_norm_std"),
+                },
             }
         else:
-            if task_type == 'cls':
+            if task_type == "cls":
                 output_decoded = self.cls_y_decoder(test_encoder_out)
             else:
                 output_decoded = self.reg_y_decoder(test_encoder_out)
 
         return output_decoded
 
-    
     def _build_x_preprocess_inputs(
-            self,
-            x: torch.Tensor,
-            eval_pos: int,
+        self,
+        x: torch.Tensor,
+        eval_pos: int,
     ) -> tuple[dict[str, torch.Tensor | int], int]:
         batch_size, seq_len, num_feature = x.shape
         x_dict: dict[str, torch.Tensor | int] = {
-            'data': x,
+            "data": x,
             # The numeric channel treats NaN and both infinities as missing.
             # NanEncoder may retain their kind in a separate indicator channel,
             # but process_4_x must never let an infinity reach the numeric encoder.
-            'mask': (~torch.isfinite(x)).to(torch.int32).to(x.device),
+            "mask": (~torch.isfinite(x)).to(torch.int32).to(x.device),
         }
         feature_to_add = (-num_feature) % self.features_per_group
         if feature_to_add > 0:
-            for k in ('data', 'mask'):
+            for k in ("data", "mask"):
                 value = x_dict[k]
                 assert isinstance(value, torch.Tensor)
                 x_dict[k] = torch.cat(
@@ -496,7 +495,7 @@ class FeaturesTransformer(nn.Module):
                     ),
                     dim=-1,
                 )
-        for k in ('data', 'mask'):
+        for k in ("data", "mask"):
             value = x_dict[k]
             assert isinstance(value, torch.Tensor)
             x_dict[k] = value.reshape(
@@ -505,14 +504,14 @@ class FeaturesTransformer(nn.Module):
                 value.shape[2] // self.features_per_group,
                 self.features_per_group,
             )
-        x_dict['eval_pos'] = eval_pos
+        x_dict["eval_pos"] = eval_pos
         return x_dict, feature_to_add
 
     def _slice_preprocessed_x(
-            self,
-            preprocessed_x: dict[str, torch.Tensor | int],
-            row_slice: slice,
-            total_rows: int,
+        self,
+        preprocessed_x: dict[str, torch.Tensor | int],
+        row_slice: slice,
+        total_rows: int,
     ) -> dict[str, torch.Tensor | int]:
         sliced: dict[str, torch.Tensor | int] = {}
         for k, v in preprocessed_x.items():
@@ -523,11 +522,11 @@ class FeaturesTransformer(nn.Module):
         return sliced
 
     def make_feature_positional_embeddings(
-            self,
-            n_groups: int,
-            *,
-            device: torch.device,
-            dtype: torch.dtype,
+        self,
+        n_groups: int,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
     ) -> torch.Tensor | None:
         if self.feature_positional_embedding_type == "subortho":
             with autocast(device_type=device.type, enabled=False):
@@ -547,35 +546,35 @@ class FeaturesTransformer(nn.Module):
         raise ValueError(f"Unknown feature_positional_embedding_type={self.feature_positional_embedding_type}")
 
     def apply_feature_positional_embeddings(
-            self,
-            x: torch.Tensor,
-            embs: torch.Tensor | None,
+        self,
+        x: torch.Tensor,
+        embs: torch.Tensor | None,
     ) -> torch.Tensor:
         if embs is None:
             return x
         return x + embs[None, None, :, :]
 
     def _encode_x_rows(
-            self,
-            preprocessed_x: dict[str, torch.Tensor | int],
-            row_slice: slice,
-            *,
-            total_rows: int,
-            feature_pos_emb: torch.Tensor | None,
+        self,
+        preprocessed_x: dict[str, torch.Tensor | int],
+        row_slice: slice,
+        *,
+        total_rows: int,
+        feature_pos_emb: torch.Tensor | None,
     ) -> torch.Tensor:
         x_part = self._slice_preprocessed_x(preprocessed_x, row_slice, total_rows)
-        encoded = self.encoder_x(x_part)['data']
+        encoded = self.encoder_x(x_part)["data"]
         return self.apply_feature_positional_embeddings(encoded, feature_pos_emb)
 
     def _encode_y_full(
-            self,
-            y: torch.Tensor,
-            *,
-            total_rows: int,
-            eval_pos: int,
-            task_type: Literal['reg', 'cls'],
+        self,
+        y: torch.Tensor,
+        *,
+        total_rows: int,
+        eval_pos: int,
+        task_type: Literal["reg", "cls"],
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        y_dict: dict[str, torch.Tensor] = {'data': y}
+        y_dict: dict[str, torch.Tensor] = {"data": y}
         for k in y_dict:
             y_dict[k] = y_dict[k].unsqueeze(-1)
             if y_dict[k].shape[1] < total_rows:
@@ -599,29 +598,29 @@ class FeaturesTransformer(nn.Module):
         seq_positions = torch.arange(total_rows, device=y_dict["data"].device)
         y_data_masked = torch.where(
             seq_positions.view(1, -1, 1) >= eval_pos,
-            torch.tensor(float('nan'), device=y_dict["data"].device, dtype=y_dict["data"].dtype),
+            torch.tensor(float("nan"), device=y_dict["data"].device, dtype=y_dict["data"].dtype),
             y_dict["data"],
         )
-        y_enc_input = {'data': y_data_masked, 'eval_pos': eval_pos}
-        if task_type == 'cls':
-            embedded_y = self.cls_y_encoder(y_enc_input)['data'].squeeze(2)
+        y_enc_input = {"data": y_data_masked, "eval_pos": eval_pos}
+        if task_type == "cls":
+            embedded_y = self.cls_y_encoder(y_enc_input)["data"].squeeze(2)
         else:
-            embedded_y = self.reg_y_encoder(y_enc_input)['data'].squeeze(2)
+            embedded_y = self.reg_y_encoder(y_enc_input)["data"].squeeze(2)
         return target_aware_y, embedded_y
 
     def forward_cached_regression(
-            self,
-            x: torch.Tensor,
-            y: torch.Tensor,
-            eval_pos: int,
-            *,
-            row_chunk_size: int | None = None,
-            cache_dtype: str = "bf16",
-            offload_kv_cache: bool = False,
-            fit_row_chunk: int | None = None,
-            adaptive_query_chunk: bool = True,
-            quantize_kv_cache: bool | None = None,
-            adaptive_oom_chunk: bool | None = None,
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        eval_pos: int,
+        *,
+        row_chunk_size: int | None = None,
+        cache_dtype: str = "bf16",
+        offload_kv_cache: bool = False,
+        fit_row_chunk: int | None = None,
+        adaptive_query_chunk: bool = True,
+        quantize_kv_cache: bool | None = None,
+        adaptive_oom_chunk: bool | None = None,
     ) -> torch.Tensor:
         """Regression-only cached prediction path for chunked inference.
 
@@ -691,26 +690,28 @@ class FeaturesTransformer(nn.Module):
         # bundle once (build_context_cache) and reuse it across calls
         # (apply_context_cache) instead of rebuilding the O(N_train) cache each time.
         bundle = self.build_context_cache(
-            x[:, :eval_pos], y[:, :eval_pos],
+            x[:, :eval_pos],
+            y[:, :eval_pos],
             cache_dtype=cache_dtype,
             offload_kv_cache=offload_kv_cache,
             fit_row_chunk=fit_row_chunk,
         )
         return self.apply_context_cache(
-            x[:, eval_pos:], bundle,
+            x[:, eval_pos:],
+            bundle,
             row_chunk_size=row_chunk_size,
             adaptive_query_chunk=adaptive_query_chunk,
         )
 
     def build_context_cache(
-            self,
-            x_train: torch.Tensor,
-            y_train: torch.Tensor,
-            *,
-            cache_dtype: str = "bf16",
-            offload_kv_cache: bool = False,
-            fit_row_chunk: int | None = None,
-            quantize_kv_cache: bool | None = None,
+        self,
+        x_train: torch.Tensor,
+        y_train: torch.Tensor,
+        *,
+        cache_dtype: str = "bf16",
+        offload_kv_cache: bool = False,
+        fit_row_chunk: int | None = None,
+        quantize_kv_cache: bool | None = None,
     ) -> ContextCache:
         """Encode a fixed context (train) table once into a reusable ``ContextCache``.
 
@@ -727,17 +728,13 @@ class FeaturesTransformer(nn.Module):
             cache_dtype = "int8" if quantize_kv_cache else "bf16"
         if cache_dtype not in ("bf16", "int8"):
             raise ValueError(
-                "build_context_cache takes a concrete cache_dtype of 'bf16' or "
-                f"'int8', got {cache_dtype!r}."
+                f"build_context_cache takes a concrete cache_dtype of 'bf16' or 'int8', got {cache_dtype!r}."
             )
         if self.mask_prediction:
             raise NotImplementedError("build_context_cache requires mask_prediction=False")
-        if (
-            not bool(self.preprocess_config_x.get("normalize_on_train_only", True))
-            and (
-                bool(self.preprocess_config_x.get("normalize_x", False))
-                or bool(self.preprocess_config_x.get("remove_outliers", False))
-            )
+        if not bool(self.preprocess_config_x.get("normalize_on_train_only", True)) and (
+            bool(self.preprocess_config_x.get("normalize_x", False))
+            or bool(self.preprocess_config_x.get("remove_outliers", False))
         ):
             raise NotImplementedError(
                 "build_context_cache cannot preserve normalize_on_train_only=False: "
@@ -761,21 +758,18 @@ class FeaturesTransformer(nn.Module):
         # Capture the train-derived normalization stats BEFORE process_4_x so they
         # can be re-applied (frozen) to query rows in apply_context_cache. Empty ->
         # None (no normalization is active, so query rows need no train stats).
-        captured = preprocessed_x.get('_norm_stats') or {}
+        captured = preprocessed_x.get("_norm_stats") or {}
         norm_stats = {k: v.detach() for k, v in captured.items()} if captured else None
         # Same for NanEncoder's imputation fill (the train column mean). The key is
         # absent when nan_handling_enabled=False.
-        captured_nan_mean = preprocessed_x.get('_nan_mean')
-        nan_mean = (captured_nan_mean.detach()
-                    if isinstance(captured_nan_mean, torch.Tensor) else None)
-        captured_valid_feature_num = preprocessed_x.get('_valid_feature_num')
+        captured_nan_mean = preprocessed_x.get("_nan_mean")
+        nan_mean = captured_nan_mean.detach() if isinstance(captured_nan_mean, torch.Tensor) else None
+        captured_valid_feature_num = preprocessed_x.get("_valid_feature_num")
         valid_feature_num = (
-            captured_valid_feature_num.detach()
-            if isinstance(captured_valid_feature_num, torch.Tensor)
-            else None
+            captured_valid_feature_num.detach() if isinstance(captured_valid_feature_num, torch.Tensor) else None
         )
         preprocessed_x = self.process_4_x(preprocessed_x)
-        data_tensor = preprocessed_x['data']
+        data_tensor = preprocessed_x["data"]
         assert isinstance(data_tensor, torch.Tensor)
         feature_pos_emb = self.make_feature_positional_embeddings(
             data_tensor.shape[2],
@@ -786,7 +780,7 @@ class FeaturesTransformer(nn.Module):
             y_train[:, :eval_pos],
             total_rows=eval_pos,
             eval_pos=eval_pos,
-            task_type='reg',
+            task_type="reg",
         )
         x_train_enc = self._encode_x_rows(
             preprocessed_x,
@@ -797,7 +791,7 @@ class FeaturesTransformer(nn.Module):
         x_train_enc = self.apply_target_aware_embedding(
             x_train_enc,
             target_aware_y[:, :eval_pos],
-            task_type='reg',
+            task_type="reg",
             eval_pos=eval_pos,
         )
         train_tokens = torch.cat((x_train_enc, embedded_y[:, :eval_pos].unsqueeze(2)), dim=2)
@@ -830,12 +824,12 @@ class FeaturesTransformer(nn.Module):
         )
 
     def apply_context_cache(
-            self,
-            x_test: torch.Tensor,
-            context: ContextCache,
-            *,
-            row_chunk_size: int | None = None,
-            adaptive_query_chunk: bool = True,
+        self,
+        x_test: torch.Tensor,
+        context: ContextCache,
+        *,
+        row_chunk_size: int | None = None,
+        adaptive_query_chunk: bool = True,
     ) -> torch.Tensor:
         """Score query rows against a prebuilt :class:`ContextCache`.
 
@@ -858,11 +852,11 @@ class FeaturesTransformer(nn.Module):
         # eval_pos here only feeds the (overridden) NormalizationEncoder split point.
         x_dict, _feature_to_add = self._build_x_preprocess_inputs(x_test, n_test)
         if context.norm_stats is not None:
-            x_dict['_frozen_norm_stats'] = context.norm_stats
+            x_dict["_frozen_norm_stats"] = context.norm_stats
         if context.nan_mean is not None:
-            x_dict['_frozen_nan_mean'] = context.nan_mean
+            x_dict["_frozen_nan_mean"] = context.nan_mean
         if context.valid_feature_num is not None:
-            x_dict['_frozen_valid_feature_num'] = context.valid_feature_num
+            x_dict["_frozen_valid_feature_num"] = context.valid_feature_num
         preprocessed_x = self.x_preprocess(x_dict)
         preprocessed_x = self.process_4_x(preprocessed_x)
 
@@ -873,7 +867,7 @@ class FeaturesTransformer(nn.Module):
             context.y_train,
             total_rows=eval_pos + n_test,
             eval_pos=eval_pos,
-            task_type='reg',
+            task_type="reg",
         )
         embedded_y_query = embedded_y_full[:, eval_pos:]
 
@@ -882,13 +876,16 @@ class FeaturesTransformer(nn.Module):
 
         def _run_chunk(start: int, end: int) -> torch.Tensor:
             x_q = self._encode_x_rows(
-                preprocessed_x, slice(start, end),
-                total_rows=n_test, feature_pos_emb=context.feature_pos_emb,
+                preprocessed_x,
+                slice(start, end),
+                total_rows=n_test,
+                feature_pos_emb=context.feature_pos_emb,
             )
-            test_tokens = torch.cat(
-                (x_q, embedded_y_query[:, start:end].unsqueeze(2)), dim=2)
+            test_tokens = torch.cat((x_q, embedded_y_query[:, start:end].unsqueeze(2)), dim=2)
             test_out = self.transformer_encoder.forward_test_with_cache(
-                test_tokens, context.caches, feature_atten_mask=None,
+                test_tokens,
+                context.caches,
+                feature_atten_mask=None,
             )
             test_out = self.encoder_out_norm(test_out)
             return self.reg_y_decoder(test_out[:, :, -1])
@@ -917,17 +914,15 @@ class FeaturesTransformer(nn.Module):
         x: torch.Tensor,
         y: torch.Tensor,
         *,
-        task_type: Literal['reg', 'cls'],
+        task_type: Literal["reg", "cls"],
         eval_pos: int,
     ) -> torch.Tensor:
-        scale = float(getattr(self, 'target_aware_scale', 1.0))
-        if (not self.use_target_aware_embedding
-                or eval_pos <= 0
-                or abs(scale) < 1e-8):
+        scale = float(getattr(self, "target_aware_scale", 1.0))
+        if not self.use_target_aware_embedding or eval_pos <= 0 or abs(scale) < 1e-8:
             return x
 
         # Compute bias for context rows, pad query rows with zeros (functional)
-        if task_type == 'cls':
+        if task_type == "cls":
             assert self.cls_target_aware_embedding is not None
             y_ctx = y[:, :eval_pos].to(torch.long)
             y_ctx = torch.clamp(y_ctx, min=0, max=self.max_num_classes - 1)
@@ -948,8 +943,7 @@ class FeaturesTransformer(nn.Module):
         # broadcasts over the n_feature_groups dim of x.
         row_broadcast_bias = target_bias.unsqueeze(2)
 
-        if (self.use_column_specific_y_aware
-                and self.column_y_aware_alpha is not None):
+        if self.use_column_specific_y_aware and self.column_y_aware_alpha is not None:
             # Column-specific gating: each feature group gets a y-bias scaled
             # by its alignment with y_emb. Columns "in the direction of" the
             # y signal get strong y-aware bias; orthogonal columns get less.
@@ -957,10 +951,10 @@ class FeaturesTransformer(nn.Module):
             #
             # col_score[b, t, c] = <x[b, t, c, :], target_bias[b, t, :]>
             # Higher score → column emb is closer to y signal → higher gate.
-            inv_sqrt_d = 1.0 / (self.embed_dim ** 0.5)
+            inv_sqrt_d = 1.0 / (self.embed_dim**0.5)
             col_score = (x * row_broadcast_bias).sum(dim=-1) * inv_sqrt_d  # [B, seq, n_cols]
-            col_gate = torch.sigmoid(col_score).unsqueeze(-1)               # [B, seq, n_cols, 1]
-            col_specific_bias = row_broadcast_bias * col_gate               # [B, seq, n_cols, embed_dim]
+            col_gate = torch.sigmoid(col_score).unsqueeze(-1)  # [B, seq, n_cols, 1]
+            col_specific_bias = row_broadcast_bias * col_gate  # [B, seq, n_cols, embed_dim]
             # Mix old row-broadcast with new column-specific via learned α.
             # alpha=sigmoid(α_param) starts at sigmoid(-5)≈0.007 → ~99.3%
             # original V8old behavior preserved at FT step 0.
@@ -968,15 +962,15 @@ class FeaturesTransformer(nn.Module):
             return x + (1.0 - alpha) * row_broadcast_bias + alpha * col_specific_bias
 
         return x + row_broadcast_bias
-    
-    def process_4_x(self, data:dict):
-        x_input = data['data']
-        mask = data['mask'].to(torch.bool)
-        x_input = torch.where(mask, float('nan'), x_input)
-        data['data'] = x_input
+
+    def process_4_x(self, data: dict):
+        x_input = data["data"]
+        mask = data["mask"].to(torch.bool)
+        x_input = torch.where(mask, float("nan"), x_input)
+        data["data"] = x_input
         return data
-    
-    def add_embeddings(self, x:torch.Tensor):
+
+    def add_embeddings(self, x: torch.Tensor):
         if self.feature_positional_embedding_type == "subortho":
             with autocast(device_type=x.device.type, enabled=False):
                 embs = torch.randn(
@@ -985,7 +979,7 @@ class FeaturesTransformer(nn.Module):
                     dtype=torch.float32,
                 )
                 torch.nn.init.orthogonal_(embs)
-            embs =self.feature_positional_embedding(embs.to(x.dtype))
+            embs = self.feature_positional_embedding(embs.to(x.dtype))
             x += embs[None, None]
         elif self.feature_positional_embedding_type == "learned":
             # Learned positional embeddings (TabPFN-2.6 style).
@@ -1003,4 +997,3 @@ class FeaturesTransformer(nn.Module):
         else:
             raise ValueError(f"Unknown feature_positional_embedding_type={self.feature_positional_embedding_type}")
         return x
-    

@@ -42,10 +42,18 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from typing_extensions import Annotated
 
 #: Named starting points accepted wherever a policy is expected, instead of a field dict.
-MEMORY_PRESETS = ('exact', 'max_context', 'off')
+MEMORY_PRESETS = ("exact", "max_context", "off")
 
 #: The fallback rungs the server may report, in decreasing memory cost.
-MEMORY_RUNGS = ('no_cache', 'resident_bf16', 'resident_int8', 'offload_bf16', 'offload_int8', 'context_row_chunk', 'plain_loop')
+MEMORY_RUNGS = (
+    "no_cache",
+    "resident_bf16",
+    "resident_int8",
+    "offload_bf16",
+    "offload_int8",
+    "context_row_chunk",
+    "plain_loop",
+)
 
 #: The direct library's defaults, copied here because synthefy must remain usable
 #: without importing the heavyweight synthefy-nori package.
@@ -57,7 +65,7 @@ DEFAULT_LARGE_CONTEXT_SEED = 0
 MAX_LARGE_CONTEXT_THRESHOLD = 10_000_000
 MAX_LARGE_CONTEXT_SEED = 2**32 - 1
 
-MemoryPreset = Literal['exact', 'max_context', 'off']
+MemoryPreset = Literal["exact", "max_context", "off"]
 #: Local mode also accepts callables; hosted modes require a policy-name string and
 #: let the server's installed synthefy-nori resolver decide whether it is valid.
 LargeContextPolicy = Union[str, Callable[..., Any]]
@@ -110,7 +118,7 @@ class MemoryPolicy(BaseModel):
     )
 
     cache_dtype: Literal["bf16", "int8"] = Field(
-        'bf16',
+        "bf16",
         description=(
             "Precision the K/V cache STARTS at. bf16 is bit-exact and is the default; set "
             "'int8' to quantize from the outset (~1.9x smaller, |dR2| ~ 6e-6) when you "
@@ -130,7 +138,9 @@ class MemoryPolicy(BaseModel):
     )
 
     gpu_budget_frac: float = Field(
-        0.4, gt=0, le=1,
+        0.4,
+        gt=0,
+        le=1,
         description=(
             "Share of TOTAL VRAM the resident cache may occupy before we offload. A "
             "fraction so one setting is portable across GPUs. Total rather than free "
@@ -140,7 +150,8 @@ class MemoryPolicy(BaseModel):
     )
 
     gpu_budget_absolute_gb: Optional[float] = Field(
-        None, ge=0,
+        None,
+        ge=0,
         description=(
             "Hard VRAM ceiling in GiB, overriding gpu_budget_frac. For a co-tenanted GPU, "
             "where a fixed cap is the requirement and a share of the card is the wrong "
@@ -161,7 +172,9 @@ class MemoryPolicy(BaseModel):
     )
 
     host_budget_frac: float = Field(
-        0.25, gt=0, le=1,
+        0.25,
+        gt=0,
+        le=1,
         description=(
             "Share of total physical RAM the offloaded cache may occupy. A fraction "
             "because a flat GB default is a latent bug: 128 GB 'fits' on a 32 GB laptop "
@@ -171,7 +184,8 @@ class MemoryPolicy(BaseModel):
     )
 
     host_budget_absolute_gb: Optional[float] = Field(
-        None, ge=0,
+        None,
+        ge=0,
         description=(
             "Hard host-RAM ceiling in GiB, overriding host_budget_frac. None = use the "
             "fraction; 0 = never offload. 0 is deliberately legal: it is also what a "
@@ -181,7 +195,8 @@ class MemoryPolicy(BaseModel):
     )
 
     context_row_chunk: Optional[int] = Field(
-        None, gt=0,
+        None,
+        gt=0,
         description=(
             "Bound the fit-time build working set to this many context rows (bit-exact). "
             "None = off, with 2048 engaged automatically after an OOM. Pinning a value "
@@ -199,7 +214,8 @@ class MemoryPolicy(BaseModel):
     )
 
     elements_budget: Optional[int] = Field(
-        None, gt=0,
+        None,
+        gt=0,
         description=(
             "Per-forward element cap driving query chunk size and context subsampling. "
             "None = derive it from available VRAM. Upstream of everything else here: the "
@@ -247,10 +263,7 @@ class MemoryReport(BaseModel):
 
     est_cache_gb: Optional[float] = Field(
         None,
-        description=(
-            "Full-precision cache footprint for this request's context, in GiB. Reported, "
-            "not set. "
-        ),
+        description=("Full-precision cache footprint for this request's context, in GiB. Reported, not set. "),
     )
 
     resident_gb: Optional[float] = Field(
@@ -271,7 +284,8 @@ class MemoryReport(BaseModel):
     )
 
     dropped_context_rows: int = Field(
-        0, ge=0,
+        0,
+        ge=0,
         description=(
             "Context rows the caller had to subsample away to fit. Non-zero only on the "
             "plain_loop rung; recorded so a shrunk context is visible in memory_report_ "
@@ -320,9 +334,7 @@ class LargeContextReport(BaseModel):
         )
     )
     policy: str = Field(
-        description=(
-            "Resolved policy name when available; otherwise a display label for the skipped request."
-        )
+        description=("Resolved policy name when available; otherwise a display label for the skipped request.")
     )
     threshold: int = Field(
         ge=1,
@@ -357,21 +369,17 @@ class LargeContextReport(BaseModel):
     full_context: Optional[bool] = Field(
         None,
         description=(
-            "Whether the applied policy used the complete context in one call. "
-            "Null when the policy did not engage."
+            "Whether the applied policy used the complete context in one call. Null when the policy did not engage."
         ),
     )
     reused_train_state: bool = Field(
         description=(
-            "Whether train-derived policy state was reused. Shared hosted requests "
-            "are one-shot and report false."
+            "Whether train-derived policy state was reused. Shared hosted requests are one-shot and report false."
         )
     )
     gate_winner: Optional[str] = Field(
         None,
-        description=(
-            "Winning policy when a holdout gate was requested; otherwise null."
-        ),
+        description=("Winning policy when a holdout gate was requested; otherwise null."),
     )
 
 
@@ -402,6 +410,4 @@ def _accept_another_packages_policy(value: Any) -> Any:
 
 #: What ``memory_policy=`` accepts: a preset name, a policy, a plain dict (validated into one),
 #: or another package's equivalent. Anything else is a pydantic error before a request is sent.
-MemoryPolicyInput = Annotated[
-    Union[MemoryPreset, MemoryPolicy], BeforeValidator(_accept_another_packages_policy)
-]
+MemoryPolicyInput = Annotated[Union[MemoryPreset, MemoryPolicy], BeforeValidator(_accept_another_packages_policy)]

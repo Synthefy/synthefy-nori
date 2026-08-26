@@ -47,9 +47,7 @@ def _numeric_categories_to_values(frame: pd.DataFrame) -> pd.DataFrame:
     out = frame
     for column in frame.columns:
         series = frame[column]
-        if isinstance(series.dtype, pd.CategoricalDtype) and pd.api.types.is_numeric_dtype(
-            series.cat.categories
-        ):
+        if isinstance(series.dtype, pd.CategoricalDtype) and pd.api.types.is_numeric_dtype(series.cat.categories):
             if out is frame:
                 out = frame.copy()
             out[column] = series.astype("float64")
@@ -144,13 +142,11 @@ class DataFramePreprocessor:
     def _validate_parameters(self) -> None:
         if not isinstance(self.max_categorical_cardinality, int) or self.max_categorical_cardinality < 1:
             raise ValueError(
-                "max_categorical_cardinality must be a positive integer; got "
-                f"{self.max_categorical_cardinality!r}."
+                f"max_categorical_cardinality must be a positive integer; got {self.max_categorical_cardinality!r}."
             )
         if self.categorical_encoding not in CATEGORICAL_ENCODINGS:
             raise ValueError(
-                f"categorical_encoding must be one of {CATEGORICAL_ENCODINGS}; "
-                f"got {self.categorical_encoding!r}."
+                f"categorical_encoding must be one of {CATEGORICAL_ENCODINGS}; got {self.categorical_encoding!r}."
             )
 
     @staticmethod
@@ -181,10 +177,7 @@ class DataFramePreprocessor:
             raise ValueError(f"text_columns not found in the DataFrame: {missing_text}.")
         overlap = [column for column in declared_text if column in set(declared_categorical)]
         if overlap:
-            raise ValueError(
-                "categorical_columns and text_columns must not overlap; "
-                f"both contain {overlap}."
-            )
+            raise ValueError(f"categorical_columns and text_columns must not overlap; both contain {overlap}.")
 
         text_set = set(declared_text)
         categorical_set = set(declared_categorical)
@@ -252,9 +245,7 @@ class DataFramePreprocessor:
                     "encode it explicitly, or remove it."
                 )
             if len(counts) > self.max_categorical_cardinality:
-                selected = sorted(counts, key=lambda key: (-counts[key], key))[
-                    : self.max_categorical_cardinality
-                ]
+                selected = sorted(counts, key=lambda key: (-counts[key], key))[: self.max_categorical_cardinality]
             else:
                 selected = list(counts)
             selected = sorted(selected)
@@ -278,9 +269,7 @@ class DataFramePreprocessor:
                 f"missing columns={missing}, extra columns={extra}."
             )
         frame = frame.loc[:, self.columns_]
-        numeric_mismatches = [
-            column for column in self.numeric_columns_ if not _is_numeric_series(frame[column])
-        ]
+        numeric_mismatches = [column for column in self.numeric_columns_ if not _is_numeric_series(frame[column])]
         if numeric_mismatches:
             raise ValueError(
                 "X_train and X_test must have matching column types. Query type mismatch for "
@@ -288,9 +277,7 @@ class DataFramePreprocessor:
                 + _dtype_items(frame, numeric_mismatches)
                 + ". Convert them to numeric values before prediction."
             )
-        temporal_categorical = [
-            column for column in self.categorical_columns_ if _unsupported_temporal(frame[column])
-        ]
+        temporal_categorical = [column for column in self.categorical_columns_ if _unsupported_temporal(frame[column])]
         if temporal_categorical:
             raise ValueError(
                 "Query categorical column(s) have unsupported temporal dtype: "

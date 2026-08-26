@@ -53,9 +53,7 @@ import torch
 from synthefy_nori import NoriRegressor
 
 # --- Configuration -----------------------------------------------------------
-DATA_DIR = Path(
-    os.environ.get("NORI_BENCH_DATA_DIR", "cache/eval_datasets/QSAR-TID-11")
-)
+DATA_DIR = Path(os.environ.get("NORI_BENCH_DATA_DIR", "cache/eval_datasets/QSAR-TID-11"))
 TRAIN_CSV = DATA_DIR / "QSAR-TID-11_train.csv"
 TEST_CSV = DATA_DIR / "QSAR-TID-11_test.csv"
 PLOT_PATH = Path("benchmarks/plots/kv_cache_speed.png")
@@ -108,10 +106,7 @@ def main() -> None:
 
     x_train, y_train = load_csv(TRAIN_CSV)
     x_test_full, _ = load_csv(TEST_CSV)
-    print(
-        f"Loaded QSAR-TID-11: train {x_train.shape}, test {x_test_full.shape}, "
-        f"budget={MAX_ELEMENTS_BUDGET}"
-    )
+    print(f"Loaded QSAR-TID-11: train {x_train.shape}, test {x_test_full.shape}, budget={MAX_ELEMENTS_BUDGET}")
 
     model = NoriRegressor(device=DEVICE, model="nori-6m").fit(x_train, y_train)
 
@@ -127,8 +122,7 @@ def main() -> None:
         max_diff = float(np.max(np.abs(on_preds - off_preds)))
         rows.append((n, on_s, off_s, speedup, max_diff))
         print(
-            f"n_test={n:5d}  on={on_s:7.3f}s  off={off_s:7.3f}s  "
-            f"speedup={speedup:5.2f}x  max_pred_diff={max_diff:.2e}"
+            f"n_test={n:5d}  on={on_s:7.3f}s  off={off_s:7.3f}s  speedup={speedup:5.2f}x  max_pred_diff={max_diff:.2e}"
         )
 
     # --- Results table -------------------------------------------------------

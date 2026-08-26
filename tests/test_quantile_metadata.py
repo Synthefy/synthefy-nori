@@ -89,9 +89,7 @@ def test_predictive_mean_uses_nonuniform_checkpoint_levels(mode):
     )
     predictor.quantile_collapse = mode
 
-    collapsed = predictor._apply_quantile_collapse(
-        torch.tensor([[0.0, 10.0, 20.0]])
-    )
+    collapsed = predictor._apply_quantile_collapse(torch.tensor([[0.0, 10.0, 20.0]]))
 
     # Constant tails plus trapezoidal interpolation:
     # .1*0 + .1*(0+10)/2 + .7*(10+20)/2 + .1*20 = 13.
@@ -113,12 +111,7 @@ def test_qdist_exponential_path_uses_checkpoint_levels():
     collapsed = predictor._apply_quantile_collapse(bank)
 
     # lambda_L=1 for q(.1)=0, q(.2)=log(2); the right tail is flat.
-    expected = (
-        0.1 * -1.0
-        + 0.1 * np.log(2.0) / 2.0
-        + 0.6 * np.log(2.0)
-        + 0.2 * np.log(2.0)
-    )
+    expected = 0.1 * -1.0 + 0.1 * np.log(2.0) / 2.0 + 0.6 * np.log(2.0) + 0.2 * np.log(2.0)
     torch.testing.assert_close(collapsed, torch.tensor([expected], dtype=torch.float64))
 
 
@@ -127,9 +120,7 @@ def test_predictor_preserves_dense_grid_for_bfloat16_predictions():
     predictor.model = SimpleNamespace(
         num_reg_quantiles=999,
         regression_loss="pinball",
-        regression_quantiles=tuple(
-            np.arange(1, 1000, dtype=np.float64) / 1000.0
-        ),
+        regression_quantiles=tuple(np.arange(1, 1000, dtype=np.float64) / 1000.0),
     )
     predictor.quantile_collapse = "mean"
     bank = torch.linspace(-2.0, 3.0, 999, dtype=torch.bfloat16).unsqueeze(0)

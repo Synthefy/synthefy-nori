@@ -11,6 +11,7 @@ exercise the exact class that owned the lambdas without needing model weights;
 the ``slow`` test covers the full fit -> pickle -> predict round-trip from the
 issue's reproduction.
 """
+
 from __future__ import annotations
 
 import os
@@ -36,8 +37,7 @@ def test_function_transformer_helpers_are_module_level():
     documents the contract that these names exist at module scope.
     """
     x = _sample()
-    for fn in (preprocess._inf_to_nan, preprocess._identity,
-               preprocess._shift_to_nonnegative, preprocess._add_epsilon):
+    for fn in (preprocess._inf_to_nan, preprocess._identity, preprocess._shift_to_nonnegative, preprocess._add_epsilon):
         assert fn.__module__ == preprocess.__name__
         assert "<lambda>" not in fn.__qualname__
         # Each helper pickles by reference and survives a round-trip.

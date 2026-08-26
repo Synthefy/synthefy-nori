@@ -29,11 +29,7 @@ def _workflow() -> dict:
 
 
 def _run_steps(job: dict) -> list[str]:
-    return [
-        step["run"]
-        for step in job["steps"]
-        if isinstance(step, dict) and "run" in step
-    ]
+    return [step["run"] for step in job["steps"] if isinstance(step, dict) and "run" in step]
 
 
 def test_ordinary_pr_ci_always_reports_and_collects_the_root_test_tree():
@@ -81,11 +77,7 @@ def test_cutover_rehearsal_covers_all_three_clean_package_combinations():
     workflow = _workflow()
     job = workflow["jobs"]["cutover-rehearsal"]
     scripts = "\n".join(_run_steps(job))
-    names = {
-        step.get("name")
-        for step in job["steps"]
-        if isinstance(step, dict)
-    }
+    names = {step.get("name") for step in job["steps"] if isinstance(step, dict)}
 
     assert {
         "Build both candidate wheels",
@@ -120,15 +112,9 @@ def test_required_test_context_fails_closed_over_every_offline_package_gate():
     step = aggregate["steps"][0]
     assert step["env"] == {
         "UNIT_RESULT": "${{ needs.unit.result }}",
-        "SYNTHEFY_ARTIFACT_RESULT": (
-            "${{ needs['synthefy-artifact'].result }}"
-        ),
-        "DISTRIBUTION_BOUNDARIES_RESULT": (
-            "${{ needs['distribution-boundaries'].result }}"
-        ),
-        "CUTOVER_REHEARSAL_RESULT": (
-            "${{ needs['cutover-rehearsal'].result }}"
-        ),
+        "SYNTHEFY_ARTIFACT_RESULT": ("${{ needs['synthefy-artifact'].result }}"),
+        "DISTRIBUTION_BOUNDARIES_RESULT": ("${{ needs['distribution-boundaries'].result }}"),
+        "CUTOVER_REHEARSAL_RESULT": ("${{ needs['cutover-rehearsal'].result }}"),
     }
     assert "CUTOVER_REHEARSAL_RESULT" in step["run"]
     assert "exit 1" in step["run"]
@@ -141,7 +127,7 @@ def test_modal_prewarm_includes_the_consolidated_workspace_member():
     assert member in body
     assert body.index(member) < body.index(".run_commands")
     assert '"/build/libs/synthefy"' in body
-    assert "copy=True" in body[body.index(member):body.index(".run_commands")]
+    assert "copy=True" in body[body.index(member) : body.index(".run_commands")]
 
 
 def test_ordinary_pr_ci_never_receives_live_validation_credentials():
@@ -157,8 +143,6 @@ def test_ordinary_pr_ci_never_receives_live_validation_credentials():
         r"[A-Z0-9_]*KEY\b",
     )
     matches = {
-        pattern: match.group(0)
-        for pattern in forbidden
-        if (match := re.search(pattern, workflow, flags=re.IGNORECASE))
+        pattern: match.group(0) for pattern in forbidden if (match := re.search(pattern, workflow, flags=re.IGNORECASE))
     }
     assert not matches

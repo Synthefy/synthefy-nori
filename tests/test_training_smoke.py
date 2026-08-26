@@ -18,6 +18,7 @@ Run explicitly with::
     pytest -m slow tests/test_training_smoke.py
     SYNTHEFY_NORI_SMOKE_DEVICE=cuda:0 pytest -m slow tests/test_training_smoke.py
 """
+
 from __future__ import annotations
 
 import os
@@ -35,14 +36,38 @@ def test_single_training_step_writes_checkpoint(tmp_path):
     device = os.environ.get("SYNTHEFY_NORI_SMOKE_DEVICE", "cpu")
 
     cmd = [
-        sys.executable, "-m", "synthefy_nori.training.cli",
-        "--device", device, "--no-prefetch", "--no-wandb",
-        "--task-type", "reg",
-        "--total-steps", "1", "--run-steps", "1", "--save-interval", "1",
+        sys.executable,
+        "-m",
+        "synthefy_nori.training.cli",
+        "--device",
+        device,
+        "--no-prefetch",
+        "--no-wandb",
+        "--task-type",
+        "reg",
+        "--total-steps",
+        "1",
+        "--run-steps",
+        "1",
+        "--save-interval",
+        "1",
         # Tiny architecture so the step is fast on a CPU runner.
-        "--embed-dim", "32", "--hid-dim", "64", "--nlayers", "2", "--nhead", "2",
-        "--batch-size", "2", "--max-features", "16", "--max-budget", "4000",
-        "--checkpoint-dir", str(checkpoint_dir),
+        "--embed-dim",
+        "32",
+        "--hid-dim",
+        "64",
+        "--nlayers",
+        "2",
+        "--nhead",
+        "2",
+        "--batch-size",
+        "2",
+        "--max-features",
+        "16",
+        "--max-budget",
+        "4000",
+        "--checkpoint-dir",
+        str(checkpoint_dir),
     ]
     # CPU has no autocast support here; on CUDA, keep mixed precision on (default)
     # so the GPU run also exercises the autocast path.
@@ -51,16 +76,16 @@ def test_single_training_step_writes_checkpoint(tmp_path):
 
     env = dict(os.environ, WANDB_MODE="disabled")
     result = subprocess.run(
-        cmd, env=env, capture_output=True, text=True, timeout=600,
+        cmd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
     )
 
     assert result.returncode == 0, (
-        f"training step failed (exit {result.returncode})\n"
-        f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        f"training step failed (exit {result.returncode})\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
 
     checkpoints = list(checkpoint_dir.glob("checkpoint_step_*.pt"))
-    assert checkpoints, (
-        f"no checkpoint written to {checkpoint_dir}\n"
-        f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
-    )
+    assert checkpoints, f"no checkpoint written to {checkpoint_dir}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"

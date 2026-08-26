@@ -106,8 +106,7 @@ def _tiny_arch_config(**overrides) -> dict:
 
 
 def _qass_modes(model) -> set:
-    return {m.qass_mode for m in model.modules()
-            if type(m).__name__ == "QASSMaxScaling"}
+    return {m.qass_mode for m in model.modules() if type(m).__name__ == "QASSMaxScaling"}
 
 
 def _build(config):
@@ -169,6 +168,7 @@ def test_no_qassmax_means_no_mode_is_passed(monkeypatch):
 # the "full" fallback in `resolve_qass_mode` only ever sees older files.
 # ---------------------------------------------------------------------------
 
+
 def _resolved_mode_for(state_dict, monkeypatch, mask_prediction=False):
     """Run load_model's config selection and return the QASS mode it resolves."""
     from synthefy_nori.utils import loading
@@ -208,8 +208,7 @@ def test_same_arch_config_resolves_the_same_in_both_containers(monkeypatch):
     ckpt_mode, _ = _resolved_mode_for(ckpt, monkeypatch)
 
     assert pt_mode == ckpt_mode == "base_only", (
-        f"container format changed the attention temperature: "
-        f".pt -> {pt_mode!r}, .ckpt -> {ckpt_mode!r}"
+        f"container format changed the attention temperature: .pt -> {pt_mode!r}, .ckpt -> {ckpt_mode!r}"
     )
 
 
@@ -243,6 +242,7 @@ def test_load_model_does_not_mutate_the_checkpoint(monkeypatch):
 # ---------------------------------------------------------------------------
 # finalize_arch_config: the write side. Every new checkpoint lands in era 1.
 # ---------------------------------------------------------------------------
+
 
 def test_finalize_pins_the_mode_and_stamps_the_attention_scale(monkeypatch):
     """Finalize records the mode the run will actually train with, and fills in

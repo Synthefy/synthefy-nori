@@ -130,6 +130,7 @@ markers = [
 [tool.ruff]
 target-version = "py39"
 line-length = 120
+extend-exclude = ["*.ipynb"]   # notebooks are formatted deliberately, not by the tree-wide gate
 
 [tool.ruff.lint]
 select = ["E9", "F821", "F822", "F823"]

@@ -10,19 +10,17 @@ from synthefy_nori.training import data_generator as dg
 
 def _row_id_data(n_rows: int, n_features: int = 4):
     row_ids = np.arange(n_rows, dtype=np.float64)
-    X = np.column_stack([
-        row_ids,
-        *[
-            np.sin(row_ids / (feature + 2.0))
-            for feature in range(n_features - 1)
-        ],
-    ])
+    X = np.column_stack(
+        [
+            row_ids,
+            *[np.sin(row_ids / (feature + 2.0)) for feature in range(n_features - 1)],
+        ]
+    )
     y = row_ids * 0.25 + np.cos(row_ids)
     return X, y
 
 
-def test_extra_trees_filter_fits_context_and_scores_query_with_15_rows(
-        monkeypatch):
+def test_extra_trees_filter_fits_context_and_scores_query_with_15_rows(monkeypatch):
     instances = []
 
     class SplitSpyExtraTrees:
@@ -42,8 +40,7 @@ def test_extra_trees_filter_fits_context_and_scores_query_with_15_rows(
             self.score_ids = X[:, 0].astype(np.int64)
             return 1.0
 
-    monkeypatch.setattr(
-        sklearn.ensemble, "ExtraTreesRegressor", SplitSpyExtraTrees)
+    monkeypatch.setattr(sklearn.ensemble, "ExtraTreesRegressor", SplitSpyExtraTrees)
     X, y = _row_id_data(64)
 
     assert dg._check_learnability(X, y, context_rows=15)
@@ -72,8 +69,7 @@ def test_scaling_filter_uses_context_ladder_and_fixed_query(monkeypatch):
             self.score_ids = X[:, 0].astype(np.int64)
             return len(self.fit_ids) / 100.0
 
-    monkeypatch.setattr(
-        sklearn.ensemble, "ExtraTreesRegressor", ScalingSpyExtraTrees)
+    monkeypatch.setattr(sklearn.ensemble, "ExtraTreesRegressor", ScalingSpyExtraTrees)
     X, y = _row_id_data(80)
 
     assert dg._check_icl_scaling(X, y, context_rows=40)
@@ -83,8 +79,7 @@ def test_scaling_filter_uses_context_ladder_and_fixed_query(monkeypatch):
         assert np.all(model.score_ids >= 40)
     expected_query_ids = np.sort(instances[0].score_ids)
     for model in instances[1:]:
-        np.testing.assert_array_equal(
-            np.sort(model.score_ids), expected_query_ids)
+        np.testing.assert_array_equal(np.sort(model.score_ids), expected_query_ids)
 
 
 def test_legacy_icl_filter_preserves_context_query_sides(monkeypatch):
@@ -98,8 +93,7 @@ def test_legacy_icl_filter_preserves_context_query_sides(monkeypatch):
             captured["eval_pos"] = eval_pos
             return {"reg_output": y[:, eval_pos:].unsqueeze(-1)}
 
-    monkeypatch.setattr(
-        dg, "_get_icl_filter_model", lambda _path: SplitSpyModel())
+    monkeypatch.setattr(dg, "_get_icl_filter_model", lambda _path: SplitSpyModel())
     X, y = _row_id_data(80)
 
     assert dg._check_learnability_icl(
@@ -119,14 +113,10 @@ def test_legacy_icl_filter_preserves_context_query_sides(monkeypatch):
 def test_generate_batch_omitted_context_keeps_legacy_filter_mode(monkeypatch):
     seen_context_rows = []
 
-    def tree_episode(
-            n_samples, n_features, task_type, n_classes, rng,
-            context_rows=None, **_kwargs):
+    def tree_episode(n_samples, n_features, task_type, n_classes, rng, context_rows=None, **_kwargs):
         del task_type, n_classes, rng
         row_ids = np.arange(n_samples, dtype=np.float64)
-        X = np.column_stack([
-            row_ids + feature for feature in range(n_features)
-        ])
+        X = np.column_stack([row_ids + feature for feature in range(n_features)])
         return {
             "X": X,
             "y": row_ids.astype(np.float32),
@@ -134,9 +124,7 @@ def test_generate_batch_omitted_context_keeps_legacy_filter_mode(monkeypatch):
             "meta": {"generator_family": "tree_prior"},
         }
 
-    def learnability_filter(
-            X, y, task_type, *, reg_min_score=0.10,
-            context_rows=None, **_kwargs):
+    def learnability_filter(X, y, task_type, *, reg_min_score=0.10, context_rows=None, **_kwargs):
         del X, y, task_type, reg_min_score
         seen_context_rows.append(context_rows)
         return True

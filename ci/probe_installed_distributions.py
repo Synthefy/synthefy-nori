@@ -56,9 +56,7 @@ def _site_packages() -> Path:
 
 def _assert_absent(module_name: str) -> None:
     if importlib.util.find_spec(module_name) is not None:
-        raise AssertionError(
-            f"{module_name} is still importable after its distribution was removed"
-        )
+        raise AssertionError(f"{module_name} is still importable after its distribution was removed")
     distribution = _DISTRIBUTIONS[module_name]
     try:
         importlib.metadata.version(distribution)
@@ -73,9 +71,7 @@ def _import_installed(module_name: str):
     module_file = Path(module.__file__).resolve()
     site_packages = _site_packages()
     if not module_file.is_relative_to(site_packages):
-        raise AssertionError(
-            f"{module_name} imported from {module_file}, outside clean environment {site_packages}"
-        )
+        raise AssertionError(f"{module_name} imported from {module_file}, outside clean environment {site_packages}")
     actual_version = importlib.metadata.version(distribution)
     if getattr(module, "__version__", actual_version) != actual_version:
         raise AssertionError(f"{module_name}.__version__ does not match {actual_version}")
@@ -84,9 +80,7 @@ def _import_installed(module_name: str):
 
 def _assert_not_loaded(*module_names: str) -> None:
     loaded = sorted(
-        name
-        for name in sys.modules
-        if any(name == root or name.startswith(f"{root}.") for root in module_names)
+        name for name in sys.modules if any(name == root or name.startswith(f"{root}.") for root in module_names)
     )
     if loaded:
         raise AssertionError(f"optional modules loaded eagerly: {loaded}")
@@ -94,9 +88,7 @@ def _assert_not_loaded(*module_names: str) -> None:
 
 def _assert_not_importable(*module_names: str) -> None:
     importable = sorted(
-        module_name
-        for module_name in module_names
-        if importlib.util.find_spec(module_name) is not None
+        module_name for module_name in module_names if importlib.util.find_spec(module_name) is not None
     )
     if importable:
         raise AssertionError(f"unrelated optional modules are installed: {importable}")
@@ -110,10 +102,7 @@ def _import_required(*module_names: str) -> None:
 def _canonical_featurizer():
     from synthefy.featurize import align_and_featurize
 
-    if (
-        not callable(align_and_featurize)
-        or align_and_featurize.__module__ != "synthefy.featurize"
-    ):
+    if not callable(align_and_featurize) or align_and_featurize.__module__ != "synthefy.featurize":
         raise AssertionError("synthefy does not own the canonical tabular featurizer")
     return align_and_featurize
 
@@ -152,12 +141,8 @@ def _assert_legacy_tsfeatures_are_canonical():
         "feature_transformer",
         "ts_dataframe",
     ):
-        canonical_module = importlib.import_module(
-            f"synthefy.nori_ts.tsfeatures.{module_name}"
-        )
-        historical_module = importlib.import_module(
-            f"synthefy_nori.nori_ts.tsfeatures.{module_name}"
-        )
+        canonical_module = importlib.import_module(f"synthefy.nori_ts.tsfeatures.{module_name}")
+        historical_module = importlib.import_module(f"synthefy_nori.nori_ts.tsfeatures.{module_name}")
         if historical_module is not canonical_module:
             raise AssertionError(f"historical deep module {module_name} is not canonical")
     return canonical
@@ -246,9 +231,7 @@ def probe_extra(case: str) -> None:
         _probe_nori_extra(extra)
 
 
-def _assert_import_cause(
-    loader_name: str, expected_name: str, *, expect_wrapped: bool
-) -> None:
+def _assert_import_cause(loader_name: str, expected_name: str, *, expect_wrapped: bool) -> None:
     from synthefy import nori_client
 
     loader = getattr(nori_client, loader_name)
@@ -263,19 +246,15 @@ def _assert_import_cause(
         missing = exc.__cause__
         wrapped = True
     else:
-        raise AssertionError(
-            f"{loader_name} unexpectedly succeeded without a working synthefy_nori"
-        )
+        raise AssertionError(f"{loader_name} unexpectedly succeeded without a working synthefy_nori")
     if not isinstance(missing, ModuleNotFoundError) or missing.name != expected_name:
         raise AssertionError(
-            f"{loader_name} reported {missing!r}; expected "
-            f"ModuleNotFoundError({expected_name!r})"
+            f"{loader_name} reported {missing!r}; expected ModuleNotFoundError({expected_name!r})"
         ) from error
     if wrapped is not expect_wrapped:
         disposition = "wrapped" if wrapped else "unwrapped"
         raise AssertionError(
-            f"{loader_name} left {expected_name!r} {disposition}; "
-            f"expect_wrapped={expect_wrapped}"
+            f"{loader_name} left {expected_name!r} {disposition}; expect_wrapped={expect_wrapped}"
         ) from error
 
 
@@ -307,9 +286,7 @@ def _probe_missing_import_causes() -> None:
         importlib.invalidate_caches()
         sys.modules.pop("synthefy_nori", None)
         try:
-            _assert_all_loader_causes(
-                "sentinel_transitive_dep", expect_wrapped=False
-            )
+            _assert_all_loader_causes("sentinel_transitive_dep", expect_wrapped=False)
         finally:
             sys.modules.pop("synthefy_nori", None)
             sys.path.remove(temp_dir)
@@ -351,9 +328,7 @@ def probe_nori_only() -> None:
         importlib.import_module("synthefy_nori")
     except ModuleNotFoundError as exc:
         if exc.name != "synthefy":
-            raise AssertionError(
-                f"synthefy_nori failed for {exc.name!r}, expected its required synthefy edge"
-            ) from exc
+            raise AssertionError(f"synthefy_nori failed for {exc.name!r}, expected its required synthefy edge") from exc
     else:
         raise AssertionError("synthefy_nori imported without its required synthefy dependency")
     print("synthefy_nori remains installed and reports its missing synthefy dependency")

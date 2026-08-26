@@ -8,6 +8,7 @@ metric up front) is what makes the comparison honest. Nori is a scikit-learn
 estimator, so it drops straight into cross_validate. Results within one
 fold-std of the best are reported as ties.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -60,20 +61,25 @@ def main() -> None:
     rows = []
     for name, (model, X_m) in models.items():
         res = cross_validate(model, X_m, y, cv=cv, scoring=scoring)
-        rows.append({
-            "model": name,
-            "r2_mean": res["test_r2"].mean(), "r2_std": res["test_r2"].std(),
-            "mae_mean": -res["test_mae"].mean(), "mae_std": res["test_mae"].std(),
-        })
-        print(f"{name:14s} R² {rows[-1]['r2_mean']:.3f} ± {rows[-1]['r2_std']:.3f}   "
-              f"MAE {rows[-1]['mae_mean']:.3f} ± {rows[-1]['mae_std']:.3f}")
+        rows.append(
+            {
+                "model": name,
+                "r2_mean": res["test_r2"].mean(),
+                "r2_std": res["test_r2"].std(),
+                "mae_mean": -res["test_mae"].mean(),
+                "mae_std": res["test_mae"].std(),
+            }
+        )
+        print(
+            f"{name:14s} R² {rows[-1]['r2_mean']:.3f} ± {rows[-1]['r2_std']:.3f}   "
+            f"MAE {rows[-1]['mae_mean']:.3f} ± {rows[-1]['mae_std']:.3f}"
+        )
 
     table = pd.DataFrame(rows).sort_values("r2_mean", ascending=False).reset_index(drop=True)
     best = table.iloc[0]
     tied = table[table.r2_mean >= best.r2_mean - best.r2_std]
     if len(tied) > 1:
-        print(f"\nwithin one fold-std of the best ({best.model}): "
-              f"{', '.join(tied.model)} — treat these as tied.")
+        print(f"\nwithin one fold-std of the best ({best.model}): {', '.join(tied.model)} — treat these as tied.")
     else:
         print(f"\nbest: {best.model} (clear of the fold-noise band)")
 

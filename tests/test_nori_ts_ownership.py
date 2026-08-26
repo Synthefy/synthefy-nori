@@ -43,12 +43,8 @@ def test_v7_legacy_exports_and_deep_modules_are_canonical():
     assert legacy.__all__ == canonical.__all__ == list(_PUBLIC)
     assert all(getattr(legacy, name) is getattr(canonical, name) for name in _PUBLIC)
     for name in _DEEP_MODULES:
-        canonical_module = importlib.import_module(
-            f"synthefy.nori_ts.tsfeatures.{name}"
-        )
-        historical_module = importlib.import_module(
-            f"synthefy_nori.nori_ts.tsfeatures.{name}"
-        )
+        canonical_module = importlib.import_module(f"synthefy.nori_ts.tsfeatures.{name}")
+        historical_module = importlib.import_module(f"synthefy_nori.nori_ts.tsfeatures.{name}")
         assert historical_module is canonical_module
 
 
@@ -83,9 +79,7 @@ def test_facade_falls_back_only_when_the_canonical_owner_is_missing(monkeypatch)
     monkeypatch.setattr(importlib, "import_module", missing_canonical)
     try:
         fallback = importlib.reload(legacy)
-        assert fallback.TimeSeriesDataFrame.__module__ == (
-            "synthefy_nori.nori_ts.tsfeatures.ts_dataframe"
-        )
+        assert fallback.TimeSeriesDataFrame.__module__ == ("synthefy_nori.nori_ts.tsfeatures.ts_dataframe")
         frame = fallback.TimeSeriesDataFrame.from_data_frame(
             pd.DataFrame(
                 {

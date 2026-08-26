@@ -33,6 +33,7 @@ Two tiers of test here:
     ``slow`` and skip when a checkpoint is not reachable (no network / no HF cache).
     They run on CPU.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -46,10 +47,11 @@ N_TRAIN, N_TEST, N_FEATURES = 300, 120, 8
 def bare_model():
     """The bare FeaturesTransformer from nori-6m, or skip when unreachable."""
     from synthefy_nori.api import NoriRegressor
+
     try:
         reg = NoriRegressor(model="nori-6m", device="cpu")
         pred = reg._get_predictor()
-    except Exception as exc:                                    # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         pytest.skip(f"no reachable Nori checkpoint: {type(exc).__name__}: {exc}")
     model = pred._bare_model()
     model.eval()
@@ -63,8 +65,8 @@ def table():
     rng = np.random.default_rng(0)
     x = rng.normal(size=(N_TRAIN + N_TEST, N_FEATURES)).astype(np.float32)
     y = (np.sin(x[:, 0] * 2) - x[:, 1] + 0.1 * rng.normal(size=len(x))).astype(np.float32)
-    xt = torch.from_numpy(x).unsqueeze(0)          # [1, N, F]
-    yt = torch.from_numpy(y).unsqueeze(0)          # [1, N]
+    xt = torch.from_numpy(x).unsqueeze(0)  # [1, N, F]
+    yt = torch.from_numpy(y).unsqueeze(0)  # [1, N]
     return xt, yt
 
 
@@ -111,17 +113,20 @@ def _nonfinite_table(sentinel):
     y = np.sin(x[:, 0]).astype(np.float32)
     x[N_TRAIN:, 0] += 5.0
     if sentinel is not None:
-        x[N_TRAIN + 3::7, 0] = sentinel
+        x[N_TRAIN + 3 :: 7, 0] = sentinel
     return torch.from_numpy(x).unsqueeze(0), torch.from_numpy(y).unsqueeze(0)
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("sentinel,label", [
-    pytest.param(None, "finite", id="finite-baseline"),
-    pytest.param(float("nan"), "NaN", id="nan"),
-    pytest.param(float("inf"), "+Inf", id="pos-inf"),
-    pytest.param(float("-inf"), "-Inf", id="neg-inf"),
-])
+@pytest.mark.parametrize(
+    "sentinel,label",
+    [
+        pytest.param(None, "finite", id="finite-baseline"),
+        pytest.param(float("nan"), "NaN", id="nan"),
+        pytest.param(float("inf"), "+Inf", id="pos-inf"),
+        pytest.param(float("-inf"), "-Inf", id="neg-inf"),
+    ],
+)
 def test_apply_matches_transductive_on_nonfinite_query_values(bare_model, sentinel, label):
     # NanEncoder imputes NaN/Inf with the CONTEXT column mean, computed from
     # x[:, :eval_pos]. On the apply path eval_pos spans the query rows, so without
@@ -140,7 +145,8 @@ def test_apply_matches_transductive_on_nonfinite_query_values(bare_model, sentin
     assert delta < 1e-3, (
         f"cached apply diverged from the transductive path on {label} query values: "
         f"max |Δ|={delta:.3e} (float reassociation alone is ~3e-05). The context's "
-        f"train-derived imputation stats are not reaching the query rows.")
+        f"train-derived imputation stats are not reaching the query rows."
+    )
 
 
 def test_nan_encoder_frozen_mean_overrides_the_eval_pos_split():
@@ -152,7 +158,7 @@ def test_nan_encoder_frozen_mean_overrides_the_eval_pos_split():
     from synthefy_nori.model.encoders import NanEncoder
 
     enc = NanEncoder(in_keys=["data"], out_key="nan_encoding")
-    x = torch.tensor([[[1.0], [3.0], [float("nan")]]])          # [1, 3, 1]
+    x = torch.tensor([[[1.0], [3.0], [float("nan")]]])  # [1, 3, 1]
 
     free = enc({"data": x.clone(), "eval_pos": 3})
     # Own split: calc_mean is nansum/non-NaN-count, so (1+3)/2 = 2.0
@@ -162,7 +168,8 @@ def test_nan_encoder_frozen_mean_overrides_the_eval_pos_split():
     frozen = torch.tensor([[-7.0]])
     out = enc({"data": x.clone(), "eval_pos": 3, "_frozen_nan_mean": frozen})
     assert out["data"][0, 2, 0].item() == pytest.approx(-7.0), (
-        "frozen context mean was ignored; NanEncoder recomputed from these rows")
+        "frozen context mean was ignored; NanEncoder recomputed from these rows"
+    )
     assert out["_nan_mean"].item() == pytest.approx(-7.0)
     # Finite entries are untouched either way -- only NaN/Inf cells are filled.
     assert out["data"][0, 0, 0].item() == pytest.approx(1.0)
@@ -183,11 +190,9 @@ def test_nan_encoder_excludes_inf_from_its_mean_and_honors_a_frozen_mean():
     assert healthy["data"][0, 2, 0].item() == pytest.approx(2.0)
     assert torch.isfinite(healthy["data"]).all()
 
-    frozen = enc({"data": x.clone(), "eval_pos": 3,
-                  "_frozen_nan_mean": torch.tensor([[-7.0]])})
+    frozen = enc({"data": x.clone(), "eval_pos": 3, "_frozen_nan_mean": torch.tensor([[-7.0]])})
     assert frozen["data"][0, 2, 0].item() == pytest.approx(-7.0)
-    assert torch.isfinite(frozen["data"]).all(), (
-        "frozen context mean did not keep the query column finite")
+    assert torch.isfinite(frozen["data"]).all(), "frozen context mean did not keep the query column finite"
 
 
 @pytest.mark.slow
@@ -198,7 +203,7 @@ def test_build_context_cache_captures_the_nan_fill(bare_model, table):
     torch.manual_seed(0)
     with torch.no_grad():
         bundle = bare_model.build_context_cache(xt[:, :N_TRAIN], yt[:, :N_TRAIN])
-        half = bare_model.build_context_cache(xt[:, :N_TRAIN // 2], yt[:, :N_TRAIN // 2])
+        half = bare_model.build_context_cache(xt[:, : N_TRAIN // 2], yt[:, : N_TRAIN // 2])
     assert bundle.nan_mean is not None, "context build did not capture NanEncoder's fill"
     assert torch.isfinite(bundle.nan_mean).all()
     # The fill is a per-feature-group reduction over rows ([B, n_groups,
@@ -209,7 +214,8 @@ def test_build_context_cache_captures_the_nan_fill(bare_model, table):
     assert bundle.nan_mean.shape == half.nan_mean.shape, (
         f"fill shape tracks the context row count ({tuple(bundle.nan_mean.shape)} for "
         f"{N_TRAIN} rows vs {tuple(half.nan_mean.shape)} for {N_TRAIN // 2}) -- it "
-        f"cannot then be re-applied to an arbitrary query batch")
+        f"cannot then be re-applied to an arbitrary query batch"
+    )
     assert N_TRAIN not in bundle.nan_mean.shape
 
 
@@ -230,8 +236,8 @@ def test_one_bundle_scores_multiple_query_batches(bare_model, table):
         p_all = bare_model.apply_context_cache(x_q, bundle, row_chunk_size=0)
     joined = torch.cat([p_a, p_b], dim=1)
     assert torch.equal(joined, p_all), (
-        f"per-batch scoring diverged from whole-block (max |Δ|="
-        f"{(joined - p_all).abs().max().item():.2e})")
+        f"per-batch scoring diverged from whole-block (max |Δ|={(joined - p_all).abs().max().item():.2e})"
+    )
 
 
 @pytest.mark.slow
@@ -249,7 +255,7 @@ def test_context_build_runs_once_not_per_apply(bare_model, table):
         calls["n"] += 1
         return orig(*a, **k)
 
-    enc.build_train_cache = counting                            # type: ignore[assignment]
+    enc.build_train_cache = counting  # type: ignore[assignment]
     try:
         torch.manual_seed(0)
         with torch.no_grad():
@@ -259,21 +265,22 @@ def test_context_build_runs_once_not_per_apply(bare_model, table):
                 bare_model.apply_context_cache(xt[:, ep:], bundle, row_chunk_size=0)
         assert calls["n"] == 1, (
             f"context forward re-ran on apply: build_train_cache called {calls['n']}x "
-            f"(expected 1) -- amortization is broken")
+            f"(expected 1) -- amortization is broken"
+        )
     finally:
-        enc.build_train_cache = orig                            # type: ignore[assignment]
+        enc.build_train_cache = orig  # type: ignore[assignment]
 
 
 def _regressor(*, reuse_context_cache: bool = True):
     """A NoriRegressor whose predict() takes the cached path, or skip."""
     from synthefy_nori.api import NoriRegressor
+
     # Small element budget forces chunk_size to its floor so n_test > chunk_size
     # and the cached (build/apply) path engages -- same trick as test_memory_policy_e2e.
     reg = NoriRegressor(
         model="nori-6m",
         device="cpu",
-        memory_policy={"elements_budget": 5_000,
-                       "reuse_context_cache": reuse_context_cache},
+        memory_policy={"elements_budget": 5_000, "reuse_context_cache": reuse_context_cache},
     )
     try:
         reg._get_predictor()
@@ -313,7 +320,7 @@ def test_context_built_once_across_multiple_predicts(monkeypatch):
     x = rng.normal(size=(600 + 800, 8)).astype(np.float32)
     y = (np.cos(x[:, 0]) + x[:, 2]).astype(np.float32)
     x_tr, y_tr = x[:600], y[:600]
-    x_te_a, x_te_b = x[600:1000], x[1000:]      # 400 + 400 query rows
+    x_te_a, x_te_b = x[600:1000], x[1000:]  # 400 + 400 query rows
 
     reg = _regressor().fit(x_tr, y_tr)
     bare = reg._get_predictor()._bare_model()
@@ -330,10 +337,11 @@ def test_context_built_once_across_multiple_predicts(monkeypatch):
         pytest.skip("cached path did not engage on this shape/box")
     after_first = calls["n"]
     assert after_first >= 1, "first predict never built a context cache"
-    reg.predict(x_te_b)          # different queries, same context
+    reg.predict(x_te_b)  # different queries, same context
     assert calls["n"] == after_first, (
         f"context rebuilt on the second predict: {calls['n']} total builds "
-        f"(expected {after_first}) -- cross-call amortization is broken")
+        f"(expected {after_first}) -- cross-call amortization is broken"
+    )
 
 
 @pytest.mark.slow
@@ -352,7 +360,7 @@ def test_repeated_apply_is_deterministic_and_bundle_immutable(bare_model, table)
     assert [id(c) for c in bundle.caches] == cache_ids, "apply mutated the bundle caches"
 
 
-_ELEMENTS_BUDGET = 5_000        # must match _regressor()'s memory_policy
+_ELEMENTS_BUDGET = 5_000  # must match _regressor()'s memory_policy
 
 
 def _assert_cached_path_reachable(n_train: int, n_test: int, n_features: int):
@@ -375,7 +383,8 @@ def _assert_cached_path_reachable(n_train: int, n_test: int, n_features: int):
         f"n_test={n_test} does not exceed chunk_size={chunk} for n_train={n_train}, "
         f"n_features={n_features}, elements_budget={_ELEMENTS_BUDGET}: predict would "
         f"take the UNCACHED loop and these tests would silently skip. Raise n_test or "
-        f"n_train (larger n_train lowers chunk_size).")
+        f"n_train (larger n_train lowers chunk_size)."
+    )
 
 
 def _dataset(seed: int, n_train: int = 600, n_test: int = 300, n_features: int = 8):
@@ -422,18 +431,15 @@ def test_serving_lifecycle_matches_uncached_predictions(monkeypatch):
     y_tr_c = y_tr_c.copy()
     y_tr_c[5], y_tr_c[17] = y_tr_c[17], y_tr_c[5]
     requests.append((x_tr_c, y_tr_c, x_te_c))
-    assert _legacy_summary_fingerprint(torch.from_numpy(y_tr_c).unsqueeze(0)) == \
-        _legacy_summary_fingerprint(torch.from_numpy(requests[0][1]).unsqueeze(0)), \
-        "dataset C no longer collides with A -- the mis-serve case is not covered"
+    assert _legacy_summary_fingerprint(torch.from_numpy(y_tr_c).unsqueeze(0)) == _legacy_summary_fingerprint(
+        torch.from_numpy(requests[0][1]).unsqueeze(0)
+    ), "dataset C no longer collides with A -- the mis-serve case is not covered"
 
     # Ground truth: every request answered by a FRESH predictor with reuse off,
     # so no bundle can carry between them.
-    expected = [
-        _regressor(reuse_context_cache=False).fit(xt, yt).predict(xq)
-        for xt, yt, xq in requests
-    ]
+    expected = [_regressor(reuse_context_cache=False).fit(xt, yt).predict(xq) for xt, yt, xq in requests]
 
-    reg = _regressor()                                  # one long-lived estimator
+    reg = _regressor()  # one long-lived estimator
     # A, B, C, then A again: fit -> predict -> fit -> predict with the context changing
     # each time, and the trailing revisit making a stale single-slot entry observable.
     # The exhaustive alternation is covered instantly by the hermetic lifecycle test;
@@ -448,7 +454,8 @@ def test_serving_lifecycle_matches_uncached_predictions(monkeypatch):
         maxdiff = np.abs(np.asarray(got) - np.asarray(expected[i])).max()
         assert maxdiff < 5e-3, (
             f"step {step} (request {i}): cached serving diverged from a cold predictor "
-            f"by {maxdiff:.2e} -- a stale context bundle reached a caller")
+            f"by {maxdiff:.2e} -- a stale context bundle reached a caller"
+        )
 
 
 @pytest.mark.slow
@@ -468,14 +475,15 @@ def test_refit_with_a_new_context_rebuilds_it(monkeypatch):
     after_a = calls["n"]
     assert after_a >= 1
 
-    reg.predict(x_te_a)                                 # same context -> reuse
+    reg.predict(x_te_a)  # same context -> reuse
     assert calls["n"] == after_a, "same context rebuilt"
 
-    reg.fit(x_b, y_b)                                   # new context -> rebuild
+    reg.fit(x_b, y_b)  # new context -> rebuild
     reg.predict(x_te_b)
     assert calls["n"] == 2 * after_a, (
         f"refit on a new context did not rebuild: {calls['n']} builds "
-        f"(expected {2 * after_a}) -- the new caller would be served the old context")
+        f"(expected {2 * after_a}) -- the new caller would be served the old context"
+    )
 
 
 @pytest.mark.slow
@@ -494,11 +502,12 @@ def test_memory_policy_change_between_predicts_rebuilds(monkeypatch):
     assert reg.memory_report_.get("cache_dtype") == "bf16"
 
     reg.memory_policy = {"elements_budget": 5_000, "cache_dtype": "int8"}
-    reg.predict(x_te)                                   # same context, new rung
+    reg.predict(x_te)  # same context, new rung
     assert reg.memory_report_.get("cache_dtype") == "int8", "policy change was ignored"
     assert calls["n"] == 2 * after_first, (
         f"bundle survived a cache_dtype change: {calls['n']} builds (expected "
-        f"{2 * after_first}) -- an int8 request would be served bf16 K/V")
+        f"{2 * after_first}) -- an int8 request would be served bf16 K/V"
+    )
 
 
 @pytest.mark.slow
@@ -519,10 +528,9 @@ def test_typed_policy_disables_reuse_on_every_predict(monkeypatch):
     for i in range(2, 4):
         reg.predict(x_te)
         assert calls["n"] == i * per_predict, (
-            f"predict {i} reused a bundle with reuse disabled: {calls['n']} builds "
-            f"(expected {i * per_predict})")
-    assert not getattr(reg._get_predictor(), "_context_cache", {}), (
-        "reuse_context_cache=False populated the cache")
+            f"predict {i} reused a bundle with reuse disabled: {calls['n']} builds (expected {i * per_predict})"
+        )
+    assert not getattr(reg._get_predictor(), "_context_cache", {}), "reuse_context_cache=False populated the cache"
 
     # Re-enable through the public policy: the first call builds, then the next hits.
     reg.memory_policy = {"elements_budget": 5_000, "reuse_context_cache": True}
@@ -547,6 +555,7 @@ def test_typed_policy_disables_reuse_on_every_predict(monkeypatch):
 # means caller B's rows scored against caller A's context, returned as if correct.
 # --------------------------------------------------------------------------------
 
+
 class _StubBundle:
     """Stands in for a ContextCache, remembering what it was built from."""
 
@@ -564,10 +573,8 @@ class _StubModel:
     def __init__(self):
         self.builds: list[_StubBundle] = []
 
-    def build_context_cache(self, x_train, y_train, *, cache_dtype,
-                            offload_kv_cache, fit_row_chunk):
-        bundle = _StubBundle(x_train, y_train,
-                             (cache_dtype, offload_kv_cache, fit_row_chunk))
+    def build_context_cache(self, x_train, y_train, *, cache_dtype, offload_kv_cache, fit_row_chunk):
+        bundle = _StubBundle(x_train, y_train, (cache_dtype, offload_kv_cache, fit_row_chunk))
         self.builds.append(bundle)
         return bundle
 
@@ -585,19 +592,32 @@ def _predictor(seed: int = 0):
     from synthefy_nori.inference.predictor import NoriPredictor
 
     class _NoCheckpointPredictor(NoriPredictor):
-        def __init__(self, seed):                       # noqa: D107 - see above
+        def __init__(self, seed):  # noqa: D107 - see above
             self.seed = seed
 
     pred = _NoCheckpointPredictor(seed)
 
-    def get(model, x, y, *, id_pipe=0, cache_dtype="bf16",
-            offload_kv_cache=False, fit_row_chunk=None,
-            reuse_context_cache=True):
+    def get(
+        model,
+        x,
+        y,
+        *,
+        id_pipe=0,
+        cache_dtype="bf16",
+        offload_kv_cache=False,
+        fit_row_chunk=None,
+        reuse_context_cache=True,
+    ):
         return pred._get_or_build_context(
-            model, id_pipe, x_train_t=x, y_train_t=y,
-            cache_dtype=cache_dtype, offload_kv_cache=offload_kv_cache,
+            model,
+            id_pipe,
+            x_train_t=x,
+            y_train_t=y,
+            cache_dtype=cache_dtype,
+            offload_kv_cache=offload_kv_cache,
             fit_row_chunk=fit_row_chunk,
-            reuse_context_cache=reuse_context_cache)
+            reuse_context_cache=reuse_context_cache,
+        )
 
     return pred, get
 
@@ -624,21 +644,31 @@ def _legacy_summary_fingerprint(t: torch.Tensor) -> tuple:
     nan_ct = int(torch.isnan(t).sum().item()) if t.numel() else 0
     tf = torch.nan_to_num(t.detach().to(torch.float64), nan=0.0, posinf=0.0, neginf=0.0)
     flat = tf.flatten()
-    return (tuple(t.shape), nan_ct,
-            float(tf.sum().item()), float((tf * tf).sum().item()),
-            float(flat[0].item()), float(flat[-1].item()))
+    return (
+        tuple(t.shape),
+        nan_ct,
+        float(tf.sum().item()),
+        float((tf * tf).sum().item()),
+        float(flat[0].item()),
+        float(flat[-1].item()),
+    )
 
 
 def _built_from(bundle, x, y) -> bool:
     """Was `bundle` built from exactly this context? Bitwise, so NaN matches NaN."""
+
     def same(a, b):
-        return (a.shape == b.shape and a.dtype == b.dtype
-                and torch.equal(a.contiguous().view(torch.uint8),
-                                b.contiguous().view(torch.uint8)))
+        return (
+            a.shape == b.shape
+            and a.dtype == b.dtype
+            and torch.equal(a.contiguous().view(torch.uint8), b.contiguous().view(torch.uint8))
+        )
+
     return same(bundle.x, x) and same(bundle.y, y)
 
 
 # --- same context reuses the cache -------------------------------------------------
+
 
 def test_same_context_reuses_the_cache():
     # The amortization itself: an equal-but-distinct context must HIT. Distinct
@@ -705,6 +735,7 @@ def test_separate_pipes_keep_separate_bundles():
 
 # --- deliberately colliding contexts ----------------------------------------------
 
+
 def test_colliding_y_does_not_share_a_bundle():
     # THE collision case. Swapping two INTERIOR target values leaves shape, NaN count,
     # sum, sum-of-squares and both endpoints untouched -- an exact collision under the
@@ -718,7 +749,8 @@ def test_colliding_y_does_not_share_a_bundle():
 
     # The collision is real, not stipulated: prove it against the old digest.
     assert _legacy_summary_fingerprint(y_a) == _legacy_summary_fingerprint(y_b), (
-        "test is not exercising a collision -- the summary stats differ")
+        "test is not exercising a collision -- the summary stats differ"
+    )
     assert not torch.equal(y_a, y_b), "the two contexts are not actually different"
 
     first = get(model, x, y_a)
@@ -738,12 +770,13 @@ def test_colliding_x_does_not_share_a_bundle():
     model = _StubModel()
     x_a, y = _ctx()
     perm = torch.arange(x_a.shape[1])
-    interior = perm[1:-1].flip(0).clone()          # reverse rows 1..N-2, pin 0 and N-1
+    interior = perm[1:-1].flip(0).clone()  # reverse rows 1..N-2, pin 0 and N-1
     perm[1:-1] = interior
     x_b = x_a[:, perm].contiguous()
 
     assert _legacy_summary_fingerprint(x_a) == _legacy_summary_fingerprint(x_b), (
-        "test is not exercising a collision -- the summary stats differ")
+        "test is not exercising a collision -- the summary stats differ"
+    )
     assert not torch.equal(x_a, x_b)
 
     first = get(model, x_a, y)
@@ -769,7 +802,8 @@ def test_colliding_nan_layout_does_not_share_a_bundle():
     y_b[0, 9] = float("nan")
 
     assert _legacy_summary_fingerprint(y_a) == _legacy_summary_fingerprint(y_b), (
-        "test is not exercising a collision -- the summary stats differ")
+        "test is not exercising a collision -- the summary stats differ"
+    )
 
     first = get(model, x, y_a)
     second = get(model, x.clone(), y_b)
@@ -779,6 +813,7 @@ def test_colliding_nan_layout_does_not_share_a_bundle():
 
 
 # --- changed context or memory policy rebuilds it ---------------------------------
+
 
 def _perturb(t, idx):
     out = t.clone()
@@ -792,15 +827,17 @@ def _with_nan(t, idx):
     return out
 
 
-@pytest.mark.parametrize("mutate", [
-    pytest.param(lambda x, y: (_perturb(x, (0, 9, 2)), y), id="one-x-value"),
-    pytest.param(lambda x, y: (x, _perturb(y, (0, 9))), id="one-y-value"),
-    pytest.param(lambda x, y: (x[:, :-1].contiguous(), y[:, :-1].contiguous()),
-                 id="fewer-context-rows"),
-    pytest.param(lambda x, y: (x[:, :, :-1].contiguous(), y), id="fewer-features"),
-    pytest.param(lambda x, y: (x.double(), y), id="different-dtype"),
-    pytest.param(lambda x, y: (_with_nan(x, (0, 9, 2)), y), id="value-becomes-nan"),
-])
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda x, y: (_perturb(x, (0, 9, 2)), y), id="one-x-value"),
+        pytest.param(lambda x, y: (x, _perturb(y, (0, 9))), id="one-y-value"),
+        pytest.param(lambda x, y: (x[:, :-1].contiguous(), y[:, :-1].contiguous()), id="fewer-context-rows"),
+        pytest.param(lambda x, y: (x[:, :, :-1].contiguous(), y), id="fewer-features"),
+        pytest.param(lambda x, y: (x.double(), y), id="different-dtype"),
+        pytest.param(lambda x, y: (_with_nan(x, (0, 9, 2)), y), id="value-becomes-nan"),
+    ],
+)
 def test_changed_context_rebuilds(mutate):
     # Every way the context can differ must MISS -- including a single value moving by
     # one float step, a shape change, and a value turning into NaN.
@@ -817,11 +854,14 @@ def test_changed_context_rebuilds(mutate):
     assert _built_from(second, x2, y2)
 
 
-@pytest.mark.parametrize("params", [
-    pytest.param({"cache_dtype": "int8"}, id="cache_dtype"),
-    pytest.param({"offload_kv_cache": True}, id="offload_to_host"),
-    pytest.param({"fit_row_chunk": 128}, id="context_row_chunk"),
-])
+@pytest.mark.parametrize(
+    "params",
+    [
+        pytest.param({"cache_dtype": "int8"}, id="cache_dtype"),
+        pytest.param({"offload_kv_cache": True}, id="offload_to_host"),
+        pytest.param({"fit_row_chunk": 128}, id="context_row_chunk"),
+    ],
+)
 def test_changed_memory_policy_rebuilds(params):
     # cache_dtype / offload_to_host / context_row_chunk all change WHAT the bundle
     # contains (quantized vs bf16, host vs device, chunked build). A server re-reads
@@ -860,6 +900,7 @@ def test_changed_seed_rebuilds():
 
 # --- typed reuse_context_cache=False always rebuilds -------------------------------
 
+
 def test_reuse_disabled_rebuilds_every_call():
     # The typed setting is absolute: no hits and nothing retained, so turning reuse
     # back on later cannot resurrect a bundle from the disabled window.
@@ -867,15 +908,11 @@ def test_reuse_disabled_rebuilds_every_call():
     model = _StubModel()
     x, y = _ctx()
 
-    bundles = [
-        get(model, x.clone(), y.clone(), reuse_context_cache=False)
-        for _ in range(4)
-    ]
+    bundles = [get(model, x.clone(), y.clone(), reuse_context_cache=False) for _ in range(4)]
 
     assert len(model.builds) == 4, "reuse_context_cache=False did not rebuild"
     assert len({id(b) for b in bundles}) == 4, "disabled reuse returned a cached bundle"
-    assert not getattr(fake, "_context_cache", {}), (
-        "disabled reuse retained context-derived state")
+    assert not getattr(fake, "_context_cache", {}), "disabled reuse retained context-derived state"
 
 
 def test_policy_change_clears_a_warm_bundle_before_rebuilding():
@@ -902,6 +939,7 @@ def test_policy_change_clears_a_warm_bundle_before_rebuilding():
 
 # --- serving's fit -> predict -> fit -> predict lifecycle --------------------------
 
+
 def test_serving_fit_predict_lifecycle_never_serves_a_stale_bundle():
     # The shape of a real server: ONE predictor, re-fit per request, contexts
     # alternating between callers, and each fit followed by several predicts. Asserts
@@ -919,19 +957,21 @@ def test_serving_fit_predict_lifecycle_never_serves_a_stale_bundle():
     ctx_c = (x_c, y_c)
     assert _legacy_summary_fingerprint(ctx_c[1]) == _legacy_summary_fingerprint(ctx_a[1])
 
-    for _ in range(3):                                  # several request rounds
+    for _ in range(3):  # several request rounds
         for x, y in (ctx_a, ctx_b, ctx_c):
-            for _ in range(2):                          # fit once, predict twice
+            for _ in range(2):  # fit once, predict twice
                 bundle = get(model, x.clone(), y.clone())
                 assert _built_from(bundle, x, y), (
                     "served a bundle built from a DIFFERENT context -- one caller's "
-                    "rows would be scored against another's")
+                    "rows would be scored against another's"
+                )
 
     # 3 rounds x 3 contexts = 9 fits, each followed by 2 predicts. The context changes
     # between fits, so every fit rebuilds; the second predict of each pair reuses.
     assert len(model.builds) == 9, (
         f"expected one build per fit (9), got {len(model.builds)} -- either the second "
-        f"predict of a pair rebuilt, or a fit reused a stale bundle")
+        f"predict of a pair rebuilt, or a fit reused a stale bundle"
+    )
 
 
 def test_refitting_the_same_context_reuses_the_bundle():
@@ -943,10 +983,9 @@ def test_refitting_the_same_context_reuses_the_bundle():
     x, y = _ctx(seed=3, nans=True)
 
     first = get(model, x, y)
-    for _ in range(4):                                  # re-fit + predict, same table
+    for _ in range(4):  # re-fit + predict, same table
         assert get(model, x.clone(), y.clone()) is first
-    assert len(model.builds) == 1, (
-        f"re-fitting an identical context rebuilt it ({len(model.builds)} builds)")
+    assert len(model.builds) == 1, f"re-fitting an identical context rebuilt it ({len(model.builds)} builds)"
 
 
 def test_failed_build_is_not_cached():
@@ -987,11 +1026,11 @@ def test_failed_build_is_not_cached():
 # budget is never retained, and smaller ones are evicted oldest-first to stay under it.
 # ---------------------------------------------------------------------------------
 
+
 class _FakePredictor:
     """Just enough of NoriPredictor to exercise the eviction arithmetic on CPU."""
 
-    _bundle_device_bytes = staticmethod(
-        lambda bundle: int(bundle["bytes"]))          # stand in for the tensor walk
+    _bundle_device_bytes = staticmethod(lambda bundle: int(bundle["bytes"]))  # stand in for the tensor walk
 
     def __init__(self, budget_bytes):
         self._budget = budget_bytes
@@ -1001,6 +1040,7 @@ class _FakePredictor:
 
     # the real implementations, bound to this stub
     from synthefy_nori.inference.predictor import NoriPredictor as _NP
+
     _evict_context_cache_for = _NP._evict_context_cache_for
 
 
@@ -1023,7 +1063,7 @@ def test_context_cache_refuses_a_bundle_larger_than_the_budget():
 
 def test_context_cache_evicts_oldest_until_the_new_bundle_fits():
     p = _FakePredictor(budget_bytes=10 * 1024**3)
-    cache = {f"pipe{i}": _entry(3 * 1024**3) for i in range(3)}   # 9 GiB held
+    cache = {f"pipe{i}": _entry(3 * 1024**3) for i in range(3)}  # 9 GiB held
     keep = p._evict_context_cache_for(cache, {"bytes": 3 * 1024**3})
     assert keep is True
     # 9 + 3 > 10, so exactly one (the oldest) is dropped to make room.
@@ -1046,7 +1086,7 @@ def test_context_cache_is_unbounded_when_the_device_has_no_accelerator_memory():
     non-CUDA device and read 0 as "retain nothing". That silently disabled the context
     cache for every CPU user and turned one build into one build *per query*.
     """
-    p = _FakePredictor(budget_bytes=None)               # None = "no device limit applies"
+    p = _FakePredictor(budget_bytes=None)  # None = "no device limit applies"
     cache = {"pipe0": _entry(1)}
     assert p._evict_context_cache_for(cache, {"bytes": 10**12}) is True
     assert "pipe0" in cache, "nothing is evicted when there is no device limit"

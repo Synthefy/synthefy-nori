@@ -12,7 +12,7 @@ def test_model_variant_registry_resolution():
     # friendly variant names -> HF repo ids
     assert hf.resolve_model_repo("nori-30m") == "Synthefy/Nori-30M"
     assert hf.resolve_model_repo("nori-100m") == "Synthefy/Nori-100M"
-    assert hf.resolve_model_repo("nori-6m") == hf.DEFAULT_MODEL_REPO_ID    # ~6M base
+    assert hf.resolve_model_repo("nori-6m") == hf.DEFAULT_MODEL_REPO_ID  # ~6M base
     # A size is required -- None and a bare "nori" both raise (there is no default).
     for missing in (None, "nori"):
         with pytest.raises(ValueError, match=r"model is required"):

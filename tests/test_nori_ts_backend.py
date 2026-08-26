@@ -29,9 +29,7 @@ class _RecordingClient:
                 "kwargs": kwargs,
             }
         )
-        return np.vstack(
-            [np.full(len(X_test), level * 10.0) for level in kwargs["quantiles"]]
-        )
+        return np.vstack([np.full(len(X_test), level * 10.0) for level in kwargs["quantiles"]])
 
 
 def _multi_series_frame():
@@ -39,11 +37,7 @@ def _multi_series_frame():
     for item in (0, 1):
         timestamps = pd.date_range("2021-01-01", periods=48, freq="h")
         target = item + np.sin(2 * np.pi * np.arange(48) / 24)
-        frames.append(
-            pd.DataFrame(
-                {"item_id": item, "timestamp": timestamps, "target": target}
-            )
-        )
+        frames.append(pd.DataFrame({"item_id": item, "timestamp": timestamps, "target": target}))
     return TimeSeriesDataFrame.from_data_frame(pd.concat(frames, ignore_index=True))
 
 
@@ -106,16 +100,12 @@ def test_auto_mode_is_rejected():
         ),
     ],
 )
-def test_forecaster_constructs_the_client_with_exact_configuration(
-    monkeypatch, kwargs, expected
-):
+def test_forecaster_constructs_the_client_with_exact_configuration(monkeypatch, kwargs, expected):
     class RecordingConstructor:
         def __init__(self, **received):
             self.received = received
 
-    monkeypatch.setattr(
-        "synthefy.nori_ts.core.SynthefyNoriClient", RecordingConstructor
-    )
+    monkeypatch.setattr("synthefy.nori_ts.core.SynthefyNoriClient", RecordingConstructor)
 
     forecaster = NoriTSForecaster(**kwargs)
 

@@ -94,20 +94,15 @@ def _validate_record(archive: ZipFile, members: frozenset[str], record_path: str
         payload = archive.read(path)
         expected_digest = _record_digest(payload)
         if digest != expected_digest:
-            raise BoundaryError(
-                f"{record_path}: hash mismatch for {path!r}: {digest!r} != {expected_digest!r}"
-            )
+            raise BoundaryError(f"{record_path}: hash mismatch for {path!r}: {digest!r} != {expected_digest!r}")
         if size != str(len(payload)):
-            raise BoundaryError(
-                f"{record_path}: size mismatch for {path!r}: {size!r} != {len(payload)!r}"
-            )
+            raise BoundaryError(f"{record_path}: size mismatch for {path!r}: {size!r} != {len(payload)!r}")
 
     missing = members.difference(recorded)
     extra = set(recorded).difference(members)
     if missing or extra:
         raise BoundaryError(
-            f"{record_path}: RECORD membership differs from the wheel; "
-            f"missing={sorted(missing)}, extra={sorted(extra)}"
+            f"{record_path}: RECORD membership differs from the wheel; missing={sorted(missing)}, extra={sorted(extra)}"
         )
 
 
@@ -124,14 +119,10 @@ def inspect_wheel(path: Path, *, distribution: str, namespace: str) -> WheelInfo
             raise BoundaryError(f"{path.name}: duplicate archive paths are not allowed")
 
         dist_info_dirs = {
-            name.split("/", 1)[0]
-            for name in members
-            if "/" in name and name.split("/", 1)[0].endswith(".dist-info")
+            name.split("/", 1)[0] for name in members if "/" in name and name.split("/", 1)[0].endswith(".dist-info")
         }
         if len(dist_info_dirs) != 1:
-            raise BoundaryError(
-                f"{path.name}: expected one .dist-info directory, found {sorted(dist_info_dirs)}"
-            )
+            raise BoundaryError(f"{path.name}: expected one .dist-info directory, found {sorted(dist_info_dirs)}")
         dist_info = next(iter(dist_info_dirs))
         record_path = f"{dist_info}/RECORD"
         metadata_path = f"{dist_info}/METADATA"
@@ -144,28 +135,22 @@ def inspect_wheel(path: Path, *, distribution: str, namespace: str) -> WheelInfo
         expected_distribution = _canonicalize_name(distribution)
         if actual_distribution != expected_distribution:
             raise BoundaryError(
-                f"{path.name}: METADATA Name is {actual_distribution!r}, "
-                f"expected {expected_distribution!r}"
+                f"{path.name}: METADATA Name is {actual_distribution!r}, expected {expected_distribution!r}"
             )
         version = str(metadata["Version"] or "")
         if not version:
             raise BoundaryError(f"{path.name}: METADATA Version is required")
 
-        runtime_files = frozenset(
-            name for name in members if not name.startswith(f"{dist_info}/")
-        )
+        runtime_files = frozenset(name for name in members if not name.startswith(f"{dist_info}/"))
         member_fingerprints = tuple(
             (name, hashlib.sha256(payload).hexdigest(), len(payload))
             for name in sorted(members)
             if name != record_path and (payload := archive.read(name))
         )
-        wrong_owner = sorted(
-            name for name in runtime_files if not name.startswith(f"{namespace}/")
-        )
+        wrong_owner = sorted(name for name in runtime_files if not name.startswith(f"{namespace}/"))
         if wrong_owner:
             raise BoundaryError(
-                f"{path.name}: {distribution} may own only {namespace}/ outside .dist-info; "
-                f"found {wrong_owner}"
+                f"{path.name}: {distribution} may own only {namespace}/ outside .dist-info; found {wrong_owner}"
             )
         if f"{namespace}/__init__.py" not in runtime_files:
             raise BoundaryError(f"{path.name}: missing {namespace}/__init__.py")
@@ -189,9 +174,7 @@ def _validate_extra_requirements(
     available_extras = {_canonicalize_name(extra) for extra in wheel.extras}
     missing_extras = sorted(set(expected).difference(available_extras))
     if missing_extras:
-        raise BoundaryError(
-            f"{wheel.distribution} does not provide expected extras: {missing_extras}"
-        )
+        raise BoundaryError(f"{wheel.distribution} does not provide expected extras: {missing_extras}")
 
     for extra, expected_requirements in expected.items():
         actual_requirements = []
@@ -205,17 +188,13 @@ def _validate_extra_requirements(
             )
             if standalone is None:
                 raise BoundaryError(
-                    f"{wheel.distribution}[{extra}] dependency must use a standalone "
-                    f"extra marker, found {value!r}"
+                    f"{wheel.distribution}[{extra}] dependency must use a standalone extra marker, found {value!r}"
                 )
             actual_requirements.append(_canonical_requirement(value))
         actual = tuple(sorted(actual_requirements))
         wanted = tuple(sorted(expected_requirements))
         if actual != wanted:
-            raise BoundaryError(
-                f"{wheel.distribution}[{extra}] requirements changed: "
-                f"{list(actual)} != {list(wanted)}"
-            )
+            raise BoundaryError(f"{wheel.distribution}[{extra}] requirements changed: {list(actual)} != {list(wanted)}")
 
 
 def _validate_dependency_direction(client: WheelInfo, nori: WheelInfo) -> None:
@@ -223,9 +202,7 @@ def _validate_dependency_direction(client: WheelInfo, nori: WheelInfo) -> None:
     if "synthefy-nori" in client_requirement_names:
         raise BoundaryError("synthefy must not depend on synthefy-nori in any dependency group")
     if client.extras != {"aws", "forecasting", "text"}:
-        raise BoundaryError(
-            f"synthefy extras changed: {sorted(client.extras)} != ['aws', 'forecasting', 'text']"
-        )
+        raise BoundaryError(f"synthefy extras changed: {sorted(client.extras)} != ['aws', 'forecasting', 'text']")
     _validate_extra_requirements(
         client,
         {
@@ -249,20 +226,13 @@ def _validate_dependency_direction(client: WheelInfo, nori: WheelInfo) -> None:
         },
     )
 
-    nori_edges = [
-        value for value in nori.requirements if _requirement_name(value) == "synthefy"
-    ]
+    nori_edges = [value for value in nori.requirements if _requirement_name(value) == "synthefy"]
     base_edges = [value for value in nori_edges if ";" not in value]
     if len(base_edges) != 1:
-        raise BoundaryError(
-            f"synthefy-nori must have exactly one unconditional synthefy edge, found {base_edges}"
-        )
+        raise BoundaryError(f"synthefy-nori must have exactly one unconditional synthefy edge, found {base_edges}")
     normalized_edge = re.sub(r"\s+", "", base_edges[0]).lower().replace("_", "-")
     if normalized_edge not in {"synthefy<8,>=7", "synthefy>=7,<8"}:
-        raise BoundaryError(
-            "synthefy-nori's base dependency must be synthefy>=7,<8; "
-            f"found {base_edges[0]!r}"
-        )
+        raise BoundaryError(f"synthefy-nori's base dependency must be synthefy>=7,<8; found {base_edges[0]!r}")
 
 
 def _validate_rebuild(direct: WheelInfo, rebuilt: WheelInfo) -> None:
@@ -277,9 +247,7 @@ def _validate_rebuild(direct: WheelInfo, rebuilt: WheelInfo) -> None:
     )
     changed = [name for name in comparable if getattr(direct, name) != getattr(rebuilt, name)]
     if changed:
-        raise BoundaryError(
-            f"{direct.distribution}: direct wheel and sdist-rebuilt wheel differ in {changed}"
-        )
+        raise BoundaryError(f"{direct.distribution}: direct wheel and sdist-rebuilt wheel differ in {changed}")
 
 
 def validate_artifacts(
@@ -291,15 +259,9 @@ def validate_artifacts(
 ) -> tuple[WheelInfo, WheelInfo]:
     """Validate the direct and sdist-rebuilt artifact pair for both distributions."""
     client = inspect_wheel(client_direct, distribution="synthefy", namespace="synthefy")
-    client_from_sdist = inspect_wheel(
-        client_rebuilt, distribution="synthefy", namespace="synthefy"
-    )
-    nori = inspect_wheel(
-        nori_direct, distribution="synthefy-nori", namespace="synthefy_nori"
-    )
-    nori_from_sdist = inspect_wheel(
-        nori_rebuilt, distribution="synthefy-nori", namespace="synthefy_nori"
-    )
+    client_from_sdist = inspect_wheel(client_rebuilt, distribution="synthefy", namespace="synthefy")
+    nori = inspect_wheel(nori_direct, distribution="synthefy-nori", namespace="synthefy_nori")
+    nori_from_sdist = inspect_wheel(nori_rebuilt, distribution="synthefy-nori", namespace="synthefy_nori")
 
     _validate_rebuild(client, client_from_sdist)
     _validate_rebuild(nori, nori_from_sdist)
