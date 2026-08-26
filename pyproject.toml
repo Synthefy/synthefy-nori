@@ -41,6 +41,7 @@ dependencies = [
     "numba>=0.60",
     "numpy>=2.0",
     "pandas>=2.0",
+    "pyarrow>=14",
     "pydantic>=2.0",
     "scikit-learn>=1.4",
     "scipy>=1.13",
@@ -65,6 +66,9 @@ timeseries = ["synthefy[forecasting]>=7,<8"]
 train = ["wandb>=0.15.0", "xgboost"]
 eval = ["matplotlib", "openml"]
 interpretability = ["shapiq>=1.0", "matplotlib"]
+# Explainability: Nori feature importance (permutation / SHAP) -> distill to a glass-box EBM.
+# The SHAP path additionally needs the `interpretability` extra (shapiq).
+explainability = ["interpret-core>=0.6", "joblib", "matplotlib", "scipy>=1.13"]
 # Zero-shot text features: embed free-text columns and append them as numeric
 # columns (NoriRegressor.fit(..., text_columns=...)). sentence-transformers is
 # imported lazily, so numeric-only use never needs it.
