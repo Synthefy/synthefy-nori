@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -9,6 +9,9 @@ from synthefy.nori_data_models import (
     MAX_LARGE_CONTEXT_THRESHOLD,
     MemoryPolicyInput,
     MemoryReport,
+    MultiTargetMemoryReport,
+    MultiTargetPredictionPolicy,
+    MultiTargetPredictionStrategy,
 )
 
 
@@ -61,7 +64,7 @@ class NoriPredictRequest(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     X_train: List[List[Optional[float]]]
-    y_train: List[float]
+    y_train: Union[List[float], List[List[float]]]
     X_test: List[List[Optional[float]]]
     task: str = "regression"
     memory_policy: Optional[MemoryPolicyInput] = None
@@ -70,6 +73,8 @@ class NoriPredictRequest(BaseModel):
     large_context_policy: Optional[LargeContextPolicy] = None
     large_context_threshold: Optional[int] = Field(default=None, strict=True, ge=1, le=MAX_LARGE_CONTEXT_THRESHOLD)
     large_context_seed: Optional[int] = Field(default=None, strict=True, ge=0, le=MAX_LARGE_CONTEXT_SEED)
+    multi_target_prediction_strategy: Optional[MultiTargetPredictionStrategy] = None
+    multi_target_prediction_policy: Optional[MultiTargetPredictionPolicy] = None
 
     @model_validator(mode="after")
     def _large_context_parameters_need_a_policy(self):
@@ -87,12 +92,19 @@ class NoriPredictRequest(BaseModel):
         defaults. ``SynthefyNoriClient`` and serving contract tests both use this method so the
         wire representation has one implementation.
         """
-        payload = self.model_dump(exclude={"memory_policy"}, exclude_none=True)
+        payload = self.model_dump(
+            exclude={"memory_policy", "multi_target_prediction_policy"},
+            exclude_none=True,
+        )
         if self.memory_policy is not None:
             payload["memory_policy"] = (
                 self.memory_policy
                 if isinstance(self.memory_policy, str)
                 else self.memory_policy.model_dump(exclude_unset=True)
+            )
+        if self.multi_target_prediction_policy is not None:
+            payload["multi_target_prediction_policy"] = self.multi_target_prediction_policy.model_dump(
+                exclude_unset=True
             )
         return payload
 
@@ -117,8 +129,9 @@ class NoriPredictResponse(BaseModel):
         fail closed instead of returning valid-looking predictions from the wrong
         model specification.
     memory_report : dict, optional
-        Present only when the request set ``memory_policy``: what the server actually did
-        about it. See
+        Present only when a scalar-target request set ``memory_policy``: what the server
+        actually did about it. Matrix-target requests use
+        ``multi_target_memory_reports``. See
         :attr:`synthefy.nori_client.SynthefyNoriClient.last_memory_report`.
     output_type : str or None, optional
         The output type the server actually honored. A deployment that predates
@@ -143,10 +156,14 @@ class NoriPredictResponse(BaseModel):
     """
 
     task: str
-    predictions: List[Optional[float]]
+    predictions: Union[List[Optional[float]], List[List[Optional[float]]]]
     model: Optional[str] = None
     memory_report: Optional[MemoryReport] = None
+    multi_target_memory_reports: Optional[List[MultiTargetMemoryReport]] = None
     output_type: Optional[str] = None
     quantiles: Optional[List[List[Optional[float]]]] = None
     taus: Optional[List[float]] = None
     large_context_report: Optional[LargeContextReport] = None
+    samples: Optional[List[List[List[Optional[float]]]]] = None
+    multi_target_prediction_strategy: Optional[MultiTargetPredictionStrategy] = None
+    target_orders: Optional[List[List[int]]] = None

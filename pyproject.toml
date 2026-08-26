@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synthefy-nori"
-version = "0.19.0"
+version = "0.20.0"
 description = "Nori foundation model training, inference, and evaluation"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -43,6 +43,8 @@ dependencies = [
     "pandas>=2.0",
     "pyarrow>=14",
     "pydantic>=2.0",
+    "pyvinecopulib>=0.7.1",
+    "pyyaml>=6.0",
     "scikit-learn>=1.4",
     "scipy>=1.13",
     # torch.compile/Inductor imports setuptools during backend discovery.

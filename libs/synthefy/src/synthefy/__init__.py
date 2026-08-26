@@ -1,4 +1,5 @@
 from synthefy.nori_data_models import (
+    DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY,
     DEFAULT_LARGE_CONTEXT_SEED,
     DEFAULT_LARGE_CONTEXT_THRESHOLD,
     LargeContextPolicy,
@@ -7,6 +8,8 @@ from synthefy.nori_data_models import (
     MEMORY_RUNGS,
     MemoryPolicy,
     MemoryReport,
+    MultiTargetPredictionPolicy,
+    MultiTargetPredictionStrategy,
 )
 from synthefy.data_models import (
     NoriPredictRequest,
@@ -14,17 +17,20 @@ from synthefy.data_models import (
 )
 from synthefy.nori_client import SynthefyNoriClient
 
-__version__ = "7.0.4"
+__version__ = "7.1.0"
 
 __all__ = [
     "DEFAULT_LARGE_CONTEXT_SEED",
     "DEFAULT_LARGE_CONTEXT_THRESHOLD",
+    "DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY",
     "LargeContextPolicy",
     "LargeContextReport",
     "MEMORY_PRESETS",
     "MEMORY_RUNGS",
     "MemoryPolicy",
     "MemoryReport",
+    "MultiTargetPredictionPolicy",
+    "MultiTargetPredictionStrategy",
     "SynthefyNoriClient",
     "NoriPredictRequest",
     "NoriPredictResponse",

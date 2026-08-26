@@ -5,7 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [7.0.4] - Unreleased
+## [7.1.0] - Unreleased
+
+### Added
+
+- Added one-call multi-target regression to `SynthefyNoriClient.predict` in
+  local, Baseten remote, and SageMaker modes. A matrix-valued `y_train` returns
+  joint means or bounded joint samples, defaults to the copula strategy, and
+  accepts the same grouped `MultiTargetPredictionPolicy` as `NoriRegressor`.
+  Hosted responses echo the honored strategy so older deployments fail closed.
+
+## [7.0.4] - 2026-08-25
 
 ### Added
 

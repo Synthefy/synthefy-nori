@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synthefy"
-version = "7.0.4"
+version = "7.1.0"
 description = "Lightweight client and workflow SDK for Synthefy Nori regression and forecasting"
 readme = "README.md"
 license = "Apache-2.0"

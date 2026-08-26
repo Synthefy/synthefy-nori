@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import copy
 import warnings
 from typing import Literal
 
 import numpy as np
 import pandas as pd
+import pyvinecopulib
 import torch
 from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.model_selection import KFold
 from synthefy.featurize import CATEGORICAL_AUTO, DataFramePreprocessor
 
 # Re-exported: `synthefy_nori.config_path` and `from synthefy_nori.api import config_path`
@@ -25,6 +28,14 @@ from synthefy_nori.inference.large_context import (
 )
 from synthefy_nori.inference.memory_policy import MemoryPolicy
 from synthefy_nori.model.quantile_dist import quantile_dist_mean_numpy
+from synthefy_nori.multi_target import (
+    DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY,
+    MULTI_TARGET_PREDICTION_STRATEGIES,
+    MultiTargetPredictionPolicy,
+    build_target_orders,
+    cdf_from_quantile_bank,
+    quantiles_from_levels,
+)
 from synthefy_nori.discretize import (
     DEFAULT_DISCRETIZE_METHOD,
     DISCRETIZE_METHODS,
@@ -39,6 +50,11 @@ from synthefy_nori.featurize import (
 
 
 Task = Literal["regression", "reg"]
+
+# Autoregressive chains append prior sampled targets to each query row. Keep each
+# distribution call bounded even for local callers, where serving request limits do
+# not apply. This bounds the temporary expanded query and quantile-bank allocations.
+MAX_AUTOREGRESSIVE_EXPANDED_ROWS_PER_CALL = 10_000
 
 
 def _mps_available() -> bool:
@@ -186,6 +202,10 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         text_max_cardinality: int | None = None,
         text_normalize: bool | None = None,
         large_context_max_calls: int | None = None,
+        multi_target_prediction_strategy: Literal[
+            "independent", "copula", "autoregressive"
+        ] = DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY,
+        multi_target_prediction_policy: "MultiTargetPredictionPolicy | dict | None" = None,
     ) -> None:
         """Configure the estimator (arguments are stored verbatim; see class docs).
 
@@ -293,6 +313,14 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
             large_context_max_calls: optional ceiling on internal Nori calls made by one
                 policy prediction. None (default) leaves local use unlimited; hosted
                 serving supplies a bounded value.
+            multi_target_prediction_strategy: joint law used when ``y`` is a
+                two-dimensional target matrix with at least two columns. ``"copula"``
+                (default) joins conditional marginals with an order-invariant vine;
+                ``"independent"`` is the cheapest baseline and ``"autoregressive"``
+                conditions later targets on earlier sampled targets. Inert for 1-D y.
+            multi_target_prediction_policy: advanced multi-target draw, seed, copula,
+                and chain controls. A dict is accepted for configuration files and is
+                validated at fit time. Inert for 1-D y.
 
         The discretize/categorical_levels pair are estimator-level defaults; the
         same-named ``predict`` kwargs override them per call. The text_* params take
@@ -352,6 +380,10 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         ):
             raise ValueError("large_context_max_calls must be a positive integer or None")
         self.large_context_max_calls = large_context_max_calls
+        # Stored verbatim for sklearn clone identity semantics; validation and
+        # coercion happen only when a 2-D target activates the feature.
+        self.multi_target_prediction_strategy = multi_target_prediction_strategy
+        self.multi_target_prediction_policy = multi_target_prediction_policy
         self._predictor = None
         self._feature_preprocessor = None
         # Legacy fitted-text slot retained for old pickles; new fits use the
@@ -364,20 +396,26 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         self._large_context_budget_features = None
         self.large_context_report_ = None
         self._text_preprocessor = None
+        self._multi_target_active_ = False
+        self._multi_target_memory_reports = None
+        self.nori_calls_ = 0
 
     @property
-    def memory_report_(self) -> dict | None:
+    def memory_report_(self) -> dict | list[dict] | None:
         """What the last ``predict`` call did about memory, or None before one.
 
-        A ``MemoryPolicy.model_dump()``: the ladder rung taken, the cache precision
+        For scalar prediction, a ``MemoryPolicy.model_dump()``: the ladder rung taken, the cache precision
         and placement chosen, the budgets used, and how many context rows (if any)
         had to be dropped to fit. Reconstruct the object with
         ``MemoryPolicy(**estimator.memory_report_)`` for derived facts such as
-        ``is_bit_exact``.
+        ``is_bit_exact``. Multi-target prediction returns a list with one entry
+        per internal marginal call, annotated with strategy and target metadata.
 
         Forwards to the underlying predictor so callers never have to reach through
         ``._predictor``, which is private.
         """
+        if getattr(self, "_multi_target_active_", False):
+            return self._multi_target_memory_reports
         if self._predictor is None:
             return None
         return self._predictor.memory_report_
@@ -492,11 +530,216 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 del self.feature_names_in_
         self._text_preprocessor = None
         self.X_train_ = X_mat.astype(np.float32)
-        self.y_train_ = np.asarray(y, dtype=np.float64)
+        try:
+            y_array = np.asarray(y, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("y must contain only numeric target values") from exc
+        if y_array.ndim == 0:
+            raise ValueError("y must contain one target value per row")
+        if y_array.shape[0] != self.X_train_.shape[0]:
+            raise ValueError(
+                f"X and y must contain the same number of rows; got {self.X_train_.shape[0]} and {y_array.shape[0]}"
+            )
+        if not np.all(np.isfinite(y_array)):
+            raise ValueError("y must contain only finite target values")
+        if y_array.ndim == 2 and y_array.shape[1] >= 2:
+            return self._fit_multi_target(y_array, target_container=y)
+        if y_array.ndim != 1:
+            raise ValueError(
+                "y must be one-dimensional for scalar regression or a 2-D "
+                "matrix with at least two target columns; got shape "
+                f"{y_array.shape}"
+            )
+
+        self._clear_multi_target_fit()
+        self.y_train_ = y_array
         self.y_mean_ = float(self.y_train_.mean())
         y_std = float(self.y_train_.std())
         self.y_std_ = y_std if y_std >= 1e-12 else 1.0
         return self
+
+    def _clear_multi_target_fit(self) -> None:
+        self._multi_target_active_ = False
+        self._multi_target_memory_reports = None
+        self.nori_calls_ = 0
+        for name in (
+            "n_outputs_",
+            "output_names_",
+            "multi_target_prediction_strategy_",
+            "multi_target_prediction_policy_",
+            "marginal_estimators_",
+            "copula_",
+            "copula_fold_indices_",
+            "target_orders_",
+            "autoregressive_chains_",
+        ):
+            if hasattr(self, name):
+                delattr(self, name)
+
+    def _make_marginal_estimator(self, X_train: np.ndarray, y_train: np.ndarray) -> "NoriRegressor":
+        """Build scalar fitted state that shares this estimator's checkpoint."""
+        marginal = copy.copy(self)
+        marginal._multi_target_active_ = False
+        marginal._multi_target_memory_reports = None
+        marginal.nori_calls_ = 0
+        marginal._feature_preprocessor = None
+        marginal._text_preprocessor = None
+        marginal._large_context_problem = None
+        marginal._large_context_budget_features = None
+        marginal.large_context_report_ = None
+        marginal.X_train_ = np.asarray(X_train, dtype=np.float32)
+        marginal.y_train_ = np.asarray(y_train, dtype=np.float64).reshape(-1)
+        marginal.y_mean_ = float(marginal.y_train_.mean())
+        y_std = float(marginal.y_train_.std())
+        marginal.y_std_ = y_std if y_std >= 1e-12 else 1.0
+        marginal.n_features_in_ = marginal.X_train_.shape[1]
+        marginal._predictor = self._get_predictor()
+        for name in (
+            "feature_names_in_",
+            "n_outputs_",
+            "output_names_",
+            "marginal_estimators_",
+            "copula_",
+            "copula_fold_indices_",
+            "target_orders_",
+            "autoregressive_chains_",
+        ):
+            if hasattr(marginal, name):
+                delattr(marginal, name)
+        return marginal
+
+    def _fit_multi_target(self, Y: np.ndarray, *, target_container) -> "NoriRegressor":
+        strategy = self.multi_target_prediction_strategy
+        if strategy not in MULTI_TARGET_PREDICTION_STRATEGIES:
+            raise ValueError(
+                f"Unknown multi_target_prediction_strategy={strategy!r}; expected "
+                f"one of {MULTI_TARGET_PREDICTION_STRATEGIES}."
+            )
+        policy = MultiTargetPredictionPolicy.coerce(self.multi_target_prediction_policy)
+        if policy.autoregressive_orders is not None and strategy != "autoregressive":
+            raise ValueError(
+                "multi_target_prediction_policy.autoregressive_orders requires "
+                "multi_target_prediction_strategy='autoregressive'"
+            )
+        if strategy == "copula" and policy.copula_cv > Y.shape[0]:
+            raise ValueError(
+                f"multi_target_prediction_policy.copula_cv cannot exceed the number of training rows ({Y.shape[0]})"
+            )
+        if self.discretize is not None or self.categorical_levels is not None:
+            raise ValueError("discretize and categorical_levels are not supported for multi-target regression")
+        if self.large_context_policy is not None:
+            raise ValueError("large_context_policy is not supported for multi-target regression")
+
+        pv = pyvinecopulib if strategy == "copula" else None
+        predictor = self._get_predictor()
+        if predictor.regression_head != "pinball":
+            raise NotImplementedError("multi-target sampling requires a pinball (quantile-head) checkpoint")
+
+        self._clear_multi_target_fit()
+        self._multi_target_active_ = True
+        self.y_train_ = np.asarray(Y, dtype=np.float64)
+        self.y_mean_ = self.y_train_.mean(axis=0)
+        y_std = self.y_train_.std(axis=0)
+        self.y_std_ = np.where(y_std >= 1e-12, y_std, 1.0)
+        self.n_outputs_ = self.y_train_.shape[1]
+        if isinstance(target_container, pd.DataFrame):
+            self.output_names_ = np.asarray(target_container.columns, dtype=object)
+        self.multi_target_prediction_strategy_ = strategy
+        self.multi_target_prediction_policy_ = policy
+        self._multi_target_memory_reports = None
+        self.nori_calls_ = 0
+
+        if strategy in ("independent", "copula"):
+            self.marginal_estimators_ = [
+                self._make_marginal_estimator(self.X_train_, self.y_train_[:, target])
+                for target in range(self.n_outputs_)
+            ]
+
+        if strategy == "copula":
+            self._fit_multi_target_copula(pv)
+        elif strategy == "autoregressive":
+            self._fit_multi_target_autoregressive()
+        return self
+
+    def _fit_multi_target_copula(self, pv) -> None:
+        policy = self.multi_target_prediction_policy_
+        splitter = KFold(
+            n_splits=policy.copula_cv,
+            shuffle=True,
+            random_state=policy.random_state,
+        )
+        pits = np.empty_like(self.y_train_, dtype=np.float64)
+        fold_indices = np.empty(self.y_train_.shape[0], dtype=np.int64)
+        for fold, (train_idx, validation_idx) in enumerate(splitter.split(self.X_train_)):
+            fold_indices[validation_idx] = fold
+            for target in range(self.n_outputs_):
+                marginal = self._make_marginal_estimator(self.X_train_[train_idx], self.y_train_[train_idx, target])
+                dist = marginal._predict_distribution(self.X_train_[validation_idx], output_type="full", quantiles=None)
+                pits[validation_idx, target] = cdf_from_quantile_bank(
+                    dist["quantiles"], dist["taus"], self.y_train_[validation_idx, target]
+                )
+        pits = np.clip(pits, 1e-6, 1.0 - 1e-6)
+        if policy.copula_pit_jitter > 0.0:
+            rng = np.random.default_rng(policy.random_state)
+            pits += rng.uniform(
+                -policy.copula_pit_jitter,
+                policy.copula_pit_jitter,
+                size=pits.shape,
+            )
+            pits = np.clip(pits, 1e-6, 1.0 - 1e-6)
+
+        families = [
+            pv.BicopFamily.indep,
+            pv.BicopFamily.gaussian,
+            pv.BicopFamily.student,
+            pv.BicopFamily.clayton,
+            pv.BicopFamily.gumbel,
+            pv.BicopFamily.frank,
+            pv.BicopFamily.joe,
+            pv.BicopFamily.bb1,
+            pv.BicopFamily.bb6,
+            pv.BicopFamily.bb7,
+            pv.BicopFamily.bb8,
+            pv.BicopFamily.tawn,
+        ]
+        controls = pv.FitControlsVinecop(
+            family_set=families,
+            selection_criterion="bic",
+            allow_rotations=True,
+            num_threads=1,
+        )
+        self.copula_ = pv.Vinecop.from_data(pits, controls=controls)
+        self.copula_fold_indices_ = fold_indices
+
+    def _fit_multi_target_autoregressive(self) -> None:
+        policy = self.multi_target_prediction_policy_
+        if policy.autoregressive_orders is None:
+            orders = build_target_orders(self.n_outputs_, policy.autoregressive_n_orders, policy.random_state)
+        else:
+            expected = list(range(self.n_outputs_))
+            orders = []
+            for index, supplied in enumerate(policy.autoregressive_orders):
+                if sorted(supplied) != expected:
+                    raise ValueError(
+                        "multi_target_prediction_policy.autoregressive_orders"
+                        f"[{index}] must be a complete permutation of target indices "
+                        f"{expected}; got {supplied}"
+                    )
+                orders.append(np.asarray(supplied, dtype=int))
+        chains = []
+        for order in orders:
+            chain = []
+            for position, target in enumerate(order):
+                previous = order[:position]
+                X_augmented = (
+                    self.X_train_
+                    if position == 0
+                    else np.concatenate([self.X_train_, self.y_train_[:, previous]], axis=1)
+                )
+                chain.append(self._make_marginal_estimator(X_augmented, self.y_train_[:, int(target)]))
+            chains.append(chain)
+        self.target_orders_ = [tuple(int(target) for target in order) for order in orders]
+        self.autoregressive_chains_ = chains
 
     def _prepare_query_features(self, X) -> np.ndarray:
         """Coerce query rows to the model's float32 matrix.
@@ -560,6 +803,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         quantiles: list[float] | None = None,
         discretize: str | None = None,
         categorical_levels=None,
+        multi_target_prediction_policy: "MultiTargetPredictionPolicy | dict | None" = None,
     ):
         """Predict targets for the query rows.
 
@@ -607,6 +851,15 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         ``clone``/``GridSearchCV``/``cross_val_score`` see them); ``predict``
         kwargs override the estimator values per call.
         """
+        if getattr(self, "_multi_target_active_", False):
+            if discretize is not None or categorical_levels is not None:
+                raise ValueError("discretize and categorical_levels are not supported for multi-target regression")
+            return self._predict_multi_target(
+                X,
+                output_type=output_type,
+                quantiles=quantiles,
+                policy_override=multi_target_prediction_policy,
+            )
         if discretize is None:
             discretize = self.discretize
         if categorical_levels is None:
@@ -649,6 +902,158 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 bar_point_estimator=self.bar_point_estimator,
             )
         return self._predict_point(X, quantile_collapse="median", bar_point_estimator=output_type)
+
+    def _reset_multi_target_prediction_report(self) -> None:
+        self._multi_target_memory_reports = []
+        self.nori_calls_ = 0
+
+    def _record_multi_target_call(self, marginal: "NoriRegressor", *, target: int, order: int | None) -> None:
+        self.nori_calls_ += 1
+        report = marginal.memory_report_
+        entry = copy.deepcopy(report) if isinstance(report, dict) else {}
+        entry.update(
+            {
+                "strategy": self.multi_target_prediction_strategy_,
+                "target": int(target),
+                "order": order,
+            }
+        )
+        self._multi_target_memory_reports.append(entry)
+
+    def _refresh_multi_target_child_resources(self, marginal: "NoriRegressor") -> None:
+        """Propagate mutable per-call resource controls to a fitted child."""
+        marginal.memory_policy = self.memory_policy
+
+    def _multi_target_distribution(
+        self,
+        marginal: "NoriRegressor",
+        X: np.ndarray,
+        *,
+        target: int,
+        order: int | None = None,
+    ) -> dict:
+        self._refresh_multi_target_child_resources(marginal)
+        dist = marginal._predict_distribution(X, output_type="full", quantiles=None)
+        self._record_multi_target_call(marginal, target=target, order=order)
+        return dist
+
+    def _multi_target_point(self, marginal: "NoriRegressor", X: np.ndarray, *, target: int) -> np.ndarray:
+        self._refresh_multi_target_child_resources(marginal)
+        point = marginal._predict_point(
+            X,
+            quantile_collapse=self.quantile_collapse,
+            bar_point_estimator=self.bar_point_estimator,
+        )
+        self._record_multi_target_call(marginal, target=target, order=None)
+        return np.asarray(point, dtype=np.float64).reshape(-1)
+
+    def _predict_multi_target(
+        self,
+        X,
+        *,
+        output_type: str,
+        quantiles: list[float] | None,
+        policy_override: "MultiTargetPredictionPolicy | dict | None",
+    ) -> np.ndarray:
+        if output_type not in ("mean", "samples"):
+            raise ValueError(
+                "multi-target regression supports output_type='mean' or output_type='samples' in this release"
+            )
+        if quantiles is not None:
+            raise ValueError(
+                "quantiles= is not supported for multi-target regression; request "
+                "output_type='samples' for the joint predictive distribution"
+            )
+        policy = self.multi_target_prediction_policy_.merge_prediction_override(policy_override)
+        X_test = self._prepare_query_features(X)
+        self._reset_multi_target_prediction_report()
+
+        if output_type == "mean" and self.multi_target_prediction_strategy_ in ("independent", "copula"):
+            columns = [
+                self._multi_target_point(marginal, X_test, target=target)
+                for target, marginal in enumerate(self.marginal_estimators_)
+            ]
+            return np.column_stack(columns)
+
+        samples = self._sample_multi_target(X_test, policy)
+        if not np.all(np.isfinite(samples)):
+            raise RuntimeError("multi-target prediction produced non-finite samples")
+        if output_type == "samples":
+            return samples
+        return samples.mean(axis=1)
+
+    def _sample_multi_target(self, X_test: np.ndarray, policy: MultiTargetPredictionPolicy) -> np.ndarray:
+        strategy = self.multi_target_prediction_strategy_
+        rng = np.random.default_rng(policy.random_state)
+        if strategy == "autoregressive":
+            return self._sample_multi_target_autoregressive(X_test, policy, rng)
+
+        n_test = X_test.shape[0]
+        if strategy == "independent":
+            uniforms = rng.random((n_test, policy.n_draws, self.n_outputs_))
+        else:
+            seed = int(rng.integers(0, 2**31 - 1))
+            uniforms = np.asarray(
+                self.copula_.simulate(
+                    n_test * policy.n_draws,
+                    seeds=[seed],
+                ),
+                dtype=np.float64,
+            ).reshape(n_test, policy.n_draws, self.n_outputs_)
+            uniforms = np.clip(uniforms, 1e-6, 1.0 - 1e-6)
+
+        samples = np.empty_like(uniforms, dtype=np.float64)
+        for target, marginal in enumerate(self.marginal_estimators_):
+            dist = self._multi_target_distribution(marginal, X_test, target=target)
+            samples[:, :, target] = quantiles_from_levels(dist["quantiles"], dist["taus"], uniforms[:, :, target])
+        return samples
+
+    def _sample_multi_target_autoregressive(
+        self,
+        X_test: np.ndarray,
+        policy: MultiTargetPredictionPolicy,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        n_orders = len(self.autoregressive_chains_)
+        base, extra = divmod(policy.n_draws, n_orders)
+        counts = [base + (1 if order < extra else 0) for order in range(n_orders)]
+        parts = []
+        for order_index, (order, chain, count) in enumerate(
+            zip(self.target_orders_, self.autoregressive_chains_, counts)
+        ):
+            if count == 0:
+                continue
+            drawn = np.empty((X_test.shape[0], count, self.n_outputs_), dtype=np.float64)
+            for position, target in enumerate(order):
+                if position == 0:
+                    query = X_test
+                    dist = self._multi_target_distribution(chain[position], query, target=target, order=order_index)
+                    levels = rng.random((X_test.shape[0], count))
+                    values = quantiles_from_levels(dist["quantiles"], dist["taus"], levels)
+                    drawn[:, :, target] = values
+                    continue
+
+                previous = order[:position]
+                flat_drawn = drawn.reshape(X_test.shape[0] * count, self.n_outputs_)
+                for start in range(0, flat_drawn.shape[0], MAX_AUTOREGRESSIVE_EXPANDED_ROWS_PER_CALL):
+                    stop = min(start + MAX_AUTOREGRESSIVE_EXPANDED_ROWS_PER_CALL, flat_drawn.shape[0])
+                    query_rows = np.arange(start, stop) // count
+                    query = np.concatenate(
+                        [X_test[query_rows], flat_drawn[start:stop][:, previous]],
+                        axis=1,
+                    )
+                    dist = self._multi_target_distribution(
+                        chain[position],
+                        query,
+                        target=target,
+                        order=order_index,
+                    )
+                    levels = rng.random((query.shape[0], 1))
+                    flat_drawn[start:stop, target] = quantiles_from_levels(dist["quantiles"], dist["taus"], levels)[
+                        :, 0
+                    ]
+            parts.append(drawn)
+        return np.concatenate(parts, axis=1)
 
     def _predict_point(self, X, *, quantile_collapse: str, bar_point_estimator: str):
         """One point-prediction pass with an explicit collapse, predictor state
@@ -764,6 +1169,11 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         inference config. Pick a member (``embeds[0]``) or average across
         ``axis=0`` for a 2D feature matrix.
         """
+        if getattr(self, "_multi_target_active_", False):
+            raise NotImplementedError(
+                "get_embeddings is not defined for a compositional multi-target fit; "
+                "fit a scalar target to request target-token embeddings"
+            )
         if not hasattr(self, "X_train_"):
             raise ValueError("Call fit(X, y) before get_embeddings(X).")
         y_norm = ((self.y_train_ - self.y_mean_) / self.y_std_).astype(np.float32)

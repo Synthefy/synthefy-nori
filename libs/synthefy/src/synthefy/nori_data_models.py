@@ -38,7 +38,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, List, Literal, Optional, Union
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 from typing_extensions import Annotated
 
 #: Named starting points accepted wherever a policy is expected, instead of a field dict.
@@ -69,6 +69,78 @@ MemoryPreset = Literal["exact", "max_context", "off"]
 #: Local mode also accepts callables; hosted modes require a policy-name string and
 #: let the server's installed synthefy-nori resolver decide whether it is valid.
 LargeContextPolicy = Union[str, Callable[..., Any]]
+MultiTargetPredictionStrategy = Literal["independent", "copula", "autoregressive"]
+DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY: MultiTargetPredictionStrategy = "copula"
+MAX_MULTI_TARGET_RANDOM_STATE = 2**32 - 1
+
+# Hosted-only work bounds. The public policy model intentionally does not apply
+# these maxima because the same object is also accepted by ``mode="local"``.
+MAX_MULTI_TARGET_DRAWS = 1_000
+MAX_MULTI_TARGET_COPULA_CV = 20
+MAX_MULTI_TARGET_COPULA_PIT_JITTER = 0.1
+MAX_MULTI_TARGET_AUTOREGRESSIVE_ORDERS = 8
+
+
+class MultiTargetPredictionPolicy(BaseModel):
+    """Controls for multi-target joint draws and dependence fitting.
+
+    Copula is the recommended/default strategy. Use independent for the lowest
+    cost, or autoregressive to model order-sensitive conditional structure.
+    Explicit autoregressive orders control factorization, not causality.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    n_draws: int = Field(
+        300,
+        ge=1,
+        description="Joint Monte Carlo draws returned or averaged per query row.",
+    )
+    random_state: Optional[int] = Field(
+        0,
+        ge=0,
+        le=MAX_MULTI_TARGET_RANDOM_STATE,
+        description="Seed for reproducible joint sampling.",
+    )
+    copula_cv: int = Field(
+        5,
+        ge=2,
+        description="Cross-fitting folds used to estimate copula residual ranks.",
+    )
+    copula_pit_jitter: float = Field(
+        1e-4,
+        ge=0.0,
+        description="Uniform jitter applied to tied copula probability transforms.",
+    )
+    autoregressive_n_orders: int = Field(
+        3,
+        ge=1,
+        description=(
+            "Number of automatically generated unique target permutations; do not set with autoregressive_orders."
+        ),
+    )
+    autoregressive_orders: Optional[List[List[int]]] = Field(
+        None,
+        description=(
+            "Explicit complete target-index permutations, used exactly as supplied. "
+            "Fit-dependent and not a causal claim."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_explicit_orders(self):
+        orders = self.autoregressive_orders
+        if orders is None:
+            return self
+        if "autoregressive_n_orders" in self.model_fields_set:
+            raise ValueError(
+                "autoregressive_orders cannot be combined with explicitly supplied autoregressive_n_orders"
+            )
+        if not orders or any(not order for order in orders):
+            raise ValueError("autoregressive_orders must contain non-empty target orders")
+        if len({tuple(order) for order in orders}) != len(orders):
+            raise ValueError("autoregressive_orders must not contain duplicate orders")
+        return self
 
 
 class MemoryPolicy(BaseModel):
@@ -310,6 +382,18 @@ class MemoryReport(BaseModel):
             "Locally these are Python warnings; over HTTP they are returned here instead, "
             "because a warning would land in the server's log rather than reaching you."
         ),
+    )
+
+
+class MultiTargetMemoryReport(MemoryReport):
+    """Memory outcome for one internal multi-target marginal or chain call."""
+
+    strategy: MultiTargetPredictionStrategy
+    target: int = Field(ge=0)
+    order: Optional[int] = Field(
+        None,
+        ge=0,
+        description="Autoregressive order index, or None for marginal calls.",
     )
 
 
