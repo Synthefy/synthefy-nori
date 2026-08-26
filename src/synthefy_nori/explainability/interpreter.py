@@ -18,6 +18,7 @@ Regression (metric = R2) and binary classification (metric = ROC-AUC) are auto-d
     interp.ebm_                                   # the fitted glass-box model
     interp.model_figure_                          # the model diagram (rendered in fit)
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -25,10 +26,15 @@ from sklearn.base import BaseEstimator
 from sklearn.model_selection import train_test_split
 from sklearn.utils.validation import check_is_fitted
 
-from synthefy_nori.explainability._common import (decode_labels, detect_task, encode_labels,
-                                                  fill_nan, make_metric, target_classes)
-from synthefy_nori.explainability._core import (distill_glassbox, prepare_rows, score_on_test,
-                                                select_features)
+from synthefy_nori.explainability._common import (
+    decode_labels,
+    detect_task,
+    encode_labels,
+    fill_nan,
+    make_metric,
+    target_classes,
+)
+from synthefy_nori.explainability._core import distill_glassbox, prepare_rows, score_on_test, select_features
 from synthefy_nori.explainability.ebm import ebm_structure
 from synthefy_nori.explainability.importance import nori_permutation_importance
 from synthefy_nori.explainability.viz import plot_ebm_model
@@ -137,9 +143,22 @@ class NoriInterpreter(BaseEstimator):
         Save it with ``interp.model_figure_.savefig(...)`` or re-draw via ``plot_model``.
     """
 
-    def __init__(self, *, model="nori-6m", test_size=0.3, reduce_threshold=16, retain=0.95,
-                 n_repeats=3, nori_cap=8000, perm_eval=2000, task="auto", random_state=0,
-                 render_figure=True, target_name="target", use_test=True):
+    def __init__(
+        self,
+        *,
+        model="nori-6m",
+        test_size=0.3,
+        reduce_threshold=16,
+        retain=0.95,
+        n_repeats=3,
+        nori_cap=8000,
+        perm_eval=2000,
+        task="auto",
+        random_state=0,
+        render_figure=True,
+        target_name="target",
+        use_test=True,
+    ):
         self.model = model
         self.test_size = test_size
         self.reduce_threshold = reduce_threshold
@@ -181,45 +200,67 @@ class NoriInterpreter(BaseEstimator):
             y = y.astype(np.float32)
         strat = y if task in ("classification", "multiclass") else None
         raw_train, raw_test, y_train, y_test = train_test_split(
-            X, y, test_size=self.test_size, random_state=self.random_state, stratify=strat)
+            X, y, test_size=self.test_size, random_state=self.random_state, stratify=strat
+        )
 
         rng = np.random.RandomState(self.random_state)
         rows, self._impute_mu_, features_train, features_test = prepare_rows(
-            raw_train, y_train, raw_test, y_test, use_test=self.use_test,
-            stratify=(y_train if task in ("classification", "multiclass") else None), rng=rng,
-            nori_cap=self.nori_cap, selection_fraction=self.test_size,
-            random_state=self.random_state)
+            raw_train,
+            y_train,
+            raw_test,
+            y_test,
+            use_test=self.use_test,
+            stratify=(y_train if task in ("classification", "multiclass") else None),
+            rng=rng,
+            nori_cap=self.nori_cap,
+            selection_fraction=self.test_size,
+            random_state=self.random_state,
+        )
 
         def importance_fn(fitted, eval_features, eval_target):
             """Permutation importance, on a capped sample of the selection-eval rows."""
             if len(eval_features) > self.perm_eval:
                 take = rng.choice(len(eval_features), self.perm_eval, replace=False)
                 eval_features, eval_target = eval_features[take], eval_target[take]
-            return nori_permutation_importance(fitted, eval_features, eval_target, metric,
-                                               n_repeats=self.n_repeats,
-                                               random_state=self.random_state)
+            return nori_permutation_importance(
+                fitted, eval_features, eval_target, metric, n_repeats=self.n_repeats, random_state=self.random_state
+            )
 
         selection, select_model = select_features(
-            rows, model=self.model, metric=metric, metric_name=metric_name, task=task,
-            importance_fn=importance_fn, retain=self.retain,
-            reduce_threshold=self.reduce_threshold, n_features=d)
+            rows,
+            model=self.model,
+            metric=metric,
+            metric_name=metric_name,
+            task=task,
+            importance_fn=importance_fn,
+            retain=self.retain,
+            reduce_threshold=self.reduce_threshold,
+            n_features=d,
+        )
 
         full_model, nori_full, nori_sel = score_on_test(
-            rows, selection, model=self.model, metric=metric, features_test=features_test,
-            target_test=y_test, task=task,
-            full_model=select_model if rows.use_test else None)
+            rows,
+            selection,
+            model=self.model,
+            metric=metric,
+            features_test=features_test,
+            target_test=y_test,
+            task=task,
+            full_model=select_model if rows.use_test else None,
+        )
 
         ebm, ebm_sel, ebm_all, ebm_all_score, fn_sel = distill_glassbox(
-            rows, selection, names=names, task=task, metric=metric,
-            features_test=features_test, target_test=y_test)
+            rows, selection, names=names, task=task, metric=metric, features_test=features_test, target_test=y_test
+        )
 
         # store artifacts
         self.task_, self.metric_ = task, metric_name
         self.feature_names_ = names
         self.feature_importances_ = selection.importance
-        self.importance_ranking_ = [{"feature": names[j], "index": int(j),
-                                     "importance": float(selection.importance[j])}
-                                    for j in selection.order]
+        self.importance_ranking_ = [
+            {"feature": names[j], "index": int(j), "importance": float(selection.importance[j])}
+            for j in selection.order
+        ]
         self.selected_indices_ = [int(c) for c in selection.columns]
         self.selected_features_ = fn_sel
         self.n_selected_ = len(selection.columns)
@@ -250,7 +291,8 @@ class NoriInterpreter(BaseEstimator):
             # module level would make `import synthefy_nori.explainability` require it.
             # plot_ebm_model has already validated it by this point.
             import matplotlib.pyplot as plt
-            plt.close(fig)          # keep the Figure object; don't auto-display it on fit
+
+            plt.close(fig)  # keep the Figure object; don't auto-display it on fit
             self.model_figure_ = fig
         return self
 
@@ -278,20 +320,29 @@ class NoriInterpreter(BaseEstimator):
 
     def _render_figure(self, *, target_name=None, feature_ranges="auto", **kwargs):
         """Draw the glass-box model diagram (shape functions + interactions -> output)."""
-        if feature_ranges == "auto":                 # clip each shape function to its 10-90 pct
-            feature_ranges = {self.selected_features_[k]:
-                              (float(np.percentile(self._density_[:, k], 10)),
-                               float(np.percentile(self._density_[:, k], 90)))
-                              for k in range(self.n_selected_)}
+        if feature_ranges == "auto":  # clip each shape function to its 10-90 pct
+            feature_ranges = {
+                self.selected_features_[k]: (
+                    float(np.percentile(self._density_[:, k], 10)),
+                    float(np.percentile(self._density_[:, k], 90)),
+                )
+                for k in range(self.n_selected_)
+            }
         skill = kwargs.pop("skill", self.ebm_score_)
         # multiclass panels hold one curve per class; label them with the caller's own labels
-        kwargs.setdefault("class_names",
-                          None if self.task_ != "multiclass" else [str(c) for c in self.classes_])
+        kwargs.setdefault("class_names", None if self.task_ != "multiclass" else [str(c) for c in self.classes_])
         # allow an explicit override instead of colliding with the stored sample
         density = kwargs.pop("X_density", self._density_)
-        return plot_ebm_model(self.ebm_, self.selected_features_, X_density=density,
-                              task=self.task_, target_name=target_name or self.target_name,
-                              skill=skill, feature_ranges=feature_ranges, **kwargs)
+        return plot_ebm_model(
+            self.ebm_,
+            self.selected_features_,
+            X_density=density,
+            task=self.task_,
+            target_name=target_name or self.target_name,
+            skill=skill,
+            feature_ranges=feature_ranges,
+            **kwargs,
+        )
 
     def plot_model(self, *, target_name=None, feature_ranges="auto", **kwargs):
         """Re-draw the glass-box model diagram (e.g. to a file via ``out_path=...``).
@@ -306,11 +357,15 @@ class NoriInterpreter(BaseEstimator):
         """A compact dict of the headline results."""
         check_is_fitted(self, "ebm_")
         return {
-            "task": self.task_, "metric": self.metric_, "n_features": len(self.feature_names_),
-            "n_selected": self.n_selected_, "reduced": self.reduced_,
+            "task": self.task_,
+            "metric": self.metric_,
+            "n_features": len(self.feature_names_),
+            "n_selected": self.n_selected_,
+            "reduced": self.reduced_,
             "nori_full": round(self.nori_full_score_, 4),
             "nori_selected": round(self.nori_selected_score_, 4),
-            "ebm_selected": round(self.ebm_score_, 4), "ebm_full": round(self.ebm_full_score_, 4),
-            "selection_split_at_k": round(self.selection_score_, 4),   # criterion value, not held-out
+            "ebm_selected": round(self.ebm_score_, 4),
+            "ebm_full": round(self.ebm_full_score_, 4),
+            "selection_split_at_k": round(self.selection_score_, 4),  # criterion value, not held-out
             "top_features": [e["feature"] for e in self.importance_ranking_[:7]],
         }

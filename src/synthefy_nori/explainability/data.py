@@ -8,6 +8,7 @@ names, so this module offers three self-contained entry points:
     train/test (``load_csv`` remains as an alias)
   * :func:`load_demo` — a bundled scikit-learn dataset, so the pipeline runs with zero setup
 """
+
 import os
 
 import numpy as np
@@ -50,8 +51,8 @@ def load_table(path, target, test_size=0.3, random_state=0):
     for c in feats:  # ordinal-encode any non-numeric columns
         if not pd.api.types.is_numeric_dtype(df[c]):
             codes = df[c].astype("category").cat.codes.astype(np.float32)
-            df[c] = codes.where(codes >= 0, np.nan)      # cat.codes marks missing as -1;
-                                                         # keep it NaN for mean imputation
+            df[c] = codes.where(codes >= 0, np.nan)  # cat.codes marks missing as -1;
+            # keep it NaN for mean imputation
     X = df[feats].to_numpy(np.float32)
     y = df[target].to_numpy()
     Xtr, Xte, ytr, yte = _split(X, y, test_size, random_state)
@@ -64,7 +65,7 @@ def load_csv(path, target, test_size=0.3, random_state=0):
 
 
 _DEMOS = {
-    "diabetes": ("regression", "load_diabetes"),        # 10 features, quantitative disease progression
+    "diabetes": ("regression", "load_diabetes"),  # 10 features, quantitative disease progression
     "california": ("regression", "fetch_california_housing"),  # 8 features (downloads once)
     "breast_cancer": ("classification", "load_breast_cancer"),  # 30 features, binary
 }

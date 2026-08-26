@@ -5,6 +5,7 @@ where each ``f`` is a binned lookup table — the per-bin scores ARE the weights
 :func:`ebm_structure` serialises that to plain Python so a fitted model can be
 read (or shipped as JSON) without unpickling.
 """
+
 import numpy as np
 
 from synthefy_nori.explainability._common import clip_inf_edges, shape_direction
@@ -18,20 +19,23 @@ def fit_ebm(X, y, feature_names, task, *, interactions=None, outer_bags=4, rando
     for K>2, so anything else would either error or be silently dropped.
     """
     # deferred on purpose: keeps `import synthefy_nori.explainability` free of interpret
-    try:                                             # optional dep: the explainability extra
+    try:  # optional dep: the explainability extra
         if task in ("classification", "multiclass"):
             from interpret.glassbox import ExplainableBoostingClassifier as EBM
         else:
             from interpret.glassbox import ExplainableBoostingRegressor as EBM
     except ImportError as exc:
-        raise ImportError("interpret-core is required to fit a glass-box EBM; install it with "
-                          'pip install "synthefy-nori[explainability]"') from exc
+        raise ImportError(
+            "interpret-core is required to fit a glass-box EBM; install it with "
+            'pip install "synthefy-nori[explainability]"'
+        ) from exc
     if task == "multiclass":
-        interactions = 0                             # unsupported for K>2 by interpret
+        interactions = 0  # unsupported for K>2 by interpret
     elif interactions is None:
         interactions = 0 if X.shape[1] > 32 else 10
-    return EBM(interactions=interactions, outer_bags=outer_bags, random_state=random_state,
-               feature_names=list(feature_names)).fit(X, y)
+    return EBM(
+        interactions=interactions, outer_bags=outer_bags, random_state=random_state, feature_names=list(feature_names)
+    ).fit(X, y)
 
 
 def ebm_score(model, X, task):
@@ -60,8 +64,7 @@ def ebm_structure(model, *, include_interactions=True):
     """
     g = model.explain_global()
     overall = g.data()
-    terms = [{"term": str(t), "importance": float(s)}
-             for t, s in zip(overall["names"], overall["scores"])]
+    terms = [{"term": str(t), "importance": float(s)} for t, s in zip(overall["names"], overall["scores"])]
     shapes, interactions = [], []
     # term arity, NOT a "&" substring test: a feature legitimately named e.g. "R&D spend"
     # would otherwise be misread as an interaction and vanish from the serialised model.
@@ -69,32 +72,41 @@ def ebm_structure(model, *, include_interactions=True):
         d_i = g.data(i)
         if len(feats) > 1:
             if include_interactions:
-                interactions.append({
-                    "term": str(tname),
-                    "feature_indices": [int(j) for j in feats],
-                    "left_edges": _flt(d_i.get("left_names", [])),
-                    "right_edges": _flt(d_i.get("right_names", [])),
-                    "scores": np.asarray(d_i.get("scores", []), float).round(6).tolist(),
-                })
+                interactions.append(
+                    {
+                        "term": str(tname),
+                        "feature_indices": [int(j) for j in feats],
+                        "left_edges": _flt(d_i.get("left_names", [])),
+                        "right_edges": _flt(d_i.get("right_names", [])),
+                        "scores": np.asarray(d_i.get("scores", []), float).round(6).tolist(),
+                    }
+                )
             continue
         raw_scores = np.asarray(d_i.get("scores", []), float)
         if raw_scores.ndim > 1:
             # multiclass: one score column per class, so there is no single trend to name
-            shapes.append({
+            shapes.append(
+                {
+                    "feature": str(tname),
+                    "bin_edges": _flt(d_i.get("names", [])),
+                    "scores_per_class": raw_scores.round(6).tolist(),
+                    "direction": None,
+                }
+            )
+            continue
+        shapes.append(
+            {
                 "feature": str(tname),
                 "bin_edges": _flt(d_i.get("names", [])),
-                "scores_per_class": raw_scores.round(6).tolist(),
-                "direction": None,
-            })
-            continue
-        shapes.append({
-            "feature": str(tname),
-            "bin_edges": _flt(d_i.get("names", [])),
-            "scores": _flt(raw_scores),
-            "direction": shape_direction(raw_scores),
-        })
-    out = {"intercept": float(np.asarray(model.intercept_).ravel()[0]),
-           "term_importances": terms, "shape_functions": shapes}
+                "scores": _flt(raw_scores),
+                "direction": shape_direction(raw_scores),
+            }
+        )
+    out = {
+        "intercept": float(np.asarray(model.intercept_).ravel()[0]),
+        "term_importances": terms,
+        "shape_functions": shapes,
+    }
     if include_interactions:
         out["interactions"] = interactions
     return out

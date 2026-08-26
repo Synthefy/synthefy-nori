@@ -13,6 +13,7 @@ Run:
   python examples/explainability_credit.py                 # full run + figures
   python examples/explainability_credit.py --nori-model nori-30m --out-dir /tmp/credit
 """
+
 import argparse
 import json
 import os
@@ -20,8 +21,8 @@ import os
 import joblib
 import matplotlib
 
-matplotlib.use("Agg")          # headless: pick the non-interactive backend BEFORE pyplot,
-                               # and before NoriInterpreter.fit renders its diagram
+matplotlib.use("Agg")  # headless: pick the non-interactive backend BEFORE pyplot,
+# and before NoriInterpreter.fit renders its diagram
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
@@ -34,8 +35,11 @@ def load_credit():
     Returns a DataFrame X (descriptive column names) and a 0/1 target array."""
     ds = fetch_ucirepo(id=350)
     X = ds.data.features.copy()
-    rename = {r["name"]: r["description"] for _, r in ds.variables.iterrows()
-              if r["name"] in X.columns and isinstance(r["description"], str)}  # X1..X23 -> real names
+    rename = {
+        r["name"]: r["description"]
+        for _, r in ds.variables.iterrows()
+        if r["name"] in X.columns and isinstance(r["description"], str)
+    }  # X1..X23 -> real names
     X = X.rename(columns=rename)
     y = ds.data.targets.iloc[:, 0].to_numpy().astype(int)
     return X, y
@@ -58,25 +62,45 @@ def main():
 
     print("\n=== summary ===")
     print(json.dumps(interp.summary(), indent=1))
-    print(f"\nkept {interp.n_selected_}/{len(interp.feature_names_)} features  |  "
-          f"Nori AUC {interp.nori_full_score_:.3f} -> glass-box EBM AUC {interp.ebm_score_:.3f}")
+    print(
+        f"\nkept {interp.n_selected_}/{len(interp.feature_names_)} features  |  "
+        f"Nori AUC {interp.nori_full_score_:.3f} -> glass-box EBM AUC {interp.ebm_score_:.3f}"
+    )
     print("top features:", [(e["feature"], round(e["importance"], 4)) for e in interp.importance_ranking_[:7]])
 
     # persist artifacts pulled straight off the fitted estimator
-    joblib.dump({"model": interp.ebm_, "feature_names": interp.selected_features_,
-                 "feature_indices": interp.selected_indices_, "task": interp.task_},
-                os.path.join(a.out_dir, "credit.ebm.joblib"))
-    json.dump({"summary": interp.summary(), "importance": interp.importance_ranking_,
-               "selected_features": interp.selected_features_, "ebm_model": interp.ebm_model_},
-              open(os.path.join(a.out_dir, "credit.json"), "w"), indent=1)
+    joblib.dump(
+        {
+            "model": interp.ebm_,
+            "feature_names": interp.selected_features_,
+            "feature_indices": interp.selected_indices_,
+            "task": interp.task_,
+        },
+        os.path.join(a.out_dir, "credit.ebm.joblib"),
+    )
+    json.dump(
+        {
+            "summary": interp.summary(),
+            "importance": interp.importance_ranking_,
+            "selected_features": interp.selected_features_,
+            "ebm_model": interp.ebm_model_,
+        },
+        open(os.path.join(a.out_dir, "credit.json"), "w"),
+        indent=1,
+    )
 
     # figure 1: feature importance (from interp.importance_ranking_)
     top = interp.importance_ranking_[:10]
     ramp = LinearSegmentedColormap.from_list("s", ["#7C2D12", "#F97316", "#FDBA74"])
     fig, ax = plt.subplots(figsize=(9, 4.8))
-    ax.barh(range(len(top)), [e["importance"] for e in top],
-            color=[ramp(i / max(len(top) - 1, 1) * 0.9) for i in range(len(top))])
-    ax.set_yticks(range(len(top))); ax.set_yticklabels([e["feature"] for e in top]); ax.invert_yaxis()
+    ax.barh(
+        range(len(top)),
+        [e["importance"] for e in top],
+        color=[ramp(i / max(len(top) - 1, 1) * 0.9) for i in range(len(top))],
+    )
+    ax.set_yticks(range(len(top)))
+    ax.set_yticklabels([e["feature"] for e in top])
+    ax.invert_yaxis()
     ax.set_xlabel("Nori-permutation importance  (drop in test AUC when the feature is shuffled)")
     ax.set_title("Credit default — Nori feature importance (top 10)")
     for s in ("top", "right"):
@@ -85,11 +109,14 @@ def main():
     fig.savefig(os.path.join(a.out_dir, "fig_credit_importance.png"), dpi=150, bbox_inches="tight")
 
     # figure 2: the glass-box model diagram, rendered during fit() and kept on the estimator
-    interp.model_figure_.savefig(os.path.join(a.out_dir, "fig_credit_glassbox_model.png"),
-                                 dpi=150, bbox_inches="tight", pad_inches=0.35)
+    interp.model_figure_.savefig(
+        os.path.join(a.out_dir, "fig_credit_glassbox_model.png"), dpi=150, bbox_inches="tight", pad_inches=0.35
+    )
 
-    print(f"\nwrote {a.out_dir}/: credit.json, credit.ebm.joblib, "
-          f"fig_credit_importance.png, fig_credit_glassbox_model.png")
+    print(
+        f"\nwrote {a.out_dir}/: credit.json, credit.ebm.joblib, "
+        f"fig_credit_importance.png, fig_credit_glassbox_model.png"
+    )
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ The row-sampling order here is load-bearing. ``prepare_rows`` draws the final-mo
 BEFORE the selection rows, and callers draw their own samples after; changing that order
 changes every reported number even though no rule changed.
 """
+
 import math
 from dataclasses import dataclass, field
 
@@ -58,8 +59,7 @@ class OneVsRestNori:
     def fit(self, features, target):
         codes = np.asarray(target).astype(int).ravel()
         self.classes_ = np.unique(codes)
-        self.models_ = [new_nori(self.model).fit(features, (codes == k).astype(np.float32))
-                        for k in self.classes_]
+        self.models_ = [new_nori(self.model).fit(features, (codes == k).astype(np.float32)) for k in self.classes_]
         return self
 
     def predict(self, features):
@@ -125,8 +125,19 @@ def cap_rows(rng, rows, cap):
     return rng.choice(rows, cap, replace=False)
 
 
-def prepare_rows(raw_train, target_train, raw_test, target_test, *, use_test, stratify, rng,
-                 nori_cap, selection_fraction=SELECTION_FRACTION, random_state=0):
+def prepare_rows(
+    raw_train,
+    target_train,
+    raw_test,
+    target_test,
+    *,
+    use_test,
+    stratify,
+    rng,
+    nori_cap,
+    selection_fraction=SELECTION_FRACTION,
+    random_state=0,
+):
     """Impute, sample, and assemble :class:`SelectionRows` from the RAW feature arrays.
 
     Takes raw (un-imputed) features on purpose: each stage is imputed from its own training
@@ -139,36 +150,57 @@ def prepare_rows(raw_train, target_train, raw_test, target_test, *, use_test, st
     features_test = fill_nan(raw_test, mu_train)
 
     all_rows = np.arange(len(features_train))
-    final_rows = cap_rows(rng, all_rows, nori_cap)      # drawn FIRST — see module docstring
+    final_rows = cap_rows(rng, all_rows, nori_cap)  # drawn FIRST — see module docstring
     final_features, final_target = features_train[final_rows], target_train[final_rows]
 
     if use_test:
         # Post-hoc reading: perturb the deployed model on held-out data.
         rows = SelectionRows(
-            final_features=final_features, final_target=final_target,
-            select_fit_features=final_features, select_fit_target=final_target,
-            select_eval_features=features_test, select_eval_target=target_test,
-            use_test=True, n_select_fit=len(final_features), n_select_eval=len(features_test),
+            final_features=final_features,
+            final_target=final_target,
+            select_fit_features=final_features,
+            select_fit_target=final_target,
+            select_eval_features=features_test,
+            select_eval_target=target_test,
+            use_test=True,
+            n_select_fit=len(final_features),
+            n_select_eval=len(features_test),
         )
         return rows, mu_train, features_train, features_test
 
-    fit_rows, eval_rows = train_test_split(all_rows, test_size=selection_fraction,
-                                           random_state=random_state, stratify=stratify)
-    mu_select = train_means(raw_train[fit_rows])        # the carve-out's OWN column means
+    fit_rows, eval_rows = train_test_split(
+        all_rows, test_size=selection_fraction, random_state=random_state, stratify=stratify
+    )
+    mu_select = train_means(raw_train[fit_rows])  # the carve-out's OWN column means
     capped = cap_rows(rng, fit_rows, nori_cap)
     rows = SelectionRows(
-        final_features=final_features, final_target=final_target,
+        final_features=final_features,
+        final_target=final_target,
         select_fit_features=fill_nan(raw_train[capped], mu_select),
         select_fit_target=target_train[capped],
         select_eval_features=fill_nan(raw_train[eval_rows], mu_select),
         select_eval_target=target_train[eval_rows],
-        use_test=False, n_select_fit=len(fit_rows), n_select_eval=len(eval_rows),
+        use_test=False,
+        n_select_fit=len(fit_rows),
+        n_select_eval=len(eval_rows),
     )
     return rows, mu_train, features_train, features_test
 
 
-def select_features(rows, *, model, metric, metric_name, task, importance_fn, retain,
-                    reduce_threshold, n_features, log=None, sweep_fractions=SWEEP_FRACTIONS):
+def select_features(
+    rows,
+    *,
+    model,
+    metric,
+    metric_name,
+    task,
+    importance_fn,
+    retain,
+    reduce_threshold,
+    n_features,
+    log=None,
+    sweep_fractions=SWEEP_FRACTIONS,
+):
     """Rank the features, then keep the fewest that retain ``retain`` of the model's skill.
 
     ``importance_fn(fitted_model, features, target) -> (importance, base_score)`` decides HOW
@@ -179,8 +211,7 @@ def select_features(rows, *, model, metric, metric_name, task, importance_fn, re
     """
     say = log or (lambda *a: None)
     select_model = new_nori(model, task).fit(rows.select_fit_features, rows.select_fit_target)
-    importance, base_score = importance_fn(select_model, rows.select_eval_features,
-                                           rows.select_eval_target)
+    importance, base_score = importance_fn(select_model, rows.select_eval_features, rows.select_eval_target)
     order = list(np.argsort(-np.asarray(importance)))
 
     full = metric(rows.select_eval_target, select_model.predict(rows.select_eval_features))
@@ -190,10 +221,8 @@ def select_features(rows, *, model, metric, metric_name, task, importance_fn, re
     if reduced:
         for k in sorted({max(1, math.ceil(f * n_features)) for f in sweep_fractions}):
             cols = order[:k]
-            fitted = new_nori(model, task).fit(rows.select_fit_features[:, cols],
-                                              rows.select_fit_target)
-            score = metric(rows.select_eval_target,
-                           fitted.predict(rows.select_eval_features[:, cols]))
+            fitted = new_nori(model, task).fit(rows.select_fit_features[:, cols], rows.select_fit_target)
+            score = metric(rows.select_eval_target, fitted.predict(rows.select_eval_features[:, cols]))
             curve.append({"k": k, metric_name: round(float(score), 4)})
             say(f"  top {k:>4}/{n_features:<4} {metric_name}={score:+.4f} (target {target:+.4f})")
             if score >= target:
@@ -204,15 +233,21 @@ def select_features(rows, *, model, metric, metric_name, task, importance_fn, re
         columns = list(range(n_features))
         say(f"  d={n_features} <= reduce_threshold={reduce_threshold}: keeping every feature")
 
-    selection = Selection(importance=np.asarray(importance), order=order, columns=list(columns),
-                          reduced=reduced, base_score=float(base_score),
-                          select_full_score=float(full), select_score=float(at_k),
-                          target=float(target), curve=curve)
+    selection = Selection(
+        importance=np.asarray(importance),
+        order=order,
+        columns=list(columns),
+        reduced=reduced,
+        base_score=float(base_score),
+        select_full_score=float(full),
+        select_score=float(at_k),
+        target=float(target),
+        curve=curve,
+    )
     return selection, select_model
 
 
-def score_on_test(rows, selection, *, model, metric, features_test, target_test, task=None,
-                  full_model=None):
+def score_on_test(rows, selection, *, model, metric, features_test, target_test, task=None, full_model=None):
     """Report the model's skill on the test split, on all features and on the selected ones.
 
     Two reuses avoid pointless refits when ``use_test=True``: ``full_model`` (the model

@@ -1,4 +1,5 @@
 """Small shared helpers: task detection, skill metric, 95%-target, NaN imputation."""
+
 import warnings
 
 import numpy as np
@@ -7,7 +8,7 @@ from sklearn.metrics import r2_score, roc_auc_score
 
 
 TASKS = ("regression", "classification", "multiclass")
-MAX_CLASSES = 20   # above this, an integer target is treated as a regression target
+MAX_CLASSES = 20  # above this, an integer target is treated as a regression target
 
 
 def detect_task(y, forced="auto"):
@@ -43,8 +44,11 @@ def _macro_ovr_auc(y_true, scores):
     scores = np.asarray(scores)
     if scores.ndim == 1:
         raise ValueError("multiclass scoring needs one score column per class, got a 1-D array")
-    aucs = [roc_auc_score((y_true == k).astype(int), scores[:, k])
-            for k in range(scores.shape[1]) if 0 < (y_true == k).sum() < len(y_true)]
+    aucs = [
+        roc_auc_score((y_true == k).astype(int), scores[:, k])
+        for k in range(scores.shape[1])
+        if 0 < (y_true == k).sum() < len(y_true)
+    ]
     if not aucs:
         raise ValueError("no class in y_true has both positive and negative examples")
     return float(np.mean(aucs))
@@ -75,8 +79,10 @@ def target_classes(*ys, expect=None):
     if len(classes) < 2:
         raise ValueError(f"classification needs at least 2 classes, got {len(classes)}")
     if expect is not None and len(classes) != expect:
-        raise ValueError(f"expected exactly {expect} classes, got {len(classes)}: "
-                         f"{classes.tolist()}. Pass task='regression' or 'multiclass' instead.")
+        raise ValueError(
+            f"expected exactly {expect} classes, got {len(classes)}: "
+            f"{classes.tolist()}. Pass task='regression' or 'multiclass' instead."
+        )
     return classes
 
 
@@ -115,7 +121,7 @@ def train_means(Xtr):
     """Per-column means of Xtr over the FINITE entries (0.0 for columns with none).
     +/-inf is treated as missing, so one infinite cell cannot poison a column's mean."""
     X = np.asarray(Xtr, np.float32)
-    with warnings.catch_warnings():                  # an all-missing column is expected here
+    with warnings.catch_warnings():  # an all-missing column is expected here
         warnings.simplefilter("ignore", RuntimeWarning)
         mu = np.nanmean(np.where(np.isfinite(X), X, np.nan), 0)
     return np.where(np.isnan(mu), 0.0, mu)

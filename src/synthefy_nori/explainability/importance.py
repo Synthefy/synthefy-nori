@@ -12,6 +12,7 @@ some surrogate:
     (reuses :mod:`synthefy_nori.interpretability.shapiq`). Needs the
     ``interpretability`` extra (``pip install "synthefy-nori[interpretability]"``).
 """
+
 import numpy as np
 
 
@@ -41,8 +42,8 @@ def nori_permutation_importance(model, X, y, metric, *, n_repeats=3, random_stat
         drop = 0.0
         for _ in range(n_repeats):
             Xp = X.copy()
-            Xp[:, j] = X[rng.permutation(len(X)), j]        # shuffle column j
-            drop += base - metric(y, model.predict(Xp))     # store the skill drop
+            Xp[:, j] = X[rng.permutation(len(X)), j]  # shuffle column j
+            drop += base - metric(y, model.predict(Xp))  # store the skill drop
         imp[j] = drop / n_repeats
     return imp, base
 
@@ -61,17 +62,19 @@ def nori_shap_importance(model, X_query, background, *, budget=256, max_order=1,
     Returns:
         length-d array of mean absolute Shapley values.
     """
-    try:                                             # optional dep: the interpretability extra
+    try:  # optional dep: the interpretability extra
         from synthefy_nori.interpretability.shapiq import get_nori_imputation_explainer
     except ImportError as exc:
-        raise ImportError("shapiq is required for SHAP importance; install it with "
-                          'pip install "synthefy-nori[interpretability]"') from exc
+        raise ImportError(
+            'shapiq is required for SHAP importance; install it with pip install "synthefy-nori[interpretability]"'
+        ) from exc
 
     X_query = np.asarray(X_query, np.float64)
     background = np.asarray(background, np.float64)
     d = X_query.shape[1]
-    expl = get_nori_imputation_explainer(model, background, index="SV", max_order=max_order,
-                                         imputer="baseline", random_state=random_state)
+    expl = get_nori_imputation_explainer(
+        model, background, index="SV", max_order=max_order, imputer="baseline", random_state=random_state
+    )
     acc = np.zeros(d)
     for row in X_query:
         iv = expl.explain(row.reshape(1, -1), budget=budget)
