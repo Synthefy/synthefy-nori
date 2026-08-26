@@ -300,7 +300,5 @@ def test_sdist_rebuild_with_same_paths_but_different_bytes_is_rejected(tmp_path)
         extra_runtime_files=("synthefy/client.py",),
     )
 
-    with pytest.raises(
-        validator.BoundaryError, match="member_fingerprints"
-    ):
+    with pytest.raises(validator.BoundaryError, match="member_fingerprints"):
         validator.validate_artifacts(**artifacts)

@@ -130,17 +130,17 @@ class TrainingConfig:
     scale_variation: bool = False
 
     # TabICL prior generator (alternative data source from TabICL's prior system)
-    scm_prior: bool = False   # Enable TabICL MLP/Tree SCM prior
+    scm_prior: bool = False  # Enable TabICL MLP/Tree SCM prior
     scm_prior_prob: float = 0.5  # Per-dataset probability of using TabICL prior
 
     # Synthetic data v4 augmentations (TabICLv2-inspired diversity improvements)
     synth_v4: bool = False
-    v4_filter: bool = True         # ExtraTrees filtering (reject unlearnable data)
+    v4_filter: bool = True  # ExtraTrees filtering (reject unlearnable data)
     learnability_filter: bool = False  # Standalone ExtraTrees filter (independent of synth_v4)
     learnability_filter_cls_min_score: float = 0.60
     learnability_filter_cls_margin: float = 0.10
     learnability_filter_reg_min_score: float = 0.10
-    icl_filter_model: str = ''       # Path to frozen LimiX checkpoint for ICL-based filtering
+    icl_filter_model: str = ""  # Path to frozen LimiX checkpoint for ICL-based filtering
     icl_filter_cls_min_auc: float = 0.55
     icl_filter_reg_min_r2: float = 0.05
     # Compatibility field for older manifests. The sampled training split is
@@ -161,11 +161,11 @@ class TrainingConfig:
     synth_v5_mixture: bool = False  # mixture prior: 25% v4, 35% v5c, 40% v5a per dataset
 
     # Task-type specialization: 'both' (default 50/50), 'cls', or 'reg'
-    task_type: str = 'both'
+    task_type: str = "both"
 
     # Regression training improvements
     regression_ratio: float = 0.5  # fraction of 'both' steps that are regression
-    regression_loss: str = 'mse'  # 'mse', 'smooth_l1', 'huber', 'pinball', 'bar_distribution'
+    regression_loss: str = "mse"  # 'mse', 'smooth_l1', 'huber', 'pinball', 'bar_distribution'
     regression_loss_beta: float = 1.0  # beta for smooth_l1/huber (ignored for mse)
     regression_quantiles: tuple[float, ...] = (0.1, 0.25, 0.5, 0.75, 0.9)
     # Tail-weighted pinball: upweight extreme quantiles to fix right/left-tail
@@ -206,7 +206,7 @@ class TrainingConfig:
     bar_target_sigma_y: float = 0.0
     # Bar borders mode: 'uniform' (linspace [low, high]) or 'normal_quantile'
     # (N(0,1) quantile-spaced — ~3-4× more bins concentrated near y=0).
-    bar_borders_mode: str = 'uniform'
+    bar_borders_mode: str = "uniform"
     # Auxiliary MSE weight on bar head's expected-value point estimate.
     # Forces softmax(logits)·bin_centers to be calibrated against true y,
     # fixing the "compression" failure mode where bar CE is satisfied but
@@ -216,7 +216,7 @@ class TrainingConfig:
     reg_denoise: bool = False  # reduce noise for regression episodes
     reg_deterministic_prob: float = 0.20  # probability a regression-prior episode is zero-noise
     reg_dense: bool = False  # dense-signal regression mode: flat importances,
-                             # fewer noise features, more parents, higher R²
+    # fewer noise features, more parents, higher R²
 
     # Probabilistic classification labelers (non-percentile class boundaries)
     # When True, ~50% of cls episodes use logistic/tree/Gaussian/threshold labelers
@@ -391,4 +391,4 @@ class TrainingConfig:
 
     # Async data prefetching
     prefetch_workers: int = 4  # number of background data generation processes (0 = disabled)
-    prefetch_count: int = 4    # number of batches to prefetch ahead
+    prefetch_count: int = 4  # number of batches to prefetch ahead

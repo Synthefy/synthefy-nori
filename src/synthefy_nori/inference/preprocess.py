@@ -13,9 +13,9 @@ from sklearn.preprocessing import (
     FunctionTransformer,
     PowerTransformer,
     StandardScaler,
-    QuantileTransformer, 
+    QuantileTransformer,
     MinMaxScaler,
-    RobustScaler
+    RobustScaler,
 )
 from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.impute import SimpleImputer
@@ -97,8 +97,7 @@ class _TorchTruncatedSVD(BaseEstimator, TransformerMixin):
     ignored so it slots into sklearn Pipelines unchanged.
     """
 
-    def __init__(self, n_components=2, *, random_state=None, algorithm=None,
-                 n_iter=None, n_oversamples=None):
+    def __init__(self, n_components=2, *, random_state=None, algorithm=None, n_iter=None, n_oversamples=None):
         self.n_components = int(n_components)
         self.random_state = random_state
         self.algorithm = algorithm
@@ -107,8 +106,7 @@ class _TorchTruncatedSVD(BaseEstimator, TransformerMixin):
 
     def _sklearn_fallback(self, X):
         algo = self.algorithm or "randomized"
-        m = TruncatedSVD(n_components=self.n_components, algorithm=algo,
-                         random_state=self.random_state)
+        m = TruncatedSVD(n_components=self.n_components, algorithm=algo, random_state=self.random_state)
         out = m.fit_transform(X)
         self.components_ = m.components_
         return out
@@ -127,7 +125,9 @@ class _TorchTruncatedSVD(BaseEstimator, TransformerMixin):
             dev = _resolve_svd_device()
             Xt = torch.from_numpy(Xnp).to(dev)
             U, S, Vh = torch.linalg.svd(Xt, full_matrices=False)
-            U = U[:, :k]; S = S[:k]; Vh = Vh[:k]
+            U = U[:, :k]
+            S = S[:k]
+            Vh = Vh[:k]
             # svd_flip, u_based_decision=True (sklearn's default for both solvers):
             # sign each component so the largest-|.| entry of its U column is +.
             idx = U.abs().argmax(dim=0)
@@ -155,11 +155,12 @@ class _TorchTruncatedSVD(BaseEstimator, TransformerMixin):
                 pass
         return Xnp @ self.components_.T
 
+
 class SelectiveInversePipeline(Pipeline):
     def __init__(self, steps, skip_inverse=None):
         super().__init__(steps)
         self.skip_inverse = skip_inverse or []
-    
+
     def inverse_transform(self, X):
         """inverse_transform that skips the configured steps."""
         if X.shape[1] == 0:
@@ -170,27 +171,25 @@ class SelectiveInversePipeline(Pipeline):
                 check_is_fitted(transformer)
             except Exception:
                 continue
-            
+
             if name in self.skip_inverse:
                 continue
-                
-            if hasattr(transformer, 'inverse_transform'):
+
+            if hasattr(transformer, "inverse_transform"):
                 X = transformer.inverse_transform(X)
                 if np.any(np.isnan(X)):
                     print(f"After reverse RebalanceFeatureDistribution of {name}, there is nan")
         return X
 
+
 class RobustPowerTransformer(PowerTransformer):
     """PowerTransformer with automatic feature reversion when variance or value constraints fail."""
 
-    def __init__(self, var_tolerance: float = 1e-3,
-                 max_abs_value: float = 100,
-                 **kwargs: Any) -> None:
+    def __init__(self, var_tolerance: float = 1e-3, max_abs_value: float = 100, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.var_tolerance = var_tolerance
         self.max_abs_value = max_abs_value
         self.restore_indices_: np.ndarray | None = None
-
 
     def fit(self, X, y=None):
         fitted = super().fit(X, y)
@@ -198,7 +197,7 @@ class RobustPowerTransformer(PowerTransformer):
         return fitted
 
     def fit_transform(self, X, y=None):
-        Z = super().fit_transform(X,y)
+        Z = super().fit_transform(X, y)
         self.restore_indices_ = self._should_revert(Z)
         return Z
 
@@ -225,9 +224,7 @@ class RobustPowerTransformer(PowerTransformer):
         "Overload_yeo_johnson_optimize to avoid crashes caused by values such as NaN and Inf."
         try:
             with warnings.catch_warnings():
-                warnings.filterwarnings("ignore",
-                                        message=r"overflow encountered",
-                                        category=RuntimeWarning)
+                warnings.filterwarnings("ignore", message=r"overflow encountered", category=RuntimeWarning)
                 return super()._yeo_johnson_optimize(x)  # type: ignore
         except Exception as e:
             return np.nan
@@ -237,6 +234,7 @@ class RobustPowerTransformer(PowerTransformer):
         if np.isnan(lmbda):
             return x
         return super()._yeo_johnson_transform(x, lmbda)  # type: ignore
+
 
 class AdaptiveColumnTransformer(BaseEstimator, TransformerMixin):
     """TabPFN-style per-column adaptive preprocessor.
@@ -284,7 +282,8 @@ class AdaptiveColumnTransformer(BaseEstimator, TransformerMixin):
             return 0.0
         try:
             from scipy.stats import skew as _scipy_skew
-            return float(_scipy_skew(x, bias=False, nan_policy='omit'))
+
+            return float(_scipy_skew(x, bias=False, nan_policy="omit"))
         except Exception:
             return 0.0
 
@@ -292,10 +291,10 @@ class AdaptiveColumnTransformer(BaseEstimator, TransformerMixin):
     def _categorize(cls, x_col: np.ndarray) -> str:
         x_finite = x_col[np.isfinite(x_col)]
         if len(x_finite) < 3:
-            return 'identity'
+            return "identity"
         n_unique = int(len(np.unique(x_finite)))
         if n_unique < 10:
-            return 'ordinal'
+            return "ordinal"
         skew_val = cls._skew(x_finite)
         x_min, x_max = float(np.min(x_finite)), float(np.max(x_finite))
         # Heavy positive-skew (income/price/count distributions): use log1p
@@ -306,61 +305,68 @@ class AdaptiveColumnTransformer(BaseEstimator, TransformerMixin):
         if x_min >= 0:
             fp = cls._fp_skew(x_finite)
             if fp > 5.0:
-                return 'positive_heavy_skew'
+                return "positive_heavy_skew"
         if abs(skew_val) > 1.1:
             if x_min >= 0:
                 if x_max <= 1.0:
-                    return 'skewed_pos_01'
-                return 'skewed_pos'
-            return 'skewed'
+                    return "skewed_pos_01"
+                return "skewed_pos"
+            return "skewed"
         # Shapiro normality on a sample (it's expensive on large N)
         try:
             from scipy.stats import shapiro
+
             sub = x_finite[:3000] if len(x_finite) > 3000 else x_finite
             stat = float(shapiro(sub).statistic)
             if stat > 0.95:
-                return 'normal'
+                return "normal"
         except Exception:
             pass
-        return 'other'
+        return "other"
 
     def _make_transformer(self, cat: str):
         """Return a fresh sklearn transformer for the given column category."""
-        if cat in ('identity', 'ordinal', 'normal'):
+        if cat in ("identity", "ordinal", "normal"):
             return FunctionTransformer()
-        if cat == 'skewed_pos_01':
+        if cat == "skewed_pos_01":
             # exp pulls (0,1)-bounded right-skew into broader range; identity inverse via log.
             return FunctionTransformer(
-                func=np.exp, inverse_func=np.log, check_inverse=False,
+                func=np.exp,
+                inverse_func=np.log,
+                check_inverse=False,
             )
         # scikit-learn PowerTransformer (Yeo-Johnson) for skewed columns.
         # (Verified numerically identical to the previously-optional
         # SafePowerTransformer on the winsorized feature ranges seen here.)
         _PowerImpl = PowerTransformer
-        if cat == 'positive_heavy_skew':
+        if cat == "positive_heavy_skew":
             # log1p first (textbook for heavy positive skew: income/price/counts),
             # then standardize. yeo-johnson under-fits very heavy tails.
-            return Pipeline([
-                ('log1p', FunctionTransformer(func=np.log1p, inverse_func=np.expm1, check_inverse=False)),
-                ('std', StandardScaler()),
-            ])
-        if cat == 'skewed_pos':
+            return Pipeline(
+                [
+                    ("log1p", FunctionTransformer(func=np.log1p, inverse_func=np.expm1, check_inverse=False)),
+                    ("std", StandardScaler()),
+                ]
+            )
+        if cat == "skewed_pos":
             # Box-cox needs strictly positive input; ensure with MinMax→(0.1,1).
-            return Pipeline([
-                ('mm', MinMaxScaler(feature_range=(0.1, 1.0), clip=True)),
-                ('bc', _PowerImpl(method='box-cox', standardize=True)),
-            ])
-        if cat == 'skewed':
-            return _PowerImpl(method='yeo-johnson', standardize=True)
+            return Pipeline(
+                [
+                    ("mm", MinMaxScaler(feature_range=(0.1, 1.0), clip=True)),
+                    ("bc", _PowerImpl(method="box-cox", standardize=True)),
+                ]
+            )
+        if cat == "skewed":
+            return _PowerImpl(method="yeo-johnson", standardize=True)
         # 'other'
         return CappedQuantileTransformer(
-            output_distribution='normal',
+            output_distribution="normal",
             n_quantiles=self.n_quantiles,
             random_state=self.random_state,
             subsample=int(1e6),
         )
 
-    def fit(self, X: np.ndarray, y=None) -> 'AdaptiveColumnTransformer':
+    def fit(self, X: np.ndarray, y=None) -> "AdaptiveColumnTransformer":
         X = np.asarray(X, dtype=np.float64)
         n_samples, n_features = X.shape
         self.column_categories_: list[str] = []
@@ -376,23 +382,22 @@ class AdaptiveColumnTransformer(BaseEstimator, TransformerMixin):
         # applies to all rows. SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE=0 -> exact legacy.
         cap = int(os.environ.get("SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE", "2000"))
         if cap > 0 and n_samples > cap:
-            fit_idx = np.random.default_rng(self.random_state).choice(
-                n_samples, size=cap, replace=False)
+            fit_idx = np.random.default_rng(self.random_state).choice(n_samples, size=cap, replace=False)
             X_fit = X[fit_idx]
         else:
             X_fit = X
         for i in range(n_features):
-            cat = self._categorize(X[:, i])          # exact: full column
+            cat = self._categorize(X[:, i])  # exact: full column
             t = self._make_transformer(cat)
-            fit_col = X_fit[:, i:i + 1]               # cheap: fit on subsample
+            fit_col = X_fit[:, i : i + 1]  # cheap: fit on subsample
             try:
                 # sklearn ColumnTransformer-style: fit a 2D slice
                 t.fit(fit_col)
             except Exception:
                 # Degenerate column (all-NaN, all-equal): fall back to identity
                 t = FunctionTransformer()
-                t.fit(X[:, i:i + 1])
-                cat = 'identity'
+                t.fit(X[:, i : i + 1])
+                cat = "identity"
             self.column_categories_.append(cat)
             self.column_transformers_.append(t)
         return self
@@ -408,8 +413,8 @@ class AdaptiveColumnTransformer(BaseEstimator, TransformerMixin):
         out = np.empty_like(X, dtype=np.float64)
         for i, t in enumerate(self.column_transformers_):
             try:
-                col = t.transform(X[:, i:i + 1])
-                out[:, i:i + 1] = np.asarray(col, dtype=np.float64)
+                col = t.transform(X[:, i : i + 1])
+                out[:, i : i + 1] = np.asarray(col, dtype=np.float64)
             except Exception:
                 # Test-time corrupted column (all NaN, etc.): fall back to median fill 0
                 out[:, i] = 0.0
@@ -425,8 +430,8 @@ class AdaptiveColumnTransformer(BaseEstimator, TransformerMixin):
         out = np.empty_like(X, dtype=np.float64)
         for i, t in enumerate(self.column_transformers_):
             try:
-                if hasattr(t, 'inverse_transform'):
-                    out[:, i:i + 1] = t.inverse_transform(X[:, i:i + 1])
+                if hasattr(t, "inverse_transform"):
+                    out[:, i : i + 1] = t.inverse_transform(X[:, i : i + 1])
                 else:
                     out[:, i] = X[:, i]
             except Exception:
@@ -437,18 +442,21 @@ class AdaptiveColumnTransformer(BaseEstimator, TransformerMixin):
 class BasePreprocess:
     """Abstract base class for preprocessing class"""
 
-    def fit(self, x:np.ndarray, categorical_features:list[int], seed:int, **kwargs)->list[int]:
+    def fit(self, x: np.ndarray, categorical_features: list[int], seed: int, **kwargs) -> list[int]:
         """Fit the preprocessing model to the data"""
         raise NotImplementedError
-    
-    def transform(self, x:np.ndarray, **kwargs)->tuple[np.ndarray, list[int]]:
+
+    def transform(self, x: np.ndarray, **kwargs) -> tuple[np.ndarray, list[int]]:
         """Transform the data using the fitted preprocessing model"""
         raise NotImplementedError
-    
-    def fit_transform(self, x:np.ndarray, categorical_features:list[int], seed:int, **kwargs)->tuple[np.ndarray, list[int]]:
+
+    def fit_transform(
+        self, x: np.ndarray, categorical_features: list[int], seed: int, **kwargs
+    ) -> tuple[np.ndarray, list[int]]:
         """Fit the preprocessing model to the data and transform the data"""
         self.fit(x, categorical_features, seed, **kwargs)
         return self.transform(x, **kwargs)
+
 
 def infer_random_state(
     random_state: int | np.random.RandomState | np.random.Generator | None,
@@ -457,18 +465,19 @@ def infer_random_state(
     if random_state is None:
         np_rng = np.random.default_rng()
         return int(np_rng.integers(0, MAXINT_RANDOM_SEED)), np_rng
-        
+
     if isinstance(random_state, (int, np.integer)):
         return int(random_state), np.random.default_rng(random_state)
-        
+
     if isinstance(random_state, np.random.RandomState):
         seed = int(random_state.randint(0, MAXINT_RANDOM_SEED))
         return seed, np.random.default_rng(seed)
-        
+
     if isinstance(random_state, np.random.Generator):
         return int(random_state.integers(0, MAXINT_RANDOM_SEED)), random_state
-        
+
     raise ValueError(f"Invalid random_state {random_state}")
+
 
 class FilterValidFeatures(BasePreprocess):
     def __init__(self):
@@ -478,7 +487,9 @@ class FilterValidFeatures(BasePreprocess):
         self.invalid_features: list[int] | None = None
 
     @override
-    def fit(self, x:np.ndarray, categorical_features:list[int], seed:int, y:np.ndarray | None = None, **kwargs) -> list[int]:
+    def fit(
+        self, x: np.ndarray, categorical_features: list[int], seed: int, y: np.ndarray | None = None, **kwargs
+    ) -> list[int]:
         self.categorical_idx = categorical_features
         self.valid_features = np.asarray(
             (x[0:1, :] == x).mean(axis=0) < 1.0,
@@ -500,7 +511,7 @@ class FilterValidFeatures(BasePreprocess):
             all_nan_train = np.all(nan_train, axis=0)
             nan_test = np.isnan(x[eval_pos:, :])
             all_nan_test = np.all(nan_test, axis=0)
-            
+
             features_nan = all_nan_train | all_nan_test
             self.valid_features = self.valid_features & ~features_nan
             self.invalid_indices = self.invalid_indices | features_nan
@@ -509,15 +520,13 @@ class FilterValidFeatures(BasePreprocess):
             raise ValueError("All features are constant! Please check your data.")
 
         self.categorical_idx = [
-            index
-            for index, idx in enumerate(np.where(self.valid_features)[0])
-            if idx in categorical_features
+            index for index, idx in enumerate(np.where(self.valid_features)[0]) if idx in categorical_features
         ]
 
         return self.categorical_idx
-    
+
     @override
-    def transform(self, x:np.ndarray, **kwargs) -> tuple[np.ndarray, list[int]]:
+    def transform(self, x: np.ndarray, **kwargs) -> tuple[np.ndarray, list[int]]:
         assert self.valid_features is not None, "You must call fit first to get effective_features"
         self.invalid_features = x[:, self.invalid_indices]
         return x[:, self.valid_features], self.categorical_idx
@@ -548,8 +557,7 @@ class MADWinsorizer(BasePreprocess):
         eliminate valid categorical values.
     """
 
-    def __init__(self, *, n_mad: float = 6.0, skip_categorical: bool = True,
-                  soft_log_clip: bool = False):
+    def __init__(self, *, n_mad: float = 6.0, skip_categorical: bool = True, soft_log_clip: bool = False):
         self.n_mad = float(n_mad)
         self.skip_categorical = bool(skip_categorical)
         # Replace hard clip at boundary with soft logarithmic clip.
@@ -590,7 +598,7 @@ class MADWinsorizer(BasePreprocess):
         if x.shape[1] != len(self.median_):
             # Shape changed (e.g., upstream filter dropped columns). Skip
             # winsorization rather than crash; this is a safety fallback.
-            return x.astype(np.float32), kwargs.get('categorical_features', [])
+            return x.astype(np.float32), kwargs.get("categorical_features", [])
         if self.soft_log_clip:
             # Soft logarithmic clip: values beyond bounds are mapped to
             # bound + sign(excess) * log1p(|excess|). Preserves ordering
@@ -622,7 +630,7 @@ class FeatureShuffler(BasePreprocess):
 
     def __init__(
         self,
-        mode: Literal['rotate', 'shuffle', 'latin'] | None = "shuffle",
+        mode: Literal["rotate", "shuffle", "latin"] | None = "shuffle",
         offset: int = 0,
     ):
         super().__init__()
@@ -633,7 +641,7 @@ class FeatureShuffler(BasePreprocess):
         self.categorical_indices = None
 
     @override
-    def fit(self, x:np.ndarray, categorical_features:list[int], seed:int, **kwargs) -> list[int]:
+    def fit(self, x: np.ndarray, categorical_features: list[int], seed: int, **kwargs) -> list[int]:
         n_features = x.shape[1]
         self.random_seed = seed
 
@@ -662,17 +670,18 @@ class FeatureShuffler(BasePreprocess):
 
         is_categorical = np.isin(np.arange(n_features), categorical_features)
         self.categorical_indices = np.where(is_categorical[self.feature_indices])[0].tolist()
-        
+
         return self.categorical_indices
 
     @override
-    def transform(self, x:np.ndarray, **kwargs) -> tuple[np.ndarray, list[int]]:
+    def transform(self, x: np.ndarray, **kwargs) -> tuple[np.ndarray, list[int]]:
         if self.feature_indices is None:
             raise RuntimeError("Please call the fit method first to initialize")
         if len(self.feature_indices) != x.shape[1]:
             raise ValueError("The number of features in the input data does not match the training data")
-            
+
         return x[:, self.feature_indices], self.categorical_indices or []
+
 
 class CategoricalFeatureEncoder(BasePreprocess):
     """
@@ -681,7 +690,10 @@ class CategoricalFeatureEncoder(BasePreprocess):
 
     def __init__(
         self,
-        encoding_strategy: Literal['ordinal', 'ordinal_strict_feature_shuffled', 'ordinal_shuffled', 'onehot', 'numeric', 'none']|None = "ordinal",
+        encoding_strategy: Literal[
+            "ordinal", "ordinal_strict_feature_shuffled", "ordinal_shuffled", "onehot", "numeric", "none"
+        ]
+        | None = "ordinal",
     ):
         super().__init__()
         self.encoding_strategy = encoding_strategy
@@ -723,9 +735,7 @@ class CategoricalFeatureEncoder(BasePreprocess):
             if Xt.size >= 1_000_000:
                 ct = None
             else:
-                categorical_features = list(range(Xt.shape[1]))[
-                    ct.output_indices_["one_hot_encoder"]
-                ]
+                categorical_features = list(range(Xt.shape[1]))[ct.output_indices_["one_hot_encoder"]]
         else:
             raise ValueError(
                 f"Unknown categorical transform {self.encoding_strategy}",
@@ -736,12 +746,12 @@ class CategoricalFeatureEncoder(BasePreprocess):
         return categorical_features
 
     @override
-    def fit(self, x:np.ndarray, categorical_features:list[int], seed:int, **kwargs) -> list[int]:
+    def fit(self, x: np.ndarray, categorical_features: list[int], seed: int, **kwargs) -> list[int]:
         self.random_seed = seed
         return self._fit_impl(x, categorical_features)
 
     @override
-    def transform(self, x:np.ndarray, **kwargs) -> tuple[np.ndarray, list[int]]:
+    def transform(self, x: np.ndarray, **kwargs) -> tuple[np.ndarray, list[int]]:
         if self.transformer is None:
             return x, self.categorical_features or []
 
@@ -757,7 +767,9 @@ class CategoricalFeatureEncoder(BasePreprocess):
         return Xt, categorical_features
 
     @override
-    def fit_transform(self, x:np.ndarray, categorical_features:list[int], seed:int, **kwargs) -> tuple[np.ndarray, list[int]]:
+    def fit_transform(
+        self, x: np.ndarray, categorical_features: list[int], seed: int, **kwargs
+    ) -> tuple[np.ndarray, list[int]]:
         self.fit(x, categorical_features, seed, **kwargs)
         return self.transform(x, **kwargs)
 
@@ -768,43 +780,57 @@ class CategoricalFeatureEncoder(BasePreprocess):
             return 0
         return int(np.unique(column, return_counts=True)[1].min())
 
-    def _create_transformer(self, data: np.ndarray, categorical_columns: list[int]) -> tuple[ColumnTransformer | None, list[int]]:
+    def _create_transformer(
+        self, data: np.ndarray, categorical_columns: list[int]
+    ) -> tuple[ColumnTransformer | None, list[int]]:
         """Create an appropriate column transformer"""
         if self.encoding_strategy.startswith("ordinal"):
-            suffix = self.encoding_strategy[len("ordinal"):]
-            
+            suffix = self.encoding_strategy[len("ordinal") :]
+
             if "feature_shuffled" in suffix:
                 categorical_columns = [
-                    idx for idx in categorical_columns 
-                    if self._is_valid_common_category(data[:, idx], suffix)
+                    idx for idx in categorical_columns if self._is_valid_common_category(data[:, idx], suffix)
                 ]
             remainder_columns = [idx for idx in range(data.shape[1]) if idx not in categorical_columns]
             self.feature_indices = categorical_columns + remainder_columns
-                
+
             return ColumnTransformer(
-                [("ordinal_encoder", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=np.nan), categorical_columns)],
-                remainder="passthrough"
+                [
+                    (
+                        "ordinal_encoder",
+                        OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=np.nan),
+                        categorical_columns,
+                    )
+                ],
+                remainder="passthrough",
             ), categorical_columns
-            
+
         elif self.encoding_strategy == "onehot":
             return ColumnTransformer(
-                [("one_hot_encoder", OneHotEncoder(drop="if_binary", sparse_output=False, handle_unknown="ignore"), categorical_columns)],
-                remainder="passthrough"
+                [
+                    (
+                        "one_hot_encoder",
+                        OneHotEncoder(drop="if_binary", sparse_output=False, handle_unknown="ignore"),
+                        categorical_columns,
+                    )
+                ],
+                remainder="passthrough",
             ), categorical_columns
-            
+
         elif self.encoding_strategy in ("numeric", "none"):
             return None, categorical_columns
-            
+
         raise ValueError(f"Unsupported encoding strategy: {self.encoding_strategy}")
 
     def _is_valid_common_category(self, column: np.ndarray, suffix: str) -> bool:
         """Check whether the input data meets the common category conditions"""
         min_count = self.get_least_common_category_count(column)
         unique_count = len(np.unique(column))
-        
+
         if "strict_feature_shuffled" in suffix:
             return min_count >= 10 and unique_count < (len(column) // 10)
         return min_count >= 10
+
 
 class QTx(QuantileTransformer):
     """
@@ -833,13 +859,12 @@ class QTx(QuantileTransformer):
         if isinstance(rs, np.random.Generator):
             rs = np.random.RandomState(int(rs.integers(0, 2**32)))
         elif hasattr(rs, "bit_generator"):
-            raise ValueError(
-                f"Unsupported random_state type: {type(rs)}"
-            )
+            raise ValueError(f"Unsupported random_state type: {type(rs)}")
         self.random_state = rs
 
         # delegate to parent
         return super().fit(X, y)
+
 
 class KDIX(KDITransformer):
     """
@@ -854,7 +879,7 @@ class KDIX(KDITransformer):
 
     def fit(self, X, y=None):
         # accept both numpy and torch
-        if hasattr(X, "detach"):   # torch.Tensor case
+        if hasattr(X, "detach"):  # torch.Tensor case
             base = X.cpu().numpy()
         else:
             base = np.asarray(X)
@@ -890,14 +915,14 @@ class KDIX(KDITransformer):
 
 class RebalanceFeatureDistribution(BasePreprocess):
     def __init__(
-            self,
-            *,
-            worker_tags: list[str] | None = None,
-            discrete_flag: bool = False,
-            original_flag: bool = False,
-            svd_tag: Literal['svd'] | None = None,
-            joined_svd_feature: bool = True,
-            joined_log_normal: bool = True,
+        self,
+        *,
+        worker_tags: list[str] | None = None,
+        discrete_flag: bool = False,
+        original_flag: bool = False,
+        svd_tag: Literal["svd"] | None = None,
+        joined_svd_feature: bool = True,
+        joined_log_normal: bool = True,
     ):
         super().__init__()
         self.worker_tags = worker_tags if worker_tags is not None else ["quantile"]
@@ -912,27 +937,29 @@ class RebalanceFeatureDistribution(BasePreprocess):
         self.n_quantile_features = 0
 
     @override
-    def fit(self, x:np.ndarray, categorical_features:list[int], seed:int, **kwargs) -> list[int]:
+    def fit(self, x: np.ndarray, categorical_features: list[int], seed: int, **kwargs) -> list[int]:
         self.random_state = seed
         n_samples, n_features = x.shape
-        worker, self.dis_ix = self._set(n_samples,n_features,categorical_features)
+        worker, self.dis_ix = self._set(n_samples, n_features, categorical_features)
         worker.fit(x)
         self.worker = worker
         return self.dis_ix
 
     @override
-    def transform(self, x:np.ndarray, **kwargs) -> np.ndarray:
+    def transform(self, x: np.ndarray, **kwargs) -> np.ndarray:
         assert self.worker is not None
         return self.worker.transform(x), self.dis_ix  # type: ignore
 
     @override
-    def fit_transform(self, x:np.ndarray, categorical_features:list[int], seed:int, *, y:np.ndarray, **kwargs)->tuple[np.ndarray, list[int]]:
+    def fit_transform(
+        self, x: np.ndarray, categorical_features: list[int], seed: int, *, y: np.ndarray, **kwargs
+    ) -> tuple[np.ndarray, list[int]]:
         """Fit the preprocessing model to the data and transform the data"""
         assert y is not None, "The input y cannot be None"
-        x_train_ = x[:len(y)]
-        x_test_ = x[len(y):]
+        x_train_ = x[: len(y)]
+        x_test_ = x[len(y) :]
         if x_train_.shape[1] != x_test_.shape[1]:
-            x_test_ = x_test_[:, :x_train_.shape[1]]
+            x_test_ = x_test_[:, : x_train_.shape[1]]
         categorical_idx_ = self.fit(x_train_, categorical_features, seed)
         x_train_, categorical_idx_ = self.transform(x_train_)
         x_test_, categorical_idx_ = self.transform(x_test_)
@@ -940,10 +967,12 @@ class RebalanceFeatureDistribution(BasePreprocess):
 
         return (x_, categorical_idx_)
 
-    def _set(self,n_samples: int,
+    def _set(
+        self,
+        n_samples: int,
         n_features: int,
         categorical_features: list[int],
-        ):
+    ):
         static_seed, rng = infer_random_state(self.random_state)
         all_ix = list(range(n_features))
         workers = []
@@ -964,27 +993,40 @@ class RebalanceFeatureDistribution(BasePreprocess):
         for worker_tag in self.worker_tags:
             # print(f"== worker_tag: \033[31m{worker_tag}\033[0m")
             if worker_tag == "logNormal":
-                sworker = Pipeline(steps=[
-                                        ("save_standard", Pipeline(steps=[
-                                            ("i2n_pre",
-                                             FunctionTransformer(
-                                                 func=_inf_to_nan,
-                                                 inverse_func=_identity, check_inverse=False)),
-                                            ("fill_missing_pre",
-                                             SimpleImputer(missing_values=np.nan, strategy="mean",
-                                                           keep_empty_features=True)),
-                                            ("feature_shift",
-                                             FunctionTransformer(func=_shift_to_nonnegative)),
-                                            ("add_epsilon", FunctionTransformer(func=_add_epsilon)),
-                                            ("logNormal", FunctionTransformer(np.log, validate=False)),
-                                            ("i2n_post",
-                                             FunctionTransformer(
-                                                 func=_inf_to_nan,
-                                                 inverse_func=_identity, check_inverse=False)),
-                                            ("fill_missing_post",
-                                             SimpleImputer(missing_values=np.nan, strategy="mean",
-                                                           keep_empty_features=True))])),
-                                        ])
+                sworker = Pipeline(
+                    steps=[
+                        (
+                            "save_standard",
+                            Pipeline(
+                                steps=[
+                                    (
+                                        "i2n_pre",
+                                        FunctionTransformer(
+                                            func=_inf_to_nan, inverse_func=_identity, check_inverse=False
+                                        ),
+                                    ),
+                                    (
+                                        "fill_missing_pre",
+                                        SimpleImputer(missing_values=np.nan, strategy="mean", keep_empty_features=True),
+                                    ),
+                                    ("feature_shift", FunctionTransformer(func=_shift_to_nonnegative)),
+                                    ("add_epsilon", FunctionTransformer(func=_add_epsilon)),
+                                    ("logNormal", FunctionTransformer(np.log, validate=False)),
+                                    (
+                                        "i2n_post",
+                                        FunctionTransformer(
+                                            func=_inf_to_nan, inverse_func=_identity, check_inverse=False
+                                        ),
+                                    ),
+                                    (
+                                        "fill_missing_post",
+                                        SimpleImputer(missing_values=np.nan, strategy="mean", keep_empty_features=True),
+                                    ),
+                                ]
+                            ),
+                        ),
+                    ]
+                )
                 # trans_ixs = cont_ix
             elif worker_tag == "quantile_uniform_10":
                 sworker = CappedQuantileTransformer(
@@ -1005,42 +1047,48 @@ class RebalanceFeatureDistribution(BasePreprocess):
                     random_state=static_seed,
                     subsample=n_samples,
                 )
-            elif worker_tag == 'power':
-                self.feature_indices = categorical_features+cont_ix
+            elif worker_tag == "power":
+                self.feature_indices = categorical_features + cont_ix
                 self.dis_ix = dis_ix
                 nan_to_mean_transformer = SimpleImputer(
-                                                    missing_values=np.nan,
-                                                    strategy="mean",
-                                                    keep_empty_features=True,
-                                                )
-            
-                sworker = SelectiveInversePipeline(
-                                steps=[
-                                    ("power_transformer", RobustPowerTransformer(standardize=False)),
-                                    ("inf_to_nan_1", FunctionTransformer(
-                                                        func=_inf_to_nan,
-                                                        inverse_func=_identity,
-                                                        check_inverse=False,
-                                                    )),
-                                    ("nan_to_mean_1", nan_to_mean_transformer),
-                                    ("scaler", StandardScaler()),
-                                    ("inf_to_nan_2", FunctionTransformer(
-                                                        func=_inf_to_nan,
-                                                        inverse_func=_identity,
-                                                        check_inverse=False,
-                                                    )),
-                                    ("nan_to_mean_2", nan_to_mean_transformer),
-                                ],
-                        skip_inverse=['nan_to_mean_1', 'nan_to_mean_2']
+                    missing_values=np.nan,
+                    strategy="mean",
+                    keep_empty_features=True,
                 )
 
-            elif worker_tag=="quantile_norm_10":
+                sworker = SelectiveInversePipeline(
+                    steps=[
+                        ("power_transformer", RobustPowerTransformer(standardize=False)),
+                        (
+                            "inf_to_nan_1",
+                            FunctionTransformer(
+                                func=_inf_to_nan,
+                                inverse_func=_identity,
+                                check_inverse=False,
+                            ),
+                        ),
+                        ("nan_to_mean_1", nan_to_mean_transformer),
+                        ("scaler", StandardScaler()),
+                        (
+                            "inf_to_nan_2",
+                            FunctionTransformer(
+                                func=_inf_to_nan,
+                                inverse_func=_identity,
+                                check_inverse=False,
+                            ),
+                        ),
+                        ("nan_to_mean_2", nan_to_mean_transformer),
+                    ],
+                    skip_inverse=["nan_to_mean_1", "nan_to_mean_2"],
+                )
+
+            elif worker_tag == "quantile_norm_10":
                 sworker = QTx(
                     output_distribution="normal",
                     n_quantiles=max(n_samples // 10, 2),
                     random_state=static_seed,
                 )
-            elif worker_tag=="quantile_norm_5":
+            elif worker_tag == "quantile_norm_5":
                 sworker = QTx(
                     output_distribution="normal",
                     n_quantiles=max(n_samples // 5, 2),
@@ -1053,7 +1101,7 @@ class RebalanceFeatureDistribution(BasePreprocess):
                     random_state=static_seed,
                     subsample=n_samples,
                 )
-            elif worker_tag=="norm_and_kdi":
+            elif worker_tag == "norm_and_kdi":
                 sworker = FeatureUnion(
                     [
                         (
@@ -1071,9 +1119,9 @@ class RebalanceFeatureDistribution(BasePreprocess):
                     ],
                 )
 
-            elif worker_tag=="robust":
+            elif worker_tag == "robust":
                 sworker = RobustScaler(unit_variance=True)
-            elif worker_tag=="adaptive":
+            elif worker_tag == "adaptive":
                 # Per-column adaptive routing (TabPFN-style). Each numeric
                 # feature is categorized at fit-time by its distribution and
                 # routed through the appropriate transform: identity for
@@ -1084,11 +1132,11 @@ class RebalanceFeatureDistribution(BasePreprocess):
                     random_state=static_seed,
                     n_quantiles=max(n_samples // 10, 2),
                 )
-            elif worker_tag=="squash":
+            elif worker_tag == "squash":
                 # Robust scaling for outlier / heavy-tail features:
                 # median-centred, IQR-scaled to unit variance.
                 sworker = RobustScaler(unit_variance=True)
-            elif worker_tag=="kdi_uni":
+            elif worker_tag == "kdi_uni":
                 sworker = KDIX(alpha=1.0, output_distribution="uniform")
             elif worker_tag is None:
                 sworker = FunctionTransformer(_identity)
@@ -1098,7 +1146,7 @@ class RebalanceFeatureDistribution(BasePreprocess):
             elif worker_tag.startswith("kdi_norm_alpha_"):
                 alpha = float(worker_tag.split("_")[-1])
                 sworker = KDIX(alpha=alpha, output_distribution="normal")
-            elif worker_tag=="kdi_norm":
+            elif worker_tag == "kdi_norm":
                 sworker = KDIX(alpha=1.0, output_distribution="normal")
             else:
                 sworker = FunctionTransformer(_identity)
@@ -1106,22 +1154,63 @@ class RebalanceFeatureDistribution(BasePreprocess):
                 self.n_quantile_features = len(trans_ixs)
             workers.append((f"feat_transform_{worker_tag}", sworker, trans_ixs))
 
-        CT_worker = ColumnTransformer(workers,remainder="drop",sparse_threshold=0.0)
+        CT_worker = ColumnTransformer(workers, remainder="drop", sparse_threshold=0.0)
         if self.svd_tag == "svd" and n_features >= 2:
-            svd_worker = FeatureUnion([
+            svd_worker = FeatureUnion(
+                [
                     ("default", FunctionTransformer(func=_identity)),
-                    ("svd",Pipeline(steps=[
-                                    ("save_standard",Pipeline(steps=[
-                                    ("i2n_pre", FunctionTransformer(func=_inf_to_nan,inverse_func=_identity, check_inverse=False)),
-                                    ("fill_missing_pre", SimpleImputer(missing_values=np.nan, strategy="mean", keep_empty_features=True)),
-                                    ("standard", StandardScaler(with_mean=False)) ,
-                                    ("i2n_post", FunctionTransformer(func=_inf_to_nan,inverse_func=_identity, check_inverse=False)),
-                                    ("fill_missing_post", SimpleImputer(missing_values=np.nan, strategy="mean", keep_empty_features=True))])),
-                                    ("svd",_TorchTruncatedSVD(algorithm="arpack",n_components=max(1,min(n_samples // 10 + 1,n_features // 2)),random_state=static_seed))]))
-                    ])
-            self.svd_n_comp = max(1,min(n_samples // 10 + 1,n_features // 2))
+                    (
+                        "svd",
+                        Pipeline(
+                            steps=[
+                                (
+                                    "save_standard",
+                                    Pipeline(
+                                        steps=[
+                                            (
+                                                "i2n_pre",
+                                                FunctionTransformer(
+                                                    func=_inf_to_nan, inverse_func=_identity, check_inverse=False
+                                                ),
+                                            ),
+                                            (
+                                                "fill_missing_pre",
+                                                SimpleImputer(
+                                                    missing_values=np.nan, strategy="mean", keep_empty_features=True
+                                                ),
+                                            ),
+                                            ("standard", StandardScaler(with_mean=False)),
+                                            (
+                                                "i2n_post",
+                                                FunctionTransformer(
+                                                    func=_inf_to_nan, inverse_func=_identity, check_inverse=False
+                                                ),
+                                            ),
+                                            (
+                                                "fill_missing_post",
+                                                SimpleImputer(
+                                                    missing_values=np.nan, strategy="mean", keep_empty_features=True
+                                                ),
+                                            ),
+                                        ]
+                                    ),
+                                ),
+                                (
+                                    "svd",
+                                    _TorchTruncatedSVD(
+                                        algorithm="arpack",
+                                        n_components=max(1, min(n_samples // 10 + 1, n_features // 2)),
+                                        random_state=static_seed,
+                                    ),
+                                ),
+                            ]
+                        ),
+                    ),
+                ]
+            )
+            self.svd_n_comp = max(1, min(n_samples // 10 + 1, n_features // 2))
             worker = Pipeline([("worker", CT_worker), ("svd_worker", svd_worker)])
-        else:   
+        else:
             self.svd_n_comp = 0
             worker = CT_worker
 
@@ -1132,29 +1221,30 @@ class RebalanceFeatureDistribution(BasePreprocess):
 # Large constant for hash normalization
 _HASH_MODULUS = 10**12
 
+
 def float_hash_arr(input_array: np.ndarray) -> float:
     """
     Generate a normalized floating-point hash value from a numpy array.
-    
+
     This function computes a SHA256 hash of the array's byte representation,
     converts it to an integer, and normalizes it to a float between 0 and 1.
-    
+
     Args:
         input_array: Input numpy array to be hashed
-        
+
     Returns:
         Normalized hash value in the range [0, 1)
     """
     # Convert array to bytes and compute SHA256 hash
     array_bytes = input_array.tobytes()
     hash_hex = hashlib.sha256(array_bytes).hexdigest()
-    
+
     # Convert hex digest to integer
     hash_int = int(hash_hex, 16)
-    
+
     # Normalize to [0, 1) range using modulus operation
     normalized_hash = (hash_int % _HASH_MODULUS) / _HASH_MODULUS
-    
+
     return normalized_hash
 
 
@@ -1165,37 +1255,37 @@ class FingerprintFeatureEncoder(BasePreprocess):
     For test data: Uses first computed hash even if collisions occur.
     For training data: Resolves hash collisions through iterative rehashing.
     """
-    
+
     def __init__(self, rng_seed: int | np.random.Generator | None = None):
         super().__init__()
         # self.rng_seed = rng_seed
         self.salt_value = None
         self.categorical_features = None
-    
+
     @override
-    def fit(self, x:np.ndarray, categorical_features:list[int], seed:int, **kwargs) -> list[int]:
+    def fit(self, x: np.ndarray, categorical_features: list[int], seed: int, **kwargs) -> list[int]:
         """Initialize random salt and return categorical feature indices."""
         _, rng = infer_random_state(seed)
         self.salt_value = int(rng.integers(0, 65536))  # 2^16 range
         self.categorical_features = categorical_features
         return categorical_features.copy()
-    
+
     @override
-    def transform(self, x:np.ndarray, is_test:bool=False, **kwargs) -> tuple[np.ndarray, list[int]]:
+    def transform(self, x: np.ndarray, is_test: bool = False, **kwargs) -> tuple[np.ndarray, list[int]]:
         """
         Transform input by appending fingerprint column.
-        
+
         Args:
             X_data: Input array of shape (n_samples, n_features)
             is_test: Whether processing test data (affects collision handling)
-            
+
         Returns:
             Transformed array with fingerprint column and updated categorical indices
         """
         # print(f"add finger")
         if self.salt_value is None:
             raise RuntimeError("Must call fit() before transform()")
-        
+
         n_samples = x.shape[0]
         fingerprint_col = np.zeros(n_samples, dtype=x.dtype)
 
@@ -1222,12 +1312,13 @@ class FingerprintFeatureEncoder(BasePreprocess):
 
                 fingerprint_col[idx] = hash_val
                 existing_hashes.add(hash_val)
-        
+
         # Append fingerprint column and update categorical indices
         transformed = np.column_stack([x, fingerprint_col.reshape(-1, 1)])
         # cat_indices_updated = list(range(x.shape[1]))  # Original features remain categorical
-        
+
         return transformed, self.categorical_features
+
 
 class HighDimFeatureSelector(BasePreprocess):
     """Conditional high-dimensional feature selector / projector.
@@ -1291,7 +1382,7 @@ class HighDimFeatureSelector(BasePreprocess):
     def __init__(
         self,
         *,
-        strategy: Literal['corr', 'mi', 'extratrees', 'svd_binary', 'svd_all', 'passthrough'] = 'passthrough',
+        strategy: Literal["corr", "mi", "extratrees", "svd_binary", "svd_all", "passthrough"] = "passthrough",
         top_k: int = 256,
         n_features_threshold: int = 128,
         binary_threshold: float = 0.5,
@@ -1334,7 +1425,7 @@ class HighDimFeatureSelector(BasePreprocess):
     def _topk_indices(scores: np.ndarray, top_k: int) -> np.ndarray:
         n = len(scores)
         k = max(1, min(top_k, n))
-        idx = np.argsort(-scores, kind='stable')[:k]
+        idx = np.argsort(-scores, kind="stable")[:k]
         return np.sort(idx)
 
     @staticmethod
@@ -1414,7 +1505,7 @@ class HighDimFeatureSelector(BasePreprocess):
         x = np.asarray(x, dtype=np.float64)
         n_samples, n_features = x.shape
 
-        if self.strategy == 'passthrough' or n_features == 0:
+        if self.strategy == "passthrough" or n_features == 0:
             return self._activate_passthrough(categorical_features)
 
         binary_mask = self._detect_binary_cols(x)
@@ -1426,31 +1517,36 @@ class HighDimFeatureSelector(BasePreprocess):
         rng = np.random.default_rng(int(seed) % (2**32))
         seed_int = int(seed) % (2**31)
 
-        if self.strategy == 'svd_binary':
+        if self.strategy == "svd_binary":
             if binary_frac < self.binary_threshold or int(binary_mask.sum()) < 2:
                 return self._activate_passthrough(categorical_features)
             x_binary = x[:, binary_mask]
             x_binary = np.where(np.isnan(x_binary), 0.0, x_binary)
-            n_components = max(1, min(
-                self.svd_components,
-                int(binary_mask.sum()) - 1,
-                n_samples - 1,
-            ))
+            n_components = max(
+                1,
+                min(
+                    self.svd_components,
+                    int(binary_mask.sum()) - 1,
+                    n_samples - 1,
+                ),
+            )
             try:
                 self.svd_model_ = _TorchTruncatedSVD(n_components=n_components, random_state=seed_int)
                 self.svd_model_.fit(x_binary)
             except Exception as exc:
                 self._svd_degraded(
-                    "fit", exc,
+                    "fit",
+                    exc,
                     f"passthrough of all {n_features} raw columns "
-                    f"({int(binary_mask.sum())} binary columns left unprojected)")
+                    f"({int(binary_mask.sum())} binary columns left unprojected)",
+                )
                 return self._activate_passthrough(categorical_features)
             self.svd_binary_mask_ = binary_mask
             self.svd_keep_idx_ = np.where(~binary_mask)[0]
             self.passthrough_ = False
             return self._remap_categorical_svd_binary(categorical_features)
 
-        if self.strategy == 'svd_all':
+        if self.strategy == "svd_all":
             x_imp = np.where(np.isnan(x), 0.0, x)
             # Rank must be supported by the ROWS, not merely bounded by them.
             #
@@ -1475,18 +1571,18 @@ class HighDimFeatureSelector(BasePreprocess):
             # n_samples - 1 is kept as a VALIDITY bound (mean-centering costs one degree
             # of freedom) and is separate from the rows-support term, so
             # svd_rows_per_component=1 reproduces the previous rank exactly.
-            n_components = max(1, min(self.svd_components,
-                                      n_features - 1,
-                                      n_samples - 1,
-                                      n_samples // self.svd_rows_per_component))
+            n_components = max(
+                1, min(self.svd_components, n_features - 1, n_samples - 1, n_samples // self.svd_rows_per_component)
+            )
             try:
                 self.svd_model_ = _TorchTruncatedSVD(n_components=n_components, random_state=seed_int)
                 self.svd_model_.fit(x_imp)
             except Exception as exc:
                 self._svd_degraded(
-                    "fit", exc,
-                    f"passthrough of all {n_features} raw columns "
-                    f"(no reduction to {n_components} components)")
+                    "fit",
+                    exc,
+                    f"passthrough of all {n_features} raw columns (no reduction to {n_components} components)",
+                )
                 return self._activate_passthrough(categorical_features)
             self.svd_binary_mask_ = np.ones(n_features, dtype=bool)
             self.svd_keep_idx_ = np.array([], dtype=int)
@@ -1503,13 +1599,13 @@ class HighDimFeatureSelector(BasePreprocess):
         if finite_y.sum() < max(10, self.top_k // 4):
             return self._activate_passthrough(categorical_features)
 
-        if self.strategy == 'corr':
+        if self.strategy == "corr":
             scores = self._compute_corr_scores(x, y_arr)
             self.selected_idx_ = self._topk_indices(scores, self.top_k)
             self.passthrough_ = False
             return self._remap_categorical(categorical_features)
 
-        if self.strategy == 'mi':
+        if self.strategy == "mi":
             try:
                 from sklearn.feature_selection import mutual_info_regression
             except Exception:
@@ -1524,7 +1620,7 @@ class HighDimFeatureSelector(BasePreprocess):
             self.passthrough_ = False
             return self._remap_categorical(categorical_features)
 
-        if self.strategy == 'extratrees':
+        if self.strategy == "extratrees":
             try:
                 from sklearn.ensemble import ExtraTreesRegressor
             except Exception:
@@ -1551,9 +1647,9 @@ class HighDimFeatureSelector(BasePreprocess):
     def transform(self, x: np.ndarray, **kwargs) -> tuple[np.ndarray, list[int]]:
         if self.passthrough_:
             return x, self.categorical_features_
-        if self.strategy in ('corr', 'mi', 'extratrees'):
+        if self.strategy in ("corr", "mi", "extratrees"):
             return x[:, self.selected_idx_], self.categorical_features_
-        if self.strategy in ('svd_binary', 'svd_all'):
+        if self.strategy in ("svd_binary", "svd_all"):
             x_arr = np.asarray(x, dtype=np.float64)
             x_in = x_arr[:, self.svd_binary_mask_]
             x_in = np.where(np.isnan(x_in), 0.0, x_in)
@@ -1562,18 +1658,21 @@ class HighDimFeatureSelector(BasePreprocess):
             except Exception as exc:
                 # SVD test-time failure: fall back to keep cols (or zeros if svd_all).
                 # Never silently — a zero column makes the model predict from nothing.
-                if self.strategy == 'svd_all':
+                if self.strategy == "svd_all":
                     self._svd_degraded(
-                        "transform", exc,
-                        f"a single all-zero column for {x_arr.shape[0]} rows "
-                        f"(all {x_in.shape[1]} features dropped)")
+                        "transform",
+                        exc,
+                        f"a single all-zero column for {x_arr.shape[0]} rows (all {x_in.shape[1]} features dropped)",
+                    )
                     return np.zeros((x_arr.shape[0], 1), dtype=np.float32), []
                 self._svd_degraded(
-                    "transform", exc,
+                    "transform",
+                    exc,
                     f"dropping the {x_in.shape[1]} SVD-projected columns, keeping the "
-                    f"{len(self.svd_keep_idx_)} non-binary ones")
+                    f"{len(self.svd_keep_idx_)} non-binary ones",
+                )
                 return x_arr[:, self.svd_keep_idx_].astype(np.float32), self.categorical_features_
-            if self.strategy == 'svd_all':
+            if self.strategy == "svd_all":
                 return x_svd.astype(np.float32), []
             x_keep = x_arr[:, self.svd_keep_idx_]
             out = np.concatenate([x_keep, x_svd], axis=1).astype(np.float32)
@@ -1612,9 +1711,7 @@ class MaxFeatureSubsampler(BasePreprocess):
             # No subsampling needed
             self.selected_idx = np.arange(n_features)
         else:
-            self.selected_idx = np.sort(
-                rng.choice(n_features, size=self.max_features, replace=False)
-            )
+            self.selected_idx = np.sort(rng.choice(n_features, size=self.max_features, replace=False))
         # Map categorical indices to new index space
         if categorical_features:
             idx_set = set(int(i) for i in self.selected_idx)
@@ -1637,7 +1734,7 @@ class PolynomialInteractionGenerator(BasePreprocess):
     Generates polynomial interaction features through randomized pairwise combinations
     with standardized preprocessing and memory-efficient implementation.
     """
-    
+
     def __init__(
         self,
         *,
@@ -1656,9 +1753,7 @@ class PolynomialInteractionGenerator(BasePreprocess):
         # When set, the step becomes a no-op for inputs with > N features (the
         # high-dim route disables poly so we don't add 10 noisy product
         # features on top of 1024 fingerprint columns).
-        self.disable_above_n_features = (
-            int(disable_above_n_features) if disable_above_n_features is not None else None
-        )
+        self.disable_above_n_features = int(disable_above_n_features) if disable_above_n_features is not None else None
         self.disabled_: bool = False
 
         self.primary_factor_indices: np.ndarray | None = None
@@ -1667,7 +1762,7 @@ class PolynomialInteractionGenerator(BasePreprocess):
         self.categorical_features = None
 
     @override
-    def fit(self, x:np.ndarray, categorical_features:list[int], seed:int, **kwargs) -> list[int]:
+    def fit(self, x: np.ndarray, categorical_features: list[int], seed: int, **kwargs) -> list[int]:
         """Configure polynomial feature generation parameters from training data."""
         assert x.ndim == 2, "Input matrix must be 2-dimensional"
 
@@ -1677,40 +1772,34 @@ class PolynomialInteractionGenerator(BasePreprocess):
         if x.size == 0:
             self.disabled_ = False
             return list(categorical_features)
-        if (self.disable_above_n_features is not None
-                and x.shape[1] > self.disable_above_n_features):
+        if self.disable_above_n_features is not None and x.shape[1] > self.disable_above_n_features:
             self.disabled_ = True
             self.categorical_features = list(categorical_features)
             return list(categorical_features)
         self.disabled_ = False
 
         feature_count = x.shape[1]
-        
+
         # Calculate maximum possible interaction combinations
         max_possible_combinations = (feature_count * (feature_count + 1)) // 2
-        
+
         # print(f"max_possible_combinations: {max_possible_combinations}")
         # Determine actual interaction count with constraint
         actual_interaction_count = (
-            min(self.max_interactions, max_possible_combinations) 
-            if self.max_interactions is not None 
+            min(self.max_interactions, max_possible_combinations)
+            if self.max_interactions is not None
             else max_possible_combinations
         )
-        
+
         # Standardize features before interaction generation
         normalized_data = self.feature_normalizer.fit_transform(x)
-        
+
         # Generate randomized factor pairs efficiently
         self._generate_interaction_pairs(feature_count, actual_interaction_count, random_engine)
         self.categorical_features = categorical_features
         return categorical_features
-    
-    def _generate_interaction_pairs(
-        self, 
-        total_features: int, 
-        required_pairs: int, 
-        rng: np.random.Generator
-    ) -> None:
+
+    def _generate_interaction_pairs(self, total_features: int, required_pairs: int, rng: np.random.Generator) -> None:
         """Efficiently generate unique factor pairs for polynomial feature creation."""
         self.primary_factor_indices = rng.choice(
             np.arange(total_features),
@@ -1733,7 +1822,7 @@ class PolynomialInteractionGenerator(BasePreprocess):
                     self.secondary_factor_indices[i] = rng.choice(allowed_b)
 
     @override
-    def transform(self, x:np.ndarray, **kwargs) -> tuple[np.ndarray, list[int]]:
+    def transform(self, x: np.ndarray, **kwargs) -> tuple[np.ndarray, list[int]]:
         """Apply polynomial feature transformation to input data."""
         assert x.ndim == 2, "Input matrix must be 2-dimensional"
 
@@ -1744,14 +1833,14 @@ class PolynomialInteractionGenerator(BasePreprocess):
 
         # Standardize input features
         standardized_features = self.feature_normalizer.transform(x)
-        
+
         # Generate polynomial interaction features
         interaction_features = (
-            standardized_features[:, self.primary_factor_indices] * 
-            standardized_features[:, self.secondary_factor_indices]
+            standardized_features[:, self.primary_factor_indices]
+            * standardized_features[:, self.secondary_factor_indices]
         )
-        
+
         # Combine original and interaction features
         transformed_output = np.column_stack([standardized_features, interaction_features])
-        
+
         return transformed_output, self.categorical_features

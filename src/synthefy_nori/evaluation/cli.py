@@ -17,35 +17,47 @@ def _parse_checkpoint(raw: str) -> tuple[str, str]:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Evaluate Nori checkpoints")
-    parser.add_argument("--checkpoint", action="append", default=[],
-                        help="Checkpoint path or label:path. Repeatable.")
+    parser.add_argument("--checkpoint", action="append", default=[], help="Checkpoint path or label:path. Repeatable.")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--output-dir", default="results/eval")
     parser.add_argument("--tabarena-reg-dir", default="cache/tabarena_reg")
     parser.add_argument("--talent-reg-dir", default="cache/talent_reg")
-    parser.add_argument("--openml-reg", action="store_true",
-                        help="Include the curated OpenML regression suite (downloads from OpenML)")
-    parser.add_argument("--download-benchmarks", action="store_true",
-                        help="Download the TabArena and TALENT regression CSV caches from OpenML first")
+    parser.add_argument(
+        "--openml-reg", action="store_true", help="Include the curated OpenML regression suite (downloads from OpenML)"
+    )
+    parser.add_argument(
+        "--download-benchmarks",
+        action="store_true",
+        help="Download the TabArena and TALENT regression CSV caches from OpenML first",
+    )
     parser.add_argument("--custom-reg-dir", default=None)
     parser.add_argument("--reg-config", default=config_path(DEFAULT_INFERENCE_CONFIG))
     parser.add_argument("--sources", nargs="+", default=None)
     parser.add_argument("--max-train-samples", type=int, default=50000)
     parser.add_argument("--max-predict-samples", type=int, default=50000)
-    parser.add_argument("--max-elements-budget", type=int, default=8_000_000,
-                        help="SYNTHEFY_MAX_ELEMENTS_BUDGET for inference chunking/subsampling. "
-                             "The 8M default targets large GPUs (>=80GB) and stays under CUDA "
-                             "kernel grid limits on the largest test sets; lower it (e.g. "
-                             "2000000) on smaller GPUs. An explicit env var wins.")
-    parser.add_argument("--gpu-mem-gb", type=float, default=None,
-                        help="Enable the memory-model train-row cap for smaller GPUs (e.g. 24). "
-                             "Default: uncapped — train rows bounded only by --max-train-samples.")
+    parser.add_argument(
+        "--max-elements-budget",
+        type=int,
+        default=8_000_000,
+        help="SYNTHEFY_MAX_ELEMENTS_BUDGET for inference chunking/subsampling. "
+        "The 8M default targets large GPUs (>=80GB) and stays under CUDA "
+        "kernel grid limits on the largest test sets; lower it (e.g. "
+        "2000000) on smaller GPUs. An explicit env var wins.",
+    )
+    parser.add_argument(
+        "--gpu-mem-gb",
+        type=float,
+        default=None,
+        help="Enable the memory-model train-row cap for smaller GPUs (e.g. 24). "
+        "Default: uncapped — train rows bounded only by --max-train-samples.",
+    )
     parser.add_argument("--warmup", type=int, default=0)
     parser.add_argument("--no-cache", action="store_true")
     parser.add_argument("--cache-dir", default="cache/eval_cache")
     args = parser.parse_args(argv)
 
     import os
+
     os.environ.setdefault("SYNTHEFY_MAX_ELEMENTS_BUDGET", str(args.max_elements_budget))
 
     from synthefy_nori.evaluation.datasets import DatasetRegistry

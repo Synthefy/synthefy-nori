@@ -5,13 +5,13 @@ example relies on (no checkpoint / encoder download). The slow test runs the
 example end-to-end against the real checkpoint + MiniLM encoder and asserts the
 text column actually helps — it is skipped when sentence-transformers is absent.
 """
+
 import importlib.util
 import pathlib
 
 import pytest
 
-EXAMPLE = (pathlib.Path(__file__).resolve().parents[1]
-           / "examples" / "text_features_synthetic.py")
+EXAMPLE = pathlib.Path(__file__).resolve().parents[1] / "examples" / "text_features_synthetic.py"
 
 
 def _load():

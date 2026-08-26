@@ -27,10 +27,8 @@ from sklearn.metrics import r2_score
 from synthefy_nori import NoriRegressor
 
 # sentiment word -> its (hidden) contribution to the target
-_SENTIMENTS = [("terrible", -2.0), ("poor", -1.0), ("okay", 0.0),
-               ("good", 1.0), ("excellent", 2.0)]
-_FILLERS = ["fast shipping", "arrived late", "nice packaging",
-            "exactly as described", "would buy again"]
+_SENTIMENTS = [("terrible", -2.0), ("poor", -1.0), ("okay", 0.0), ("good", 1.0), ("excellent", 2.0)]
+_FILLERS = ["fast shipping", "arrived late", "nice packaging", "exactly as described", "would buy again"]
 _BRANDS = {"acme": 0.5, "globex": -0.5, "initech": 0.0}
 
 
@@ -58,8 +56,7 @@ def make_dataset(n: int, seed: int):
     return df, y.astype(np.float64)
 
 
-def run(n_train: int = 800, n_test: int = 200, svd_dim: int = 64,
-        device=None, seed: int = 0):
+def run(n_train: int = 800, n_test: int = 200, svd_dim: int = 64, device=None, seed: int = 0):
     """Fit Nori with and without the text column; return ``(r2_tabular, r2_text)``."""
     df_train, y_train = make_dataset(n_train, seed)
     df_test, y_test = make_dataset(n_test, seed + 1)
@@ -69,9 +66,7 @@ def run(n_train: int = 800, n_test: int = 200, svd_dim: int = 64,
     # Tabular-only baseline: the DataFrame automatically resolves brand as a
     # categorical and never loads the text embedder. Same estimator as the +text
     # run below, just without the review column.
-    tab = NoriRegressor(device=device, model="nori-6m").fit(
-        df_train[tab_cols], y_train
-    )
+    tab = NoriRegressor(device=device, model="nori-6m").fit(df_train[tab_cols], y_train)
     r_tab = float(r2_score(y_test, tab.predict(df_test[tab_cols])))
 
     # + text: same columns plus the review, embedded -> SVD -> appended columns.

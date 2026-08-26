@@ -45,9 +45,7 @@ def test_generate_test_x_builds_a_contiguous_unknown_horizon():
     assert len(test) == 6
     assert test["target"].isna().all()
     timestamps = test.index.get_level_values("timestamp")
-    assert timestamps[0] == train.index.get_level_values("timestamp").max() + pd.Timedelta(
-        hours=1
-    )
+    assert timestamps[0] == train.index.get_level_values("timestamp").max() + pd.Timedelta(hours=1)
 
 
 def test_generate_test_x_uses_explicit_frequency_for_gappy_input():
@@ -125,9 +123,7 @@ def test_static_features_survive_train_and_horizon_transform():
 
 
 def test_canonical_generators_restart_for_each_series():
-    train = TimeSeriesDataFrame(
-        pd.concat([pd.DataFrame(_tsdf(item_id=item)) for item in (0, 1)])
-    )
+    train = TimeSeriesDataFrame(pd.concat([pd.DataFrame(_tsdf(item_id=item)) for item in (0, 1)]))
     test = generate_test_X(train, prediction_length=4, freq="h")
 
     transformed_train, transformed_test = FeatureTransformer(_features()).transform(

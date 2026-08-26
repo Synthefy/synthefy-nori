@@ -17,6 +17,7 @@ from synthefy_nori.configs import (
     config_path,
 )
 
+
 def test_default_inference_config_ships():
     path = pathlib.Path(config_path(DEFAULT_INFERENCE_CONFIG))
     assert path.exists(), f"{DEFAULT_INFERENCE_CONFIG} is not bundled"
@@ -72,8 +73,6 @@ def test_no_source_file_writes_the_config_name_by_hand():
     src = pathlib.Path(__file__).resolve().parents[1] / "src" / "synthefy_nori"
     owner = src / "configs" / "__init__.py"
     offenders = [
-        str(p.relative_to(src))
-        for p in src.rglob("*.py")
-        if p != owner and DEFAULT_INFERENCE_CONFIG in p.read_text()
+        str(p.relative_to(src)) for p in src.rglob("*.py") if p != owner and DEFAULT_INFERENCE_CONFIG in p.read_text()
     ]
     assert not offenders, f"config filename hard-coded outside configs/__init__.py: {offenders}"

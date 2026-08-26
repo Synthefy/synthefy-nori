@@ -88,9 +88,7 @@ def test_predict_df_rejects_missing_timestamp_and_target():
     with pytest.raises(ValueError, match="timestamp"):
         forecaster.predict_df(pd.DataFrame({"target": [1.0, 2.0]}), prediction_length=3)
     with pytest.raises(ValueError, match="target column 'sales' not found"):
-        forecaster.predict_df(
-            _history(), prediction_length=3, target_column="sales"
-        )
+        forecaster.predict_df(_history(), prediction_length=3, target_column="sales")
 
 
 def test_predict_df_rejects_multiple_target_columns_clearly():
@@ -211,9 +209,7 @@ def test_predict_df_runs_through_public_synthefy_nori_client(monkeypatch):
 
     def predict(X_train, y_train, X_test, **kwargs):
         calls.append((X_train, y_train, X_test, kwargs))
-        return np.vstack(
-            [np.full(len(X_test), level, dtype=float) for level in kwargs["quantiles"]]
-        )
+        return np.vstack([np.full(len(X_test), level, dtype=float) for level in kwargs["quantiles"]])
 
     monkeypatch.setattr(client, "predict", predict)
     try:

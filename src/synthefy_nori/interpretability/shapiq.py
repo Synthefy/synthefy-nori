@@ -16,8 +16,7 @@ def _require_shapiq():
         import shapiq  # noqa: F401
     except ImportError as exc:  # pragma: no cover
         raise ImportError(
-            "shapiq is required for interpretability. Install with: "
-            'pip install "synthefy-nori[interpretability]"'
+            'shapiq is required for interpretability. Install with: pip install "synthefy-nori[interpretability]"'
         ) from exc
     return shapiq
 

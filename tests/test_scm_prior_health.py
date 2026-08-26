@@ -45,10 +45,7 @@ def test_linear_initialization_preserves_random_function_parameters():
         noise_std=0.0,
     )
 
-    activations = [
-        module for module in scm.modules()
-        if isinstance(module, scm_prior.RandomFunctionActivation)
-    ]
+    activations = [module for module in scm.modules() if isinstance(module, scm_prior.RandomFunctionActivation)]
     assert activations
     for activation in activations:
         assert torch.count_nonzero(activation.freqs) == activation.freqs.numel()
@@ -67,13 +64,17 @@ def test_block_dropout_uses_probability_and_keeps_every_row_and_column(monkeypat
     torch.manual_seed(7)
     dense_blocks = torch.empty(7, 5)
     scm_prior._block_wise_dropout_init(
-        dense_blocks, init_std=1.0, dropout_prob=0.0,
+        dense_blocks,
+        init_std=1.0,
+        dropout_prob=0.0,
     )
 
     torch.manual_seed(7)
     sparse_blocks = torch.empty(7, 5)
     scm_prior._block_wise_dropout_init(
-        sparse_blocks, init_std=1.0, dropout_prob=0.9,
+        sparse_blocks,
+        init_std=1.0,
+        dropout_prob=0.9,
     )
 
     assert torch.all(torch.count_nonzero(sparse_blocks, dim=1) > 0)
@@ -84,13 +85,17 @@ def test_block_dropout_uses_probability_and_keeps_every_row_and_column(monkeypat
 def test_block_dropout_rejects_impossible_probability():
     with pytest.raises(ValueError, match="dropout_prob"):
         scm_prior._block_wise_dropout_init(
-            torch.empty(3, 3), init_std=1.0, dropout_prob=1.0,
+            torch.empty(3, 3),
+            init_std=1.0,
+            dropout_prob=1.0,
         )
 
 
 def test_positive_meta_distribution_has_no_boundary_atom():
     sample = scm_prior.meta_trunc_norm_log_scaled(
-        np.random.default_rng(5), min_mean=0.01, max_mean=0.01,
+        np.random.default_rng(5),
+        min_mean=0.01,
+        max_mean=0.01,
         lower_bound=0.0,
     )
     values = np.array([sample() for _ in range(2_000)])
@@ -116,10 +121,7 @@ def test_random_choice_activation_cannot_choose_itself_recursively():
     factories = scm_prior.get_activations()
     choice_factory = factories[len(factories) // 2]
     assert isinstance(choice_factory, scm_prior.RandomChoiceFactory)
-    assert all(
-        not isinstance(factory, scm_prior.RandomChoiceFactory)
-        for factory in choice_factory.act_factories
-    )
+    assert all(not isinstance(factory, scm_prior.RandomChoiceFactory) for factory in choice_factory.act_factories)
 
 
 def test_failed_mlp_draws_use_an_observable_exactly_learnable_fallback(monkeypatch):
@@ -129,7 +131,11 @@ def test_failed_mlp_draws_use_an_observable_exactly_learnable_fallback(monkeypat
 
     monkeypatch.setattr(scm_prior, "MLPSCM", NumericallyInvalidSCM)
     X, y, meta = scm_prior._generate_mlp(
-        256, 8, _mlp_hyperparams(), np.random.default_rng(13), "cpu",
+        256,
+        8,
+        _mlp_hyperparams(),
+        np.random.default_rng(13),
+        "cpu",
     )
 
     weights = np.arange(4, 0, -1, dtype=np.float32)
@@ -142,12 +148,15 @@ def test_failed_mlp_draws_use_an_observable_exactly_learnable_fallback(monkeypat
     }
 
 
-@pytest.mark.parametrize("error", [
-    TypeError("bad API call"),
-    RuntimeError("shape mismatch"),
-    RuntimeError("Inference tensors cannot be saved for backward"),
-    RuntimeError("inferred shape mismatch"),
-])
+@pytest.mark.parametrize(
+    "error",
+    [
+        TypeError("bad API call"),
+        RuntimeError("shape mismatch"),
+        RuntimeError("Inference tensors cannot be saved for backward"),
+        RuntimeError("inferred shape mismatch"),
+    ],
+)
 def test_programming_errors_are_not_swallowed(monkeypatch, error):
     class BrokenSCM:
         def __init__(self, **_kwargs):
@@ -156,19 +165,26 @@ def test_programming_errors_are_not_swallowed(monkeypatch, error):
     monkeypatch.setattr(scm_prior, "MLPSCM", BrokenSCM)
     with pytest.raises(type(error), match=str(error)):
         scm_prior._generate_mlp(
-            32, 4, _mlp_hyperparams(), np.random.default_rng(13), "cpu",
+            32,
+            4,
+            _mlp_hyperparams(),
+            np.random.default_rng(13),
+            "cpu",
         )
 
 
-@pytest.mark.parametrize("message", [
-    "output contains NaN",
-    "output contains inf",
-    "array must not contain infs or NaNs",
-    "output is infinite",
-    "output is non-finite",
-    "overflow encountered in sampled activation",
-    "sampled numerical failure",
-])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "output contains NaN",
+        "output contains inf",
+        "array must not contain infs or NaNs",
+        "output is infinite",
+        "output is non-finite",
+        "overflow encountered in sampled activation",
+        "sampled numerical failure",
+    ],
+)
 def test_known_numerical_errors_remain_retryable(message):
     assert scm_prior._retryable_generation_exception(RuntimeError(message))
 
@@ -218,8 +234,7 @@ def test_tree_presampled_noise_uses_per_output_scales(monkeypatch):
 
 def test_scm_target_normalization_does_not_inspect_query_targets(monkeypatch):
     n_samples, n_features, context_rows = 12, 3, 6
-    X = np.arange(n_samples * n_features, dtype=np.float32).reshape(
-        n_samples, n_features)
+    X = np.arange(n_samples * n_features, dtype=np.float32).reshape(n_samples, n_features)
     context_y = np.linspace(-2.0, 3.0, context_rows, dtype=np.float32)
     query_a = np.linspace(4.0, 7.0, n_samples - context_rows, dtype=np.float32)
     query_b = query_a * 100.0 + 10_000.0
@@ -241,15 +256,14 @@ def test_scm_target_normalization_does_not_inspect_query_targets(monkeypatch):
 
     monkeypatch.setattr(scm_prior, "_generate_mlp", fixed_mlp)
     first = scm_prior._generate_scm_prior_dataset(
-        n_samples, n_features, "reg", None, np.random.default_rng(8), "cpu",
-        context_rows=context_rows)
+        n_samples, n_features, "reg", None, np.random.default_rng(8), "cpu", context_rows=context_rows
+    )
     state["query"] = query_b
     second = scm_prior._generate_scm_prior_dataset(
-        n_samples, n_features, "reg", None, np.random.default_rng(8), "cpu",
-        context_rows=context_rows)
+        n_samples, n_features, "reg", None, np.random.default_rng(8), "cpu", context_rows=context_rows
+    )
 
-    np.testing.assert_array_equal(
-        first["y"][:context_rows], second["y"][:context_rows])
+    np.testing.assert_array_equal(first["y"][:context_rows], second["y"][:context_rows])
     assert float(np.mean(first["y"][:context_rows])) == pytest.approx(0.0)
     assert float(np.std(first["y"][:context_rows])) == pytest.approx(1.0)
     assert first["meta"]["context_rows"] == context_rows
@@ -266,16 +280,19 @@ def test_scm_feature_stabilization_fits_context_only(array_type):
         shifted = torch.from_numpy(shifted)
 
     first = scm_prior._robust_stabilize_features(
-        base, context_rows=context_rows,
+        base,
+        context_rows=context_rows,
     )
     second = scm_prior._robust_stabilize_features(
-        shifted, context_rows=context_rows,
+        shifted,
+        context_rows=context_rows,
     )
     if isinstance(first, torch.Tensor):
         first = first.numpy()
         second = second.numpy()
     np.testing.assert_array_equal(
-        first[:context_rows], second[:context_rows],
+        first[:context_rows],
+        second[:context_rows],
     )
 
 
@@ -287,7 +304,11 @@ def test_scm_validation_requires_context_variation():
     y[context_rows:] = np.arange(8, dtype=np.float32)
 
     healthy, reason = scm_prior._validate_generated_data(
-        X, y, 16, 3, context_rows=context_rows,
+        X,
+        y,
+        16,
+        3,
+        context_rows=context_rows,
     )
 
     assert healthy is False
@@ -295,7 +316,11 @@ def test_scm_validation_requires_context_variation():
 
     X[:context_rows] = np.arange(24, dtype=np.float32).reshape(8, 3)
     healthy, reason = scm_prior._validate_generated_data(
-        X, y, 16, 3, context_rows=context_rows,
+        X,
+        y,
+        16,
+        3,
+        context_rows=context_rows,
     )
     assert healthy is False
     assert reason == "constant target"
@@ -310,7 +335,11 @@ def test_scm_validation_accepts_finite_singleton_context(array_type):
         y = torch.from_numpy(y)
 
     healthy, reason = scm_prior._validate_generated_data(
-        X, y, 2, 2, context_rows=1,
+        X,
+        y,
+        2,
+        2,
+        context_rows=1,
     )
 
     assert healthy is True
@@ -330,7 +359,11 @@ def test_scm_validation_ignores_query_only_nonfinite_values(array_type):
         y = torch.from_numpy(y)
 
     healthy, reason = scm_prior._validate_generated_data(
-        X, y, 16, 3, context_rows=context_rows,
+        X,
+        y,
+        16,
+        3,
+        context_rows=context_rows,
     )
 
     assert healthy is True
@@ -338,8 +371,7 @@ def test_scm_validation_ignores_query_only_nonfinite_values(array_type):
 
 
 @pytest.mark.parametrize("scm_type", ["mlp", "tree"])
-def test_scm_context_is_invariant_to_query_causes(
-        monkeypatch, scm_type):
+def test_scm_context_is_invariant_to_query_causes(monkeypatch, scm_type):
     n_samples, n_features, context_rows = 64, 4, 32
     state = {"query_mode": "unchanged"}
     original_sample = scm_prior.XSampler.sample
@@ -380,29 +412,42 @@ def test_scm_context_is_invariant_to_query_causes(
             "pre_sample_noise_std": False,
         }
     monkeypatch.setattr(
-        scm_prior, "sample_hyperparams", lambda *_args, **_kwargs: hp,
+        scm_prior,
+        "sample_hyperparams",
+        lambda *_args, **_kwargs: hp,
     )
 
     first = scm_prior.generate_scm_prior_dataset(
-        n_samples, n_features, "reg", rng=np.random.default_rng(31),
+        n_samples,
+        n_features,
+        "reg",
+        rng=np.random.default_rng(31),
         context_rows=context_rows,
     )
     state["query_mode"] = "shifted"
     second = scm_prior.generate_scm_prior_dataset(
-        n_samples, n_features, "reg", rng=np.random.default_rng(31),
+        n_samples,
+        n_features,
+        "reg",
+        rng=np.random.default_rng(31),
         context_rows=context_rows,
     )
 
     np.testing.assert_array_equal(
-        first["X"][:context_rows], second["X"][:context_rows],
+        first["X"][:context_rows],
+        second["X"][:context_rows],
     )
     np.testing.assert_array_equal(
-        first["y"][:context_rows], second["y"][:context_rows],
+        first["y"][:context_rows],
+        second["y"][:context_rows],
     )
 
     state["query_mode"] = "nonfinite"
     nonfinite_query = scm_prior.generate_scm_prior_dataset(
-        n_samples, n_features, "reg", rng=np.random.default_rng(31),
+        n_samples,
+        n_features,
+        "reg",
+        rng=np.random.default_rng(31),
         context_rows=context_rows,
     )
     assert nonfinite_query["meta"]["fallback_used"] is False
@@ -419,8 +464,7 @@ def test_scm_context_is_invariant_to_query_causes(
 
 
 @pytest.mark.parametrize("scm_type", ["mlp", "tree"])
-def test_scm_singleton_context_preserves_a_usable_episode(
-        monkeypatch, scm_type):
+def test_scm_singleton_context_preserves_a_usable_episode(monkeypatch, scm_type):
     if scm_type == "mlp":
         hp = {
             **_mlp_hyperparams(),
@@ -446,11 +490,17 @@ def test_scm_singleton_context_preserves_a_usable_episode(
             "pre_sample_noise_std": False,
         }
     monkeypatch.setattr(
-        scm_prior, "sample_hyperparams", lambda *_args, **_kwargs: hp,
+        scm_prior,
+        "sample_hyperparams",
+        lambda *_args, **_kwargs: hp,
     )
 
     data = scm_prior.generate_scm_prior_dataset(
-        32, 4, "reg", rng=np.random.default_rng(41), context_rows=1,
+        32,
+        4,
+        "reg",
+        rng=np.random.default_rng(41),
+        context_rows=1,
     )
 
     assert data["meta"]["fallback_used"] is (scm_type == "tree")
@@ -469,13 +519,10 @@ def test_context_rows_must_include_at_least_one_labeled_row(module):
 def test_generate_batch_passes_context_rows_to_scm_prior(monkeypatch):
     seen_context_rows = []
 
-    def fake_scm(
-            n_samples, n_features, task_type, n_classes=None,
-            rng=None, device="cpu", context_rows=None):
+    def fake_scm(n_samples, n_features, task_type, n_classes=None, rng=None, device="cpu", context_rows=None):
         del task_type, n_classes, rng, device
         seen_context_rows.append(context_rows)
-        X = np.arange(n_samples * n_features, dtype=np.float32).reshape(
-            n_samples, n_features)
+        X = np.arange(n_samples * n_features, dtype=np.float32).reshape(n_samples, n_features)
         y = np.linspace(-1.0, 1.0, n_samples, dtype=np.float32)
         return {"X": X, "y": y, "meta": {"generator_family": "scm_prior"}}
 

@@ -7,6 +7,7 @@ guards the exact public construction API the examples/README rely on; the slow
 tests import each example module and run its own ``extract_embeddings`` end-to-end
 on tiny data against the real checkpoint.
 """
+
 import importlib.util
 import pathlib
 
@@ -55,8 +56,7 @@ def test_example_extract_embeddings_end_to_end(name):
     rng = np.random.default_rng(0)
     X = rng.uniform(-2.0, 2.0, size=(60, 5)).astype(np.float32)
     y = (np.sin(X[:, 0]) + X[:, 1] ** 2).astype(np.float64)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.4, random_state=0)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.4, random_state=0)
 
     Z_train, Z_test, native = module.extract_embeddings(X_train, y_train, X_test)
 

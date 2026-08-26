@@ -34,18 +34,13 @@ class EvalAnalyzer:
 
     @staticmethod
     def _safe_name(text: str) -> str:
-        return (
-            text.replace(" ", "_")
-            .replace("/", "_")
-            .replace("(", "")
-            .replace(")", "")
-            .replace(":", "_")
-        )
+        return text.replace(" ", "_").replace("/", "_").replace("(", "").replace(")", "").replace(":", "_")
 
     @staticmethod
     def _import_matplotlib():
         try:
             import matplotlib.pyplot as plt
+
             return plt
         except Exception as e:
             print(f"[EvalAnalyzer] Plot generation skipped (matplotlib unavailable): {e}")
@@ -129,8 +124,10 @@ class EvalAnalyzer:
         if metric not in df.columns:
             return pd.DataFrame()
         return df.pivot_table(
-            index=["source", "dataset"], columns="model",
-            values=metric, aggfunc="first",
+            index=["source", "dataset"],
+            columns="model",
+            values=metric,
+            aggfunc="first",
         ).sort_index()
 
     # --- Head-to-head comparison ---
@@ -147,9 +144,15 @@ class EvalAnalyzer:
         wins_b = int((m["delta"] < -0.001).sum())
         ties = len(m) - wins_a - wins_b
         return {
-            "model_a": model_a, "model_b": model_b, "metric": metric,
-            "n_datasets": len(m), "wins_a": wins_a, "wins_b": wins_b, "ties": ties,
-            "mean_delta": float(m["delta"].mean()), "std_delta": float(m["delta"].std()),
+            "model_a": model_a,
+            "model_b": model_b,
+            "metric": metric,
+            "n_datasets": len(m),
+            "wins_a": wins_a,
+            "wins_b": wins_b,
+            "ties": ties,
+            "mean_delta": float(m["delta"].mean()),
+            "std_delta": float(m["delta"].std()),
             "per_dataset": m.sort_values("delta", ascending=False).to_dict("records"),
         }
 
@@ -235,7 +238,9 @@ class EvalAnalyzer:
         if focus_model not in pivot.columns:
             return pd.DataFrame()
 
-        meta_cols = [c for c in ["source", "dataset", "n_train", "n_test", "n_features", "n_classes"] if c in sub.columns]
+        meta_cols = [
+            c for c in ["source", "dataset", "n_train", "n_test", "n_features", "n_classes"] if c in sub.columns
+        ]
         meta = sub[sub["model"] == focus_model][meta_cols].drop_duplicates(["source", "dataset"])
 
         comp = pivot.reset_index().merge(meta, on=["source", "dataset"], how="left")
@@ -353,12 +358,7 @@ class EvalAnalyzer:
         if df.empty or metric not in df.columns:
             return None
 
-        pivot = (
-            df.groupby(["source", "model"])[metric]
-            .mean()
-            .unstack("model")
-            .sort_index()
-        )
+        pivot = df.groupby(["source", "model"])[metric].mean().unstack("model").sort_index()
         if pivot.empty:
             return None
 
@@ -492,11 +492,7 @@ class EvalAnalyzer:
             axes = [axes]
 
         for ax, col in zip(axes, bucket_cols):
-            g = (
-                comp_df.groupby(col, observed=False)["delta_vs_best_other"]
-                .agg(["mean", "count"])
-                .dropna()
-            )
+            g = comp_df.groupby(col, observed=False)["delta_vs_best_other"].agg(["mean", "count"]).dropna()
             if g.empty:
                 ax.set_title(f"{col} (no data)")
                 continue
@@ -604,15 +600,9 @@ class EvalAnalyzer:
                 continue
             metric = self._primary_metric(task_type)
             files = [
-                self.plot_metric_leaderboard(
-                    task_type, metric, out / f"{task_type}_{metric}_leaderboard.png"
-                ),
-                self.plot_source_grouped_bars(
-                    task_type, metric, out / f"{task_type}_{metric}_by_source_bars.png"
-                ),
-                self.plot_pairwise_heatmap(
-                    task_type, metric, out / f"{task_type}_{metric}_pairwise_heatmap.png"
-                ),
+                self.plot_metric_leaderboard(task_type, metric, out / f"{task_type}_{metric}_leaderboard.png"),
+                self.plot_source_grouped_bars(task_type, metric, out / f"{task_type}_{metric}_by_source_bars.png"),
+                self.plot_pairwise_heatmap(task_type, metric, out / f"{task_type}_{metric}_pairwise_heatmap.png"),
             ]
             created.extend([f for f in files if f])
 
@@ -639,15 +629,25 @@ class EvalAnalyzer:
 
                 files = [
                     self.plot_focus_loss_topk(
-                        comp, focus, task_type, metric, top_k=top_k,
+                        comp,
+                        focus,
+                        task_type,
+                        metric,
+                        top_k=top_k,
                         output_path=out / f"{task_type}_{focus_safe}_hardest_topk.png",
                     ),
                     self.plot_focus_bucket_analysis(
-                        comp, focus, task_type, metric,
+                        comp,
+                        focus,
+                        task_type,
+                        metric,
                         output_path=out / f"{task_type}_{focus_safe}_bucket_analysis.png",
                     ),
                     self.plot_focus_scatter(
-                        comp, focus, task_type, metric,
+                        comp,
+                        focus,
+                        task_type,
+                        metric,
                         output_path=out / f"{task_type}_{focus_safe}_difficulty_scatter.png",
                     ),
                 ]
@@ -678,9 +678,9 @@ class EvalAnalyzer:
         # --- Regression aggregate ---
         reg_df = self._clean("regression")
         if not reg_df.empty:
-            print(f"\n{'='*80}\n  REGRESSION (aggregate)\n{'='*80}")
+            print(f"\n{'=' * 80}\n  REGRESSION (aggregate)\n{'=' * 80}")
             print(f"  {'Model':<30} {'R2':>8} {'RMSE':>8} {'MAE':>8} {'N':>5}")
-            print(f"  {'-'*63}")
+            print(f"  {'-' * 63}")
             for model in models:
                 m = reg_df[reg_df["model"] == model]
                 if m.empty:
@@ -702,9 +702,9 @@ class EvalAnalyzer:
         # Latency
         if "latency_ms" in self.df.columns:
             clean = self._clean()
-            print(f"\n{'='*80}\n  LATENCY\n{'='*80}")
+            print(f"\n{'=' * 80}\n  LATENCY\n{'=' * 80}")
             print(f"  {'Model':<30} {'Mean ms':>10} {'Median ms':>11} {'Throughput':>14}")
-            print(f"  {'-'*67}")
+            print(f"  {'-' * 67}")
             for model in models:
                 m = clean[clean["model"] == model]
                 if m.empty:
@@ -715,7 +715,7 @@ class EvalAnalyzer:
                 thr_s = f"{thr:>12.0f} s/s" if np.isfinite(thr) else f"{'N/A':>14}"
                 print(f"  {model:<30} {ml:>10.1f} {mdl:>11.1f} {thr_s}")
 
-        print(f"\n{'='*80}\n")
+        print(f"\n{'=' * 80}\n")
 
     def _print_per_source(self, df, models, task_type):
         """Print per-source aggregate table (e.g. OpenML-CC18 avg, TabArena avg)."""
@@ -785,10 +785,7 @@ class EvalAnalyzer:
             # Simplified: one row per dataset, one block of metrics per model
             # For readability, show primary metric per model + best marker
             primary = metric_cols[0]  # auc or r2
-            hdr = (
-                f"  {'Dataset':<{name_w}}"
-                f"  {'Train':>8}  {'Test':>8}  {'Total':>8}  {'Feat':>6}"
-            )
+            hdr = f"  {'Dataset':<{name_w}}  {'Train':>8}  {'Test':>8}  {'Total':>8}  {'Feat':>6}"
             for m in models:
                 hdr += f"  {model_short[m]:>20}"
             print(hdr)

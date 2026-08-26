@@ -43,16 +43,14 @@ def extract_embeddings(X_train, y_train, X_test):
     leakage-free out-of-fold train embeddings) and the low-level
     ``get_embeddings`` call on its final full-data model.
     """
-    embedder = NoriEmbedding(n_fold=5, shuffle=True, random_state=0,
-                             model=NoriRegressor(model="nori-6m"))
+    embedder = NoriEmbedding(n_fold=5, shuffle=True, random_state=0, model=NoriRegressor(model="nori-6m"))
     Z_train = embedder.fit_transform(X_train, y_train).mean(axis=0)  # OOF, no leak
-    Z_test = embedder.transform(X_test).mean(axis=0)                 # full-data model
+    Z_test = embedder.transform(X_test).mean(axis=0)  # full-data model
 
     # Low-level call on the same fitted model (no extra load); shows the raw 3D
     # shape before we average over the ensemble axis.
     raw = embedder.model_.get_embeddings(X_test, data_source="test")
-    print(f"  get_embeddings -> (n_estimators, n_samples, embed_dim) = {raw.shape}"
-          f"; averaged to 2D {Z_test.shape}")
+    print(f"  get_embeddings -> (n_estimators, n_samples, embed_dim) = {raw.shape}; averaged to 2D {Z_test.shape}")
 
     native = np.asarray(embedder.model_.predict(X_test))  # Nori's native head
     return Z_train, Z_test, native
@@ -70,6 +68,7 @@ def tsne_plot(X_raw, Z_embed, color, title, fname, *, cbar_label):
     """
     try:
         import matplotlib
+
         matplotlib.use("Agg")  # headless: straight to file
         import matplotlib.pyplot as plt
         from sklearn.manifold import TSNE
@@ -80,18 +79,16 @@ def tsne_plot(X_raw, Z_embed, color, title, fname, *, cbar_label):
     def _tsne(M):
         M = StandardScaler().fit_transform(M)
         perp = float(min(30, max(5, (len(M) - 1) // 3)))  # valid for small n
-        return TSNE(n_components=2, perplexity=perp, init="pca",
-                    random_state=0).fit_transform(M)
+        return TSNE(n_components=2, perplexity=perp, init="pca", random_state=0).fit_transform(M)
 
     os.makedirs(OUT_DIR, exist_ok=True)
     fig, axes = plt.subplots(1, 2, figsize=(12, 5.2))
     sc = None
-    for ax, pts, sub in ((axes[0], _tsne(X_raw), "raw features"),
-                         (axes[1], _tsne(Z_embed), "Nori embeddings")):
-        sc = ax.scatter(pts[:, 0], pts[:, 1], c=color, cmap="viridis", s=18,
-                        alpha=0.85, edgecolors="none")
+    for ax, pts, sub in ((axes[0], _tsne(X_raw), "raw features"), (axes[1], _tsne(Z_embed), "Nori embeddings")):
+        sc = ax.scatter(pts[:, 0], pts[:, 1], c=color, cmap="viridis", s=18, alpha=0.85, edgecolors="none")
         ax.set_title(sub, fontsize=12)
-        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_xticks([])
+        ax.set_yticks([])
     fig.suptitle(title, fontsize=14, fontweight="bold")
     fig.colorbar(sc, ax=axes, fraction=0.046, pad=0.04).set_label(cbar_label)
     path = os.path.join(OUT_DIR, fname)
@@ -111,8 +108,7 @@ def make_dataset(n=400, seed=0):
 
 def main():
     X_train, X_test, y_train, y_test = make_dataset()
-    print(f"synthetic regression: train={len(X_train)} test={len(X_test)} "
-          f"features={X_train.shape[1]}")
+    print(f"synthetic regression: train={len(X_train)} test={len(X_test)} features={X_train.shape[1]}")
 
     Z_train, Z_test, native = extract_embeddings(X_train, y_train, X_test)
 
@@ -123,9 +119,14 @@ def main():
     print(f"  kNN probe on embeddings  : {probe_r2:.4f}")
     print(f"  Nori native head (ref.)  : {native_r2:.4f}")
 
-    tsne_plot(X_test, Z_test, y_test,
-              "t-SNE — synthetic regression (color = target y)",
-              "embedding_synthetic_tsne.png", cbar_label="target y")
+    tsne_plot(
+        X_test,
+        Z_test,
+        y_test,
+        "t-SNE — synthetic regression (color = target y)",
+        "embedding_synthetic_tsne.png",
+        cbar_label="target y",
+    )
 
 
 if __name__ == "__main__":

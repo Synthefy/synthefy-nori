@@ -58,9 +58,7 @@ def generate_test_X(
     for i, last_ts in enumerate(last_timestamps):
         start_ts = last_ts + freq_offset
         timestamps = pd.date_range(start=start_ts, periods=prediction_length, freq=freq)
-        all_timestamps[i * prediction_length : (i + 1) * prediction_length] = (
-            timestamps.values
-        )
+        all_timestamps[i * prediction_length : (i + 1) * prediction_length] = timestamps.values
 
     # Build single DataFrame with vectorized arrays
     test_df = pd.DataFrame(
@@ -239,11 +237,7 @@ offset_alias_to_period_alias = {
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 def to_gluonts_univariate(hf_dataset: datasets.Dataset):
-    series_fields = [
-        col
-        for col in hf_dataset.features
-        if isinstance(hf_dataset.features[col], datasets.Sequence)
-    ]
+    series_fields = [col for col in hf_dataset.features if isinstance(hf_dataset.features[col], datasets.Sequence)]
     series_fields.remove("timestamp")
     dataset_length = hf_dataset.info.splits["train"].num_examples * len(series_fields)
     dataset_freq = pd.infer_freq(hf_dataset[0]["timestamp"])

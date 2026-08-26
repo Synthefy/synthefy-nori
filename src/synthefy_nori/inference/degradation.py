@@ -84,6 +84,6 @@ def strict_pipeline(*categories: type[Warning]):
     next one.
     """
     with warnings.catch_warnings():
-        for category in (categories or (DegradedPipelineWarning,)):
+        for category in categories or (DegradedPipelineWarning,):
             warnings.simplefilter("error", category)
         yield

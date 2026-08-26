@@ -16,20 +16,14 @@ def _installed_module(name: str, distribution: str, expected: str):
     module = importlib.import_module(name)
     actual = importlib.metadata.version(distribution)
     if actual != expected:
-        raise AssertionError(
-            f"{distribution} version {actual!r} does not match {expected!r}"
-        )
+        raise AssertionError(f"{distribution} version {actual!r} does not match {expected!r}")
     module_version = getattr(module, "__version__", actual)
     if module_version != actual:
-        raise AssertionError(
-            f"{name}.__version__={module_version!r} does not match {actual!r}"
-        )
+        raise AssertionError(f"{name}.__version__={module_version!r} does not match {actual!r}")
     module_path = Path(module.__file__).resolve()
     site_packages = Path(sysconfig.get_path("purelib")).resolve()
     if not module_path.is_relative_to(site_packages):
-        raise AssertionError(
-            f"{name} imported from {module_path}, outside {site_packages}"
-        )
+        raise AssertionError(f"{name} imported from {module_path}, outside {site_packages}")
     return module
 
 
@@ -43,13 +37,9 @@ def probe(
         synthefy = _installed_module("synthefy", "synthefy", expected_client)
         if "synthefy_nori" in sys.modules:
             raise AssertionError("import synthefy eagerly imported synthefy_nori")
-        synthefy_nori = _installed_module(
-            "synthefy_nori", "synthefy-nori", expected_nori
-        )
+        synthefy_nori = _installed_module("synthefy_nori", "synthefy-nori", expected_nori)
     else:
-        synthefy_nori = _installed_module(
-            "synthefy_nori", "synthefy-nori", expected_nori
-        )
+        synthefy_nori = _installed_module("synthefy_nori", "synthefy-nori", expected_nori)
         synthefy = _installed_module("synthefy", "synthefy", expected_client)
 
     capture: dict[str, Any] = {}
@@ -95,10 +85,7 @@ def probe(
         "kwargs": {},
     }:
         raise AssertionError(f"unexpected local call: {capture!r}")
-    print(
-        f"synthefy {expected_client} -> synthefy-nori {expected_nori} "
-        f"works in {order} order"
-    )
+    print(f"synthefy {expected_client} -> synthefy-nori {expected_nori} works in {order} order")
 
 
 def main() -> None:

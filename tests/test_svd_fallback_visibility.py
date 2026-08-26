@@ -11,6 +11,7 @@ one ``strict_pipeline()`` makes it fatal, the category tree lets a caller escala
 all degradation or one kind, and the eval runner escalates the SVD fallback so no
 eval can score a degraded run.
 """
+
 import inspect
 import warnings
 
@@ -26,8 +27,7 @@ from synthefy_nori import (
 from synthefy_nori.inference import preprocess as pp
 from synthefy_nori.inference.preprocess import HighDimFeatureSelector
 
-SVD_BLOCK = {"strategy": "svd_all", "svd_components": 64,
-             "n_features_threshold": 256, "binary_threshold": 1.01}
+SVD_BLOCK = {"strategy": "svd_all", "svd_components": 64, "n_features_threshold": 256, "binary_threshold": 1.01}
 
 
 def _data(n=300, p=400, seed=0):
@@ -42,20 +42,25 @@ def _selector(**kw):
 
 def _break_fit(monkeypatch):
     """Make the SVD blow up at fit time."""
+
     class _Boom(pp._TorchTruncatedSVD):
         def fit(self, X, y=None):
             raise np.linalg.LinAlgError("synthetic fit failure")
+
     monkeypatch.setattr(pp, "_TorchTruncatedSVD", _Boom)
 
 
 def _break_transform(sel):
     """Make the already-fitted SVD blow up at transform time."""
+
     def _boom(_X):
         raise np.linalg.LinAlgError("synthetic transform failure")
+
     sel.svd_model_.transform = _boom
 
 
 # --- transform-time failure (the all-zero column) ----------------------------
+
 
 def test_transform_failure_warns_and_zeros():
     X, y = _data()
@@ -64,7 +69,7 @@ def test_transform_failure_warns_and_zeros():
     _break_transform(sel)
     with pytest.warns(SvdFallbackWarning, match="all-zero column"):
         out, cat = sel.transform(X[:5])
-    assert out.shape == (5, 1) and not out.any()   # fallback still taken
+    assert out.shape == (5, 1) and not out.any()  # fallback still taken
     assert cat == []
 
 
@@ -79,9 +84,10 @@ def test_transform_failure_is_fatal_under_strict_pipeline():
 
 def test_svd_binary_transform_failure_warns():
     rng = np.random.default_rng(1)
-    X = (rng.random((300, 400)) < 0.3).astype(float)   # all-binary -> svd_binary
-    sel = HighDimFeatureSelector(strategy="svd_binary", n_features_threshold=256,
-                                 binary_threshold=0.5, svd_components=64)
+    X = (rng.random((300, 400)) < 0.3).astype(float)  # all-binary -> svd_binary
+    sel = HighDimFeatureSelector(
+        strategy="svd_binary", n_features_threshold=256, binary_threshold=0.5, svd_components=64
+    )
     sel.fit(X, [], 0, y=rng.standard_normal(300))
     _break_transform(sel)
     with pytest.warns(SvdFallbackWarning, match="SVD-projected columns"):
@@ -91,6 +97,7 @@ def test_svd_binary_transform_failure_warns():
 
 # --- fit-time failure (passthrough of the raw columns) -----------------------
 
+
 def test_fit_failure_warns_and_passes_through(monkeypatch):
     X, y = _data()
     _break_fit(monkeypatch)
@@ -99,7 +106,7 @@ def test_fit_failure_warns_and_passes_through(monkeypatch):
         sel.fit(X, [], 0, y=y)
     assert sel.passthrough_
     out, _ = sel.transform(X[:5])
-    assert out.shape[1] == 400          # model sees the raw width, not 64
+    assert out.shape[1] == 400  # model sees the raw width, not 64
 
 
 def test_fit_failure_is_fatal_under_strict_pipeline(monkeypatch):
@@ -110,6 +117,7 @@ def test_fit_failure_is_fatal_under_strict_pipeline(monkeypatch):
 
 
 # --- the happy path stays quiet ---------------------------------------------
+
 
 def test_working_svd_is_silent_even_under_strict_pipeline():
     """The guard must not fire on a healthy run, strict or not."""
@@ -122,7 +130,7 @@ def test_working_svd_is_silent_even_under_strict_pipeline():
     assert not [w for w in caught if issubclass(w.category, DegradedPipelineWarning)]
     assert out.shape == (5, 64)
 
-    sel2 = _selector()                      # same run, now strict: still no raise
+    sel2 = _selector()  # same run, now strict: still no raise
     with strict_pipeline():
         sel2.fit(X, [], 0, y=y)
         out2, _ = sel2.transform(X[:5])
@@ -130,6 +138,7 @@ def test_working_svd_is_silent_even_under_strict_pipeline():
 
 
 # --- the category tree is the whole mechanism --------------------------------
+
 
 def test_category_tree():
     """One escalation covers every fallback; a subclass covers just one."""
@@ -160,7 +169,7 @@ def test_strict_pipeline_restores_filters(monkeypatch):
     with strict_pipeline(), pytest.raises(SvdFallbackWarning):
         _selector().fit(X, [], 0, y=y)
     assert warnings.filters == before
-    with pytest.warns(SvdFallbackWarning):          # back to warning
+    with pytest.warns(SvdFallbackWarning):  # back to warning
         _selector().fit(X, [], 0, y=y)
 
 
@@ -184,6 +193,7 @@ def test_no_threaded_argument_survives():
 
 
 # --- an eval can never score a degraded run ---------------------------------
+
 
 class _WarningWrapper:
     """A model whose predict degrades: warns ``category``, then predicts anyway."""
@@ -226,7 +236,8 @@ def _run_runner_with(wrapper, tmp_path):
         y_test=np.arange(3, dtype=np.float64),
     )
     runner = EvalRunner(
-        _Registry(), _Registry(),
+        _Registry(),
+        _Registry(),
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
         no_cache=True,
@@ -241,8 +252,8 @@ def _run_runner_with(wrapper, tmp_path):
 def test_runner_records_a_broken_svd_as_failed_not_scored(tmp_path):
     """The guarantee: an eval can never report a degraded pipeline as a score."""
     row = _run_runner_with(_WarningWrapper(SvdFallbackWarning), tmp_path)
-    assert row["r2"] is None or np.isnan(row["r2"])       # NOT scored
-    assert "SvdFallbackWarning" in (row["error"] or "")   # recorded instead
+    assert row["r2"] is None or np.isnan(row["r2"])  # NOT scored
+    assert "SvdFallbackWarning" in (row["error"] or "")  # recorded instead
 
 
 def test_runner_still_scores_a_subsampled_context(tmp_path):
@@ -252,7 +263,7 @@ def test_runner_still_scores_a_subsampled_context(tmp_path):
     ContextSubsampledWarning must not fail the row — memory_policy=
     {'allow_subsample': False} is the knob for refusing that.
     """
-    with pytest.warns(ContextSubsampledWarning):        # warns, but does not fail
+    with pytest.warns(ContextSubsampledWarning):  # warns, but does not fail
         row = _run_runner_with(_WarningWrapper(ContextSubsampledWarning), tmp_path)
     assert row["error"] is None
     assert row["r2"] is not None and not np.isnan(row["r2"])
@@ -260,6 +271,7 @@ def test_runner_still_scores_a_subsampled_context(tmp_path):
 
 class _DistPointDegrader:
     """A second custom wrapper whose point prediction degrades."""
+
     name = "dist-point-degrader"
     device_str = "cpu"
 
@@ -274,11 +286,12 @@ class _DistPointDegrader:
 def test_runner_guards_every_scored_predict(tmp_path):
     """Every scored prediction is guarded by the strict SVD filter."""
     row = _run_runner_with(_DistPointDegrader(), tmp_path)
-    assert "SvdFallbackWarning" in (row["error"] or "")   # recorded as failed
-    assert row["r2"] is None or np.isnan(row["r2"])       # NOT scored
+    assert "SvdFallbackWarning" in (row["error"] or "")  # recorded as failed
+    assert row["r2"] is None or np.isnan(row["r2"])  # NOT scored
 
 
 # --- an escalated warning must not be swallowed as a generic failure ---------
+
 
 def test_yj_ensemble_does_not_swallow_an_escalated_warning(monkeypatch):
     """A Warning IS an Exception, so blanket handlers can eat the escalation.
@@ -294,22 +307,22 @@ def test_yj_ensemble_does_not_swallow_an_escalated_warning(monkeypatch):
 
     def _fake_single(self, x_train, y_train, x_test, return_distribution=False):
         calls["n"] += 1
-        if calls["n"] == 2:                              # the YJ pass only
+        if calls["n"] == 2:  # the YJ pass only
             warnings.warn("Nori: synthetic SVD fit failure", SvdFallbackWarning)
         return np.full(len(x_test), 1.0)
 
     monkeypatch.setattr(NoriPredictor, "_predict_reg_single", _fake_single)
-    pred = NoriPredictor.__new__(NoriPredictor)          # no checkpoint needed
+    pred = NoriPredictor.__new__(NoriPredictor)  # no checkpoint needed
     pred.augmentations = ["yj"]
-    pred.yj_skew_threshold = 0.0                         # force the YJ branch open
-    y = np.array([0.0, 0, 0, 0, 0, 0, 0, 0, 1, 40.0])    # skewed -> gate opens
+    pred.yj_skew_threshold = 0.0  # force the YJ branch open
+    y = np.array([0.0, 0, 0, 0, 0, 0, 0, 0, 1, 40.0])  # skewed -> gate opens
     x_train, x_test = np.zeros((10, 3)), np.zeros((4, 3))
 
     with strict_pipeline(), pytest.raises(SvdFallbackWarning):
         pred._predict_reg(x_train, y, x_test)
     assert calls["n"] == 2, "the YJ pass must actually have run"
 
-    calls["n"] = 0                                       # default stays resilient
+    calls["n"] = 0  # default stays resilient
     with pytest.warns(SvdFallbackWarning):
         out = pred._predict_reg(x_train, y, x_test)
     assert len(out) == 4

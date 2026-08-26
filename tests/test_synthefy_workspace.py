@@ -17,6 +17,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by the Python 3.10 l
 _ROOT = Path(__file__).resolve().parents[1]
 _CLIENT = _ROOT / "libs" / "synthefy"
 _CLIENT_TSFEATURES = _CLIENT / "src" / "synthefy" / "nori_ts" / "tsfeatures"
+
+
 def _toml(path: Path) -> dict:
     return tomllib.loads(path.read_text())
 
@@ -34,8 +36,7 @@ def _declared_version() -> str:
     tree = ast.parse((_CLIENT / "src" / "synthefy" / "__init__.py").read_text())
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "__version__"
-            for target in node.targets
+            isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets
         ):
             assert isinstance(node.value, ast.Constant)
             return str(node.value.value)
@@ -139,8 +140,7 @@ def test_published_dependencies_point_only_from_heavy_to_light():
     assert set(client_optionals) == {"aws", "forecasting", "text"}
     assert "local" not in client_optionals
     all_client_requirements = _requirements(
-        client["dependencies"]
-        + [value for values in client_optionals.values() for value in values]
+        client["dependencies"] + [value for values in client_optionals.values() for value in values]
     )
     assert not _named(all_client_requirements, "synthefy-nori")
 
@@ -160,10 +160,7 @@ def test_published_dependencies_point_only_from_heavy_to_light():
     assert base_names.isdisjoint(forbidden_base)
 
     forecasting = _requirements(client_optionals["forecasting"])
-    assert {
-        canonicalize_name(requirement.name): str(requirement.specifier)
-        for requirement in forecasting
-    } == {
+    assert {canonicalize_name(requirement.name): str(requirement.specifier) for requirement in forecasting} == {
         "datasets": ">=2.0",
         "gluonts": ">=0.16",
         "joblib": ">=1.1",
@@ -189,12 +186,8 @@ def test_namespaces_and_imports_do_not_create_a_base_runtime_cycle():
     root = _toml(_ROOT / "pyproject.toml")
     client = _toml(_CLIENT / "pyproject.toml")
 
-    assert root["tool"]["setuptools"]["packages"]["find"]["include"] == [
-        "synthefy_nori*"
-    ]
-    assert client["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == [
-        "src/synthefy"
-    ]
+    assert root["tool"]["setuptools"]["packages"]["find"]["include"] == ["synthefy_nori*"]
+    assert client["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == ["src/synthefy"]
     assert not (_ROOT / "src" / "synthefy").exists()
     assert not (_CLIENT / "src" / "synthefy_nori").exists()
 
@@ -217,8 +210,7 @@ def test_namespaces_and_imports_do_not_create_a_base_runtime_cycle():
         if any(name.split(".", 1)[0] in client_forbidden for name in _import_time_modules(path)):
             client_offenders.append(str(path.relative_to(_ROOT)))
     assert not client_offenders, (
-        "base synthefy imports a heavy or forecasting-only dependency at module scope: "
-        f"{client_offenders}"
+        f"base synthefy imports a heavy or forecasting-only dependency at module scope: {client_offenders}"
     )
 
     tsfeature_forbidden = {
@@ -231,25 +223,17 @@ def test_namespaces_and_imports_do_not_create_a_base_runtime_cycle():
     }
     tsfeature_offenders = []
     for path in _CLIENT_TSFEATURES.rglob("*.py"):
-        if any(
-            name.split(".", 1)[0] in tsfeature_forbidden
-            for name in _import_time_modules(path)
-        ):
+        if any(name.split(".", 1)[0] in tsfeature_forbidden for name in _import_time_modules(path)):
             tsfeature_offenders.append(str(path.relative_to(_ROOT)))
     assert not tsfeature_offenders, (
-        "model-free time-series preparation imports a heavy/client backend: "
-        f"{tsfeature_offenders}"
+        f"model-free time-series preparation imports a heavy/client backend: {tsfeature_offenders}"
     )
-    assert _import_time_modules(
-        _CLIENT / "src" / "synthefy" / "nori_ts" / "__init__.py"
-    ) == ["synthefy.nori_ts.core"]
+    assert _import_time_modules(_CLIENT / "src" / "synthefy" / "nori_ts" / "__init__.py") == ["synthefy.nori_ts.core"]
 
     facade_offenders = []
     for path in (_ROOT / "src" / "synthefy_nori").rglob("*.py"):
         modules = _import_time_modules(path)
-        if any(
-            name == "synthefy" or name.startswith("synthefy.nori_client") for name in modules
-        ):
+        if any(name == "synthefy" or name.startswith("synthefy.nori_client") for name in modules):
             facade_offenders.append(str(path.relative_to(_ROOT)))
     assert not facade_offenders, (
         f"synthefy_nori imports the lightweight client facade at module scope: {facade_offenders}"
@@ -264,12 +248,8 @@ def test_tabular_preparation_has_one_v7_implementation_owner():
     canonical_tree = ast.parse(canonical_path.read_text())
     client_tree = ast.parse(client_path.read_text())
     legacy_tree = ast.parse(legacy_path.read_text())
-    canonical_defs = {
-        node.name for node in canonical_tree.body if isinstance(node, ast.FunctionDef)
-    }
-    client_defs = {
-        node.name for node in client_tree.body if isinstance(node, ast.FunctionDef)
-    }
+    canonical_defs = {node.name for node in canonical_tree.body if isinstance(node, ast.FunctionDef)}
+    client_defs = {node.name for node in client_tree.body if isinstance(node, ast.FunctionDef)}
     canonical_helpers = {
         "_has_encodable_columns",
         "_numeric_categories_to_values",
@@ -281,23 +261,15 @@ def test_tabular_preparation_has_one_v7_implementation_owner():
     assert not any(isinstance(node, ast.FunctionDef) for node in legacy_tree.body)
 
     builder = next(
-        node
-        for node in client_tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_build_nori_request"
+        node for node in client_tree.body if isinstance(node, ast.FunctionDef) and node.name == "_build_nori_request"
     )
     canonical_calls = [
         node
         for node in ast.walk(builder)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_align_and_featurize"
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_align_and_featurize"
     ]
     assert len(canonical_calls) == 1
-    stacklevel = next(
-        keyword.value
-        for keyword in canonical_calls[0].keywords
-        if keyword.arg == "_warning_stacklevel"
-    )
+    stacklevel = next(keyword.value for keyword in canonical_calls[0].keywords if keyword.arg == "_warning_stacklevel")
     assert isinstance(stacklevel, ast.Constant) and stacklevel.value == 5
 
 
@@ -330,10 +302,7 @@ def test_time_series_forecaster_has_one_lightweight_implementation_owner():
     assert "synthefy.nori_ts.tsfeatures" in core_modules
     assert not any(name.startswith("synthefy_nori") for name in core_modules)
     legacy_tree = ast.parse(legacy_core.read_text())
-    assert not any(
-        isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-        for node in legacy_tree.body
-    )
+    assert not any(isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) for node in legacy_tree.body)
     assert _import_time_modules(legacy_core) == ["synthefy.nori_ts.core"]
     facade = (legacy / "__init__.py").read_text()
     assert '_CANONICAL_PACKAGE = "synthefy.nori_ts.tsfeatures"' in facade
@@ -408,15 +377,13 @@ def test_python_floors_preserve_public_python39_compatibility():
     root = _toml(_ROOT / "pyproject.toml")["project"]
     client = _toml(_CLIENT / "pyproject.toml")["project"]
 
-    assert (
-        "eval-type-backport>=0.2; python_version < '3.10'"
-        in root["dependencies"]
-    )
+    assert "eval-type-backport>=0.2; python_version < '3.10'" in root["dependencies"]
     assert root["requires-python"] == ">=3.9"
     assert client["requires-python"] == ">=3.9"
     assert "Programming Language :: Python :: 3.9" in root["classifiers"]
     assert "Programming Language :: Python :: 3.9" in client["classifiers"]
     assert "Programming Language :: Python :: 3.8" not in client["classifiers"]
+
 
 def test_living_docs_name_supported_install_paths(monkeypatch):
     readme = (_ROOT / "README.md").read_text()

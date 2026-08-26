@@ -13,6 +13,7 @@ because at forecast time the h-1 most recent periods are not observed yet.
 That is the whole trick: lag_h is the newest usable lag; lag_1..lag_{h-1}
 would be leaks.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -25,8 +26,9 @@ import pandas as pd
 from synthefy_nori import NoriRegressor
 
 
-def synthetic_series(n: int = 120, season: int = 12, seed: int = 7,
-                     ar: float = 0.7, sigma: float = 3.0) -> pd.DataFrame:
+def synthetic_series(
+    n: int = 120, season: int = 12, seed: int = 7, ar: float = 0.7, sigma: float = 3.0
+) -> pd.DataFrame:
     """Trend + seasonality + AR(1) noise. The autocorrelation matters: it makes
     horizon-2 genuinely harder than horizon-1, like real demand/telemetry."""
     rng = np.random.default_rng(seed)
@@ -39,25 +41,23 @@ def synthetic_series(n: int = 120, season: int = 12, seed: int = 7,
     return pd.DataFrame({"date": dates, "y": y})
 
 
-def build_features(y: pd.Series, *, horizon: int, season: int,
-                   n_lags: int = 3) -> pd.DataFrame:
+def build_features(y: pd.Series, *, horizon: int, season: int, n_lags: int = 3) -> pd.DataFrame:
     """Leak-safe for horizon h: every column uses only values <= t-h."""
     df = pd.DataFrame(index=y.index)
-    for k in range(horizon, horizon + n_lags):          # lag_h is the newest legal lag
+    for k in range(horizon, horizon + n_lags):  # lag_h is the newest legal lag
         df[f"lag{k}"] = y.shift(k)
     df[f"lag{max(season, horizon)}"] = y.shift(max(season, horizon))
     trailing = y.shift(horizon).rolling(season)
     df["roll_mean"] = trailing.mean()
     df["roll_std"] = trailing.std()
     t = np.arange(len(y))
-    df["trend"] = t                                      # calendar of the TARGET period is known
+    df["trend"] = t  # calendar of the TARGET period is known
     df["phase_sin"] = np.sin(2 * np.pi * (t % season) / season)
     df["phase_cos"] = np.cos(2 * np.pi * (t % season) / season)
     return df
 
 
-def rolling_direct(y: np.ndarray, X: np.ndarray, origins: range, *, horizon: int,
-                   device: str | None) -> pd.DataFrame:
+def rolling_direct(y: np.ndarray, X: np.ndarray, origins: range, *, horizon: int, device: str | None) -> pd.DataFrame:
     """At each origin t: context = rows whose features AND target are fully in
     the past (target rows <= t-h), then predict row t."""
     reg = NoriRegressor(device=device, model="nori-30m")
@@ -65,11 +65,9 @@ def rolling_direct(y: np.ndarray, X: np.ndarray, origins: range, *, horizon: int
     for t in origins:
         cut = t - horizon + 1  # rows [0, cut) have targets <= t-h+... strictly before t's info
         reg.fit(X[:cut], y[:cut])
-        point = float(np.atleast_1d(reg.predict(X[t:t + 1], output_type="median"))[0])
-        q = np.asarray(reg.predict(X[t:t + 1], output_type="quantiles",
-                                   quantiles=[0.1, 0.9])).reshape(2, -1)
-        rows.append({"t": t, "y_true": float(y[t]), "y_pred": point,
-                     "q10": float(q[0, 0]), "q90": float(q[1, 0])})
+        point = float(np.atleast_1d(reg.predict(X[t : t + 1], output_type="median"))[0])
+        q = np.asarray(reg.predict(X[t : t + 1], output_type="quantiles", quantiles=[0.1, 0.9])).reshape(2, -1)
+        rows.append({"t": t, "y_true": float(y[t]), "y_pred": point, "q10": float(q[0, 0]), "q90": float(q[1, 0])})
     return pd.DataFrame(rows)
 
 
@@ -100,8 +98,10 @@ def main() -> None:
     X = build_features(y, horizon=args.horizon, season=args.season).to_numpy(np.float32)
     yv = y.to_numpy(np.float64)
     origins = range(len(yv) - args.n_test, len(yv))
-    print(f"{len(yv)} periods, horizon={args.horizon}, last {args.n_test} origins "
-          f"({X.shape[1]} features; newest legal lag = lag{args.horizon})")
+    print(
+        f"{len(yv)} periods, horizon={args.horizon}, last {args.n_test} origins "
+        f"({X.shape[1]} features; newest legal lag = lag{args.horizon})"
+    )
 
     fc = rolling_direct(yv, X, origins, horizon=args.horizon, device=args.device)
     fc["date"] = df[date_col].iloc[fc.t].dt.date.values
@@ -117,8 +117,10 @@ def main() -> None:
         "coverage_10_90": float(((truth >= fc.q10) & (truth <= fc.q90)).mean()),
         "interval_width_mean": float((fc.q90 - fc.q10).mean()),
     }
-    print(f"MAE  nori={results['mae']:.3f}  last-known={results['mae_naive_lastknown']:.3f}  "
-          f"seasonal-naive={results['mae_naive_seasonal']:.3f}")
+    print(
+        f"MAE  nori={results['mae']:.3f}  last-known={results['mae_naive_lastknown']:.3f}  "
+        f"seasonal-naive={results['mae_naive_seasonal']:.3f}"
+    )
     print(f"coverage [q10,q90] {results['coverage_10_90']:.2f} (nominal 0.80)")
 
     fc[["date", "y_true", "y_pred", "q10", "q90"]].to_csv("forecasts.csv", index=False)

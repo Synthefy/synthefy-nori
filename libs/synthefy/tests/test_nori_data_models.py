@@ -64,9 +64,9 @@ def test_the_policy_is_frozen_so_a_shared_instance_cannot_be_mutated():
 
 def test_bounds_are_enforced_locally():
     with pytest.raises(ValueError):
-        MemoryPolicy(gpu_budget_frac=1.5)   # a fraction of VRAM cannot exceed 1
+        MemoryPolicy(gpu_budget_frac=1.5)  # a fraction of VRAM cannot exceed 1
     with pytest.raises(ValueError):
-        MemoryPolicy(gpu_budget_frac=0)     # exclusive minimum: 0 would mean "never cache"
+        MemoryPolicy(gpu_budget_frac=0)  # exclusive minimum: 0 would mean "never cache"
     assert MemoryPolicy(gpu_budget_absolute_gb=0).gpu_budget_absolute_gb == 0
 
 

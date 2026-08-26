@@ -58,9 +58,7 @@ def test_strict_modes_name_every_undeclared_non_numeric_column(categorical_colum
 
 
 def test_explicit_categorical_uses_top_k_and_other_without_query_leakage():
-    preprocessor = DataFramePreprocessor(
-        categorical_columns=["plan"], max_categorical_cardinality=2
-    )
+    preprocessor = DataFramePreprocessor(categorical_columns=["plan"], max_categorical_cardinality=2)
     train = pd.DataFrame({"plan": ["pro", "free", "pro", "rare"], "amount": [1, 2, 3, 4]})
     query = pd.DataFrame({"amount": [5, 6, 7], "plan": ["free", "new", None]})
 
@@ -94,9 +92,7 @@ def test_text_and_categorical_declarations_are_validated_before_text_import(monk
     monkeypatch.setattr(builtins, "__import__", fail_text_import)
     frame = pd.DataFrame({"body": ["a", "b"]})
     with pytest.raises(ValueError, match="must not overlap"):
-        DataFramePreprocessor(
-            categorical_columns=["body"], text_columns=["body"]
-        ).fit(frame)
+        DataFramePreprocessor(categorical_columns=["body"], text_columns=["body"]).fit(frame)
 
 
 def test_categorical_only_never_imports_text_dependencies(monkeypatch):
@@ -108,9 +104,7 @@ def test_categorical_only_never_imports_text_dependencies(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fail_text_import)
-    result = DataFramePreprocessor(categorical_columns=["plan"]).fit_transform(
-        pd.DataFrame({"plan": ["free", "pro"]})
-    )
+    result = DataFramePreprocessor(categorical_columns=["plan"]).fit_transform(pd.DataFrame({"plan": ["free", "pro"]}))
     assert _rows(result) == [[0.0], [1.0]]
 
 

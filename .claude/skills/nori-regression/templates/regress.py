@@ -10,6 +10,7 @@ context; all compute happens in predict), reports R²/MAE for both the mean and
 median point estimates, and checks that the nominal 80% interval [q10, q90]
 actually covers ~80% of the held-out targets.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -52,15 +53,13 @@ def main() -> None:
     args = ap.parse_args()
 
     X, y = load_data(args.data, args.target)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=args.test_size, random_state=args.seed
-    )
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=args.test_size, random_state=args.seed)
     print(f"rows: {len(X_train)} context / {len(X_test)} query, {X.shape[1]} features")
 
     reg = NoriRegressor(device=args.device, model="nori-30m")
     reg.fit(X_train, y_train)
 
-    mean_pred = reg.predict(X_test)                          # (n,) distribution mean
+    mean_pred = reg.predict(X_test)  # (n,) distribution mean
     median_pred = reg.predict(X_test, output_type="median")  # robust for skewed targets
     q10, q50, q90 = reg.predict(X_test, output_type="quantiles", quantiles=[0.1, 0.5, 0.9])
 
@@ -79,8 +78,9 @@ def main() -> None:
 
     print(f"R²   mean={results['r2_mean']:.3f}  median={results['r2_median']:.3f}")
     print(f"MAE  mean={results['mae_mean']:.3f}  median={results['mae_median']:.3f}")
-    print(f"[q10, q90] empirical coverage: {coverage:.2f} (nominal 0.80), "
-          f"mean width {results['interval_width_mean']:.3f}")
+    print(
+        f"[q10, q90] empirical coverage: {coverage:.2f} (nominal 0.80), mean width {results['interval_width_mean']:.3f}"
+    )
 
     out = Path(args.out)
     out.write_text(json.dumps(results, indent=2) + "\n")

@@ -321,23 +321,16 @@ class NoriTSForecaster:
         an identical set of used covariates.
         """
         if not isinstance(target_column, str):
-            raise ValueError(
-                "`target_column` must be one column name; multiple target columns "
-                "are not supported yet"
-            )
+            raise ValueError("`target_column` must be one column name; multiple target columns are not supported yet")
         if (prediction_length is None) == (future_df is None):
-            raise ValueError(
-                "provide exactly one of `prediction_length` or `future_df` "
-                "(got both or neither)"
-            )
+            raise ValueError("provide exactly one of `prediction_length` or `future_df` (got both or neither)")
 
         history = context_df.copy()
         if "timestamp" not in history.columns:
             raise ValueError("`context_df` must have a `timestamp` column")
         if target_column not in history.columns:
             raise ValueError(
-                f"target column {target_column!r} not found in `context_df` "
-                f"(columns: {list(history.columns)})"
+                f"target column {target_column!r} not found in `context_df` (columns: {list(history.columns)})"
             )
         if "item_id" not in history.columns:
             history["item_id"] = 0
@@ -360,8 +353,7 @@ class NoriTSForecaster:
         reserved = {"item_id", "timestamp", _TARGET}
         # Covariates are the numeric non-reserved history columns; non-numeric extras
         # (labels, strings) are ignored rather than fed to the regressor.
-        hist_cov = [c for c in history.columns
-                    if c not in reserved and pd.api.types.is_numeric_dtype(history[c])]
+        hist_cov = [c for c in history.columns if c not in reserved and pd.api.types.is_numeric_dtype(history[c])]
 
         if future_df is not None:
             future = future_df.copy()
@@ -373,10 +365,7 @@ class NoriTSForecaster:
                 future["item_id"] = 0
             future["timestamp"] = pd.to_datetime(future["timestamp"])
             if future.duplicated(["item_id", "timestamp"]).any():
-                raise ValueError(
-                    "`future_df` must contain at most one row per "
-                    "(`item_id`, `timestamp`)"
-                )
+                raise ValueError("`future_df` must contain at most one row per (`item_id`, `timestamp`)")
             # No leakage: a target in the horizon must be absent or entirely NaN.
             for tcol in {target_column, _TARGET} & set(future.columns):
                 if not future[tcol].isna().all():
@@ -388,16 +377,11 @@ class NoriTSForecaster:
             # item_ids must line up exactly with history.
             h_ids, f_ids = set(history["item_id"]), set(future["item_id"])
             if h_ids != f_ids:
-                raise ValueError(
-                    f"`future_df` item_ids {sorted(f_ids)} do not match "
-                    f"history item_ids {sorted(h_ids)}"
-                )
+                raise ValueError(f"`future_df` item_ids {sorted(f_ids)} do not match history item_ids {sorted(h_ids)}")
             history_end = history.groupby("item_id", sort=False)["timestamp"].max()
             future_start = future.groupby("item_id", sort=False)["timestamp"].min()
             overlapping = [
-                item_id
-                for item_id in history_end.index
-                if future_start.loc[item_id] <= history_end.loc[item_id]
+                item_id for item_id in history_end.index if future_start.loc[item_id] <= history_end.loc[item_id]
             ]
             if overlapping:
                 raise ValueError(
@@ -422,9 +406,7 @@ class NoriTSForecaster:
             test_tsdf = TimeSeriesDataFrame.from_data_frame(test_df)
         else:
             if not isinstance(prediction_length, (int, np.integer)) or prediction_length <= 0:
-                raise ValueError(
-                    f"`prediction_length` must be a positive integer, got {prediction_length!r}"
-                )
+                raise ValueError(f"`prediction_length` must be a positive integer, got {prediction_length!r}")
             used_cov = []  # no way to know future covariates without an explicit horizon
             test_tsdf = None  # built from the (capped) history below
 

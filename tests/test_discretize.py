@@ -1,4 +1,5 @@
 """Unit tests for synthefy_nori.discretize + the discretize=/categorical_levels= API wiring."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -95,14 +96,12 @@ class TestDiscretizePredictions:
     def test_median_cell_crosses_half(self):
         taus = (np.arange(99) + 1.0) / 100.0
         row = np.where(taus < 0.4, 3.0, 7.0) + np.linspace(0, 0.01, 99)
-        out = discretize_predictions(
-            "median-cell", np.array([3.0, 5.0, 7.0]), Q=row[None, :], taus=taus)
+        out = discretize_predictions("median-cell", np.array([3.0, 5.0, 7.0]), Q=row[None, :], taus=taus)
         assert out.tolist() == [7.0]
 
     def test_unsorted_duplicate_levels_normalized(self):
         Q, taus = _bank_from_normal([7.0], [0.05])
-        out = discretize_predictions(
-            "map-cell", np.array([7.0, 3.0, 5.0, 3.0]), Q=Q, taus=taus)
+        out = discretize_predictions("map-cell", np.array([7.0, 3.0, 5.0, 3.0]), Q=Q, taus=taus)
         assert out.tolist() == [7.0]
 
     def test_single_level_cell_method(self):
@@ -113,8 +112,7 @@ class TestDiscretizePredictions:
     def test_expected_level_matches_posterior_mean(self):
         taus = (np.arange(99) + 1.0) / 100.0
         row = np.where(taus < 0.4, 3.0, 7.0) + np.linspace(0, 0.01, 99)
-        out = discretize_predictions(
-            "expected-level", np.array([3.0, 5.0, 7.0]), Q=row[None, :], taus=taus)
+        out = discretize_predictions("expected-level", np.array([3.0, 5.0, 7.0]), Q=row[None, :], taus=taus)
         # ~40% mass at 3, ~60% at 7 -> expectation ~ 5.4 (continuous, off-lattice)
         assert 5.0 < out[0] < 5.8
         assert out[0] not in (3.0, 5.0, 7.0)
@@ -122,8 +120,7 @@ class TestDiscretizePredictions:
     def test_prior_match_matches_train_frequencies(self):
         y_train = np.array([3.0] * 6 + [5.0] * 3 + [7.0] * 3)  # 50/25/25
         point = np.linspace(0, 10, 8)
-        out = discretize_predictions(
-            "prior-match", np.array([3.0, 5.0, 7.0]), point=point, y_train=y_train)
+        out = discretize_predictions("prior-match", np.array([3.0, 5.0, 7.0]), point=point, y_train=y_train)
         vals, counts = np.unique(out, return_counts=True)
         assert vals.tolist() == [3.0, 5.0, 7.0]
         assert counts.tolist() == [4, 2, 2]  # 8 rows at 50/25/25
@@ -133,8 +130,7 @@ class TestDiscretizePredictions:
 
     def test_prior_match_requires_y_train(self):
         with pytest.raises(ValueError, match="y_train"):
-            discretize_predictions("prior-match", np.array([1.0, 2.0]),
-                                   point=np.array([1.0]))
+            discretize_predictions("prior-match", np.array([1.0, 2.0]), point=np.array([1.0]))
 
     def test_prior_match_direct_zero_overlap_raises(self):
         with pytest.raises(ValueError, match="no training values"):
@@ -170,7 +166,6 @@ class TestPackageSurface:
         assert set(DISCRETIZE_METHOD_DESCRIPTIONS) == set(DISCRETIZE_METHODS)
         assert all(len(v) > 40 for v in DISCRETIZE_METHOD_DESCRIPTIONS.values())
 
-
     def test_submodule_attribute_access(self):
         # docs promise `synthefy_nori.discretize.snap_to_levels` works
         import synthefy_nori
@@ -188,17 +183,16 @@ class TestPredictCategoricalAPI:
         model.fit(X, y)
         Q, taus = _bank_from_normal([6.9, 3.1, 5.0], [0.1, 0.1, 0.1])
         monkeypatch.setattr(
-            NoriRegressor, "_predict_distribution",
-            lambda self, X, *, output_type, quantiles:
-                {"quantiles": Q, "taus": taus, "mean": Q.mean(axis=1)},
+            NoriRegressor,
+            "_predict_distribution",
+            lambda self, X, *, output_type, quantiles: {"quantiles": Q, "taus": taus, "mean": Q.mean(axis=1)},
         )
         return model
 
     def test_map_cell_default_via_levels_only(self, monkeypatch):
         # categorical_levels alone activates with the default (map-cell) strategy
         model = self._fitted(monkeypatch)
-        out = model.predict(np.zeros((3, 2), dtype=np.float32),
-                            categorical_levels=[3.0, 5.0, 7.0])
+        out = model.predict(np.zeros((3, 2), dtype=np.float32), categorical_levels=[3.0, 5.0, 7.0])
         assert out.tolist() == [7.0, 3.0, 5.0]
 
     def test_snap_mean_forces_mean_collapse(self, monkeypatch):
@@ -210,8 +204,7 @@ class TestPredictCategoricalAPI:
             return np.array([6.6, 2.0, 4.9])
 
         monkeypatch.setattr(NoriRegressor, "_predict_point", fake_point)
-        out = model.predict(np.zeros((3, 2), dtype=np.float32),
-                            discretize="snap-mean")
+        out = model.predict(np.zeros((3, 2), dtype=np.float32), discretize="snap-mean")
         assert out.tolist() == [7.0, 3.0, 5.0]
         # snap-mean must snap the MEAN even if the regressor was configured
         # with a different quantile_collapse
@@ -226,15 +219,13 @@ class TestPredictCategoricalAPI:
             return np.array([6.6, 2.0, 4.9])
 
         monkeypatch.setattr(NoriRegressor, "_predict_point", fake_point)
-        model.predict(np.zeros((3, 2), dtype=np.float32),
-                      discretize="snap-median")
+        model.predict(np.zeros((3, 2), dtype=np.float32), discretize="snap-median")
         assert seen["collapse"] == ("median", "median")
 
     def test_categorical_levels_override(self, monkeypatch):
         model = self._fitted(monkeypatch)
         # supply a lattice richer than the fitted y (e.g. known 1-9 scale)
-        out = model.predict(np.zeros((3, 2), dtype=np.float32),
-                            categorical_levels=np.arange(1.0, 10.0))
+        out = model.predict(np.zeros((3, 2), dtype=np.float32), categorical_levels=np.arange(1.0, 10.0))
         assert out.tolist() == [7.0, 3.0, 5.0]
 
     def test_discretize_alone_activates(self, monkeypatch):
@@ -243,8 +234,7 @@ class TestPredictCategoricalAPI:
         model = self._fitted(monkeypatch)
         out = model.predict(np.zeros((3, 2), dtype=np.float32), discretize="median-cell")
         assert set(out.tolist()) <= {3.0, 5.0, 7.0}
-        out = model.predict(np.zeros((3, 2), dtype=np.float32),
-                            categorical_levels=[3.0, 5.0, 7.0])
+        out = model.predict(np.zeros((3, 2), dtype=np.float32), categorical_levels=[3.0, 5.0, 7.0])
         assert set(out.tolist()) <= {3.0, 5.0, 7.0}
 
     def test_infer_helper_implication(self, monkeypatch):
@@ -253,14 +243,16 @@ class TestPredictCategoricalAPI:
 
         Q, taus = _bank_from_normal([6.9, 3.1, 5.0], [0.1, 0.1, 0.1])
         monkeypatch.setattr(
-            NoriRegressor, "_predict_distribution",
-            lambda self, X, *, output_type, quantiles:
-                {"quantiles": Q, "taus": taus, "mean": Q.mean(axis=1)},
+            NoriRegressor,
+            "_predict_distribution",
+            lambda self, X, *, output_type, quantiles: {"quantiles": Q, "taus": taus, "mean": Q.mean(axis=1)},
         )
-        out = infer(np.zeros((6, 2), dtype=np.float32),
-                    np.array([3.0, 3.0, 5.0, 5.0, 7.0, 7.0]),
-                    np.zeros((3, 2), dtype=np.float32),
-                    discretize="map-cell")
+        out = infer(
+            np.zeros((6, 2), dtype=np.float32),
+            np.array([3.0, 3.0, 5.0, 5.0, 7.0, 7.0]),
+            np.zeros((3, 2), dtype=np.float32),
+            discretize="map-cell",
+        )
         assert out.tolist() == [7.0, 3.0, 5.0]
 
     def test_flag_is_gone(self, monkeypatch):
@@ -273,8 +265,7 @@ class TestPredictCategoricalAPI:
     def test_rejects_output_type_combo(self, monkeypatch):
         model = self._fitted(monkeypatch)
         with pytest.raises(ValueError, match="categorical output"):
-            model.predict(np.zeros((3, 2), dtype=np.float32),
-                          discretize="map-cell", output_type="median")
+            model.predict(np.zeros((3, 2), dtype=np.float32), discretize="map-cell", output_type="median")
 
     def test_unknown_strategy_raises(self, monkeypatch):
         model = self._fitted(monkeypatch)
@@ -293,23 +284,21 @@ class TestPredictCategoricalAPI:
 
     def test_requires_fit(self):
         with pytest.raises(ValueError, match="fit"):
-            NoriRegressor().predict(np.zeros((1, 2), dtype=np.float32),
-                                    discretize="map-cell")
+            NoriRegressor().predict(np.zeros((1, 2), dtype=np.float32), discretize="map-cell")
 
     def test_expected_level_via_predict(self, monkeypatch):
         model = self._fitted(monkeypatch)
-        out = model.predict(np.zeros((3, 2), dtype=np.float32),
-                            discretize="expected-level")
+        out = model.predict(np.zeros((3, 2), dtype=np.float32), discretize="expected-level")
         assert out.shape == (3,)  # continuous, near the per-row bank means
 
     def test_prior_match_via_predict(self, monkeypatch):
         model = self._fitted(monkeypatch)
         monkeypatch.setattr(
-            NoriRegressor, "_predict_point",
-            lambda self, X, *, quantile_collapse, bar_point_estimator:
-                np.array([6.6, 2.0, 4.9]))
-        out = model.predict(np.zeros((3, 2), dtype=np.float32),
-                            discretize="prior-match")
+            NoriRegressor,
+            "_predict_point",
+            lambda self, X, *, quantile_collapse, bar_point_estimator: np.array([6.6, 2.0, 4.9]),
+        )
+        out = model.predict(np.zeros((3, 2), dtype=np.float32), discretize="prior-match")
         # fitted y is 2x each of {3,5,7} -> 3 rows get one of each, rank-ordered
         assert sorted(out.tolist()) == [3.0, 5.0, 7.0]
         assert out.tolist() == [7.0, 3.0, 5.0]
@@ -336,29 +325,26 @@ class TestSklearnEcosystem:
     def test_constructor_params_drive_predict(self, monkeypatch):
         self._patch_distribution(monkeypatch)
         model = NoriRegressor(discretize="map-cell")
-        model.fit(np.zeros((6, 2), dtype=np.float32),
-                  np.array([3.0, 3.0, 5.0, 5.0, 7.0, 7.0]))
+        model.fit(np.zeros((6, 2), dtype=np.float32), np.array([3.0, 3.0, 5.0, 5.0, 7.0, 7.0]))
         out = model.predict(np.zeros((4, 2), dtype=np.float32))
         assert out.tolist() == [5.0, 5.0, 5.0, 5.0]
 
     def test_per_call_override_wins(self, monkeypatch):
         self._patch_distribution(monkeypatch)
         model = NoriRegressor(discretize="median-cell")
-        model.fit(np.zeros((6, 2), dtype=np.float32),
-                  np.array([3.0, 3.0, 5.0, 5.0, 7.0, 7.0]))
+        model.fit(np.zeros((6, 2), dtype=np.float32), np.array([3.0, 3.0, 5.0, 5.0, 7.0, 7.0]))
         monkeypatch.setattr(
-            NoriRegressor, "_predict_point",
-            lambda self, X, *, quantile_collapse, bar_point_estimator:
-                np.array([5.37] * np.asarray(X).shape[0]))
-        out = model.predict(np.zeros((2, 2), dtype=np.float32),
-                            discretize="map-cell")
+            NoriRegressor,
+            "_predict_point",
+            lambda self, X, *, quantile_collapse, bar_point_estimator: np.array([5.37] * np.asarray(X).shape[0]),
+        )
+        out = model.predict(np.zeros((2, 2), dtype=np.float32), discretize="map-cell")
         assert set(out.tolist()) <= {3.0, 5.0, 7.0}  # per-call strategy override
 
     def test_clone_roundtrip(self):
         from sklearn.base import clone
 
-        model = NoriRegressor(discretize="median-cell",
-                              categorical_levels=[1.0, 2.0, 3.0])
+        model = NoriRegressor(discretize="median-cell", categorical_levels=[1.0, 2.0, 3.0])
         params = clone(model).get_params()
         assert params["discretize"] == "median-cell"
         assert params["categorical_levels"] == [1.0, 2.0, 3.0]
@@ -370,8 +356,7 @@ class TestSklearnEcosystem:
         X = np.zeros((12, 2), dtype=np.float32)
         y = np.tile([3.0, 5.0, 7.0], 4)
         gs = GridSearchCV(
-            NoriRegressor(),
-            {"discretize": ["map-cell", "median-cell"]},
-            scoring="accuracy", cv=2, error_score="raise")
+            NoriRegressor(), {"discretize": ["map-cell", "median-cell"]}, scoring="accuracy", cv=2, error_score="raise"
+        )
         gs.fit(X, y)
         assert gs.best_params_["discretize"] in ("map-cell", "median-cell")

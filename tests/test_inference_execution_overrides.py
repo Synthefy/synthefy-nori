@@ -12,6 +12,7 @@ Both are applied per call and undone afterwards: ``NoriPredictor(model=...)``
 may be handed a module the caller also trains with, and a leaked
 ``_skip_feature_decoder`` would silently zero its feature-reconstruction loss.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -22,8 +23,7 @@ from synthefy_nori.inference.predictor import NoriPredictor
 from synthefy_nori.model.layer import RMSNorm
 
 
-def _stub_predictor(model, *, mask_prediction=False,
-                    skip_unused_feature_decoder=True, native_rms_norm=None):
+def _stub_predictor(model, *, mask_prediction=False, skip_unused_feature_decoder=True, native_rms_norm=None):
     """A NoriPredictor with only the attributes _execution_overrides reads.
 
     Bypasses __init__ so the test stays on CPU and off the config/pipeline
@@ -159,18 +159,18 @@ def test_forward_parity_reg_output_is_bit_identical():
     from synthefy_nori.utils.loading import build_model
 
     mc = load_model_config(None)
-    mc['mask_prediction'] = True
-    mc['embed_dim'] = 32
-    mc['hid_dim'] = 64
-    mc['nlayers'] = 2
-    mc['nhead'] = 2
-    for sub_key in ('encoder_config_x', 'encoder_config_y'):
+    mc["mask_prediction"] = True
+    mc["embed_dim"] = 32
+    mc["hid_dim"] = 64
+    mc["nlayers"] = 2
+    mc["nhead"] = 2
+    for sub_key in ("encoder_config_x", "encoder_config_y"):
         sub = mc.get(sub_key, {})
-        for field in ('embedding_size', 'mask_embedding_size'):
+        for field in ("embedding_size", "mask_embedding_size"):
             if field in sub:
                 sub[field] = 32
 
-    model = build_model(mc).to('cpu').eval()
+    model = build_model(mc).to("cpu").eval()
 
     torch.manual_seed(0)
     x = torch.randn(1, 16, 4)
@@ -180,15 +180,15 @@ def test_forward_parity_reg_output_is_bit_identical():
     def run():
         torch.manual_seed(1234)  # feature positional embeddings are re-drawn
         with torch.inference_mode():
-            return model(x=x, y=y, eval_pos=eval_pos, task_type='reg')
+            return model(x=x, y=y, eval_pos=eval_pos, task_type="reg")
 
     baseline = run()
-    assert baseline['feature_pred'] is not None
+    assert baseline["feature_pred"] is not None
 
     predictor = _stub_predictor(model)
     with predictor._execution_overrides():
         skipped = run()
 
-    assert skipped['feature_pred'] is None
-    assert torch.equal(baseline['reg_output'], skipped['reg_output'])
-    assert torch.equal(baseline['cls_output'], skipped['cls_output'])
+    assert skipped["feature_pred"] is None
+    assert torch.equal(baseline["reg_output"], skipped["reg_output"])
+    assert torch.equal(baseline["cls_output"], skipped["cls_output"])

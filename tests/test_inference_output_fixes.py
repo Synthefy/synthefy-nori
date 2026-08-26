@@ -35,9 +35,7 @@ def test_quantile_collapse_uses_an_mps_supported_tau_dtype(
 
     class FakeQuantiles:
         def __init__(self):
-            self.values = torch.tensor(
-                [[0.0, 1.0, 2.0], [0.0, 1.0, 2.0]]
-            )
+            self.values = torch.tensor([[0.0, 1.0, 2.0], [0.0, 1.0, 2.0]])
             self.shape = self.values.shape
             self.device = torch.device(device_type)
 

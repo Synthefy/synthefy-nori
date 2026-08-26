@@ -122,9 +122,7 @@ def test_auto_high_cardinality_column_requires_explicit_role():
 def test_datetime_column_requires_explicit_conversion():
     with pytest.raises(ValueError, match="unsupported dtype"):
         align_and_featurize(
-            pd.DataFrame(
-                {"a": [0.0, 1.0], "d": pd.to_datetime(["2024-01-01", "2024-01-02"])}
-            ),
+            pd.DataFrame({"a": [0.0, 1.0], "d": pd.to_datetime(["2024-01-01", "2024-01-02"])}),
             pd.DataFrame({"a": [2.0], "d": pd.to_datetime(["2024-01-03"])}),
         )
 
@@ -180,9 +178,7 @@ def test_numeric_category_dtype_is_respected_as_categorical():
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # must NOT warn / drop / explode
         Xtr, Xte = align_and_featurize(
-            pd.DataFrame(
-                {"a": [0.0, 1.0, 2.0], "r": pd.Categorical([1, 2, 3], categories=[1, 2, 3])}
-            ),
+            pd.DataFrame({"a": [0.0, 1.0, 2.0], "r": pd.Categorical([1, 2, 3], categories=[1, 2, 3])}),
             pd.DataFrame({"a": [5.0], "r": pd.Categorical([2], categories=[1, 2, 3])}),
         )
     # Pandas categorical dtype is a semantic declaration even when levels are numbers.

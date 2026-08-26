@@ -89,8 +89,6 @@ def test_stack_returns_final_layer_maps_not_an_earlier_capture(monkeypatch):
 def test_no_diagnostic_flags_returns_no_maps():
     stack = _build_stack(3, "smf", True)
     with torch.no_grad():
-        _, feature_attention, sample_attention = stack(
-            torch.randn(1, 6, 3, 8), feature_atten_mask=None, eval_pos=4
-        )
+        _, feature_attention, sample_attention = stack(torch.randn(1, 6, 3, 8), feature_atten_mask=None, eval_pos=4)
     assert feature_attention is None
     assert sample_attention is None

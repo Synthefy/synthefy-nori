@@ -45,9 +45,7 @@ class AutoSeasonalFeature(FeatureGenerator):
 
     def __init__(self, config: Optional[dict] = None):
         # Create default config from Config class
-        default_config = {
-            k: v for k, v in vars(self.Config).items() if not k.startswith("__")
-        }
+        default_config = {k: v for k, v in vars(self.Config).items() if not k.startswith("__")}
 
         # Initialize config with defaults
         self.config = default_config.copy()
@@ -77,9 +75,7 @@ class AutoSeasonalFeature(FeatureGenerator):
             "linear",
             "constant",
         ]:
-            logger.warning(
-                f"Invalid detrend_type: {self.config['detrend_type']}, using 'linear'"
-            )
+            logger.warning(f"Invalid detrend_type: {self.config['detrend_type']}, using 'linear'")
             self.config["detrend_type"] = "linear"
 
     def generate(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -93,9 +89,7 @@ class AutoSeasonalFeature(FeatureGenerator):
         codes, _ = pd.factorize(df.index.get_level_values("item_id"), sort=False)
         n_series = int(codes.max()) + 1 if n else 0
         periods_by_series = np.full((n_series, max_top_k), np.nan)
-        for code, (_item_id, target) in enumerate(
-            df["target"].groupby(level="item_id", sort=False)
-        ):
+        for code, (_item_id, target) in enumerate(df["target"].groupby(level="item_id", sort=False)):
             periods = [p for p, _ in self.find_seasonal_periods(target, **self.config)]
             for i, period in enumerate(periods[:max_top_k]):
                 periods_by_series[code, i] = period
@@ -121,18 +115,14 @@ class AutoSeasonalFeature(FeatureGenerator):
         target_values: pd.Series,
         max_top_k: int = 10,
         do_detrend: bool = True,
-        detrend_type: Literal[
-            "first_diff", "loess", "linear", "constant"
-        ] = "first_diff",
+        detrend_type: Literal["first_diff", "loess", "linear", "constant"] = "first_diff",
         use_peaks_only: bool = True,
         apply_hann_window: bool = True,
         zero_padding_factor: int = 2,
         round_to_closest_integer: bool = True,
         validate_with_acf: bool = False,
         sampling_interval: float = 1.0,
-        magnitude_threshold: Optional[
-            float
-        ] = 0.05,  # Default relative threshold (5% of max)
+        magnitude_threshold: Optional[float] = 0.05,  # Default relative threshold (5% of max)
         relative_threshold: bool = True,  # Interpret threshold as a fraction of max FFT magnitude
         exclude_zero: bool = False,
     ) -> List[Tuple[float, float]]:
@@ -224,16 +214,12 @@ class AutoSeasonalFeature(FeatureGenerator):
                 # Fallback to considering all frequency bins if no peaks are found
                 peak_indices = np.arange(len(fft_magnitudes))
             # Sort the peak indices by magnitude in descending order
-            sorted_peak_indices = peak_indices[
-                np.argsort(fft_magnitudes[peak_indices])[::-1]
-            ]
+            sorted_peak_indices = peak_indices[np.argsort(fft_magnitudes[peak_indices])[::-1]]
             top_indices = sorted_peak_indices[:max_top_k]
         else:
             sorted_indices = np.argsort(fft_magnitudes)[::-1]
             if threshold_value is not None:
-                sorted_indices = [
-                    i for i in sorted_indices if fft_magnitudes[i] >= threshold_value
-                ]
+                sorted_indices = [i for i in sorted_indices if fft_magnitudes[i] >= threshold_value]
             top_indices = sorted_indices[:max_top_k]
 
         # Convert frequencies to periods (avoiding division by zero)
@@ -261,10 +247,7 @@ class AutoSeasonalFeature(FeatureGenerator):
             top_indices = top_indices[unique_period_indices]
 
         # Pair each period with its corresponding magnitude
-        results = [
-            (top_periods[i], fft_magnitudes[top_indices[i]])
-            for i in range(len(top_indices))
-        ]
+        results = [(top_periods[i], fft_magnitudes[top_indices[i]]) for i in range(len(top_indices))]
 
         # Validate with ACF if requested and filter the results accordingly
         if validate_with_acf:
@@ -274,15 +257,11 @@ class AutoSeasonalFeature(FeatureGenerator):
                 nlags=N_original,
                 fft=True,
             )
-            acf_peak_indices, _ = find_peaks(
-                acf_values, height=1.96 / np.sqrt(N_original)
-            )
+            acf_peak_indices, _ = find_peaks(acf_values, height=1.96 / np.sqrt(N_original))
             validated_results = []
             for period, mag in results:
                 period_int = int(round(period))
-                if period_int < len(acf_values) and any(
-                    abs(period_int - peak) <= 1 for peak in acf_peak_indices
-                ):
+                if period_int < len(acf_values) and any(abs(period_int - peak) <= 1 for peak in acf_peak_indices):
                     validated_results.append((period, mag))
             if validated_results:
                 results = validated_results
@@ -293,9 +272,7 @@ class AutoSeasonalFeature(FeatureGenerator):
         return results
 
 
-def detrend(
-    x: np.ndarray, detrend_type: Literal["first_diff", "loess", "linear", "constant"]
-) -> np.ndarray:
+def detrend(x: np.ndarray, detrend_type: Literal["first_diff", "loess", "linear", "constant"]) -> np.ndarray:
     if detrend_type == "first_diff":
         return np.diff(x, prepend=x[0])
 

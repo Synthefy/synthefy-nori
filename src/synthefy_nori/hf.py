@@ -24,8 +24,8 @@ DEFAULT_CHECKPOINT_FILENAME = os.environ.get(
 # variant. An unknown name is treated as a raw repo id, so an explicit ``"org/repo"`` still works.
 NORI_MODELS = {
     "nori-6m": DEFAULT_MODEL_REPO_ID,  # ~6M base (honors SYNTHEFY_NORI_HF_REPO)
-    "nori-30m": "Synthefy/Nori-30M",   # ~29.2M scaling-law variant
-    "nori-100m": "Synthefy/Nori-100M", # ~98.3M scaling-law variant
+    "nori-30m": "Synthefy/Nori-30M",  # ~29.2M scaling-law variant
+    "nori-100m": "Synthefy/Nori-100M",  # ~98.3M scaling-law variant
 }
 
 

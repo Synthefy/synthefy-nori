@@ -11,10 +11,10 @@ def test_regressor_is_sklearn_estimator_and_clones():
     from sklearn.base import clone, is_regressor
 
     m = NoriRegressor(model_path="local.pt", augmentations=("yj",))
-    assert is_regressor(m)                       # RegressorMixin -> PDP/SFS treat it as regressor
+    assert is_regressor(m)  # RegressorMixin -> PDP/SFS treat it as regressor
     params = m.get_params()
     assert params["model_path"] == "local.pt"
-    c = clone(m)                                 # required by SequentialFeatureSelector/cross_val
+    c = clone(m)  # required by SequentialFeatureSelector/cross_val
     assert c.get_params()["model_path"] == "local.pt"
     assert c.inference_config.endswith("default_inference.json")
 
@@ -28,7 +28,7 @@ def test_imputation_explainer_requires_shapiq_or_runs():
     X = rng.normal(size=(40, 4))
     w = np.array([2.0, -1.0, 0.5, 0.0])
 
-    class _StubRegressor:                        # behaves like a fitted regressor
+    class _StubRegressor:  # behaves like a fitted regressor
         def predict(self, x):
             return np.asarray(x) @ w
 
@@ -59,7 +59,8 @@ def test_pdp_and_feature_selection_wrappers_plumbing():
     from synthefy_nori.interpretability.pdp import partial_dependence_plots
 
     rng = np.random.default_rng(1)
-    X = rng.normal(size=(60, 4)); y = X @ np.array([3.0, 0.0, -2.0, 0.0]) + rng.normal(scale=0.1, size=60)
+    X = rng.normal(size=(60, 4))
+    y = X @ np.array([3.0, 0.0, -2.0, 0.0]) + rng.normal(scale=0.1, size=60)
     est = LinearRegression().fit(X, y)
 
     disp = partial_dependence_plots(est, X, features=[0, 2], kind="average")
@@ -67,6 +68,6 @@ def test_pdp_and_feature_selection_wrappers_plumbing():
 
     res = feature_selection(est, X, y, n_features_to_select=2, cv=3, feature_names=list("abcd"))
     assert len(res.selected_indices) == 2
-    assert set(res.selected_indices) == {0, 2}            # the two signal features
+    assert set(res.selected_indices) == {0, 2}  # the two signal features
     assert res.selected_names == ["a", "c"]
     assert res.selected_score_mean >= res.baseline_score_mean - 0.05

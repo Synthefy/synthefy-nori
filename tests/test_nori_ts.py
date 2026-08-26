@@ -5,6 +5,7 @@ no checkpoint (they need the `forecasting` extra: gluonts, statsmodels, datasets
 The end-to-end forecast is marked `slow` — it downloads a checkpoint and runs
 real inference.
 """
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -36,9 +37,7 @@ def _tsdf(n=60, freq="h", item_id=0, start="2020-01-01", gappy=False):
 def test_quantiles_sorted_in_ctor():
     # Non-ascending input must be sorted so column labels stay aligned with the
     # value-sorted forecast rows.
-    assert NoriTSForecaster(
-        mode="local", model="nori-30m", quantiles=[0.9, 0.1, 0.5]
-    ).quantiles == [0.1, 0.5, 0.9]
+    assert NoriTSForecaster(mode="local", model="nori-30m", quantiles=[0.9, 0.1, 0.5]).quantiles == [0.1, 0.5, 0.9]
 
 
 def test_generate_test_X_horizon():
@@ -64,9 +63,7 @@ def test_generate_test_X_gappy_uses_explicit_freq():
 def test_feature_columns_match_and_nan_split():
     train = _tsdf(n=60, freq="h")
     test = generate_test_X(train, prediction_length=12, freq="h")
-    tr, te = FeatureTransformer(_default_features()).transform(
-        train, test, target_column=_TARGET
-    )
+    tr, te = FeatureTransformer(_default_features()).transform(train, test, target_column=_TARGET)
     tr_cols = sorted(c for c in tr.columns if c != _TARGET)
     te_cols = sorted(c for c in te.columns if c != _TARGET)
     assert tr_cols == te_cols  # identical feature schema across the boundary
@@ -77,9 +74,7 @@ def test_feature_columns_match_and_nan_split():
 def test_running_index_contiguous_across_boundary():
     train = _tsdf(n=40, freq="h")
     test = generate_test_X(train, prediction_length=8, freq="h")
-    tr, te = FeatureTransformer(_default_features()).transform(
-        train, test, target_column=_TARGET
-    )
+    tr, te = FeatureTransformer(_default_features()).transform(train, test, target_column=_TARGET)
     ri = np.concatenate([tr["running_index"].to_numpy(), te["running_index"].to_numpy()])
     assert (np.diff(ri) == 1).all()  # continues, doesn't restart at the horizon
 
@@ -104,15 +99,18 @@ def test_generators_group_per_series_on_a_multi_series_frame():
     for item in (0, 1, 2):
         ts = pd.date_range("2021-01-01", periods=48, freq="h")
         t = np.arange(48)
-        frames.append(pd.DataFrame({
-            "item_id": item, "timestamp": ts,
-            "target": 10.0 + item + np.sin(2 * np.pi * t / 24),
-        }))
+        frames.append(
+            pd.DataFrame(
+                {
+                    "item_id": item,
+                    "timestamp": ts,
+                    "target": 10.0 + item + np.sin(2 * np.pi * t / 24),
+                }
+            )
+        )
     train = TimeSeriesDataFrame.from_data_frame(pd.concat(frames, ignore_index=True))
     test = generate_test_X(train, prediction_length=6, freq="h")
-    tr, te = FeatureTransformer(_default_features()).transform(
-        train, test, target_column=_TARGET
-    )
+    tr, te = FeatureTransformer(_default_features()).transform(train, test, target_column=_TARGET)
     for item in (0, 1, 2):
         ri = tr.xs(item, level="item_id")["running_index"].to_numpy()
         assert ri[0] == 0, f"series {item} running_index must restart at 0, got {ri[0]}"
@@ -128,9 +126,7 @@ def test_generated_feature_columns_are_float32():
     # inference — but the target must keep its own dtype.
     train = _tsdf(n=48, freq="h")
     test = generate_test_X(train, prediction_length=6, freq="h")
-    tr, _ = FeatureTransformer(_default_features()).transform(
-        train, test, target_column=_TARGET
-    )
+    tr, _ = FeatureTransformer(_default_features()).transform(train, test, target_column=_TARGET)
     generated = [c for c in tr.columns if c != _TARGET]
     assert generated, "expected generated feature columns"
     # Only float64 columns are downcast; integer features (running_index, year) keep
@@ -150,9 +146,7 @@ def test_feature_transformer_static_features_merge():
     train = _tsdf(n=30, freq="h")
     test = generate_test_X(train, prediction_length=6, freq="h")
     train.static_features = pd.DataFrame({"cat": [7]}, index=pd.Index([0], name="item_id"))
-    tr, te = FeatureTransformer(_default_features()).transform(
-        train, test, target_column=_TARGET
-    )
+    tr, te = FeatureTransformer(_default_features()).transform(train, test, target_column=_TARGET)
     assert tr.static_features is not None
     assert set(tr.static_features.index) == {0}
     assert te.static_features.loc[0, "cat"] == 7
@@ -165,12 +159,10 @@ def test_predict_df_end_to_end():
     n = 300
     t = np.arange(n)
     series = 10 + 5 * np.sin(2 * np.pi * t / 24) + rng.normal(0, 0.3, n)
-    hist = pd.DataFrame(
-        {"timestamp": pd.date_range("2021-01-01", periods=n, freq="h"), "target": series}
+    hist = pd.DataFrame({"timestamp": pd.date_range("2021-01-01", periods=n, freq="h"), "target": series})
+    out = NoriTSForecaster(mode="local", model="nori-6m", quantiles=[0.1, 0.5, 0.9]).predict_df(
+        hist, prediction_length=24
     )
-    out = NoriTSForecaster(
-        mode="local", model="nori-6m", quantiles=[0.1, 0.5, 0.9]
-    ).predict_df(hist, prediction_length=24)
     assert len(out) == 24
     assert {"0.1", "0.5", "0.9"}.issubset(set(out.columns))
     assert np.isfinite(out["0.5"].to_numpy()).all()
@@ -198,9 +190,9 @@ def test_predict_df_end_to_end_custom_target_multiseries():
         )
     history = pd.concat(frames, ignore_index=True)
 
-    output = NoriTSForecaster(
-        mode="local", model="nori-6m", quantiles=[0.1, 0.5, 0.9]
-    ).predict_df(history, prediction_length=12, target_column="sales")
+    output = NoriTSForecaster(mode="local", model="nori-6m", quantiles=[0.1, 0.5, 0.9]).predict_df(
+        history, prediction_length=12, target_column="sales"
+    )
 
     assert set(output.index.get_level_values("item_id")) == {0, 1}
     assert len(output) == 24
@@ -229,9 +221,9 @@ def test_predict_df_end_to_end_future_known_covariate():
         }
     )
 
-    output = NoriTSForecaster(
-        mode="local", model="nori-6m", quantiles=[0.1, 0.5, 0.9]
-    ).predict_df(history, future_df=future)
+    output = NoriTSForecaster(mode="local", model="nori-6m", quantiles=[0.1, 0.5, 0.9]).predict_df(
+        history, future_df=future
+    )
 
     assert len(output) == horizon
     assert np.isfinite(output["0.5"].to_numpy()).all()

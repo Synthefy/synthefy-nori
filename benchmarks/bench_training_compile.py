@@ -29,9 +29,7 @@ def parse_shapes(raw: str) -> list[tuple[int, int, float]]:
             features = int(features_raw)
             ratio = float(ratio_raw)
         except ValueError as exc:
-            raise argparse.ArgumentTypeError(
-                "Shapes must use ROWSxFEATURES@CONTEXT_RATIO"
-            ) from exc
+            raise argparse.ArgumentTypeError("Shapes must use ROWSxFEATURES@CONTEXT_RATIO") from exc
         signature = (rows, features, ratio)
         if rows <= 1 or features <= 0 or not 0 < ratio < 1:
             raise argparse.ArgumentTypeError(f"Invalid shape signature: {item!r}")
@@ -106,15 +104,10 @@ def make_batch(
     generator = torch.Generator(device="cpu").manual_seed(seed)
     x = torch.randn(batch, rows, features, generator=generator)
     y = torch.randn(batch, rows, generator=generator)
-    query_mask = (
-        torch.rand(batch, rows - eval_pos, features, generator=generator) < 0.15
-    )
+    query_mask = torch.rand(batch, rows - eval_pos, features, generator=generator) < 0.15
     x[:, eval_pos:][query_mask] = float("nan")
     context = y[:, :eval_pos]
-    y = (
-        (y - context.mean(-1, keepdim=True))
-        / context.std(-1, keepdim=True).clamp_min(1e-8)
-    )
+    y = (y - context.mean(-1, keepdim=True)) / context.std(-1, keepdim=True).clamp_min(1e-8)
     return x.to(device), y.to(device)
 
 
@@ -127,11 +120,7 @@ def counters_snapshot():
     from torch._dynamo.utils import counters
 
     return {
-        str(category): {
-            str(key): int(value)
-            for key, value in values.items()
-            if isinstance(value, int) and value
-        }
+        str(category): {str(key): int(value) for key, value in values.items() if isinstance(value, int) and value}
         for category, values in counters.items()
         if values
     }
@@ -173,9 +162,7 @@ def main():
         default="interleaved",
     )
     parser.add_argument("--checkpoint-threshold", type=int, default=24576)
-    parser.add_argument(
-        "--checkpointing", choices=("auto", "on", "off"), default="auto"
-    )
+    parser.add_argument("--checkpointing", choices=("auto", "on", "off"), default="auto")
     parser.add_argument("--output")
     args = parser.parse_args()
 
@@ -213,11 +200,7 @@ def main():
 
     records = []
     started_all = time.perf_counter()
-    schedule = [
-        (cycle, shape_index)
-        for cycle in range(args.cycles)
-        for shape_index in range(len(args.shapes))
-    ]
+    schedule = [(cycle, shape_index) for cycle in range(args.cycles) for shape_index in range(len(args.shapes))]
     if args.shape_order == "grouped":
         schedule.sort(key=lambda item: (item[1], item[0]))
 

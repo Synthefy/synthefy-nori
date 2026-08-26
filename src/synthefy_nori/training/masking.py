@@ -27,11 +27,11 @@ def create_masks(n_query, n_features, mask_ratio, mask_type, rng=None):
     if rng is None:
         rng = np.random.default_rng()
 
-    if mask_type == 'cell':
+    if mask_type == "cell":
         return _cell_mask(n_query, n_features, mask_ratio, rng)
-    elif mask_type == 'column':
+    elif mask_type == "column":
         return _column_mask(n_query, n_features, mask_ratio, rng)
-    elif mask_type == 'block':
+    elif mask_type == "block":
         return _block_mask(n_query, n_features, mask_ratio, rng)
     else:
         raise ValueError(f"Unknown mask_type: {mask_type}")
@@ -75,7 +75,7 @@ def _block_mask(n_query, n_features, mask_ratio, rng):
         row_start = rng.integers(0, max(1, n_query - block_rows + 1))
         col_start = rng.integers(0, max(1, n_features - block_cols + 1))
 
-        mask[row_start:row_start + block_rows, col_start:col_start + block_cols] = True
+        mask[row_start : row_start + block_rows, col_start : col_start + block_cols] = True
         cells_masked = mask.sum()
 
     return mask
@@ -85,7 +85,7 @@ def random_mask_type(rng=None):
     """Randomly select a mask type."""
     if rng is None:
         rng = np.random.default_rng()
-    return rng.choice(['cell', 'column', 'block'])
+    return rng.choice(["cell", "column", "block"])
 
 
 def random_mask_ratio(min_ratio=0.1, max_ratio=0.4, rng=None):

@@ -33,6 +33,7 @@ def _safe_torch_load(path):
         with torch.serialization.safe_globals([TrainingConfig]):
             return torch.load(path, map_location="cpu", weights_only=True)
 
+
 # The attention-scale flags and their defaults. ``finalize_arch_config`` stamps
 # this table into every new checkpoint's ``model_config``; ``build_model`` falls
 # back to it for checkpoints saved before it did. One table, so the value a run
@@ -98,66 +99,64 @@ def finalize_arch_config(model_config: dict) -> dict:
     """
     if bool(model_config.get("use_qassmax", False)):
         env_mode = os.environ.get("SYNTHEFY_QASS_MODE")
-        model_config["qass_mode"] = (
-            env_mode.strip().lower() if env_mode else resolve_qass_mode(model_config)
-        )
+        model_config["qass_mode"] = env_mode.strip().lower() if env_mode else resolve_qass_mode(model_config)
     for key, default in _ATTENTION_SCALE_DEFAULTS.items():
         model_config.setdefault(key, default)
     return model_config
 
 
-def build_model(config:dict):
+def build_model(config: dict):
     # Pre-``finalize_arch_config`` checkpoints omit these; fall back to the same
     # table finalize stamps in, so old and new checkpoints agree.
     attn_scale = {k: config.get(k, v) for k, v in _ATTENTION_SCALE_DEFAULTS.items()}
-    use_qassmax = bool(config.get('use_qassmax', False))
+    use_qassmax = bool(config.get("use_qassmax", False))
     model = FeaturesTransformer(
-        preprocess_config_x=config['preprocess_config_x'],
-        encoder_config_x=config['encoder_config_x'],
-        encoder_config_y=config['encoder_config_y'],
-        decoder_config=config['decoder_config'],
-        feature_positional_embedding_type=config.get('feature_positional_embedding_type', "subortho"),
-        feature_positional_embedding_num_slots=config.get('feature_positional_embedding_num_slots', 1000),
-        nlayers=config['nlayers'],
-        nhead=config['nhead'],
-        embed_dim=config['embed_dim'],
-        hid_dim=config['hid_dim'],
-        mask_prediction=config.get('mask_prediction', False),
-        features_per_group=config['features_per_group'],
-        dropout=config['dropout'],
-        pre_norm=config.get('pre_norm', True),
-        activation=config.get('activation', 'gelu'),
-        layer_norm_eps=config.get('layer_norm_eps', 1e-5),
-        device=config.get('device', None),
-        dtype=config.get('dtype', None),
-        recompute_attn=config['recompute_attn'],
+        preprocess_config_x=config["preprocess_config_x"],
+        encoder_config_x=config["encoder_config_x"],
+        encoder_config_y=config["encoder_config_y"],
+        decoder_config=config["decoder_config"],
+        feature_positional_embedding_type=config.get("feature_positional_embedding_type", "subortho"),
+        feature_positional_embedding_num_slots=config.get("feature_positional_embedding_num_slots", 1000),
+        nlayers=config["nlayers"],
+        nhead=config["nhead"],
+        embed_dim=config["embed_dim"],
+        hid_dim=config["hid_dim"],
+        mask_prediction=config.get("mask_prediction", False),
+        features_per_group=config["features_per_group"],
+        dropout=config["dropout"],
+        pre_norm=config.get("pre_norm", True),
+        activation=config.get("activation", "gelu"),
+        layer_norm_eps=config.get("layer_norm_eps", 1e-5),
+        device=config.get("device", None),
+        dtype=config.get("dtype", None),
+        recompute_attn=config["recompute_attn"],
         # Kept as a fail-fast compatibility input: True was historically a
         # silent no-op and must not continue pretending to select an architecture.
-        mlp_use_residual=config.get('mlp_use_residual', False),
-        layer_arch=config.get('layer_arch', 'fmfmsm'),
-        norm_type=config.get('norm_type', 'layernorm'),
-        deepnorm_alpha=config.get('deepnorm_alpha', None),
-        self_share_all_kv_heads=config.get('self_share_all_kv_heads', False),
-        cross_share_all_kv_heads=config.get('cross_share_all_kv_heads', True),
-        seq_attn_isolated=config.get('seq_attn_isolated', False),
-        seq_attn_serial=config.get('seq_attn_serial', False),
+        mlp_use_residual=config.get("mlp_use_residual", False),
+        layer_arch=config.get("layer_arch", "fmfmsm"),
+        norm_type=config.get("norm_type", "layernorm"),
+        deepnorm_alpha=config.get("deepnorm_alpha", None),
+        self_share_all_kv_heads=config.get("self_share_all_kv_heads", False),
+        cross_share_all_kv_heads=config.get("cross_share_all_kv_heads", True),
+        seq_attn_isolated=config.get("seq_attn_isolated", False),
+        seq_attn_serial=config.get("seq_attn_serial", False),
         use_qassmax=use_qassmax,
         # Resolved here, once, from this config — not read back out of the
         # environment inside QASSMaxScaling.
         qass_mode=resolve_qass_mode(config) if use_qassmax else None,
-        use_target_aware_embedding=config.get('use_target_aware_embedding', False),
-        use_column_specific_y_aware=config.get('use_column_specific_y_aware', False),
-        use_logn_attention=bool(attn_scale['use_logn_attention']),
-        use_learnable_attn_temperature=bool(attn_scale['use_learnable_attn_temperature']),
-        attn_n_ref=float(attn_scale['attn_n_ref']),
+        use_target_aware_embedding=config.get("use_target_aware_embedding", False),
+        use_column_specific_y_aware=config.get("use_column_specific_y_aware", False),
+        use_logn_attention=bool(attn_scale["use_logn_attention"]),
+        use_learnable_attn_temperature=bool(attn_scale["use_learnable_attn_temperature"]),
+        attn_n_ref=float(attn_scale["attn_n_ref"]),
         # Legacy configs omit this flag and therefore retain the decoder. That
         # preserves their state-dict schema for strict checkpoint loading.
-        omit_feature_decoder=bool(config.get('omit_feature_decoder', False)),
+        omit_feature_decoder=bool(config.get("omit_feature_decoder", False)),
     )
     return model
 
-def load_model(model_path, mask_prediction:bool=False, base_config_path:str=None,
-               native_rms_norm:bool=True):
+
+def load_model(model_path, mask_prediction: bool = False, base_config_path: str = None, native_rms_norm: bool = True):
     """Load a Nori checkpoint for inference.
 
     ``native_rms_norm`` selects PyTorch's fused ``F.rms_norm`` over the
@@ -173,15 +172,15 @@ def load_model(model_path, mask_prediction:bool=False, base_config_path:str=None
     state_dict = _safe_torch_load(model_path)
 
     # Support both pretrained (.ckpt) and training checkpoint (.pt) formats
-    if 'model_config' in state_dict:
+    if "model_config" in state_dict:
         # Training checkpoint format (new): has architecture config embedded.
         # `model_config` is the architecture record -- read it and nothing else.
         # `state_dict['config']` is the TrainingConfig (hyperparameters, no
         # architecture); merging it in here would make the resolved QASS mode a
         # function of the container format instead of the model.
-        config = state_dict['model_config']
-        weights = state_dict.get('ema_state_dict') or state_dict['model_state_dict']
-    elif 'model_state_dict' in state_dict:
+        config = state_dict["model_config"]
+        weights = state_dict.get("ema_state_dict") or state_dict["model_state_dict"]
+    elif "model_state_dict" in state_dict:
         # Training checkpoint format (legacy): no model_config saved
         # Fall back to extracting config from base pretrained checkpoint
         if base_config_path is None:
@@ -191,32 +190,33 @@ def load_model(model_path, mask_prediction:bool=False, base_config_path:str=None
             )
         print(f"Loading model architecture config from {base_config_path}")
         base_state = _safe_torch_load(base_config_path)
-        config = base_state['config']
-        weights = state_dict.get('ema_state_dict') or state_dict['model_state_dict']
+        config = base_state["config"]
+        weights = state_dict.get("ema_state_dict") or state_dict["model_state_dict"]
     else:
         # Pretrained .ckpt format: {'state_dict': ..., 'config': ...}
-        config = state_dict['config']
-        weights = state_dict['state_dict']
+        config = state_dict["config"]
+        weights = state_dict["state_dict"]
 
     # Copy before mutating: `config` is a dict embedded in the loaded checkpoint,
     # and callers (e.g. the eval harness) reuse that object.
     config = dict(config)
-    if mask_prediction and bool(config.get('omit_feature_decoder', False)):
+    if mask_prediction and bool(config.get("omit_feature_decoder", False)):
         raise ValueError(
             "mask_prediction=True requires a checkpoint with feature_decoder; "
             "this checkpoint explicitly omits that head"
         )
-    config['mask_prediction'] = mask_prediction
+    config["mask_prediction"] = mask_prediction
 
     # Strip torch.compile "_orig_mod." prefix if present
-    if any(k.startswith('_orig_mod.') for k in weights):
-        weights = {k.removeprefix('_orig_mod.'): v for k, v in weights.items()}
+    if any(k.startswith("_orig_mod.") for k in weights):
+        weights = {k.removeprefix("_orig_mod."): v for k, v in weights.items()}
 
     model = build_model(config)
     model.load_state_dict(weights)
 
     if native_rms_norm:
         from synthefy_nori.model.layer import RMSNorm
+
         for module in model.modules():
             if isinstance(module, RMSNorm):
                 module.use_native = True

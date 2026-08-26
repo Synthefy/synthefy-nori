@@ -33,6 +33,7 @@ Discretization is strictly opt-in: nothing here runs unless the caller passes
 ``discretize=`` / ``categorical_levels=`` to ``NoriRegressor.predict`` /
 ``infer`` (or uses these helpers directly).
 """
+
 from __future__ import annotations
 
 import warnings
@@ -40,11 +41,15 @@ import warnings
 import numpy as np
 
 DISCRETIZE_METHODS = (
-    "map-cell", "median-cell", "snap-mean", "snap-median",
-    "expected-level", "prior-match",
+    "map-cell",
+    "median-cell",
+    "snap-mean",
+    "snap-median",
+    "expected-level",
+    "prior-match",
 )
-SNAP_METHODS = ("snap-mean", "snap-median")   # need only a point prediction
-CONTINUOUS_METHODS = ("expected-level",)      # output is NOT on the lattice
+SNAP_METHODS = ("snap-mean", "snap-median")  # need only a point prediction
+CONTINUOUS_METHODS = ("expected-level",)  # output is NOT on the lattice
 DEFAULT_DISCRETIZE_METHOD = "map-cell"  # accuracy-optimal; what the bare flag means
 
 # One-paragraph explanation per strategy — importable for CLIs/UIs/agents and
@@ -206,9 +211,7 @@ def discretize_predictions(
     ``Q`` and its ``taus``. ``expected-level`` returns CONTINUOUS values.
     """
     if method not in DISCRETIZE_METHODS:
-        raise ValueError(
-            f"Unknown discretize method {method!r}; expected one of {DISCRETIZE_METHODS}."
-        )
+        raise ValueError(f"Unknown discretize method {method!r}; expected one of {DISCRETIZE_METHODS}.")
     levels = np.asarray(levels, dtype=np.float64).ravel()
     levels = np.unique(levels[np.isfinite(levels)])
     if levels.size == 0:

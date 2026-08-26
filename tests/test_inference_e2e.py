@@ -17,6 +17,7 @@ Override the checkpoint location without touching HF by setting
 ``SYNTHEFY_NORI_TEST_CHECKPOINT=/abs/path/to/checkpoint.pt`` in the
 environment.
 """
+
 from __future__ import annotations
 
 import os
@@ -52,9 +53,7 @@ def _linear_signal_data():
     return X_train, y_train, X_test, X_test @ true_w
 
 
-@pytest.mark.skipif(
-    not torch.backends.mps.is_available(), reason="requires an MPS-capable macOS host"
-)
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="requires an MPS-capable macOS host")
 def test_default_devices_run_nori_and_minilm_on_mps():
     """One smoke covers automatic model and named-text placement end to end."""
     X_train = pd.DataFrame(
@@ -64,13 +63,9 @@ def test_default_devices_run_nori_and_minilm_on_mps():
         }
     )
     y_train = np.linspace(-1.0, 1.0, 8, dtype=np.float32)
-    X_test = pd.DataFrame(
-        {"amount": [2.5, 7.5], "description": ["small order", "large order"]}
-    )
+    X_test = pd.DataFrame({"amount": [2.5, 7.5], "description": ["small order", "large order"]})
 
-    model = NoriRegressor(
-        **_checkpoint_kwargs(), text_columns=["description"], svd_dim=4
-    ).fit(X_train, y_train)
+    model = NoriRegressor(**_checkpoint_kwargs(), text_columns=["description"], svd_dim=4).fit(X_train, y_train)
     predictions = model.predict(X_test)
 
     assert model.device_ == torch.device("mps")
@@ -79,9 +74,7 @@ def test_default_devices_run_nori_and_minilm_on_mps():
     assert model._predictor.mix_precision is False
 
 
-@pytest.mark.skipif(
-    not torch.backends.mps.is_available(), reason="requires an MPS-capable macOS host"
-)
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="requires an MPS-capable macOS host")
 def test_mps_regressor_matches_cpu_quality():
     """MPS must preserve CPU task quality, not merely return finite numbers."""
     X_train, y_train, X_test, y_truth = _linear_signal_data()

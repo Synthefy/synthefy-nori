@@ -25,9 +25,7 @@ from synthefy.errors import BadRequestError
 
 _ROOT = Path(__file__).resolve().parents[1]
 _GOLDEN_PATH = _ROOT / "tests" / "compat" / "synthefy_6_3_nori_goldens.json"
-_GOLDEN_SHA256 = (
-    "f357863508260242746021594d8616a8baecb6284736f54fac8f8e771e0e7903"
-)
+_GOLDEN_SHA256 = "f357863508260242746021594d8616a8baecb6284736f54fac8f8e771e0e7903"
 _ORACLE = {
     "repository": "Synthefy/synthefy",
     "commit": "9ecc3d2fad8e37e95869379cc05f328597e258f9",
@@ -112,9 +110,7 @@ def _public_trace(monkeypatch) -> dict:
     )
     trace["remote_dataframe"] = _remote_call(
         {"task": "regression", "predictions": [3.5, 4.5]},
-        pd.DataFrame(
-            {"number": [1.0, 2.0, 3.0], "color": ["red", "blue", None]}
-        ),
+        pd.DataFrame({"number": [1.0, 2.0, 3.0], "color": ["red", "blue", None]}),
         pd.Series([1.0, 2.0, 3.0], name="score"),
         pd.DataFrame(
             {"color": ["green", "red"], "number": [4.0, 5.0]},
@@ -232,9 +228,7 @@ def _public_trace(monkeypatch) -> dict:
         region_name="us-east-1",
     )
     trace["sagemaker_default"] = {
-        "result": _normalized(
-            aws_client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])
-        ),
+        "result": _normalized(aws_client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])),
         "transport": _normalized(aws_capture),
     }
 
@@ -250,9 +244,7 @@ def _public_trace(monkeypatch) -> dict:
             headers={"x-request-id": "req-error"},
         )
 
-    error_client = SynthefyNoriClient(
-        api_key="bad", model="nori-30m", max_retries=0
-    )
+    error_client = SynthefyNoriClient(api_key="bad", model="nori-30m", max_retries=0)
     error_client.close()
     error_client.client = httpx.Client(
         base_url=error_client.base_url,
@@ -285,9 +277,9 @@ def _public_trace(monkeypatch) -> dict:
         ).to_wire(),
         # The golden pins the 6.3 fields. New additive response capabilities
         # have their own contract tests and are excluded from this legacy view.
-        "response": NoriPredictResponse(
-            task="regression", predictions=[1.0, None]
-        ).model_dump(exclude={"large_context_report"}),
+        "response": NoriPredictResponse(task="regression", predictions=[1.0, None]).model_dump(
+            exclude={"large_context_report"}
+        ),
     }
     return trace
 
@@ -312,7 +304,5 @@ def test_migrated_client_matches_frozen_6_3_except_the_v7_categorical_contract(m
     assert golden_dataframe["transport"]["body"]["X_test"][0] == [4.0, -1.0]
     expected_dataframe = copy.deepcopy(golden_dataframe)
     expected_dataframe["transport"]["body"]["X_test"][0] = [4.0, 2.0]
-    expected_dataframe["transport"]["raw"] = expected_dataframe["transport"][
-        "raw"
-    ].replace("[4.0, -1.0]", "[4.0, 2.0]")
+    expected_dataframe["transport"]["raw"] = expected_dataframe["transport"]["raw"].replace("[4.0, -1.0]", "[4.0, 2.0]")
     assert current_dataframe == expected_dataframe

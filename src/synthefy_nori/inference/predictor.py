@@ -10,7 +10,8 @@ from synthefy_nori.inference.preprocess import (
     HighDimFeatureSelector,
     MaxFeatureSubsampler,
     MADWinsorizer,
-    PolynomialInteractionGenerator)
+    PolynomialInteractionGenerator,
+)
 from synthefy_nori.inference.degradation import ContextSubsampledWarning, DegradedPipelineWarning
 from synthefy_nori.inference.memory_policy import (
     FIT_ROW_CHUNK_ON_OOM,
@@ -42,29 +43,33 @@ logger = logging.getLogger(__name__)
 
 NA_PLACEHOLDER = "__MISSING__"
 
+
 class NoriPredictor:
     """Nori model inferencer, supporting tasks such as classification, regression, and missing value prediction."""
-    def __init__(self,
-                 device:torch.device,
-                 model_path:str = None,
-                 inference_config: list|str = None,
-                 mix_precision:bool=True,
-                 outlier_remove_std: float=12,
-                 softmax_temperature:float=0.9,
-                 mask_prediction:bool=False,
-                 categorical_features_indices:List[int]|None=None,
-                 inference_with_DDP: bool = False,
-                 seed:int=0,
-                 model: torch.nn.Module = None,
-                 augmentations: tuple|list|None = None,
-                 yj_skew_threshold: float = 10.0,
-                 quantile_collapse: str = 'mean',
-                 bar_temperature: float = 1.0,
-                 bar_point_estimator: str = 'mean',
-                 discrete_y_snap_max_unique: int = 0,
-                 memory_policy: "MemoryPolicy | dict | str | None" = None,
-                 skip_unused_feature_decoder: bool = True,
-                 native_rms_norm: bool | None = None):
+
+    def __init__(
+        self,
+        device: torch.device,
+        model_path: str = None,
+        inference_config: list | str = None,
+        mix_precision: bool = True,
+        outlier_remove_std: float = 12,
+        softmax_temperature: float = 0.9,
+        mask_prediction: bool = False,
+        categorical_features_indices: List[int] | None = None,
+        inference_with_DDP: bool = False,
+        seed: int = 0,
+        model: torch.nn.Module = None,
+        augmentations: tuple | list | None = None,
+        yj_skew_threshold: float = 10.0,
+        quantile_collapse: str = "mean",
+        bar_temperature: float = 1.0,
+        bar_point_estimator: str = "mean",
+        discrete_y_snap_max_unique: int = 0,
+        memory_policy: "MemoryPolicy | dict | str | None" = None,
+        skip_unused_feature_decoder: bool = True,
+        native_rms_norm: bool | None = None,
+    ):
         """
         init NoriPredictor
 
@@ -97,27 +102,26 @@ class NoriPredictor:
         """
         if isinstance(inference_config, str):
             if os.path.isfile(inference_config):
-                with open(inference_config, 'r') as f:
+                with open(inference_config, "r") as f:
                     inference_config = json.load(f)
             else:
                 raise ValueError(f"inference_config is not a config file path: {inference_config}")
         for inference_config_item in inference_config:
             retrieval_config = inference_config_item.get("retrieval_config")
             if retrieval_config and retrieval_config.get("use_retrieval"):
-                raise ValueError(
-                    "retrieval inference has been removed; omit retrieval_config "
-                    "and use the full context"
-                )
+                raise ValueError("retrieval inference has been removed; omit retrieval_config and use the full context")
         self.model_path = model_path
         self.device = device
         # Route GPU SVD (preprocess._TorchTruncatedSVD) to this predictor's
         # device so high-dim SVD runs on the same GPU as the model.
         try:
             import synthefy_nori.inference.preprocess as _pp
+
             _pp._GPU_SVD_DEVICE = device
         except Exception as _e:
-            print(f"WARNING: could not route GPU SVD to {device} "
-                  f"({type(_e).__name__}: {_e}); using default SVD device.")
+            print(
+                f"WARNING: could not route GPU SVD to {device} ({type(_e).__name__}: {_e}); using default SVD device."
+            )
         self.mix_precision = mix_precision
         self.categorical_features_indices = categorical_features_indices
         self.seed = seed
@@ -167,13 +171,10 @@ class NoriPredictor:
         #              is ~+10% on forward+backward, but inference is dominated
         #              by the 16 CPU preprocessing pipelines, so little of it
         #              survives. Do NOT cite a large inference speedup here.
-        self.native_rms_norm = (
-            None if native_rms_norm is None else bool(native_rms_norm))
-        self.inference_with_DDP=inference_with_DDP
+        self.native_rms_norm = None if native_rms_norm is None else bool(native_rms_norm)
+        self.inference_with_DDP = inference_with_DDP
         if self.inference_with_DDP and self.mask_prediction:
-            raise ValueError(
-                "inference_with_DDP does not support mask_prediction"
-            )
+            raise ValueError("inference_with_DDP does not support mask_prediction")
         # Optional inference-time augmentations. Currently supports:
         #   'yj': Yeo-Johnson target transform ensemble — fit PowerTransformer
         #         on y_train, predict in transformed space, inverse-transform,
@@ -202,8 +203,7 @@ class NoriPredictor:
         #                     out-of-bulk prediction.
         # All strategies are zero-retrain: they only change how the K-way
         # quantile head is collapsed to a single prediction.
-        valid_collapse = ('mean', 'median', 'trimmed_mean', 'huber_mean',
-                            'tail_aware', 'qdist', 'qdist_simple')
+        valid_collapse = ("mean", "median", "trimmed_mean", "huber_mean", "tail_aware", "qdist", "qdist_simple")
         if quantile_collapse not in valid_collapse:
             raise ValueError(f"quantile_collapse must be one of {valid_collapse}, got {quantile_collapse!r}")
         self.quantile_collapse = quantile_collapse
@@ -214,17 +214,17 @@ class NoriPredictor:
         # Bar-distribution inference controls (only used when the loaded model
         # was trained with regression_loss='bar_distribution', auto-detected
         # via model.regression_loss). Ignored for pinball/MSE/etc. checkpoints.
-        valid_bar = ('mean', 'mode', 'median')
+        valid_bar = ("mean", "mode", "median")
         if bar_point_estimator not in valid_bar:
             raise ValueError(f"bar_point_estimator must be one of {valid_bar}, got {bar_point_estimator!r}")
         self.bar_temperature = float(bar_temperature)
         self.bar_point_estimator = bar_point_estimator
 
-        device_type = device.type if isinstance(device, torch.device) else str(device).split(':')[0]
-        if device_type == 'cpu':
+        device_type = device.type if isinstance(device, torch.device) else str(device).split(":")[0]
+        if device_type == "cpu":
             self.mix_precision = False
             print("Mixed precision is not supported for CPU inference, so it has been automatically disabled")
-        elif device_type == 'mps' and self.mix_precision:
+        elif device_type == "mps" and self.mix_precision:
             # MPS autocast uses float16, while Nori's CPU path and checkpoint
             # weights use float32. The reduced precision can materially change
             # regression quality even when every output remains finite.
@@ -235,10 +235,7 @@ class NoriPredictor:
             self.model = model
         else:
             self.model = load_model(model_path=model_path, mask_prediction=mask_prediction)
-        if (
-            self.mask_prediction
-            and getattr(self._bare_model(), "feature_decoder", None) is None
-        ):
+        if self.mask_prediction and getattr(self._bare_model(), "feature_decoder", None) is None:
             raise ValueError(
                 "mask_prediction=True requires a model with feature_decoder; "
                 "the supplied model explicitly omits that head"
@@ -252,23 +249,25 @@ class NoriPredictor:
     def build_preprocess_pipeline(self):
         self.preprocess_pipelines = []
         self.preprocess_configs = []
-    
+
         random.seed(self.seed)
         rand_gen = np.random.default_rng(self.seed)
-        self.seeds = [random.randint(0, 10000) for _ in range(self.n_estimators*self.preprocess_num)]
+        self.seeds = [random.randint(0, 10000) for _ in range(self.n_estimators * self.preprocess_num)]
         start_idx = rand_gen.integers(0, 1000)
         all_shifts = list(range(start_idx, start_idx + self.n_estimators))
         self.all_shifts = rand_gen.choice(all_shifts, size=self.n_estimators, replace=False)
-    
+
         if self.mask_prediction:
             for inference_config_item in self.inference_config:
-                if len(inference_config_item['RebalanceFeatureDistribution']['worker_tags']) > 0:
-                    for i, v in enumerate(inference_config_item['RebalanceFeatureDistribution']['worker_tags']):
-                        if v == 'power':
-                            print("WARNING: Missing value imputation does not currently support the preprocessing method of power! Using the default worker_tags method")
-                            inference_config_item['RebalanceFeatureDistribution']['worker_tags'].pop(i)
-                            inference_config_item['RebalanceFeatureDistribution']['worker_tags'].append(None)
-                inference_config_item['RebalanceFeatureDistribution']['discrete_flag'] = True
+                if len(inference_config_item["RebalanceFeatureDistribution"]["worker_tags"]) > 0:
+                    for i, v in enumerate(inference_config_item["RebalanceFeatureDistribution"]["worker_tags"]):
+                        if v == "power":
+                            print(
+                                "WARNING: Missing value imputation does not currently support the preprocessing method of power! Using the default worker_tags method"
+                            )
+                            inference_config_item["RebalanceFeatureDistribution"]["worker_tags"].pop(i)
+                            inference_config_item["RebalanceFeatureDistribution"]["worker_tags"].append(None)
+                inference_config_item["RebalanceFeatureDistribution"]["discrete_flag"] = True
 
         for idx in range(self.n_estimators):
             pipeline = []
@@ -279,35 +278,37 @@ class NoriPredictor:
             # Self-gates: passthrough on low-dim datasets, identical to today's
             # behavior. Activates only when n_features > threshold OR
             # binary_frac >= threshold.
-            if 'HighDimFeatureSelector' in inference_config_item:
-                pipeline.append(HighDimFeatureSelector(**inference_config_item['HighDimFeatureSelector']))
+            if "HighDimFeatureSelector" in inference_config_item:
+                pipeline.append(HighDimFeatureSelector(**inference_config_item["HighDimFeatureSelector"]))
             # MaxFeatureSubsampler runs BEFORE poly generator so poly pairs are
             # drawn from the subsampled feature set (matches TabPFN semantics:
             # each estimator sees ≤ max_features original columns).
-            if 'MaxFeatureSubsampler' in inference_config_item:
-                pipeline.append(MaxFeatureSubsampler(**inference_config_item['MaxFeatureSubsampler']))
-            if 'PolynomialInteractionGenerator' in inference_config_item:
-                pipeline.append(PolynomialInteractionGenerator(**inference_config_item['PolynomialInteractionGenerator']))
+            if "MaxFeatureSubsampler" in inference_config_item:
+                pipeline.append(MaxFeatureSubsampler(**inference_config_item["MaxFeatureSubsampler"]))
+            if "PolynomialInteractionGenerator" in inference_config_item:
+                pipeline.append(
+                    PolynomialInteractionGenerator(**inference_config_item["PolynomialInteractionGenerator"])
+                )
 
             pipeline.append(FilterValidFeatures())
 
             # MAD winsorization: clip per-column at ±N MAD from median, matching
             # the training-side safety winsorization. Runs BEFORE rebalance so
             # subsequent transforms see clipped values.
-            if 'MADWinsorizer' in inference_config_item:
-                pipeline.append(MADWinsorizer(**inference_config_item['MADWinsorizer']))
+            if "MADWinsorizer" in inference_config_item:
+                pipeline.append(MADWinsorizer(**inference_config_item["MADWinsorizer"]))
 
-            if 'RebalanceFeatureDistribution' in inference_config_item:
-                pipeline.append(RebalanceFeatureDistribution(**inference_config_item['RebalanceFeatureDistribution']))
-            if 'CategoricalFeatureEncoder' in inference_config_item:
-                pipeline.append(CategoricalFeatureEncoder(**inference_config_item['CategoricalFeatureEncoder']))
-            if inference_config_item.get('FingerprintFeatureEncoder', False):
+            if "RebalanceFeatureDistribution" in inference_config_item:
+                pipeline.append(RebalanceFeatureDistribution(**inference_config_item["RebalanceFeatureDistribution"]))
+            if "CategoricalFeatureEncoder" in inference_config_item:
+                pipeline.append(CategoricalFeatureEncoder(**inference_config_item["CategoricalFeatureEncoder"]))
+            if inference_config_item.get("FingerprintFeatureEncoder", False):
                 pipeline.append(FingerprintFeatureEncoder())
-            if 'FeatureShuffler' in inference_config_item:
-                shuffler = FeatureShuffler(**inference_config_item['FeatureShuffler'])
+            if "FeatureShuffler" in inference_config_item:
+                shuffler = FeatureShuffler(**inference_config_item["FeatureShuffler"])
                 shuffler.offset = self.all_shifts[idx]
                 pipeline.append(shuffler)
-            
+
             self.preprocess_pipelines.append(pipeline)
 
     def _check_n_features(self, X, reset):
@@ -318,10 +319,9 @@ class NoriPredictor:
         else:
             if self.n_features_in_ != n_features:
                 raise ValueError(
-                    f"X has {n_features} features, "
-                    f"but this estimator is expecting {self.n_features_in_} features."
+                    f"X has {n_features} features, but this estimator is expecting {self.n_features_in_} features."
                 )
-    
+
     def validate_data(self, x=None, y=None, reset=True, validate_separately=False, **check_params):
         """
         {'accept_sparse': False, 'dtype': None, 'ensure_all_finite': 'allow-nan'}
@@ -339,12 +339,12 @@ class NoriPredictor:
             return x
 
         return None
-    
-    def convert_x_dtypes(self, x:np.ndarray, dtypes:Literal["float32", "float64"] = "float64"):
+
+    def convert_x_dtypes(self, x: np.ndarray, dtypes: Literal["float32", "float64"] = "float64"):
         NUMERIC_DTYPE_KINDS = "?bBiufm"
         OBJECT_DTYPE_KINDS = "OV"
         STRING_DTYPE_KINDS = "SaU"
-        
+
         if x.dtype.kind in NUMERIC_DTYPE_KINDS:
             x = pd.DataFrame(x, copy=False, dtype=dtypes)
         elif x.dtype.kind in OBJECT_DTYPE_KINDS:
@@ -357,7 +357,7 @@ class NoriPredictor:
         if len(integer_columns) > 0:
             x[integer_columns] = x[integer_columns].astype(dtypes)
         return x
-    
+
     def _drop_high_cardinality_string_columns(
         self,
         x_train: pd.DataFrame,
@@ -388,9 +388,7 @@ class NoriPredictor:
             unknown_value=-1,
             encoded_missing_value=np.nan,
         )
-        encoded_cols = list(
-            x_train.select_dtypes(include=["category", "string", "bool"]).columns
-        )
+        encoded_cols = list(x_train.select_dtypes(include=["category", "string", "bool"]).columns)
         string_cols = list(x_train.select_dtypes(include=["string", "object"]).columns)
         x_train_fit = x_train.copy()
         if string_cols:
@@ -463,8 +461,7 @@ class NoriPredictor:
         """
         if isinstance(pipe[id_step], HighDimFeatureSelector):
             return self.preprocess_num - 1
-        return sum(1 for s in pipe[:id_step]
-                   if not isinstance(s, HighDimFeatureSelector))
+        return sum(1 for s in pipe[:id_step] if not isinstance(s, HighDimFeatureSelector))
 
     def _fit_transform_step_inductive(
         self,
@@ -486,13 +483,9 @@ class NoriPredictor:
 
         if isinstance(step, FilterValidFeatures):
             x_train_out, categorical_idx = step.transform(x_train)
-            train_invalid = (
-                None if step.invalid_features is None else step.invalid_features.copy()
-            )
+            train_invalid = None if step.invalid_features is None else step.invalid_features.copy()
             x_test_out, categorical_idx = step.transform(x_test)
-            test_invalid = (
-                None if step.invalid_features is None else step.invalid_features.copy()
-            )
+            test_invalid = None if step.invalid_features is None else step.invalid_features.copy()
             if train_invalid is None:
                 step.invalid_features = test_invalid
             elif test_invalid is None:
@@ -505,8 +498,7 @@ class NoriPredictor:
         x_test_out, categorical_idx = step.transform(x_test)
         return x_train_out, x_test_out, categorical_idx
 
-    
-    def get_categorical_features_indices(self, x:np.ndarray):
+    def get_categorical_features_indices(self, x: np.ndarray):
         if x.shape[0] < self.min_seq_len_for_category_infer:
             return []
         categorical_idx = []
@@ -560,8 +552,9 @@ class NoriPredictor:
         seen.add(key)
         logger.log(level, "%s", message)
 
-    def predict(self, x_train:np.ndarray, y_train:np.ndarray, x_test:np.ndarray,
-                return_distribution: bool = False) -> np.ndarray:
+    def predict(
+        self, x_train: np.ndarray, y_train: np.ndarray, x_test: np.ndarray, return_distribution: bool = False
+    ) -> np.ndarray:
         """
         Perform regression inference using the Nori model
 
@@ -593,7 +586,7 @@ class NoriPredictor:
         # setting this threshold explicitly) — the raw conditional mean
         # is the R²-optimal point output, and benchmarking showed lattice
         # snapping costs ~0.05 R² on K≤10 targets.
-        if getattr(self, 'discrete_y_snap_max_unique', 0) > 0:
+        if getattr(self, "discrete_y_snap_max_unique", 0) > 0:
             preds = self._maybe_snap_discrete_y(y_train, preds)
         return preds
 
@@ -613,12 +606,12 @@ class NoriPredictor:
         return output
 
     def _reject_nonfinite_output(
-            self,
-            out: torch.Tensor,
-            *,
-            path: str,
-            n_train: int,
-            n_test: int,
+        self,
+        out: torch.Tensor,
+        *,
+        path: str,
+        n_train: int,
+        n_test: int,
     ) -> torch.Tensor:
         """Raise when the model emits NaN/inf, instead of zero-filling it.
 
@@ -648,8 +641,7 @@ class NoriPredictor:
             "that scores at chance while reporting success."
         )
 
-    def _maybe_snap_discrete_y(self, y_train: np.ndarray,
-                                 preds: np.ndarray) -> np.ndarray:
+    def _maybe_snap_discrete_y(self, y_train: np.ndarray, preds: np.ndarray) -> np.ndarray:
         """Snap regression predictions to nearest training y value when
         training y is discrete (low unique count).
 
@@ -680,15 +672,11 @@ class NoriPredictor:
             left_idx = np.clip(idx - 1, 0, len(unique_sorted) - 1)
             d_right = np.abs(preds_arr - unique_sorted[idx])
             d_left = np.abs(preds_arr - unique_sorted[left_idx])
-            chosen = np.where(d_left < d_right, unique_sorted[left_idx],
-                                unique_sorted[idx])
-            return chosen.reshape(np.asarray(preds).shape).astype(
-                np.asarray(preds).dtype
-            )
+            chosen = np.where(d_left < d_right, unique_sorted[left_idx], unique_sorted[idx])
+            return chosen.reshape(np.asarray(preds).shape).astype(np.asarray(preds).dtype)
         except Exception as _e:
             # Fail open — never break inference because of the snap helper.
-            print(f"WARNING: discrete-y snap failed "
-                  f"({type(_e).__name__}: {_e}); returning unsnapped predictions.")
+            print(f"WARNING: discrete-y snap failed ({type(_e).__name__}: {_e}); returning unsnapped predictions.")
             return preds
 
     def _bare_model(self):
@@ -749,11 +737,7 @@ class NoriPredictor:
             # default scalar head was MSE; width > 1 identified pinball. A
             # historical one-level pinball head cannot be distinguished, which
             # is why current checkpoints persist regression_loss explicitly.
-            regression_loss = (
-                "mse"
-                if int(getattr(model, "num_reg_quantiles", 1)) == 1
-                else "pinball"
-            )
+            regression_loss = "mse" if int(getattr(model, "num_reg_quantiles", 1)) == 1 else "pinball"
         return str(regression_loss)
 
     @property
@@ -797,7 +781,7 @@ class NoriPredictor:
             output = output.unsqueeze(0)
 
         if num_reg_quantiles > 1:
-            if regression_loss == 'bar_distribution':
+            if regression_loss == "bar_distribution":
                 num_bars = int(getattr(model_ref, "num_bars", num_reg_quantiles))
                 lo = float(getattr(model_ref, "bar_borders_low", -10.0))
                 hi = float(getattr(model_ref, "bar_borders_high", 10.0))
@@ -807,13 +791,23 @@ class NoriPredictor:
                 stored_borders = getattr(model_ref, "bar_borders_buffer", None)
                 if output.ndim == 1 and output.shape[0] == num_bars:
                     # Single test row with num_bars logits
-                    output = self._apply_bar_distribution_decode(
-                        output.unsqueeze(0), num_bars, lo, hi,
-                        borders=stored_borders,
-                    ).squeeze(0).unsqueeze(0)
+                    output = (
+                        self._apply_bar_distribution_decode(
+                            output.unsqueeze(0),
+                            num_bars,
+                            lo,
+                            hi,
+                            borders=stored_borders,
+                        )
+                        .squeeze(0)
+                        .unsqueeze(0)
+                    )
                 elif output.shape[-1] == num_bars:
                     output = self._apply_bar_distribution_decode(
-                        output, num_bars, lo, hi,
+                        output,
+                        num_bars,
+                        lo,
+                        hi,
                         borders=stored_borders,
                     )
             else:
@@ -829,7 +823,11 @@ class NoriPredictor:
         return output
 
     def _apply_bar_distribution_decode(
-        self, logits: torch.Tensor, num_bars: int, lo: float, hi: float,
+        self,
+        logits: torch.Tensor,
+        num_bars: int,
+        lo: float,
+        hi: float,
         borders: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Decode [..., num_bars] logits to [...] point estimate.
@@ -848,18 +846,22 @@ class NoriPredictor:
             borders = borders.to(device=logits.device, dtype=logits.dtype)
         else:
             borders = torch.linspace(
-                lo, hi, num_bars + 1, device=logits.device, dtype=logits.dtype,
+                lo,
+                hi,
+                num_bars + 1,
+                device=logits.device,
+                dtype=logits.dtype,
             )
         bin_centers = 0.5 * (borders[:-1] + borders[1:])  # [num_bars]
-        T = float(getattr(self, 'bar_temperature', 1.0))
+        T = float(getattr(self, "bar_temperature", 1.0))
         if T <= 0:
             T = 1.0
         probs = torch.softmax(logits.float() / T, dim=-1)
-        mode = getattr(self, 'bar_point_estimator', 'mean')
-        if mode == 'mode':
+        mode = getattr(self, "bar_point_estimator", "mean")
+        if mode == "mode":
             idx = probs.argmax(dim=-1)
             return bin_centers[idx]
-        if mode == 'median':
+        if mode == "median":
             cdf = probs.cumsum(dim=-1)
             idx = (cdf >= 0.5).int().argmax(dim=-1)  # first bin where CDF crosses 0.5
             return bin_centers[idx]
@@ -878,48 +880,47 @@ class NoriPredictor:
           huber_mean    — Huber-weighted mean with center = τ=0.5 quantile,
                           scale = MAD of quantile values
         """
-        mode = getattr(self, 'quantile_collapse', 'mean')
+        mode = getattr(self, "quantile_collapse", "mean")
         K = q.shape[-1]
         if K <= 1:
             return q.mean(dim=-1)
         # MPS does not implement float64 tensors. Float32 still keeps every
         # level in the released 999-quantile grid distinct; retain float64 on
         # CPU/CUDA so their existing integration precision is unchanged.
-        tau_dtype = (
-            torch.float32
-            if q.device.type == 'mps'
-            else torch.float64
-        )
-        if mode == 'mean':
+        tau_dtype = torch.float32 if q.device.type == "mps" else torch.float64
+        if mode == "mean":
             from synthefy_nori.model.quantile_dist import quantile_dist_mean_simple
+
             tau_levels = torch.as_tensor(
                 self.regression_quantiles,
                 device=q.device,
                 dtype=tau_dtype,
             )
             return quantile_dist_mean_simple(
-                q, tau_levels, enforce_monotone_first=True,
+                q,
+                tau_levels,
+                enforce_monotone_first=True,
             )
-        if mode == 'median':
+        if mode == "median":
             # For an even-sized bank there is no single middle level. Average
             # the two central predictions; choosing K // 2 alone makes K=2
             # return the upper endpoint instead of its median.
             middle = K // 2
             if K % 2:
                 return q[..., middle]
-            return q[..., middle - 1:middle + 1].mean(dim=-1)
-        if mode == 'trimmed_mean':
+            return q[..., middle - 1 : middle + 1].mean(dim=-1)
+        if mode == "trimmed_mean":
             # Keep at least one value. The historical max(1, ...) made K=2
             # trim both endpoints and reduce an empty tensor to NaN.
             trim = min(max(1, int(K * 0.05)), (K - 1) // 2)
             if trim == 0:
                 return q.mean(dim=-1)
-            return q[..., trim:K - trim].mean(dim=-1)
-        if mode == 'huber_mean':
+            return q[..., trim : K - trim].mean(dim=-1)
+        if mode == "huber_mean":
             # Sort defensively against quantile crossing — q should already be
             # monotonic in τ for a well-trained pinball head.
             q_sorted, _ = q.sort(dim=-1)
-            center = q_sorted[..., K // 2:K // 2 + 1]
+            center = q_sorted[..., K // 2 : K // 2 + 1]
             mad = (q_sorted - center).abs().median(dim=-1, keepdim=True).values
             mad = torch.clamp(mad, min=1e-8)
             dev = (q_sorted - center) / mad
@@ -930,7 +931,7 @@ class NoriPredictor:
                 k_huber / dev.abs().clamp(min=k_huber),
             )
             return (q_sorted * w).sum(dim=-1) / w.sum(dim=-1).clamp(min=1e-8)
-        if mode == 'tail_aware':
+        if mode == "tail_aware":
             # Use the shape of the predicted quantile distribution to detect
             # rows where the model is signaling an out-of-bulk prediction.
             # For such rows, collapse to the heavy-side quantile instead of
@@ -944,9 +945,9 @@ class NoriPredictor:
             #   RIGHT_HEAVY if right_weight > SKEW_RATIO * left_weight
             # Both require spread > MIN_SPREAD_RATIO × (batch-median spread)
             # so a uniformly-tiny quantile spread can't accidentally trigger.
-            lo_idx = max(0, int(round(K * 0.01)))           # τ≈0.01
-            mid_idx = K // 2                                 # τ=0.5
-            hi_idx = min(K - 1, int(round(K * 0.99)) - 1)    # τ≈0.99
+            lo_idx = max(0, int(round(K * 0.01)))  # τ≈0.01
+            mid_idx = K // 2  # τ=0.5
+            hi_idx = min(K - 1, int(round(K * 0.99)) - 1)  # τ≈0.99
             q_lo = q[..., lo_idx]
             q_mid = q[..., mid_idx]
             q_hi = q[..., hi_idx]
@@ -959,47 +960,56 @@ class NoriPredictor:
             left_heavy = (left_w.abs() > SKEW_RATIO * right_w.abs().clamp(min=1e-8)) & (spread > spread_thresh)
             right_heavy = (right_w.abs() > SKEW_RATIO * left_w.abs().clamp(min=1e-8)) & (spread > spread_thresh)
             from synthefy_nori.model.quantile_dist import quantile_dist_mean_simple
+
             tau_levels = torch.as_tensor(
                 self.regression_quantiles,
                 device=q.device,
                 dtype=tau_dtype,
             )
             mean_est = quantile_dist_mean_simple(
-                q, tau_levels, enforce_monotone_first=True,
+                q,
+                tau_levels,
+                enforce_monotone_first=True,
             )
             result = torch.where(left_heavy, q_lo.to(mean_est.dtype), mean_est)
             result = torch.where(right_heavy, q_hi.to(mean_est.dtype), result)
             return result
-        if mode == 'qdist':
+        if mode == "qdist":
             # Quantile-distribution decoder: sort + analytical mean with
             # exp tail extrapolation. K should be ≥ ~100 for stable tail fit.
             # Falls back to qdist_simple at K < 8.
             from synthefy_nori.model.quantile_dist import quantile_dist_mean_batch
+
             tau_levels = np.asarray(
                 self.regression_quantiles,
                 dtype=np.float64,
             )
             return quantile_dist_mean_batch(
-                q, tau_levels, enforce_monotone_first=True, tail_outer_n=20,
+                q,
+                tau_levels,
+                enforce_monotone_first=True,
+                tail_outer_n=20,
             )
-        if mode == 'qdist_simple':
+        if mode == "qdist_simple":
             # Quantile-distribution decoder, pure-torch (no tail correction).
             # Faster, fully on-device. Use when tail extrapolation isn't needed
             # (e.g. K=999 already covers 99.9% of mass).
             from synthefy_nori.model.quantile_dist import quantile_dist_mean_simple
+
             tau_levels = torch.as_tensor(
                 self.regression_quantiles,
                 device=q.device,
                 dtype=tau_dtype,
             )
             return quantile_dist_mean_simple(
-                q, tau_levels, enforce_monotone_first=True,
+                q,
+                tau_levels,
+                enforce_monotone_first=True,
             )
         # Should be unreachable (validated in __init__), but fall back safely.
         return q.mean(dim=-1)
 
-    def _effective_budget_n_features(self, n_features: int,
-                                     x_train: np.ndarray) -> int:
+    def _effective_budget_n_features(self, n_features: int, x_train: np.ndarray) -> int:
         """Feature count the model actually sees after a HighDimFeatureSelector
         in the inference config reduces dimensionality.
 
@@ -1013,25 +1023,24 @@ class NoriPredictor:
         for item in self.inference_config:
             if not isinstance(item, dict):
                 continue
-            hdf = item.get('HighDimFeatureSelector')
+            hdf = item.get("HighDimFeatureSelector")
             if not hdf:
                 continue
-            strategy = hdf.get('strategy', 'passthrough')
-            thr = int(hdf.get('n_features_threshold', 128))
-            bthr = float(hdf.get('binary_threshold', 0.5))
+            strategy = hdf.get("strategy", "passthrough")
+            thr = int(hdf.get("n_features_threshold", 128))
+            bthr = float(hdf.get("binary_threshold", 0.5))
             if binary_frac is None:
                 try:
-                    bm = HighDimFeatureSelector._detect_binary_cols(
-                        np.asarray(x_train, dtype=np.float64))
+                    bm = HighDimFeatureSelector._detect_binary_cols(np.asarray(x_train, dtype=np.float64))
                     binary_frac = float(bm.mean()) if n_features else 0.0
                 except Exception:
                     binary_frac = 0.0
             if not ((n_features > thr) or (binary_frac >= bthr)):
                 continue
-            if strategy == 'svd_all':
-                eff = min(eff, int(hdf.get('svd_components', 64)))
-            elif strategy in ('corr', 'mi', 'extratrees'):
-                eff = min(eff, int(hdf.get('top_k', 256)))
+            if strategy == "svd_all":
+                eff = min(eff, int(hdf.get("svd_components", 64)))
+            elif strategy in ("corr", "mi", "extratrees"):
+                eff = min(eff, int(hdf.get("top_k", 256)))
             # svd_binary output size is data-dependent (n_nonbinary +
             # components) — leave the budget conservative (no reduction).
         return max(1, eff)
@@ -1084,8 +1093,7 @@ class NoriPredictor:
         n_features = x_train.shape[1] if x_train.ndim > 1 else 1
         return self._effective_budget_n_features(n_features, x_train)
 
-    def max_context_rows(self, x_train: np.ndarray, *,
-                         budget_n_features: int | None = None) -> int:
+    def max_context_rows(self, x_train: np.ndarray, *, budget_n_features: int | None = None) -> int:
         """Context rows one call can take for this table before subsampling engages.
 
         Mirrors the budget arithmetic in :meth:`_predict_reg_single` exactly: returns
@@ -1206,11 +1214,11 @@ class NoriPredictor:
         try:
             dev = self.device if isinstance(self.device, torch.device) else torch.device(self.device)
             if dev.type == "cuda" and torch.cuda.is_available():
-                return torch.cuda.get_device_properties(dev).total_memory / (1024 ** 3)
+                return torch.cuda.get_device_properties(dev).total_memory / (1024**3)
             if dev.type == "mps" and torch.backends.mps.is_available():
                 recommended = getattr(torch.mps, "recommended_max_memory", None)
                 if callable(recommended):
-                    return recommended() / (1024 ** 3)
+                    return recommended() / (1024**3)
         except Exception:
             pass
         return None
@@ -1223,15 +1231,17 @@ class NoriPredictor:
         """
         return max(256, (max_elements // max(budget_n_features, 1)) - n_train)
 
-    def PostProcessInModel(self, feature_pred:torch.tensor, config: dict) -> torch.tensor:
+    def PostProcessInModel(self, feature_pred: torch.tensor, config: dict) -> torch.tensor:
         # Revert preprocess in model forward
-        feature_pred = feature_pred / torch.sqrt(config['features_per_group'] / config['num_used_features'].to(self.device))
-        feature_pred = feature_pred*config['std_for_normalization'] + config['mean_for_normalization']
+        feature_pred = feature_pred / torch.sqrt(
+            config["features_per_group"] / config["num_used_features"].to(self.device)
+        )
+        feature_pred = feature_pred * config["std_for_normalization"] + config["mean_for_normalization"]
         feature_pred = einops.rearrange(feature_pred, "b s f n -> s b (f n)").squeeze(1).float().cpu().numpy()
-        if config['n_x_padding'] > 0:
-            feature_pred = feature_pred[:,:-config['n_x_padding']]
+        if config["n_x_padding"] > 0:
+            feature_pred = feature_pred[:, : -config["n_x_padding"]]
         return feature_pred
-    
+
     def PostProcess(
         self,
         feature_pred: np.ndarray,
@@ -1249,7 +1259,7 @@ class NoriPredictor:
                 else:
                     raise NotImplementedError
             elif isinstance(step, CategoricalFeatureEncoder):
-                if step.encoding_strategy != 'onehot':
+                if step.encoding_strategy != "onehot":
                     if step.category_mappings is not None:
                         categorical_indices = list(step.category_mappings.keys())
                         feature_pred[:, categorical_indices] = np.round(feature_pred[:, categorical_indices])
@@ -1263,43 +1273,64 @@ class NoriPredictor:
                 else:
                     if len(step.categorical_features) == 0 or step.transformer is None:
                         continue
-                    cont_features_indices = [idx for idx in range(feature_pred.shape[1]) if idx not in step.categorical_features]
-                    
+                    cont_features_indices = [
+                        idx for idx in range(feature_pred.shape[1]) if idx not in step.categorical_features
+                    ]
+
                     assert np.array_equal(step.categorical_features, np.arange(len(step.categorical_features)))
                     start_idx = 0
-                    for idx, out_category in enumerate(step.transformer.named_transformers_['one_hot_encoder'].categories_):
+                    for idx, out_category in enumerate(
+                        step.transformer.named_transformers_["one_hot_encoder"].categories_
+                    ):
                         assert len(out_category) >= 2
                         if not np.any(np.isnan(out_category)):
-                            if len(out_category) == 2: # e.g. [3, 5.5]
-                                feature_pred[:,start_idx] = np.round(np.clip(feature_pred[:,start_idx], a_min=0, a_max=1))
+                            if len(out_category) == 2:  # e.g. [3, 5.5]
+                                feature_pred[:, start_idx] = np.round(
+                                    np.clip(feature_pred[:, start_idx], a_min=0, a_max=1)
+                                )
                                 start_idx += 1
                             else:
-                                arr = feature_pred[:, start_idx:start_idx+len(out_category)]
-                                feature_pred[:, start_idx:start_idx+len(out_category)] = (arr == arr.max(axis=1, keepdims=True)).astype(float)
+                                arr = feature_pred[:, start_idx : start_idx + len(out_category)]
+                                feature_pred[:, start_idx : start_idx + len(out_category)] = (
+                                    arr == arr.max(axis=1, keepdims=True)
+                                ).astype(float)
                                 start_idx += len(out_category)
                         else:
-                            if len(out_category) == 2: # e.g. [0, nan]
-                                feature_pred[:,start_idx] = 0
+                            if len(out_category) == 2:  # e.g. [0, nan]
+                                feature_pred[:, start_idx] = 0
                                 start_idx += 1
                             else:
-                                arr = feature_pred[:, start_idx:start_idx+len(out_category)-1]
-                                feature_pred[:, start_idx:start_idx+len(out_category)-1] = (arr == arr.max(axis=1, keepdims=True)).astype(float)
-                                feature_pred[:, start_idx+len(out_category)-1] = 0
+                                arr = feature_pred[:, start_idx : start_idx + len(out_category) - 1]
+                                feature_pred[:, start_idx : start_idx + len(out_category) - 1] = (
+                                    arr == arr.max(axis=1, keepdims=True)
+                                ).astype(float)
+                                feature_pred[:, start_idx + len(out_category) - 1] = 0
                                 start_idx += len(out_category)
-                    feature_pred = np.column_stack([step.transformer.named_transformers_['one_hot_encoder'].inverse_transform(feature_pred[:, step.categorical_features]), feature_pred[:, cont_features_indices]])
-                    
+                    feature_pred = np.column_stack(
+                        [
+                            step.transformer.named_transformers_["one_hot_encoder"].inverse_transform(
+                                feature_pred[:, step.categorical_features]
+                            ),
+                            feature_pred[:, cont_features_indices],
+                        ]
+                    )
+
             elif isinstance(step, RebalanceFeatureDistribution):
-                if step.svd_tag == 'svd' and step.svd_n_comp > 0:
-                    feature_pred = feature_pred[:, :-step.svd_n_comp]
-                if step.worker_tags[0] in ["quantile_uniform_10", "quantile_uniform_5", "quantile_uniform_all_data"] and step.n_quantile_features > 0:
-                    feature_pred = feature_pred[:, :-step.n_quantile_features]
+                if step.svd_tag == "svd" and step.svd_n_comp > 0:
+                    feature_pred = feature_pred[:, : -step.svd_n_comp]
+                if (
+                    step.worker_tags[0] in ["quantile_uniform_10", "quantile_uniform_5", "quantile_uniform_all_data"]
+                    and step.n_quantile_features > 0
+                ):
+                    feature_pred = feature_pred[:, : -step.n_quantile_features]
                 elif step.worker_tags[0] == "power":
-                    raise ValueError(f"Missing value imputation does not currently support the preprocessing method of power!")
+                    raise ValueError(
+                        f"Missing value imputation does not currently support the preprocessing method of power!"
+                    )
                 if step.feature_indices is not None:
                     inv_p = np.argsort(step.feature_indices)
                     feature_pred = feature_pred[:, inv_p]
 
-                    
             elif isinstance(step, FilterValidFeatures):
                 invalid_mask = np.asarray(step.invalid_indices, dtype=bool)
                 if np.any(invalid_mask):
@@ -1357,10 +1388,14 @@ class NoriPredictor:
         context = np.stack([chunk[:n_context] for chunk in chunks]).mean(axis=0)
         query = np.concatenate([chunk[n_context:] for chunk in chunks], axis=0)
         return np.concatenate([context, query], axis=0)
-        
-    def get_embeddings(self, x_train: np.ndarray, y_train: np.ndarray,
-                       x_test: np.ndarray | None = None,
-                       data_source: Literal["test", "train"] = "test") -> np.ndarray:
+
+    def get_embeddings(
+        self,
+        x_train: np.ndarray,
+        y_train: np.ndarray,
+        x_test: np.ndarray | None = None,
+        data_source: Literal["test", "train"] = "test",
+    ) -> np.ndarray:
         """Thin wrapper applying the execution overrides once for the call.
 
         Entering the context manager per query chunk would walk model.modules()
@@ -1371,9 +1406,13 @@ class NoriPredictor:
         with self._execution_overrides():
             return self._get_embeddings_impl(x_train, y_train, x_test, data_source)
 
-    def _get_embeddings_impl(self, x_train: np.ndarray, y_train: np.ndarray,
-                             x_test: np.ndarray | None = None,
-                             data_source: Literal["test", "train"] = "test") -> np.ndarray:
+    def _get_embeddings_impl(
+        self,
+        x_train: np.ndarray,
+        y_train: np.ndarray,
+        x_test: np.ndarray | None = None,
+        data_source: Literal["test", "train"] = "test",
+    ) -> np.ndarray:
         """Extract per-row Nori embeddings for a context/query split.
 
         Runs each preprocessing pipeline (the inference ensemble) through the
@@ -1395,12 +1434,17 @@ class NoriPredictor:
             for ``data_source="train"``.
         """
         if data_source not in ("test", "train"):
-            raise ValueError(
-                f"data_source must be 'test' or 'train', got {data_source!r}.")
+            raise ValueError(f"data_source must be 'test' or 'train', got {data_source!r}.")
 
         x_train, y_train = self.validate_data(
-            x_train, y_train, reset=True, validate_separately=False,
-            accept_sparse=False, dtype=None, ensure_all_finite=False)
+            x_train,
+            y_train,
+            reset=True,
+            validate_separately=False,
+            accept_sparse=False,
+            dtype=None,
+            ensure_all_finite=False,
+        )
         if data_source == "train":
             # Context embeddings ignore the query rows entirely (the train branch
             # below uses a dummy query drawn from the context). Replace whatever
@@ -1410,22 +1454,21 @@ class NoriPredictor:
             x_test = x_train[:1]
         else:
             if x_test is None:
-                raise ValueError(
-                    "get_embeddings requires x_test for data_source='test'.")
+                raise ValueError("get_embeddings requires x_test for data_source='test'.")
             x_test = self.validate_data(
-                x_test, reset=False, validate_separately=False,
-                accept_sparse=False, dtype=None, ensure_all_finite=False)
+                x_test, reset=False, validate_separately=False, accept_sparse=False, dtype=None, ensure_all_finite=False
+            )
 
         x_train_base, x_test_base, categorical_idx = self._prepare_inductive_features(
-            x_train, x_test,
+            x_train,
+            x_test,
         )
 
         n_train = len(y_train)
         n_test = len(x_test)
         # Chunk the query rows along the same element budget the predictor uses,
         # so wide/large tables don't OOM while embedding.
-        budget_n_features = self._effective_budget_n_features(
-            x_train.shape[1] if x_train.ndim > 1 else 1, x_train)
+        budget_n_features = self._effective_budget_n_features(x_train.shape[1] if x_train.ndim > 1 else 1, x_train)
         max_elements = self._resolve_max_elements_budget()
 
         # Context-size guard. Chunking below only splits the QUERY rows; every
@@ -1468,9 +1511,11 @@ class NoriPredictor:
             categorical_idx_ = categorical_idx.copy()
             for id_step, step in enumerate(pipe):
                 x_train_, x_test_, categorical_idx_ = self._fit_transform_step_inductive(
-                    step, x_train_, x_test_, categorical_idx_,
-                    self.seeds[id_pipe * self.preprocess_num
-                               + self._seed_step_index(pipe, id_step)],
+                    step,
+                    x_train_,
+                    x_test_,
+                    categorical_idx_,
+                    self.seeds[id_pipe * self.preprocess_num + self._seed_step_index(pipe, id_step)],
                     y_train=y_,
                 )
 
@@ -1492,11 +1537,14 @@ class NoriPredictor:
                 bare_model.to(self.device)
                 torch.manual_seed(self.seed)
                 torch.cuda.manual_seed_all(self.seed)
-                with torch.autocast(
-                    device_type=self.device.type if isinstance(self.device, torch.device) else self.device,
-                    enabled=self.mix_precision), torch.inference_mode():
-                    emb = bare_model(x=x_all, y=y_all, eval_pos=n_train,
-                                     task_type='reg', return_embeddings=True)
+                with (
+                    torch.autocast(
+                        device_type=self.device.type if isinstance(self.device, torch.device) else self.device,
+                        enabled=self.mix_precision,
+                    ),
+                    torch.inference_mode(),
+                ):
+                    emb = bare_model(x=x_all, y=y_all, eval_pos=n_train, task_type="reg", return_embeddings=True)
                 per_pipeline.append(emb[0, :n_train].float().cpu().numpy())
                 continue
 
@@ -1511,11 +1559,14 @@ class NoriPredictor:
                 bare_model.to(self.device)
                 torch.manual_seed(self.seed)
                 torch.cuda.manual_seed_all(self.seed)
-                with torch.autocast(
-                    device_type=self.device.type if isinstance(self.device, torch.device) else self.device,
-                    enabled=self.mix_precision), torch.inference_mode():
-                    emb = bare_model(x=x_all, y=y_all, eval_pos=n_train,
-                                     task_type='reg', return_embeddings=True)
+                with (
+                    torch.autocast(
+                        device_type=self.device.type if isinstance(self.device, torch.device) else self.device,
+                        enabled=self.mix_precision,
+                    ),
+                    torch.inference_mode(),
+                ):
+                    emb = bare_model(x=x_all, y=y_all, eval_pos=n_train, task_type="reg", return_embeddings=True)
                 chunks.append(emb[0, n_train:].float().cpu().numpy())
             per_pipeline.append(np.concatenate(chunks, axis=0))
 
@@ -1577,6 +1628,7 @@ class NoriPredictor:
         if distributed_inference is None:
             predict_single = self._predict_reg_single
         else:
+
             def predict_single(
                 x_train_single,
                 y_train_single,
@@ -1603,13 +1655,14 @@ class NoriPredictor:
             y_train,
             x_test,
         )
-        if 'yj' not in self.augmentations:
+        if "yj" not in self.augmentations:
             return base_pred
 
         # Conditional YJ gate: only apply if y_train is sufficiently skewed.
         # Use bias=False for unbiased estimator; robust to NaN via nan_to_num.
         try:
             from scipy import stats as _stats
+
             y_np = np.asarray(y_train, dtype=np.float64)
             y_np = y_np[np.isfinite(y_np)]
             if len(y_np) < 10:
@@ -1627,9 +1680,9 @@ class NoriPredictor:
             import warnings as _warnings
 
             y_train_arr = np.asarray(y_train, dtype=np.float64).reshape(-1, 1)
-            pt = PowerTransformer(method='yeo-johnson', standardize=True)
+            pt = PowerTransformer(method="yeo-johnson", standardize=True)
             with _warnings.catch_warnings():
-                _warnings.simplefilter('ignore')
+                _warnings.simplefilter("ignore")
                 y_train_yj = pt.fit_transform(y_train_arr).ravel()
 
             # Predict in YJ-transformed target space
@@ -1639,19 +1692,18 @@ class NoriPredictor:
                 x_test,
             )
             # base_pred may be torch.Tensor; normalize to numpy for transform
-            pred_yj_np = pred_yj_space.detach().cpu().numpy() if torch.is_tensor(pred_yj_space) else np.asarray(pred_yj_space)
+            pred_yj_np = (
+                pred_yj_space.detach().cpu().numpy() if torch.is_tensor(pred_yj_space) else np.asarray(pred_yj_space)
+            )
 
             # Clip in-transformed-space before inverse to avoid explosion
             y_tr_min, y_tr_max = y_train_yj.min(), y_train_yj.max()
             clip_range = (y_tr_max - y_tr_min) * 3.0 + 1e-6
-            pred_yj_np_clipped = np.clip(
-                pred_yj_np, y_tr_min - clip_range, y_tr_max + clip_range
-            )
+            pred_yj_np_clipped = np.clip(pred_yj_np, y_tr_min - clip_range, y_tr_max + clip_range)
 
             with _warnings.catch_warnings():
-                _warnings.simplefilter('ignore')
-                pred_inv = pt.inverse_transform(
-                    pred_yj_np_clipped.reshape(-1, 1)).ravel()
+                _warnings.simplefilter("ignore")
+                pred_inv = pt.inverse_transform(pred_yj_np_clipped.reshape(-1, 1)).ravel()
 
             # Convert base_pred to numpy for averaging
             base_np = base_pred.detach().cpu().numpy() if torch.is_tensor(base_pred) else np.asarray(base_pred)
@@ -1676,13 +1728,22 @@ class NoriPredictor:
             # and turn strict_pipeline() back into a silent degradation on this path.
             raise
         except Exception as _e:
-            print(f"  [YJ] augmentation failed ({type(_e).__name__}: {_e}), "
-                  f"falling back to identity-only prediction")
+            print(f"  [YJ] augmentation failed ({type(_e).__name__}: {_e}), falling back to identity-only prediction")
             return base_pred
 
-    def _get_or_build_context(self, bare_model, id_pipe, *, x_train_t, y_train_t,
-                              cache_dtype, offload_kv_cache, fit_row_chunk,
-                              reuse_context_cache, cache_entries=1):
+    def _get_or_build_context(
+        self,
+        bare_model,
+        id_pipe,
+        *,
+        x_train_t,
+        y_train_t,
+        cache_dtype,
+        offload_kv_cache,
+        fit_row_chunk,
+        reuse_context_cache,
+        cache_entries=1,
+    ):
         """Build the per-pipe context (train) K/V cache, reusing it across predict()
         calls whose context and cache params are unchanged.
 
@@ -1715,10 +1776,15 @@ class NoriPredictor:
         8 verification clones. Each entry is a full K/V cache, so capacity is bounded
         only by the caller's explicit, memory-aware choice.
         """
+
         def _build():
             return bare_model.build_context_cache(
-                x_train_t, y_train_t, cache_dtype=cache_dtype,
-                offload_kv_cache=offload_kv_cache, fit_row_chunk=fit_row_chunk)
+                x_train_t,
+                y_train_t,
+                cache_dtype=cache_dtype,
+                offload_kv_cache=offload_kv_cache,
+                fit_row_chunk=fit_row_chunk,
+            )
 
         if not reuse_context_cache:
             # A policy can change between calls (the shared engine re-declares one
@@ -1747,10 +1813,8 @@ class NoriPredictor:
         for position, (hit_key, hit_x, hit_y, hit_bundle) in enumerate(entries):
             # Cheap scalar key first, then the O(N_train*F) byte compare -- a param
             # change short-circuits without touching the tensors.
-            if (hit_key == key
-                    and self._same_context(hit_x, x_train_t)
-                    and self._same_context(hit_y, y_train_t)):
-                if position:                    # promote: this pool is in active rotation
+            if hit_key == key and self._same_context(hit_x, x_train_t) and self._same_context(hit_y, y_train_t):
+                if position:  # promote: this pool is in active rotation
                     entries.insert(0, entries.pop(position))
                 # Honour a capacity shrink on the hit path too. Returning early here is
                 # how a drop from 3 to 1 used to retain all three K/V bundles for as
@@ -1759,7 +1823,7 @@ class NoriPredictor:
                 # above runs first, so the entry being returned always survives.
                 del entries[capacity:]
                 return hit_bundle
-        bundle = _build()                       # cache only on a successful build
+        bundle = _build()  # cache only on a successful build
         entries = cache.setdefault(id_pipe, entries)
         # Keep our OWN contiguous copies to verify future calls against. Clones, not
         # the caller's tensors: x_train_t is a slice of the concatenated train+test
@@ -1784,12 +1848,15 @@ class NoriPredictor:
         # bundles only when they are individually huge, which is precisely when
         # retaining them is what breaks the run.
         if self._evict_context_cache_for(cache, bundle, keep_pipe=id_pipe):
-            entries.insert(0, (
-                key,
-                x_train_t.detach().clone(memory_format=torch.contiguous_format),
-                y_train_t.detach().clone(memory_format=torch.contiguous_format),
-                bundle,
-            ))
+            entries.insert(
+                0,
+                (
+                    key,
+                    x_train_t.detach().clone(memory_format=torch.contiguous_format),
+                    y_train_t.detach().clone(memory_format=torch.contiguous_format),
+                    bundle,
+                ),
+            )
             # Evict from the cold end. Shrinking capacity between calls (the shared
             # engine re-declares its policy per request) is honoured here rather than
             # needing its own path: the list is trimmed to whatever the CURRENT call
@@ -1832,7 +1899,7 @@ class NoriPredictor:
 
         try:
             walk(bundle)
-        except Exception:                       # never let accounting break a predict
+        except Exception:  # never let accounting break a predict
             return 0
         return total
 
@@ -1860,7 +1927,7 @@ class NoriPredictor:
                     return int(recommended() * frac)
         except Exception:
             pass
-        return None                             # cannot measure -> leave behaviour unchanged
+        return None  # cannot measure -> leave behaviour unchanged
 
     def _evict_context_cache_for(self, cache: dict, incoming, *, keep_pipe=None) -> bool:
         """Drop cached bundles (oldest first, across every pipe) until ``incoming``
@@ -1885,7 +1952,7 @@ class NoriPredictor:
         """
         budget = self._context_cache_budget_bytes()
         if budget is None:
-            return True                         # no device limit -> exactly the old behaviour
+            return True  # no device limit -> exactly the old behaviour
         incoming_bytes = self._bundle_device_bytes(incoming)
         if incoming_bytes > budget:
             # The branch that fixes topo_2_1: a 15.2 GiB bundle against a 0.25 x 143 GiB
@@ -1893,11 +1960,7 @@ class NoriPredictor:
             # is held so the forward pass gets the whole card.
             cache.clear()
             return False
-        total = sum(
-            self._bundle_device_bytes(entry[3])
-            for entries in cache.values()
-            for entry in entries
-        )
+        total = sum(self._bundle_device_bytes(entry[3]) for entries in cache.values() for entry in entries)
         # Dict preserves pipe insertion order, and each per-pipe list is
         # most-recently-used-first (see _get_or_build_context), so popping from the
         # END of the first pipe's list, then the next pipe's, evicts oldest-first
@@ -1954,16 +2017,16 @@ class NoriPredictor:
         and the integer dtypes alike. Shape, dtype and device are checked separately
         so that two tables of equal byte length but different layout cannot match.
         """
-        if (cached.shape != candidate.shape
-                or cached.dtype != candidate.dtype
-                or cached.device != candidate.device):
+        if cached.shape != candidate.shape or cached.dtype != candidate.dtype or cached.device != candidate.device:
             return False
         if cached.numel() == 0:
             return True
-        return bool(torch.equal(
-            cached.contiguous().view(torch.uint8),
-            candidate.detach().contiguous().view(torch.uint8),
-        ))
+        return bool(
+            torch.equal(
+                cached.contiguous().view(torch.uint8),
+                candidate.detach().contiguous().view(torch.uint8),
+            )
+        )
 
     def _predict_reg_single(
         self,
@@ -2005,7 +2068,7 @@ class NoriPredictor:
         n_features = x_train.shape[1] if x_train.ndim > 1 else 1
         n_samples_train = x_train.shape[0]
         n_samples_test = x_test.shape[0]
-        
+
         # If the number of elements is too large, we must chunk the test set to avoid OOM.
         # The default is VRAM-aware: anchored at 2M elements for a ~24GB GPU (the
         # historical conservative value) and scaled linearly with total VRAM, so a
@@ -2029,10 +2092,8 @@ class NoriPredictor:
                 # Name whichever setting actually forbade it. Reporting the env var to
                 # someone who set memory_policy={"allow_subsample": False} sends them hunting
                 # a variable they never set.
-                _source = ("SYNTHEFY_FORBID_SUBSAMPLE=1" if _forbid_env
-                           else "memory_policy={'allow_subsample': False}")
-                _remedy = ("Raise memory_policy={'elements_budget': N} for full context, or "
-                           "allow subsampling.")
+                _source = "SYNTHEFY_FORBID_SUBSAMPLE=1" if _forbid_env else "memory_policy={'allow_subsample': False}"
+                _remedy = "Raise memory_policy={'elements_budget': N} for full context, or allow subsampling."
                 raise ContextTooLargeError(
                     f"{_source}: context subsampling required but forbidden "
                     f"(n_train={n_samples_train}, eff_features={budget_n_features}, "
@@ -2067,17 +2128,27 @@ class NoriPredictor:
             x_train = x_train[idx]
             y_train = y_train[idx]
             n_samples_train = len(x_train)
-            
+
         np_rng = np.random.default_rng(self.seed)
-        
-        x_train, y_train = self.validate_data(x_train, y_train, reset=True, validate_separately=False, accept_sparse=False, dtype=None, ensure_all_finite=False)
-        x_test = self.validate_data(x_test, reset=False, validate_separately=False, accept_sparse=False, dtype=None, ensure_all_finite=False)
+
+        x_train, y_train = self.validate_data(
+            x_train,
+            y_train,
+            reset=True,
+            validate_separately=False,
+            accept_sparse=False,
+            dtype=None,
+            ensure_all_finite=False,
+        )
+        x_test = self.validate_data(
+            x_test, reset=False, validate_separately=False, accept_sparse=False, dtype=None, ensure_all_finite=False
+        )
 
         x_train_base, x_test_base, categorical_idx = self._prepare_inductive_features(
             x_train,
             x_test,
         )
-    
+
         outputs = []
         mask_predictions = []
         for id_pipe, pipe in enumerate(self.preprocess_pipelines):
@@ -2092,7 +2163,7 @@ class NoriPredictor:
                     x_train_,
                     x_test_,
                     categorical_idx_,
-                    self.seeds[id_pipe*self.preprocess_num+self._seed_step_index(pipe, id_step)],
+                    self.seeds[id_pipe * self.preprocess_num + self._seed_step_index(pipe, id_step)],
                     y_train=y_,
                 )
 
@@ -2104,9 +2175,9 @@ class NoriPredictor:
             if self.inference_with_DDP:
                 assert distributed_inference is not None
                 output = distributed_inference.inference(
-                    x_[:len(y_train)],
+                    x_[: len(y_train)],
                     y_,
-                    x_[len(y_train):],
+                    x_[len(y_train) :],
                 )
                 outputs.append(output)
             if not self.inference_with_DDP:
@@ -2135,8 +2206,7 @@ class NoriPredictor:
                 # keying off self.mask_prediction wrongly enters the cached path
                 # and the model raises NotImplementedError under chunking. Use the
                 # model's real flag so such ckpts fall to the plain chunked loop.
-                model_mask_pred = bool(getattr(bare_model, "mask_prediction",
-                                               self.mask_prediction))
+                model_mask_pred = bool(getattr(bare_model, "mask_prediction", self.mask_prediction))
                 # Serving-memory policy. The ladder and the reasoning behind its
                 # ORDER live in ``synthefy_nori.inference.memory_policy``; here we
                 # only supply the measurements it needs and record what it picked.
@@ -2182,7 +2252,9 @@ class NoriPredictor:
                     use_cached = policy.cache
                 else:
                     policy = policy.resolve(
-                        est_cache_gb=0.0, bytes_per_element=1, head_dim=1,
+                        est_cache_gb=0.0,
+                        bytes_per_element=1,
+                        head_dim=1,
                         cache_eligible=False,
                     )
                 # Announce the opening rung. WARNING when it is already a fallback
@@ -2190,8 +2262,10 @@ class NoriPredictor:
                 # should see by default; INFO on the fast rungs so a normal run stays
                 # quiet but is still explainable after the fact.
                 self._log_once_per_call(
-                    "rung", logging.WARNING if policy.is_degraded else logging.INFO,
-                    f"Nori serving-memory rung: {policy.describe()}")
+                    "rung",
+                    logging.WARNING if policy.is_degraded else logging.INFO,
+                    f"Nori serving-memory rung: {policy.describe()}",
+                )
 
                 cached_done = False
                 if use_cached:
@@ -2210,7 +2284,15 @@ class NoriPredictor:
                         fit_chunk_attempts.append(FIT_ROW_CHUNK_ON_OOM)
                     for attempt_fit_chunk in fit_chunk_attempts:
                         try:
-                            with torch.autocast(device_type=self.device.type if isinstance(self.device, torch.device) else self.device, enabled=self.mix_precision), torch.inference_mode():
+                            with (
+                                torch.autocast(
+                                    device_type=self.device.type
+                                    if isinstance(self.device, torch.device)
+                                    else self.device,
+                                    enabled=self.mix_precision,
+                                ),
+                                torch.inference_mode(),
+                            ):
                                 # Cross-call context amortization: build the O(N_train)
                                 # per-layer K/V cache once and reuse it across predict()
                                 # calls whose context (x_train/y_train) is unchanged --
@@ -2221,7 +2303,8 @@ class NoriPredictor:
                                 # pair) and memoizes the build. See _get_or_build_context.
                                 n_ctx = len(y_train)
                                 ctx_bundle = self._get_or_build_context(
-                                    bare_model, id_pipe,
+                                    bare_model,
+                                    id_pipe,
                                     x_train_t=x_[:n_ctx].unsqueeze(0),
                                     y_train_t=y_[:n_ctx].unsqueeze(0),
                                     cache_dtype=policy.cache_dtype,
@@ -2231,25 +2314,23 @@ class NoriPredictor:
                                     cache_entries=self.context_cache_entries,
                                 )
                                 output = bare_model.apply_context_cache(
-                                    x_[n_ctx:].unsqueeze(0), ctx_bundle,
+                                    x_[n_ctx:].unsqueeze(0),
+                                    ctx_bundle,
                                     row_chunk_size=chunk_size,
                                     adaptive_query_chunk=policy.adaptive_query_chunk,
                                 )
                             output = self._unwrap_model_output(output, task_type="reg").squeeze(0)
                             output = self._reject_nonfinite_output(
-                                output, path=f"cached ({policy.rung})",
-                                n_train=n_samples_train, n_test=n_samples_test)
+                                output, path=f"cached ({policy.rung})", n_train=n_samples_train, n_test=n_samples_test
+                            )
                             outputs.append(output)
                             cached_done = True
                             if attempt_fit_chunk is not None and pinned is None:
-                                policy = policy.escalated(
-                                    "context_row_chunk",
-                                    context_row_chunk=attempt_fit_chunk)
-                                logger.warning(
-                                    "Nori recovered on rung %s", policy.describe())
+                                policy = policy.escalated("context_row_chunk", context_row_chunk=attempt_fit_chunk)
+                                logger.warning("Nori recovered on rung %s", policy.describe())
                             policy = policy.escalated(
-                                policy.rung, dropped_context_rows=dropped_context_rows,
-                                query_chunk=chunk_size)
+                                policy.rung, dropped_context_rows=dropped_context_rows, query_chunk=chunk_size
+                            )
                             self.memory_report_ = policy.model_dump()
                             break
                         except NotImplementedError as exc:
@@ -2278,7 +2359,9 @@ class NoriPredictor:
                             )
                             logger.warning(
                                 "Nori OOM on rung %s (fit_row_chunk=%s); %s",
-                                policy.rung, attempt_fit_chunk, next_step,
+                                policy.rung,
+                                attempt_fit_chunk,
+                                next_step,
                             )
                 if not cached_done:
                     # Every cached rung failed, or the policy never chose one. This
@@ -2287,14 +2370,16 @@ class NoriPredictor:
                     # reads as an unexplained accuracy regression to whoever is
                     # looking at the numbers later.
                     if policy.rung != "no_cache":
-                        policy = policy.escalated(
-                            "plain_loop", dropped_context_rows=dropped_context_rows)
+                        policy = policy.escalated("plain_loop", dropped_context_rows=dropped_context_rows)
                         msg = (
                             f"Nori fell back to the plain chunked loop: "
                             f"{policy.describe()}. Every query chunk now recomputes "
                             f"the context K/V, several times slower"
-                            + (f"; {dropped_context_rows} context rows were DROPPED "
-                               f"to fit" if dropped_context_rows else "")
+                            + (
+                                f"; {dropped_context_rows} context rows were DROPPED to fit"
+                                if dropped_context_rows
+                                else ""
+                            )
                             + ". Raise memory_policy={'gpu_budget_frac': ...} / "
                             "'host_budget_frac' / 'elements_budget', or read "
                             "predictor.memory_report_ for what was chosen."
@@ -2302,42 +2387,50 @@ class NoriPredictor:
                         self._log_once_per_call("plain_loop", logging.WARNING, msg)
                         self._warn_once_per_call("plain_loop", msg, RuntimeWarning)
                     else:
-                        policy = policy.escalated(
-                            policy.rung, dropped_context_rows=dropped_context_rows)
+                        policy = policy.escalated(policy.rung, dropped_context_rows=dropped_context_rows)
                     self.memory_report_ = policy.model_dump()
-
 
                 # Chunk the test data (skipped entirely if the cached path ran)
                 all_outputs = []
-                for i in ([] if cached_done else range(0, n_samples_test, chunk_size)):
+                for i in [] if cached_done else range(0, n_samples_test, chunk_size):
                     end_idx = min(i + chunk_size, n_samples_test)
                     x_chunk_test = x_[len(y_train) + i : len(y_train) + end_idx]
-                    
+
                     # Recombine train + test chunk
-                    x_chunk_combined = torch.cat([x_[:len(y_train)], x_chunk_test], dim=0)
-                    
+                    x_chunk_combined = torch.cat([x_[: len(y_train)], x_chunk_test], dim=0)
+
                     # Create dummy y for test chunk
                     y_chunk_test = torch.zeros(end_idx - i, dtype=y_.dtype, device=y_.device)
-                    y_chunk_combined = torch.cat([y_[:len(y_train)], y_chunk_test], dim=0)
+                    y_chunk_combined = torch.cat([y_[: len(y_train)], y_chunk_test], dim=0)
 
                     self.model.to(self.device)
-                    with torch.autocast(device_type=self.device.type if isinstance(self.device, torch.device) else self.device, enabled=self.mix_precision), torch.inference_mode():
+                    with (
+                        torch.autocast(
+                            device_type=self.device.type if isinstance(self.device, torch.device) else self.device,
+                            enabled=self.mix_precision,
+                        ),
+                        torch.inference_mode(),
+                    ):
                         x_in = x_chunk_combined.unsqueeze(0)
                         y_in = y_chunk_combined.unsqueeze(0)
 
-                        chunk_output = self.model(x=x_in, y=y_in, eval_pos=len(y_train), task_type='reg')
+                        chunk_output = self.model(x=x_in, y=y_in, eval_pos=len(y_train), task_type="reg")
 
                     if self.mask_prediction:
-                        process_config = chunk_output['process_config']
-                        chunk_output_feature_pred = self.PostProcessInModel(chunk_output['feature_pred'], process_config)
-                        source_row_indices = np.concatenate((
-                            np.arange(len(y_train), dtype=np.int64),
-                            np.arange(
-                                len(y_train) + i,
-                                len(y_train) + end_idx,
-                                dtype=np.int64,
-                            ),
-                        ))
+                        process_config = chunk_output["process_config"]
+                        chunk_output_feature_pred = self.PostProcessInModel(
+                            chunk_output["feature_pred"], process_config
+                        )
+                        source_row_indices = np.concatenate(
+                            (
+                                np.arange(len(y_train), dtype=np.int64),
+                                np.arange(
+                                    len(y_train) + i,
+                                    len(y_train) + end_idx,
+                                    dtype=np.int64,
+                                ),
+                            )
+                        )
                         chunk_output_feature_pred = self.PostProcess(
                             chunk_output_feature_pred,
                             pipe,
@@ -2345,14 +2438,14 @@ class NoriPredictor:
                             source_row_indices=source_row_indices,
                         )
                         pipeline_mask_chunks.append(chunk_output_feature_pred)
-                        chunk_output = chunk_output['reg_output']
+                        chunk_output = chunk_output["reg_output"]
 
                     chunk_output = self._unwrap_model_output(chunk_output, task_type="reg").squeeze(0)
                     chunk_output = self._reject_nonfinite_output(
-                        chunk_output, path="plain chunked loop",
-                        n_train=n_samples_train, n_test=end_idx - i)
+                        chunk_output, path="plain chunked loop", n_train=n_samples_train, n_test=end_idx - i
+                    )
                     all_outputs.append(chunk_output)
-                    
+
                 # Concatenate all test chunks (cached path already appended above)
                 if not cached_done:
                     output = torch.cat(all_outputs, dim=0)
@@ -2364,7 +2457,7 @@ class NoriPredictor:
                             len(y_train),
                         )
                     )
-            
+
         output = torch.stack(outputs).mean(dim=0)
         if return_distribution:
             # Return the ensemble-averaged decoder output BEFORE collapse: the
@@ -2374,7 +2467,7 @@ class NoriPredictor:
             return output
         output = self._collapse_regression_output(output)
         mask_prediction = np.stack(mask_predictions).mean(axis=0) if mask_predictions != [] else None
-        
+
         if self.mask_prediction:
             return output, mask_prediction
         else:

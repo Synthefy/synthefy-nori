@@ -27,6 +27,10 @@ jobs:
           ci/validate_distribution_boundaries.py
           ci/probe_installed_distributions.py
           ci/probe_cutover_matrix.py
+      # Formatting is a gate, not a suggestion: the tree was formatted once with the
+      # locked ruff, so a diff that reflows untouched lines means a stale formatter,
+      # not style drift. Same version as uv.lock and the pre-commit hook.
+      - run: uv run ruff format --check .
       - run: uv build
 
   synthefy-artifact:

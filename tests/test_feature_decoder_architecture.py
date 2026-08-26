@@ -46,9 +46,7 @@ def test_legacy_config_keeps_decoder_and_strict_state_schema():
 
 
 def test_legacy_wide_head_is_inferred_as_evenly_spaced_pinball():
-    model = build_model(
-        _tiny_model_config(decoder_config={"num_reg_quantiles": 2})
-    )
+    model = build_model(_tiny_model_config(decoder_config={"num_reg_quantiles": 2}))
 
     assert model.regression_loss == "pinball"
     assert model.regression_quantiles == pytest.approx((1 / 3, 2 / 3))
@@ -70,9 +68,7 @@ def test_model_rejects_nonfinite_quantile_metadata():
 def test_explicit_omission_removes_only_feature_decoder_parameters():
     legacy = build_model(_tiny_model_config())
     omitted = build_model(_tiny_model_config(omit_feature_decoder=True))
-    decoder_parameters = sum(
-        parameter.numel() for parameter in legacy.feature_decoder.parameters()
-    )
+    decoder_parameters = sum(parameter.numel() for parameter in legacy.feature_decoder.parameters())
 
     assert omitted.feature_decoder is None
     assert not any(key.startswith("feature_decoder.") for key in omitted.state_dict())

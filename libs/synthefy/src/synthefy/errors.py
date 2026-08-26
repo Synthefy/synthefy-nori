@@ -67,9 +67,7 @@ def _extract_error_details(
 
     Returns a tuple of (message, request_id, error_code, parsed_body)
     """
-    request_id = response.headers.get("x-request-id") or response.headers.get(
-        "X-Request-Id"
-    )
+    request_id = response.headers.get("x-request-id") or response.headers.get("X-Request-Id")
     parsed: Any
     message: str = f"HTTP {response.status_code} Error"
     code: Optional[str] = None
@@ -80,21 +78,11 @@ def _extract_error_details(
         if isinstance(parsed, dict):
             error_obj: Any = parsed.get("error")
             if isinstance(error_obj, dict):
-                message = (
-                    error_obj.get("message")
-                    or error_obj.get("detail")
-                    or error_obj.get("error")
-                    or message
-                )
+                message = error_obj.get("message") or error_obj.get("detail") or error_obj.get("error") or message
                 code = error_obj.get("code") or error_obj.get("type")
                 request_id = request_id or error_obj.get("request_id")
             else:
-                message = (
-                    parsed.get("message")
-                    or parsed.get("detail")
-                    or parsed.get("error")
-                    or message
-                )
+                message = parsed.get("message") or parsed.get("detail") or parsed.get("error") or message
                 code = parsed.get("code") or parsed.get("type")
                 request_id = request_id or parsed.get("request_id")
         else:

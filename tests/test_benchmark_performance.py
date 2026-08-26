@@ -172,8 +172,15 @@ def _matches(name, name_filter):
     return name_filter is None or any(s in name for s in name_filter)
 
 
-def load_local_suite(bench_root: Path, cache_subdir: str, list_name: str, source: str,
-                     test_size: float, random_state: int, name_filter=None):
+def load_local_suite(
+    bench_root: Path,
+    cache_subdir: str,
+    list_name: str,
+    source: str,
+    test_size: float,
+    random_state: int,
+    name_filter=None,
+):
     """Load all cached regression datasets for one suite (tabarena/talent)."""
     cache_dir = bench_root / "cache" / cache_subdir
     if not cache_dir.is_dir():
@@ -197,22 +204,22 @@ def load_local_suite(bench_root: Path, cache_subdir: str, list_name: str, source
             entry = None
         if entry is not None:
             entries.append(entry)
-    print(f"  {source}: loaded {len(entries)} datasets"
-          + (f" ({missing} listed but missing from cache)" if missing else ""))
+    print(
+        f"  {source}: loaded {len(entries)} datasets"
+        + (f" ({missing} listed but missing from cache)" if missing else "")
+    )
     return entries
 
 
-def load_openml_regression(test_size: float, random_state: int, max_datasets: int | None,
-                           name_filter=None):
+def load_openml_regression(test_size: float, random_state: int, max_datasets: int | None, name_filter=None):
     """Fetch OpenML regression datasets live (optional; needs the openml package)."""
     try:
         import openml
     except ImportError:
-        print("  [skip] openml: package not installed "
-              "(`uv pip install openml` to enable OpenML datasets)")
+        print("  [skip] openml: package not installed (`uv pip install openml` to enable OpenML datasets)")
         return []
 
-    ids = OPENML_REGRESSION_IDS[: max_datasets] if max_datasets else OPENML_REGRESSION_IDS
+    ids = OPENML_REGRESSION_IDS[:max_datasets] if max_datasets else OPENML_REGRESSION_IDS
     entries = []
     for did in ids:
         try:
@@ -223,9 +230,7 @@ def load_openml_regression(test_size: float, random_state: int, max_datasets: in
             ds = openml.datasets.get_dataset(did, download_data=True)
             target = ds.default_target_attribute
             X_df, y, _, _ = ds.get_data(target=target)
-            X_tr, X_te, y_tr, y_te = train_test_split(
-                X_df, y, test_size=test_size, random_state=random_state
-            )
+            X_tr, X_te, y_tr, y_te = train_test_split(X_df, y, test_size=test_size, random_state=random_state)
             entry = _finalize_entry(X_tr, y_tr, X_te, y_te, ds.name, "openml")
         except Exception as exc:  # noqa: BLE001
             print(f"  [warn] openml/{did}: load failed ({exc})")
@@ -240,34 +245,56 @@ def load_openml_regression(test_size: float, random_state: int, max_datasets: in
 # Main
 # --------------------------------------------------------------------------- #
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--bench-root", type=Path, default=DEFAULT_BENCH_ROOT,
-                        help="Outer repo holding cache/ and benchmark_list/ (default: ~/SynthefyPFN)")
-    parser.add_argument("--suites", nargs="+", default=["tabarena", "talent", "openml"],
-                        choices=["tabarena", "talent", "openml"],
-                        help="Benchmark suites to evaluate")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--bench-root",
+        type=Path,
+        default=DEFAULT_BENCH_ROOT,
+        help="Outer repo holding cache/ and benchmark_list/ (default: ~/SynthefyPFN)",
+    )
+    parser.add_argument(
+        "--suites",
+        nargs="+",
+        default=["tabarena", "talent", "openml"],
+        choices=["tabarena", "talent", "openml"],
+        help="Benchmark suites to evaluate",
+    )
     parser.add_argument("--device", default="cuda:0", help="Torch device (e.g. cuda:0, cpu)")
-    parser.add_argument("--model-path", default=None,
-                        help="Local checkpoint path (default: download from HF Hub)")
-    parser.add_argument("--output", type=Path, default=Path("benchmarks/benchmark_results.csv"),
-                        help="Per-dataset results CSV output path")
-    parser.add_argument("--max-train-samples", type=int, default=50000,
-                        help="Cap on context rows per dataset (mirrors outer repo; 0 = no cap)")
-    parser.add_argument("--max-openml", type=int, default=None,
-                        help="Limit number of OpenML datasets (default: all)")
-    parser.add_argument("--test-size", type=float, default=0.3,
-                        help="Train/test split fraction when a dataset has no _test.csv")
+    parser.add_argument("--model-path", default=None, help="Local checkpoint path (default: download from HF Hub)")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("benchmarks/benchmark_results.csv"),
+        help="Per-dataset results CSV output path",
+    )
+    parser.add_argument(
+        "--max-train-samples",
+        type=int,
+        default=50000,
+        help="Cap on context rows per dataset (mirrors outer repo; 0 = no cap)",
+    )
+    parser.add_argument("--max-openml", type=int, default=None, help="Limit number of OpenML datasets (default: all)")
+    parser.add_argument(
+        "--test-size", type=float, default=0.3, help="Train/test split fraction when a dataset has no _test.csv"
+    )
     parser.add_argument("--random-state", type=int, default=42)
-    parser.add_argument("--max-elements-budget", type=int, default=16_000_000,
-                        help="SYNTHEFY_MAX_ELEMENTS_BUDGET for inference chunking (H200-friendly)")
-    parser.add_argument("--retry-budget", type=int, default=8_000_000,
-                        help="On a CUDA/inference error, retry the dataset once at this lower "
-                             "element budget (forces finer test chunking). 0 disables retry.")
-    parser.add_argument("--limit", type=int, default=None,
-                        help="Evaluate only the first N datasets (smoke test)")
-    parser.add_argument("--dataset", nargs="+", default=None,
-                        help="Only evaluate datasets whose name contains one of these substrings")
+    parser.add_argument(
+        "--max-elements-budget",
+        type=int,
+        default=16_000_000,
+        help="SYNTHEFY_MAX_ELEMENTS_BUDGET for inference chunking (H200-friendly)",
+    )
+    parser.add_argument(
+        "--retry-budget",
+        type=int,
+        default=8_000_000,
+        help="On a CUDA/inference error, retry the dataset once at this lower "
+        "element budget (forces finer test chunking). 0 disables retry.",
+    )
+    parser.add_argument("--limit", type=int, default=None, help="Evaluate only the first N datasets (smoke test)")
+    parser.add_argument(
+        "--dataset", nargs="+", default=None, help="Only evaluate datasets whose name contains one of these substrings"
+    )
     args = parser.parse_args()
 
     # The predictor re-reads this env var on every predict() call, so we can lower
@@ -285,14 +312,15 @@ def main():
     print(f"Loading datasets from {bench_root} (suites: {', '.join(args.suites)})")
     datasets = []
     if "tabarena" in args.suites:
-        datasets += load_local_suite(bench_root, "tabarena_reg", "tabarena_reg.csv",
-                                      "tabarena", args.test_size, args.random_state, args.dataset)
+        datasets += load_local_suite(
+            bench_root, "tabarena_reg", "tabarena_reg.csv", "tabarena", args.test_size, args.random_state, args.dataset
+        )
     if "talent" in args.suites:
-        datasets += load_local_suite(bench_root, "talent_reg", "talent_reg.csv",
-                                      "talent", args.test_size, args.random_state, args.dataset)
+        datasets += load_local_suite(
+            bench_root, "talent_reg", "talent_reg.csv", "talent", args.test_size, args.random_state, args.dataset
+        )
     if "openml" in args.suites:
-        datasets += load_openml_regression(args.test_size, args.random_state, args.max_openml,
-                                           args.dataset)
+        datasets += load_openml_regression(args.test_size, args.random_state, args.max_openml, args.dataset)
 
     if args.limit:
         datasets = datasets[: args.limit]
@@ -322,8 +350,7 @@ def main():
             # lower element budget, which the predictor honors per-call and which
             # forces finer test chunking. Only retry if it actually shrinks.
             if args.retry_budget and args.retry_budget < base_budget:
-                print(f"{tag:<60} error ({err.splitlines()[0][:50]}) -- retrying "
-                      f"at budget={args.retry_budget}")
+                print(f"{tag:<60} error ({err.splitlines()[0][:50]}) -- retrying at budget={args.retry_budget}")
                 torch.cuda.empty_cache()
                 os.environ["SYNTHEFY_MAX_ELEMENTS_BUDGET"] = str(args.retry_budget)
                 try:
@@ -336,22 +363,41 @@ def main():
 
         if err == "" and pred is not None:
             metrics = compute_reg_metrics(ds["y_test"], pred)
-            print(f"{tag:<60} R2={metrics['r2']:.4f}  RMSE={metrics['rmse']:.4f}  "
-                  f"MAE={metrics['mae']:.4f}  ({elapsed:.1f}s, n={n_train}/{n_test}, "
-                  f"f={ds['n_features']})" + (f"  [{note}]" if note else ""))
-            rows.append({
-                "dataset": ds["name"], "source": ds["source"],
-                "n_train": n_train, "n_test": n_test, "n_features": ds["n_features"],
-                "latency_s": elapsed, **metrics, "note": note, "error": "",
-            })
+            print(
+                f"{tag:<60} R2={metrics['r2']:.4f}  RMSE={metrics['rmse']:.4f}  "
+                f"MAE={metrics['mae']:.4f}  ({elapsed:.1f}s, n={n_train}/{n_test}, "
+                f"f={ds['n_features']})" + (f"  [{note}]" if note else "")
+            )
+            rows.append(
+                {
+                    "dataset": ds["name"],
+                    "source": ds["source"],
+                    "n_train": n_train,
+                    "n_test": n_test,
+                    "n_features": ds["n_features"],
+                    "latency_s": elapsed,
+                    **metrics,
+                    "note": note,
+                    "error": "",
+                }
+            )
         else:
             print(f"{tag:<60} ERROR: {err}")
-            rows.append({
-                "dataset": ds["name"], "source": ds["source"],
-                "n_train": n_train, "n_test": n_test, "n_features": ds["n_features"],
-                "latency_s": float("nan"), "r2": float("nan"), "rmse": float("nan"),
-                "mae": float("nan"), "note": note, "error": err,
-            })
+            rows.append(
+                {
+                    "dataset": ds["name"],
+                    "source": ds["source"],
+                    "n_train": n_train,
+                    "n_test": n_test,
+                    "n_features": ds["n_features"],
+                    "latency_s": float("nan"),
+                    "r2": float("nan"),
+                    "rmse": float("nan"),
+                    "mae": float("nan"),
+                    "note": note,
+                    "error": err,
+                }
+            )
 
     # ----- save + summarize ----------------------------------------------- #
     df = pd.DataFrame(rows)
@@ -364,14 +410,17 @@ def main():
         print("\n=== Summary by source (mean over datasets) ===")
         by_src = ok.groupby("source").agg(
             n=("dataset", "count"),
-            r2=("r2", "mean"), rmse=("rmse", "mean"), mae=("mae", "mean"),
+            r2=("r2", "mean"),
+            rmse=("rmse", "mean"),
+            mae=("mae", "mean"),
         )
         for src, r in by_src.iterrows():
-            print(f"  {src:<12} n={int(r['n']):<4} "
-                  f"R2={r['r2']:.4f}  RMSE={r['rmse']:.4f}  MAE={r['mae']:.4f}")
+            print(f"  {src:<12} n={int(r['n']):<4} R2={r['r2']:.4f}  RMSE={r['rmse']:.4f}  MAE={r['mae']:.4f}")
         print(f"\n=== Overall (n={len(ok)}) ===")
-        print(f"  mean R2={ok['r2'].mean():.4f}  median R2={ok['r2'].median():.4f}  "
-              f"mean RMSE={ok['rmse'].mean():.4f}  mean MAE={ok['mae'].mean():.4f}")
+        print(
+            f"  mean R2={ok['r2'].mean():.4f}  median R2={ok['r2'].median():.4f}  "
+            f"mean RMSE={ok['rmse'].mean():.4f}  mean MAE={ok['mae'].mean():.4f}"
+        )
     n_err = int((df["error"] != "").sum())
     if n_err:
         print(f"\n{n_err} dataset(s) errored -- see the 'error' column in {args.output}")

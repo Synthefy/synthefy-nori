@@ -23,11 +23,13 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.metrics import r2_score, mean_absolute_error
+
 try:
     from sklearn.metrics import root_mean_squared_error as rmse_score
 except ImportError:
     from sklearn.metrics import mean_squared_error
     import functools
+
     rmse_score = functools.partial(mean_squared_error, squared=False)
 
 from synthefy_nori.evaluation.datasets import DatasetEntry, DatasetRegistry
@@ -38,6 +40,7 @@ from synthefy_nori.inference.degradation import SvdFallbackWarning, strict_pipel
 # ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------
+
 
 def compute_reg_metrics(y_true, y_pred):
     """Compute all regression metrics."""
@@ -58,9 +61,11 @@ def compute_reg_metrics(y_true, y_pred):
 # Result container
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class EvalResult:
     """Result of evaluating one model on one dataset."""
+
     model_name: str
     dataset_name: str
     dataset_source: str
@@ -93,6 +98,7 @@ class EvalResult:
 # ---------------------------------------------------------------------------
 # Eval Runner
 # ---------------------------------------------------------------------------
+
 
 class EvalRunner:
     """Runs evaluation across all models and datasets."""
@@ -142,18 +148,15 @@ class EvalRunner:
     # Cache helpers
     # ------------------------------------------------------------------
 
-    def _cache_key(self, model_name: str, dataset_name: str, source: str,
-                   task_type: str) -> str:
+    def _cache_key(self, model_name: str, dataset_name: str, source: str, task_type: str) -> str:
         """Deterministic cache key from evaluation parameters."""
-        raw = (f"{model_name}|{dataset_name}|{source}|{task_type}"
-               f"|max={self.max_samples}|memcap={self.gpu_mem_gb}")
+        raw = f"{model_name}|{dataset_name}|{source}|{task_type}|max={self.max_samples}|memcap={self.gpu_mem_gb}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
     def _cache_path(self, key: str) -> Path:
         return self._cache_dir / f"{key}.json"
 
-    def _cache_get(self, model_name: str, dataset_name: str, source: str,
-                   task_type: str) -> Optional[EvalResult]:
+    def _cache_get(self, model_name: str, dataset_name: str, source: str, task_type: str) -> Optional[EvalResult]:
         """Return cached EvalResult or None."""
         if self.no_cache or model_name in self.no_cache_models:
             return None
@@ -188,8 +191,7 @@ class EvalRunner:
             return
         if result.error is not None:
             return
-        key = self._cache_key(result.model_name, result.dataset_name,
-                              result.dataset_source, result.task_type)
+        key = self._cache_key(result.model_name, result.dataset_name, result.dataset_source, result.task_type)
         data = result.to_dict()
         self._cache_path(key).write_text(json.dumps(data, default=str))
 
@@ -205,8 +207,9 @@ class EvalRunner:
             n += 1
         return n
 
-    def _run_one_model(self, model_name: str, model_entry: ModelEntry,
-                       all_datasets: List[DatasetEntry], start_idx: int, total: int):
+    def _run_one_model(
+        self, model_name: str, model_entry: ModelEntry, all_datasets: List[DatasetEntry], start_idx: int, total: int
+    ):
         """Run one model across all datasets; returns results + cache stats."""
         local_results = []
         local_hits = 0
@@ -225,10 +228,9 @@ class EvalRunner:
                 local_hits += 1
                 if self.verbose:
                     metric_str = "  ".join(
-                        f"{k}={v:.4f}" for k, v in cached.metrics.items()
-                        if isinstance(v, float) and np.isfinite(v))
-                    print(f"{prefix} {ds.source}/{ds.name} ({ds.task_type}): "
-                          f"{metric_str}  [CACHED]")
+                        f"{k}={v:.4f}" for k, v in cached.metrics.items() if isinstance(v, float) and np.isfinite(v)
+                    )
+                    print(f"{prefix} {ds.source}/{ds.name} ({ds.task_type}): {metric_str}  [CACHED]")
                 continue
 
             local_misses += 1
@@ -237,10 +239,10 @@ class EvalRunner:
             self._cache_put(result)
 
             if self.verbose and result.error is None:
-                metric_str = "  ".join(f"{k}={v:.4f}" for k, v in result.metrics.items()
-                                       if isinstance(v, float) and np.isfinite(v))
-                print(f"{prefix} {ds.source}/{ds.name} ({ds.task_type}): "
-                      f"{metric_str}  [{result.latency_ms:.0f}ms]")
+                metric_str = "  ".join(
+                    f"{k}={v:.4f}" for k, v in result.metrics.items() if isinstance(v, float) and np.isfinite(v)
+                )
+                print(f"{prefix} {ds.source}/{ds.name} ({ds.task_type}): {metric_str}  [{result.latency_ms:.0f}ms]")
             elif result.error:
                 print(f"{prefix} {ds.source}/{ds.name}: ERROR - {result.error[:120]}")
 
@@ -268,14 +270,15 @@ class EvalRunner:
         all_datasets = list(self.datasets.datasets.values())
 
         if dataset_names:
-            all_datasets = [d for d in all_datasets if d.name in dataset_names
-                           or f"{d.source}/{d.name}" in dataset_names]
+            all_datasets = [
+                d for d in all_datasets if d.name in dataset_names or f"{d.source}/{d.name}" in dataset_names
+            ]
         if sources:
             all_datasets = [d for d in all_datasets if d.source in sources]
 
         total = len(models) * len(all_datasets)
         cache_status = "OFF" if self.no_cache else f"ON ({self._cache_dir})"
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print(f"  Nori Evaluation")
         print(f"  Models: {len(models)}  |  Datasets: {len(all_datasets)}  |  Total runs: {total}")
         print(f"  Cache: {cache_status}")
@@ -284,7 +287,7 @@ class EvalRunner:
             print("  Single-GPU parallel override: ON")
         if self.no_cache_models:
             print(f"  Cache bypass: {', '.join(sorted(self.no_cache_models))}")
-        print(f"{'='*70}\n")
+        print(f"{'=' * 70}\n")
 
         model_entries = []
         for i, model_name in enumerate(models):
@@ -386,7 +389,7 @@ class EvalRunner:
         weights, optimizer state, and fragmentation.
         """
         n_groups = max((n_features + features_per_group - 1) // features_per_group, 1)
-        mem_bytes = gpu_mem_gb * (1024 ** 3) * 0.45
+        mem_bytes = gpu_mem_gb * (1024**3) * 0.45
 
         # Empirical calibration from OOM failures on 80GB H100:
         #   Fashion-MNIST (784 feat, 10K samp) -> 16.8 GiB alloc => ~4600 bytes/sample/group
@@ -403,7 +406,7 @@ class EvalRunner:
         b = per_sample_bytes
         c = -mem_bytes
         discriminant = b * b - 4 * a * c
-        max_total = int((-b + discriminant ** 0.5) / (2 * a))
+        max_total = int((-b + discriminant**0.5) / (2 * a))
 
         max_train = max(max_total - n_test, 200)
         return max_train
@@ -414,8 +417,7 @@ class EvalRunner:
         if self.gpu_mem_gb:
             # Memory-capped mode for smaller GPUs: bound train rows with the
             # memory model so high-dim / large-N datasets do not OOM.
-            mem_max = self._compute_max_train(
-                ds.n_test, ds.n_features, gpu_mem_gb=self.gpu_mem_gb)
+            mem_max = self._compute_max_train(ds.n_test, ds.n_features, gpu_mem_gb=self.gpu_mem_gb)
             max_train = min(max_train, mem_max)
         X_train, y_train = self._subsample_train(ds.X_train, ds.y_train, max_train)
 
@@ -435,31 +437,29 @@ class EvalRunner:
             # Set CUDA device to match the model's device so that any
             # implicit cuda ops (torch.zeros, autocast, etc.) land on
             # the correct GPU instead of defaulting to cuda:0.
-            model_device = getattr(wrapper, 'device', None) or getattr(wrapper, '_device', None)
+            model_device = getattr(wrapper, "device", None) or getattr(wrapper, "_device", None)
             if model_device is not None:
                 dev = torch.device(model_device) if isinstance(model_device, str) else model_device
-                if dev.type == 'cuda':
+                if dev.type == "cuda":
                     torch.cuda.set_device(dev)
 
             # Warmup (for GPU timing stability)
             for _ in range(self.warmup_runs):
                 with strict_pipeline(SvdFallbackWarning):
                     wrapper.predict_regression(
-                        X_train[:min(100, len(X_train))],
-                        y_train[:min(100, len(y_train))],
-                        ds.X_test[:min(10, ds.n_test)],
+                        X_train[: min(100, len(X_train))],
+                        y_train[: min(100, len(y_train))],
+                        ds.X_test[: min(10, ds.n_test)],
                     )
 
             # Timed run — synchronize on the model's device, not the default device
-            model_device = getattr(wrapper, 'device', None) or getattr(wrapper, '_device', None)
+            model_device = getattr(wrapper, "device", None) or getattr(wrapper, "_device", None)
             if torch.cuda.is_available() and model_device is not None:
                 torch.cuda.synchronize(model_device)
             t_start = time.perf_counter()
 
             with strict_pipeline(SvdFallbackWarning):
-                y_pred = wrapper.predict_regression(
-                    X_train, y_train, ds.X_test
-                )
+                y_pred = wrapper.predict_regression(X_train, y_train, ds.X_test)
             if torch.cuda.is_available() and model_device is not None:
                 torch.cuda.synchronize(model_device)
             t_end = time.perf_counter()

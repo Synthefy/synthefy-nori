@@ -22,11 +22,7 @@ def test_exponential_left_tail_uses_the_anchored_integral():
     q = np.full(8, math.log(2.0), dtype=np.float64)
     q[0] = 0.0
     # The first two points follow q(tau) = log(tau / 0.1), so lambda_L=1.
-    expected = (
-        tau[0] * (q[0] - 1.0)
-        + _mid_area(q, tau)
-        + (1.0 - tau[-1]) * q[-1]
-    )
+    expected = tau[0] * (q[0] - 1.0) + _mid_area(q, tau) + (1.0 - tau[-1]) * q[-1]
 
     actual = quantile_dist_mean_batch(
         torch.from_numpy(q).unsqueeze(0),
@@ -42,11 +38,7 @@ def test_exponential_right_tail_uses_the_anchored_integral():
     q = np.zeros(8, dtype=np.float64)
     q[-1] = math.log(1.5)
     # The last two points follow q(tau) = log(0.3 / (1 - tau)), so lambda_R=1.
-    expected = (
-        tau[0] * q[0]
-        + _mid_area(q, tau)
-        + (1.0 - tau[-1]) * (q[-1] + 1.0)
-    )
+    expected = tau[0] * q[0] + _mid_area(q, tau) + (1.0 - tau[-1]) * (q[-1] + 1.0)
 
     actual = quantile_dist_mean_batch(
         torch.from_numpy(q).unsqueeze(0),

@@ -8,6 +8,7 @@ baselines (last-value, seasonal-naive) for an honest comparison.
 
 Writes forecasts.csv (one row per origin) and results.json.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -44,19 +45,16 @@ def build_features(y: pd.Series, *, season: int, lags: tuple[int, ...] = (1, 2, 
     return df  # early rows hold NaN lags — fine as Nori context; don't zero-fill
 
 
-def rolling_one_step(y: np.ndarray, X: np.ndarray, origins: range, *,
-                     device: str | None) -> pd.DataFrame:
+def rolling_one_step(y: np.ndarray, X: np.ndarray, origins: range, *, device: str | None) -> pd.DataFrame:
     """Expanding-context backtest: refit (free) at each origin, predict one row."""
     reg = NoriRegressor(device=device, model="nori-30m")  # construct once, refit per origin
     rows = []
     for t in origins:
         reg.fit(X[:t], y[:t])
         # single-row predict can come back 0-d — normalize the shapes
-        point = float(np.atleast_1d(reg.predict(X[t:t + 1], output_type="median"))[0])
-        q = np.asarray(reg.predict(X[t:t + 1], output_type="quantiles",
-                                   quantiles=[0.1, 0.9])).reshape(2, -1)
-        rows.append({"t": t, "y_true": float(y[t]), "y_pred": point,
-                     "q10": float(q[0, 0]), "q90": float(q[1, 0])})
+        point = float(np.atleast_1d(reg.predict(X[t : t + 1], output_type="median"))[0])
+        q = np.asarray(reg.predict(X[t : t + 1], output_type="quantiles", quantiles=[0.1, 0.9])).reshape(2, -1)
+        rows.append({"t": t, "y_true": float(y[t]), "y_pred": point, "q10": float(q[0, 0]), "q90": float(q[1, 0])})
     return pd.DataFrame(rows)
 
 
@@ -92,8 +90,7 @@ def main() -> None:
     X = build_features(y, season=args.season, lags=lags).to_numpy(np.float32)
     yv = y.to_numpy(np.float64)
     origins = range(len(yv) - args.n_test, len(yv))
-    print(f"{len(yv)} periods, forecasting the last {args.n_test} one step ahead "
-          f"(features: {X.shape[1]})")
+    print(f"{len(yv)} periods, forecasting the last {args.n_test} one step ahead (features: {X.shape[1]})")
 
     fc = rolling_one_step(yv, X, origins, device=args.device)
     fc["date"] = df[date_col].iloc[fc.t].dt.date.values
@@ -111,10 +108,11 @@ def main() -> None:
         "interval_width_mean": float((fc.q90 - fc.q10).mean()),
     }
 
-    print(f"MAE  nori={results['mae']:.3f}  last-value={results['mae_naive_last']:.3f}  "
-          f"seasonal-naive={results['mae_naive_seasonal']:.3f}")
-    print(f"WAPE nori={results['wape']:.3%}   [q10,q90] coverage "
-          f"{results['coverage_10_90']:.2f} (nominal 0.80)")
+    print(
+        f"MAE  nori={results['mae']:.3f}  last-value={results['mae_naive_last']:.3f}  "
+        f"seasonal-naive={results['mae_naive_seasonal']:.3f}"
+    )
+    print(f"WAPE nori={results['wape']:.3%}   [q10,q90] coverage {results['coverage_10_90']:.2f} (nominal 0.80)")
 
     fc[["date", "y_true", "y_pred", "q10", "q90"]].to_csv("forecasts.csv", index=False)
     Path(args.out).write_text(json.dumps(results, indent=2) + "\n")
