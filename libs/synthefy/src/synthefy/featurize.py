@@ -111,11 +111,12 @@ class DataFramePreprocessor:
     * a sequence: exactly those columns are categorical;
     * ``None``: categorical inference is disabled.
 
-    Automatically inferred columns above ``max_categorical_cardinality`` raise
-    because they may be identifiers or free text.  An explicitly declared
-    categorical keeps its most frequent K training levels and maps rarer and
-    unseen values to one reserved ``other`` code.  Missing values remain NaN
-    under ordinal encoding.
+    Automatically inferred object/string columns above
+    ``max_categorical_cardinality`` raise because they may be identifiers or
+    free text. A pandas categorical dtype is itself an explicit schema
+    declaration. Explicit categoricals keep their most frequent K training
+    levels and map rarer and unseen values to one reserved ``other`` code.
+    Missing values remain NaN under ordinal encoding.
     """
 
     def __init__(
@@ -231,7 +232,9 @@ class DataFramePreprocessor:
         self.category_other_codes_: dict[Any, int] = {}
         self.category_has_missing_: dict[Any, bool] = {}
 
-        explicitly_declared = set(declared_categorical)
+        explicitly_declared = set(declared_categorical) | {
+            column for column in categorical_columns if isinstance(frame[column].dtype, pd.CategoricalDtype)
+        }
         for column in categorical_columns:
             series = frame[column]
             keys = [_canonical_category(value) for value in series[series.notna()].tolist()]

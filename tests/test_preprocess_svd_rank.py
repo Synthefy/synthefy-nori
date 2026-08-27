@@ -20,24 +20,12 @@ def _fit(x, **kw):
     return sel
 
 
-def _rank(sel):
-    """Components actually retained, or None when the selector never fitted an SVD.
-
-    Read off the fitted model rather than a bookkeeping attribute so the assertion
-    covers the rank the data is really projected onto.
-    """
-    model = getattr(sel, "svd_model_", None)
-    if model is None or getattr(model, "components_", None) is None:
-        return None
-    return int(model.components_.shape[0])
-
-
 def test_short_wide_table_is_reduced_not_rotated():
     """190 rows x 1901 features: the old rule kept 189 components (all of them)."""
     rng = np.random.default_rng(0)
     x = rng.normal(size=(190, 1901))
     sel = _fit(x, svd_components=512, svd_rows_per_component=3)
-    k = _rank(sel)
+    k = sel.svd_keep_k_
     assert k is not None
     assert k <= 190 // 3, f"rank {k} not tied to rows (expected <= {190 // 3})"
     assert k < min(x.shape) - 1, "rank equals full row space -- a rotation, not a reduction"
@@ -48,25 +36,24 @@ def test_tall_table_still_capped_by_svd_components():
     rng = np.random.default_rng(1)
     x = rng.normal(size=(6234, 2000))
     sel = _fit(x, svd_components=512, svd_rows_per_component=3)
-    assert _rank(sel) == 512, f"expected the 512 cap to bind, got {_rank(sel)}"
+    assert sel.svd_keep_k_ == 512, f"expected the 512 cap to bind, got {sel.svd_keep_k_}"
 
 
 def test_default_is_the_previous_behaviour():
     """Opt-in by design: the bare constructor must not change any existing caller.
-    A fixed low cap is known to REGRESS genuinely high-rank wide data, and the evidence
-    for this rule is low-rank spectral tables only -- so it ships in the config, not
-    here."""
+    PR #98 found low caps REGRESS genuinely high-rank wide data, and the evidence for
+    this rule is low-rank spectral tables only -- so it ships in the config, not here."""
     rng = np.random.default_rng(5)
     x = rng.normal(size=(300, 400))
     sel = _fit(x, svd_components=256)
-    assert _rank(sel) == 256, f"default changed behaviour: got {_rank(sel)}"
+    assert sel.svd_keep_k_ == 256, f"default changed behaviour: got {sel.svd_keep_k_}"
 
 
 def test_rows_per_component_one_restores_previous_behaviour():
     rng = np.random.default_rng(2)
     x = rng.normal(size=(190, 1901))
     sel = _fit(x, svd_components=512, svd_rows_per_component=1)
-    assert _rank(sel) == 189, f"expected the legacy 189, got {_rank(sel)}"
+    assert sel.svd_keep_k_ == 189, f"expected the legacy 189, got {sel.svd_keep_k_}"
 
 
 def test_narrow_table_is_untouched_by_the_gate():
@@ -84,14 +71,12 @@ def test_tiny_row_counts_stay_valid(n):
     rng = np.random.default_rng(4)
     x = rng.normal(size=(n, 400))
     sel = _fit(x, svd_components=512)
-    k = _rank(sel)
-    assert k is None or k >= 1
+    assert sel.svd_keep_k_ is None or sel.svd_keep_k_ >= 1
 
 
 def test_shipped_config_enables_the_rule():
     """The production config is where this actually ships."""
     import json
-
     from synthefy_nori.training.config import package_config_path
 
     cfg = json.loads(pathlib.Path(package_config_path("default_inference.json")).read_text())

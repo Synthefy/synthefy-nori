@@ -4,12 +4,10 @@ import os
 import pickle
 
 import torch
-import random
-import numpy as np
 from synthefy_nori.model.transformer import FeaturesTransformer
 
 
-def _safe_torch_load(path):
+def _safe_torch_load(path, *, mmap: bool = False):
     """Load a checkpoint without executing code embedded in it.
 
     ``weights_only=True`` uses torch's restricted unpickler — it reconstructs
@@ -26,12 +24,15 @@ def _safe_torch_load(path):
     See SECURITY.md.
     """
     try:
-        return torch.load(path, map_location="cpu", weights_only=True)
+        return torch.load(path, map_location="cpu", weights_only=True, mmap=mmap)
     except pickle.UnpicklingError:
         from synthefy_nori.training.config import TrainingConfig
 
-        with torch.serialization.safe_globals([TrainingConfig]):
-            return torch.load(path, map_location="cpu", weights_only=True)
+        # Older imported SynthefyPFN checkpoints were saved before the package
+        # rename and reference this dataclass as training.config.TrainingConfig.
+        legacy_training_config = (TrainingConfig, "training.config.TrainingConfig")
+        with torch.serialization.safe_globals([TrainingConfig, legacy_training_config]):
+            return torch.load(path, map_location="cpu", weights_only=True, mmap=mmap)
 
 
 # The attention-scale flags and their defaults. ``finalize_arch_config`` stamps
@@ -50,26 +51,29 @@ def resolve_qass_mode(config: dict) -> str:
 
     ``config`` must be the architecture dict -- the same one ``build_model``
     consumes. Never a ``TrainingConfig``: that object carries no architecture,
-    and reading it here would make the resolved mode depend on the checkpoint's
-    container format rather than on the model.
+    and reading it here is what made the resolved mode depend on the
+    checkpoint's container format rather than on the model.
 
-    An explicit ``qass_mode`` is honored verbatim. Anything else resolves to
-    "full", because "full" is the only mode this tree has ever trained:
-    ``QASSMaxScaling`` had no mode switch until now, so every checkpoint written
-    without a ``qass_mode`` ran the full ``base * gate`` path and carries trained
-    base/gate weights. Resolving such a checkpoint to anything else would discard
-    those weights and silently apply the wrong attention temperature.
+    Three config-schema eras. Resolving the wrong one silently runs the wrong
+    attention temperature (cost ~0.1 R2 on smooth datasets for a "log_only"
+    checkpoint that still carries trained base/gate weights):
 
-    So this is a widening, not a change: nothing that loads today resolves
-    differently, and a checkpoint that *does* record a mode -- the released
-    ``Nori-30M`` already carries ``qass_mode: "full"`` -- is now honored instead
-    of ignored. Going forward ``finalize_arch_config`` pins the mode before
-    training, so new checkpoints never reach the fallback at all.
+      1. Explicit ``qass_mode``                          -> honor verbatim.
+      2. ``qass_mode`` unset, ``use_logn_attention`` is False (open-source
+         release schema; log-n scaling deliberately disabled)  -> "full".
+      3. Both unset (early-V13 schema)                   -> "log_only" (the
+         V13 training default).
+
+    Eras 2 and 3 are inference over an incomplete record, so they are legacy
+    paths only: ``finalize_arch_config`` pins ``qass_mode`` before training, and
+    every checkpoint written since lands in era 1.
     """
     explicit_mode = config.get("qass_mode")
     if explicit_mode is not None:
         return str(explicit_mode)
-    return "full"
+    if config.get("use_logn_attention") is False:
+        return "full"
+    return "log_only"
 
 
 def finalize_arch_config(model_config: dict) -> dict:
@@ -84,10 +88,9 @@ def finalize_arch_config(model_config: dict) -> dict:
     Call this once, after every architecture override has been applied and
     before ``build_model``.
 
-    ``qass_mode`` is pinned before the attention-scale keys are defaulted. The
-    order does not change the outcome here, but it keeps this function honest:
-    the mode is derived from the config the caller actually assembled, never
-    from a value this function just invented.
+    Order matters: ``qass_mode`` is pinned *first*, because writing
+    ``use_logn_attention=False`` into the dict would push an era-3 config into
+    era 2 and change the mode for this very run.
 
     ``SYNTHEFY_QASS_MODE`` is honoured here and *only* here: this is the single
     point where the environment can influence the architecture, and it does so
@@ -105,6 +108,30 @@ def finalize_arch_config(model_config: dict) -> dict:
     return model_config
 
 
+# Parameter-name prefixes of the classification head, deleted in Tier 6. Every
+# checkpoint written before that still carries these tensors; they were frozen
+# (``freeze_unused_heads``) and never contributed to a regression prediction, so
+# dropping them is lossless. They are stripped rather than tolerated via
+# ``strict=False`` so a *genuine* schema mismatch still raises.
+_LEGACY_CLS_PREFIXES = (
+    "cls_y_encoder.",
+    "cls_y_decoder.",
+    "cls_target_aware_embedding.",
+)
+
+
+def has_legacy_cls_weights(weights: dict) -> bool:
+    """True if this state dict predates the classification-head removal."""
+    return any(k.startswith(_LEGACY_CLS_PREFIXES) for k in weights)
+
+
+def strip_legacy_cls_weights(weights: dict) -> dict:
+    """Drop the deleted classification-head tensors from a state dict."""
+    if not has_legacy_cls_weights(weights):
+        return weights
+    return {k: v for k, v in weights.items() if not k.startswith(_LEGACY_CLS_PREFIXES)}
+
+
 def build_model(config: dict):
     # Pre-``finalize_arch_config`` checkpoints omit these; fall back to the same
     # table finalize stamps in, so old and new checkpoints agree.
@@ -114,7 +141,7 @@ def build_model(config: dict):
         preprocess_config_x=config["preprocess_config_x"],
         encoder_config_x=config["encoder_config_x"],
         encoder_config_y=config["encoder_config_y"],
-        decoder_config=config["decoder_config"],
+        decoder_config=config.get("decoder_config", {}),
         feature_positional_embedding_type=config.get("feature_positional_embedding_type", "subortho"),
         feature_positional_embedding_num_slots=config.get("feature_positional_embedding_num_slots", 1000),
         nlayers=config["nlayers"],
@@ -207,12 +234,8 @@ def load_model(model_path, mask_prediction: bool = False, base_config_path: str 
         )
     config["mask_prediction"] = mask_prediction
 
-    # Strip torch.compile "_orig_mod." prefix if present
-    if any(k.startswith("_orig_mod.") for k in weights):
-        weights = {k.removeprefix("_orig_mod."): v for k, v in weights.items()}
-
     model = build_model(config)
-    model.load_state_dict(weights)
+    model.load_state_dict(strip_legacy_cls_weights(weights))
 
     if native_rms_norm:
         from synthefy_nori.model.layer import RMSNorm

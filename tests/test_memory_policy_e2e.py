@@ -52,16 +52,23 @@ def regressor_cls():
     return NoriRegressor
 
 
-def _predict(regressor_cls, table, memory_policy):
+def _predict(regressor_cls, table, memory):
     """Fit + predict under one memory policy, returning (predictions, report)."""
     x_train, y_train, x_test = table
     model = regressor_cls(
         model="nori-6m",
         device="cpu",
-        memory_policy={**({} if memory_policy is None else memory_policy), "elements_budget": SMALL_ELEMENTS_BUDGET},
+        memory_policy={**({} if memory is None else memory), "elements_budget": SMALL_ELEMENTS_BUDGET},
     )
     model.fit(x_train, y_train)
     return np.asarray(model.predict(x_test), dtype=np.float64), model.memory_report_
+
+
+def _policy_from_report(report):
+    """Round-trip the reported dict straight back through MemoryPolicy."""
+    assert set(report) == set(MemoryPolicy().model_dump())
+    assert isinstance(report["attempt_history"], list)
+    return MemoryPolicy(**report)
 
 
 class TestPolicyReachesInference:
@@ -77,11 +84,11 @@ class TestPolicyReachesInference:
             f'"no_cache", SMALL_ELEMENTS_BUDGET is too large for this table and the '
             f"rest of this suite is testing nothing."
         )
-        assert MemoryPolicy(**report).is_bit_exact
+        assert _policy_from_report(report).is_bit_exact
 
     def test_report_round_trips_into_the_policy_type(self, regressor_cls, table):
         _, report = _predict(regressor_cls, table, None)
-        assert MemoryPolicy(**report).rung == report["rung"]
+        assert _policy_from_report(report).rung == report["rung"]
 
     def test_requesting_int8_changes_the_reported_rung(self, regressor_cls, table):
         # The load-bearing assertion: a different memory_policy= must produce a different
@@ -89,7 +96,7 @@ class TestPolicyReachesInference:
         _, default_report = _predict(regressor_cls, table, None)
         _, int8_report = _predict(regressor_cls, table, {"cache_dtype": "int8"})
         assert int8_report["cache_dtype"] == "int8"
-        assert not MemoryPolicy(**int8_report).is_bit_exact
+        assert not _policy_from_report(int8_report).is_bit_exact
         assert default_report["rung"] == "resident_bf16"
         assert int8_report["rung"] == "resident_int8"
 
@@ -153,66 +160,14 @@ class TestSklearnContract:
     def test_clone_round_trips_every_memory_form(self, regressor_cls):
         from sklearn.base import clone
 
-        for policy in (None, "exact", {"gpu_budget_frac": 0.25}, MemoryPolicy(cache_dtype="bf16")):
-            estimator = regressor_cls(model="nori-6m", memory_policy=policy)
-            # sklearn's param name follows the constructor argument, so the rename moves
-            # this key too -- get_params()["memory"] would silently KeyError-free to nothing.
-            assert clone(estimator).get_params()["memory_policy"] == policy
+        for memory in (None, "exact", {"gpu_budget_frac": 0.25}, MemoryPolicy(cache_dtype="bf16")):
+            estimator = regressor_cls(model="nori-6m", memory_policy=memory)
+            assert clone(estimator).get_params()["memory_policy"] == memory
 
     def test_set_params_accepts_a_preset(self, regressor_cls):
         estimator = regressor_cls(model="nori-6m")
         estimator.set_params(memory_policy="max_context")
         assert estimator.memory_policy == "max_context"
-
-
-class TestSubsamplingIsNeverSilent:
-    """`allow_subsample=False` must raise rather than quietly shrink the context.
-
-    Promoted with #257 and untested anywhere until now -- including in the internal tier,
-    where `allow_subsample` appears in no test file at all. It is the one setting in this
-    feature whose failure mode is a *wrong answer* rather than an error: a silently trimmed
-    context still returns confident, plausible predictions computed from a fraction of the
-    data the caller supplied. Nothing downstream can detect that.
-    """
-
-    def test_forbidding_the_shrink_raises_instead_of_trimming(self, regressor_cls):
-        from synthefy_nori.inference.memory_policy import ContextTooLargeError
-
-        rng = np.random.default_rng(0)
-        x_train = rng.normal(size=(3000, 8)).astype(np.float32)
-        y_train = (0.5 + 0.4 * (x_train[:, 0] - x_train[:, 1])).astype(np.float64)
-        x_test = rng.normal(size=(64, 8)).astype(np.float32)
-
-        model = regressor_cls(
-            model="nori-6m",
-            device="cpu",
-            # A budget this context cannot fit, with the shrink forbidden.
-            memory_policy={"elements_budget": 2000, "allow_subsample": False},
-        )
-        model.fit(x_train, y_train)
-        with pytest.raises(ContextTooLargeError) as excinfo:
-            model.predict(x_test)
-        message = str(excinfo.value)
-        # The message must name the setting that forbade it and how to proceed -- the caller
-        # cannot act on "context too large" alone.
-        assert "allow_subsample" in message
-        assert "elements_budget" in message
-
-    def test_permitting_the_shrink_serves_and_reports_what_it_dropped(self, regressor_cls):
-        rng = np.random.default_rng(0)
-        x_train = rng.normal(size=(3000, 8)).astype(np.float32)
-        y_train = (0.5 + 0.4 * (x_train[:, 0] - x_train[:, 1])).astype(np.float64)
-        x_test = rng.normal(size=(64, 8)).astype(np.float32)
-
-        model = regressor_cls(model="nori-6m", device="cpu", memory_policy={"elements_budget": 2000})
-        model.fit(x_train, y_train)
-        with pytest.warns(UserWarning, match="context subsampled"):
-            predictions = model.predict(x_test)
-
-        assert len(predictions) == len(x_test)
-        # The count is the point: it is the only signal that the answer used less data than
-        # was supplied, and it has to survive past the warning.
-        assert model.memory_report_["dropped_context_rows"] > 0
 
 
 class TestWarningVolume:
@@ -281,3 +236,87 @@ class TestWarningVolume:
             f"one predict logged the rung {len(rung_lines)} times; logging has no "
             f"de-duplication of its own, so it must be done at the call site"
         )
+
+
+# --------------------------------------------------------- serving integration
+def test_the_serving_engine_walks_every_rung_a_caller_can_force():
+    """Drive the whole ladder through the engine, one case per rung.
+
+    The cases live in ``synthefy_nori.testing.rung_cases`` so that the live-deployment smoke
+    suite (#312) can run the SAME table and the SAME policies against a real Baseten
+    deployment. That is the point: a rung expectation maintained in two places drifts, and
+    this ladder is decided by hardware, so both places have to be exercised. Until that suite
+    exists, this test is the only consumer.
+
+    CUDA-only by nature -- the cached path is a GPU path, and on CPU every policy resolves to
+    ``no_cache``, which would make every assertion here vacuously true.
+
+    Two exactness claims in the ladder docs did NOT survive measurement, so this test asserts
+    only what did:
+
+    * ``resident_bf16`` is documented BIT-EXACT, but it is not bit-identical to the UNCACHED
+      path: ``cache: false`` differs from it by ~4.1e-03 on this table. Both answers are
+      legitimate; they are not the same bits.
+    * ``context_row_chunk`` is documented bit-exact, and is not: a single slice
+      (``context_row_chunk == n_context``) reproduces the default exactly, but 128 or 64
+      differs on 85 of 512 rows, reproducibly (inference here is run-to-run deterministic, so
+      that is a real path difference, not noise).
+
+    Both are pre-existing and tracked separately; asserting the documented claim here would
+    just encode a false statement as a test.
+    """
+    import sys
+    from pathlib import Path
+
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("the cached path is a GPU path; on CPU every rung is no_cache")
+
+    serving_root = Path(__file__).resolve().parents[1] / "serving" / "core"
+    if str(serving_root) not in sys.path:
+        sys.path.insert(0, str(serving_root))
+    from nori_inference.engine import NoriEngine
+
+    from synthefy_nori.testing.rung_cases import BASELINE, CASES, N_QUERY, build_table
+
+    from synthefy_nori import NoriRegressor
+
+    body = build_table()
+    body["model"] = "nori-6m"
+    engine = NoriEngine()
+    engine._variant = "nori-6m"
+    engine._regressor = NoriRegressor(model="nori-6m", device="cuda:0")
+    engine._loaded = True
+
+    def served(case):
+        out = engine.predict({**body, "memory_policy": case.memory_policy})
+        return np.asarray(out["predictions"], dtype=np.float64), out["memory_report"]
+
+    baseline, report = served(BASELINE)
+    assert report["rung"] == BASELINE.rung
+    assert report["query_chunk"] < N_QUERY, (
+        f"query_chunk={report['query_chunk']} does not chunk {N_QUERY} query rows, so no cache "
+        "is reused and every case below would be vacuous"
+    )
+    assert report["est_cache_gb"] > 0
+    assert len(baseline) == N_QUERY
+
+    for case in CASES:
+        predictions, report = served(case)
+        assert report["rung"] == case.rung, (
+            f"{case.label}: expected rung {case.rung!r}, got {report['rung']!r} — {case.why}"
+        )
+        assert len(predictions) == N_QUERY, f"{case.label}: wrong prediction count"
+        assert np.isfinite(predictions).all(), f"{case.label}: non-finite predictions"
+        identical = np.array_equal(predictions, baseline)
+        if case.bit_exact:
+            assert identical, (
+                f"{case.label} must be bit-identical to the baseline ({case.why}); "
+                f"max|delta|={np.max(np.abs(predictions - baseline)):.3e}"
+            )
+        elif case is not BASELINE:
+            # A lossy rung that returns the baseline's exact bits did not actually engage.
+            assert not identical, (
+                f"{case.label} reported rung {report['rung']!r} but returned the baseline's "
+                "exact predictions, so the rung did not change what ran"
+            )

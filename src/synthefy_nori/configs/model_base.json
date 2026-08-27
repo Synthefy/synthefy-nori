@@ -25,12 +25,9 @@
   "encoder_config_y": {
     "num_inputs": 1,
     "embedding_size": 96,
-    "nan_handling_y_encoder": true,
-    "max_num_classes": 10
+    "nan_handling_y_encoder": true
   },
-  "decoder_config": {
-    "num_classes": 10
-  },
+  "decoder_config": {},
   "feature_positional_embedding_type": "none",
   "nlayers": 12,
   "nhead": 6,

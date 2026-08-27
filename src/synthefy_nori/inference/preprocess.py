@@ -109,6 +109,9 @@ class _TorchTruncatedSVD(BaseEstimator, TransformerMixin):
         m = TruncatedSVD(n_components=self.n_components, algorithm=algo, random_state=self.random_state)
         out = m.fit_transform(X)
         self.components_ = m.components_
+        self.singular_values_ = np.asarray(m.singular_values_, dtype=np.float64)
+        Xnp = np.asarray(X, dtype=np.float64)
+        self.total_ss_ = float((Xnp**2).sum())
         return out
 
     def fit(self, X, y=None):
@@ -135,6 +138,8 @@ class _TorchTruncatedSVD(BaseEstimator, TransformerMixin):
             signs = torch.where(signs == 0, torch.ones_like(signs), signs)
             Vh = Vh * signs[:, None]
             US = U * (S * signs)[None, :]
+            self.singular_values_ = S.detach().cpu().numpy()
+            self.total_ss_ = float((Xt**2).sum().item())
             self.components_ = Vh.detach().cpu().numpy()
             return US.detach().cpu().numpy()
         except Exception:
@@ -1358,14 +1363,14 @@ class HighDimFeatureSelector(BasePreprocess):
     svd_rows_per_component : int
         Minimum training rows required per retained SVD component. **Defaults to 1
         (previous behaviour)**; the shipped inference config sets 3. Opt-in rather than a
-        global default because the evidence for it is low-rank spectral data, while a
-        fixed low cap is known to *regress* genuinely high-rank wide tables (QSAR /
-        isolet / Santander). With it set, the fitted rank is
-        ``min(svd_components, p-1, n-1, n // svd_rows_per_component)``. Without it the
-        rank was bounded by ``n-1``, which takes the *maximum* available rank exactly
-        when rows are scarcest — on a 1901-feature x 190-row table that is 189, an
-        orthogonal rotation rather than a reduction, retaining the whole noise tail.
-        Set to 1 to restore the previous behaviour.
+        global default because the evidence for it is low-rank spectral data, while PR #98
+        recorded that low caps *regress* genuinely high-rank wide tables (QSAR / isolet /
+        Santander) -- see ``tests/test_svd_variance_adaptive.py``. With it set, the
+        fitted rank is ``min(svd_components, p-1, n-1, n // svd_rows_per_component)``.
+        Without it the rank was bounded by ``n-1``, which takes the *maximum* available
+        rank exactly when rows are scarcest — on a 1901-feature x 190-row table that is
+        189, an orthogonal rotation rather than a reduction, retaining the whole noise
+        tail. Set to 1 to restore the previous behaviour.
     extratrees_n_estimators : int
         Number of trees for ``extratrees`` strategy (default 100).
     subsample_rows : int
@@ -1387,6 +1392,8 @@ class HighDimFeatureSelector(BasePreprocess):
         n_features_threshold: int = 128,
         binary_threshold: float = 0.5,
         svd_components: int = 64,
+        svd_variance_threshold: float | None = None,
+        svd_min_components: int = 2,
         svd_rows_per_component: int = 1,
         extratrees_n_estimators: int = 100,
         subsample_rows: int = 5000,
@@ -1397,7 +1404,10 @@ class HighDimFeatureSelector(BasePreprocess):
         self.n_features_threshold = int(n_features_threshold)
         self.binary_threshold = float(binary_threshold)
         self.svd_components = int(svd_components)
+        self.svd_variance_threshold = None if svd_variance_threshold is None else float(svd_variance_threshold)
+        self.svd_min_components = int(svd_min_components)
         self.svd_rows_per_component = max(1, int(svd_rows_per_component))
+        self.svd_keep_k_: int | None = None
         self.extratrees_n_estimators = int(extratrees_n_estimators)
         self.subsample_rows = int(subsample_rows)
         self.passthrough_: bool = False
@@ -1455,6 +1465,26 @@ class HighDimFeatureSelector(BasePreprocess):
             return x, y
         idx = rng.choice(n, size=self.subsample_rows, replace=False)
         return x[idx], y[idx]
+
+    def _adaptive_k(self, fitted_k: int) -> int:
+        """Number of SVD components to KEEP. If ``svd_variance_threshold`` is set,
+        keep the smallest ``k`` whose cumulative singular-value energy (S**2)
+        reaches that fraction of the total (``||X||_F**2``) — i.e. the dataset's
+        effective rank — clamped to ``[svd_min_components, fitted_k]``. This makes
+        the reduction adapt to redundancy: near-full-rank data (e.g. QSAR
+        molecular fingerprints) keeps ~all fitted components (no signal loss),
+        while low-rank data (e.g. Raman/NIR spectra) collapses to a few. Returns
+        ``fitted_k`` unchanged when the threshold is None or the energy is never
+        reached within the fitted components."""
+        if self.svd_variance_threshold is None:
+            return fitted_k
+        sv = getattr(self.svd_model_, "singular_values_", None)
+        tot = getattr(self.svd_model_, "total_ss_", None)
+        if sv is None or tot is None or tot <= 0:
+            return fitted_k
+        cum = np.cumsum(np.asarray(sv, dtype=np.float64) ** 2) / float(tot)
+        k = int(np.searchsorted(cum, self.svd_variance_threshold) + 1)
+        return max(self.svd_min_components, min(k, fitted_k))
 
     def _remap_categorical(self, categorical_features: list[int]) -> list[int]:
         idx_set = set(int(i) for i in self.selected_idx_)
@@ -1586,6 +1616,7 @@ class HighDimFeatureSelector(BasePreprocess):
                 return self._activate_passthrough(categorical_features)
             self.svd_binary_mask_ = np.ones(n_features, dtype=bool)
             self.svd_keep_idx_ = np.array([], dtype=int)
+            self.svd_keep_k_ = self._adaptive_k(n_components)
             self.categorical_features_ = []
             self.passthrough_ = False
             return []
@@ -1673,6 +1704,8 @@ class HighDimFeatureSelector(BasePreprocess):
                 )
                 return x_arr[:, self.svd_keep_idx_].astype(np.float32), self.categorical_features_
             if self.strategy == "svd_all":
+                if self.svd_keep_k_ is not None and x_svd.shape[1] > self.svd_keep_k_:
+                    x_svd = x_svd[:, : self.svd_keep_k_]
                 return x_svd.astype(np.float32), []
             x_keep = x_arr[:, self.svd_keep_idx_]
             out = np.concatenate([x_keep, x_svd], axis=1).astype(np.float32)

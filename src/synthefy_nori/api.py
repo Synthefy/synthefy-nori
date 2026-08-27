@@ -770,7 +770,8 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         caches the resolved policy. Without it the FIRST predict's policy would stick
         for the estimator's lifetime, so ``est.memory_policy = "off"; est.predict(X)`` would
         be silently ignored, and a long-lived server that re-declares the policy per
-        request would serve every caller the first caller's setting.
+        request (``serving/core/nori_inference/engine.py``) would serve every caller the
+        first caller's setting.
         """
         if self._predictor is None:
             from synthefy_nori.inference.predictor import NoriPredictor

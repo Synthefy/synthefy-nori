@@ -1,14 +1,8 @@
 """Regression tests for QASS attention-mode handling.
 
-``QASSMaxScaling`` now has a ``qass_mode`` switch (full / base_only / log_only)
-and reads it from the architecture config. Two things must stay true, and both
-are silent failures if they don't:
-
-  * a checkpoint that records no mode keeps running "full" — that is what every
-    checkpoint this repo has produced actually trained, and its base/gate
-    weights are live;
-  * a checkpoint that *does* record a mode gets that mode, from its own config
-    and not from process-global state.
+Guards the migration bug where the new repo dropped the ``qass_mode`` switch and
+silently ran older "log_only" checkpoints (which still carry trained base/gate
+weights) with the gate ON — applying the wrong attention temperature.
 """
 
 import math
@@ -123,28 +117,15 @@ def test_built_model_mode_follows_config_not_env(monkeypatch):
     assert _qass_modes(model) == {"log_only"}
 
 
-def test_resolve_qass_mode_honors_explicit_and_otherwise_says_full():
-    # An explicit qass_mode is honored verbatim -- this is what the released
-    # Nori-30M carries, and what QASSMaxScaling used to ignore.
+def test_resolve_qass_mode_three_eras():
+    # Era 1: explicit qass_mode honored verbatim.
     assert resolve_qass_mode({"use_qassmax": True, "qass_mode": "full"}) == "full"
-    assert resolve_qass_mode({"use_qassmax": True, "qass_mode": "log_only"}) == "log_only"
 
-    # No recorded mode -> "full". Every checkpoint this tree has produced ran
-    # the full base*gate path (QASSMaxScaling had no mode switch), so its
-    # base/gate weights are trained and must stay live. Resolving these to
-    # anything else would silently discard them.
-    assert resolve_qass_mode({"use_qassmax": True}) == "full"
+    # Era 2: qass_mode unset, use_logn_attention explicitly False -> "full".
     assert resolve_qass_mode({"use_qassmax": True, "use_logn_attention": False}) == "full"
 
-
-def test_training_cli_checkpoints_keep_running_full():
-    """The exact shape the training CLI has always written must stay "full".
-
-    `cli.py` sets `use_qassmax = not --no-qassmax` (on by default) and never
-    writes `use_logn_attention`, so this is what every checkpoint trained from
-    this repo records. It trained "full"; it must keep loading as "full".
-    """
-    assert resolve_qass_mode({"use_qassmax": True, "nlayers": 12}) == "full"
+    # Era 3: both unset (early-V13 schema, e.g. the 3M) -> "log_only".
+    assert resolve_qass_mode({"use_qassmax": True}) == "log_only"
 
 
 def test_no_qassmax_means_no_mode_is_passed(monkeypatch):
@@ -165,7 +146,7 @@ def test_no_qassmax_means_no_mode_is_passed(monkeypatch):
 # QASS mode a function of which container the checkpoint sat in.
 #
 # Going forward `finalize_arch_config` pins every arch flag before training, so
-# the "full" fallback in `resolve_qass_mode` only ever sees older files.
+# the era-2/era-3 inference in `resolve_qass_mode` only ever sees old files.
 # ---------------------------------------------------------------------------
 
 
@@ -194,7 +175,7 @@ class _StopBuild(Exception):
     """Abort load_model once build_model has seen the config."""
 
 
-# The shape the training CLI writes: QASSMax on, no recorded mode -> "full".
+# An early-V13 model_config: no qass_mode, no use_logn_attention -> era 3.
 _MODEL_CONFIG = {"use_qassmax": True, "nlayers": 2, "embed_dim": 8}
 
 
@@ -215,20 +196,18 @@ def test_same_arch_config_resolves_the_same_in_both_containers(monkeypatch):
 def test_training_config_never_supplies_architecture(monkeypatch):
     """A `.pt`'s TrainingConfig must not reach the architecture.
 
-    `TrainingConfig` used to declare `use_logn_attention: bool = False` and
-    `attn_n_ref: float = 1024.0` -- unread defaults, not a record of the run.
-    Letting them through would build the model from values nothing ever trained
-    with, and `attn_n_ref` in particular changes the attention scale.
+    `TrainingConfig` used to declare `use_logn_attention: bool = False` -- an
+    unread default, not a record of the run. Letting it through pushed an era-3
+    checkpoint into era 2 and silently ran "full" where training ran "log_only".
     """
     pt = {
         "model_config": dict(_MODEL_CONFIG),
-        "config": {"use_logn_attention": True, "attn_n_ref": 4096.0, "lr": 1e-4},
+        "config": {"use_logn_attention": False, "attn_n_ref": 4096.0, "lr": 1e-4},
         "model_state_dict": {},
     }
     mode, config = _resolved_mode_for(pt, monkeypatch)
-    assert mode == "full"
+    assert mode == "log_only"
     assert config.get("attn_n_ref") != 4096.0
-    assert config.get("use_logn_attention") is not True
 
 
 def test_load_model_does_not_mutate_the_checkpoint(monkeypatch):
@@ -244,14 +223,17 @@ def test_load_model_does_not_mutate_the_checkpoint(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_finalize_pins_the_mode_and_stamps_the_attention_scale(monkeypatch):
-    """Finalize records the mode the run will actually train with, and fills in
-    the attention-scale keys from the one shared defaults table."""
+def test_finalize_pins_the_era_3_mode_not_the_defaulted_one(monkeypatch):
+    """Pinning must happen before the attention-scale keys are defaulted.
+
+    Writing `use_logn_attention=False` first would move an era-3 config into
+    era 2 and flip the pinned mode from "log_only" to "full".
+    """
     from synthefy_nori.utils.loading import finalize_arch_config
 
     monkeypatch.delenv("SYNTHEFY_QASS_MODE", raising=False)
     config = finalize_arch_config(dict(_MODEL_CONFIG))
-    assert config["qass_mode"] == "full"
+    assert config["qass_mode"] == "log_only"
     assert config["use_logn_attention"] is False
     assert config["attn_n_ref"] == 1024.0
 
@@ -264,7 +246,7 @@ def test_finalized_config_round_trips_to_the_same_mode(monkeypatch):
     config = finalize_arch_config(dict(_MODEL_CONFIG))
     pt = {"model_config": config, "config": {}, "model_state_dict": {}}
     mode, _ = _resolved_mode_for(pt, monkeypatch)
-    assert mode == "full"
+    assert mode == "log_only"
 
 
 def test_finalize_records_the_env_override(monkeypatch):

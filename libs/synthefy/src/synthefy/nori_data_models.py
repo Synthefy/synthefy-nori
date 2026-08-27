@@ -51,6 +51,8 @@ MEMORY_RUNGS = (
     "resident_int8",
     "offload_bf16",
     "offload_int8",
+    "stream_bf16",
+    "stream_int8",
     "context_row_chunk",
     "plain_loop",
 )
@@ -266,14 +268,27 @@ class MemoryPolicy(BaseModel):
         ),
     )
 
+    stream_context: bool = Field(
+        False,
+        description=(
+            "Keep the full context and K/V cache in host RAM and stage only bounded "
+            "row slices on the GPU. This forces the host-only stream_bf16/stream_int8 "
+            "path, disables cross-call context reuse, and uses "
+            "context_row_chunk=2048 as the maximum staged-row cap when no cap is "
+            "supplied. Runtime may split K/V blocks smaller to honor its fixed FP32 "
+            "online-attention workspace ceiling. Streaming never silently falls back "
+            "to plain_loop."
+        ),
+    )
+
     context_row_chunk: Optional[int] = Field(
         None,
         gt=0,
         description=(
-            "Bound the fit-time build working set to this many context rows (bit-exact). "
-            "None = off, with 2048 engaged automatically after an OOM. Pinning a value "
-            "uses it from the first attempt — which also costs you that escalation, since "
-            "there is then nothing left to escalate to. "
+            "Bound prefill to this many context rows (deterministic, with small "
+            "floating-point reassociation differences). None = off, with 2048, 1024, 512, "
+            "then 256 tried after OOMs. An explicit value is a first-attempt cap; retries "
+            "stay at or below it. "
         ),
     )
 
@@ -306,6 +321,28 @@ class MemoryPolicy(BaseModel):
     )
 
 
+class MemoryAttempt(BaseModel):
+    """One execution attempt contributing to a prediction's memory outcome."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    pipeline_ids: List[int] = Field(default_factory=list)
+    path: Literal["pipeline_batch", "cached", "plain_loop"]
+    rung: str
+    cache_dtype: Literal["bf16", "int8"]
+    offload_to_host: bool
+    context_row_chunk: Optional[int] = Field(None, gt=0)
+    query_chunk: Optional[int] = Field(None, gt=0)
+    outcome: Literal["success", "oom", "unsupported"]
+    reason: Literal[
+        "resolved",
+        "oom_retry",
+        "fallback_after_oom",
+        "fallback_after_unsupported",
+    ]
+    dropped_context_rows: int = Field(0, ge=0)
+
+
 class MemoryReport(BaseModel):
     """What the server did about ``memory_policy=`` — the resolved policy plus its outcome.
 
@@ -327,9 +364,10 @@ class MemoryReport(BaseModel):
             "Which fallback the server used, in decreasing memory cost: resident_bf16 "
             "(cache in GPU memory, exact), resident_int8 (quantized), offload_bf16 / "
             "offload_int8 (cache in host RAM, streamed back per layer, exact transport), "
-            "context_row_chunk (cache built in row chunks), plain_loop (no cache; the "
-            "context re-read per query batch), no_cache (the cached path did not apply). "
-            "Decided per request, not requestable. "
+            "stream_bf16 / stream_int8 (explicit bounded host-only context streaming; "
+            "not bit-exact), context_row_chunk (cache built in row chunks), plain_loop "
+            "(no cache; the context re-read per query batch), no_cache (the cached path "
+            "did not apply). Decided per request, not requestable. "
         ),
     )
 
@@ -349,9 +387,10 @@ class MemoryReport(BaseModel):
     query_chunk: Optional[int] = Field(
         None,
         description=(
-            "Query rows per decode forward, as the cached path was entered with. "
-            "Reported, not set. NOTE: a decode OOM may halve this further inside the "
-            "model, and that further reduction is not currently reported here. "
+            "Effective query rows per decode forward on the successful cached path. "
+            "If decoding exhausted its retries and raised, this is the last attempted "
+            "size. Every adaptive reduction is also recorded in attempt_history. "
+            "Reported, not set. "
         ),
     )
 
@@ -359,10 +398,17 @@ class MemoryReport(BaseModel):
         0,
         ge=0,
         description=(
-            "Context rows the caller had to subsample away to fit. Non-zero only on the "
-            "plain_loop rung; recorded so a shrunk context is visible in memory_report_ "
+            "Context rows subsampled before cache resolution to fit the element budget; "
+            "recorded on cached and plain-loop outcomes so a shrunk context is visible "
             "rather than inferred from the score. "
         ),
+    )
+
+    attempt_history: List[MemoryAttempt] = Field(
+        default_factory=list,
+        description="Chronological memory execution attempts, including cache-build "
+        "OOMs, decode query-chunk retries, fit-row retries, and the "
+        "successful fallback.",
     )
 
     clamped: List[str] = Field(

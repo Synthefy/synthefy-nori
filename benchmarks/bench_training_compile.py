@@ -14,8 +14,13 @@ from pathlib import Path
 
 import torch
 
+import synthefy_nori.model.layer as model_layer
 from synthefy_nori.model.layer import RMSNorm
-from synthefy_nori.utils.loading import _safe_torch_load, build_model
+from synthefy_nori.utils.loading import (
+    _safe_torch_load,
+    build_model,
+    strip_legacy_cls_weights,
+)
 
 
 def parse_shapes(raw: str) -> list[tuple[int, int, float]]:
@@ -49,16 +54,13 @@ def build_exact_model(
 ):
     state = _safe_torch_load(checkpoint)
     model = build_model(dict(state["model_config"]))
-    model.load_state_dict(state["model_state_dict"])
-    for name in (
-        "feature_decoder",
-        "cls_y_encoder",
-        "cls_y_decoder",
-        "cls_target_aware_embedding",
-    ):
-        module = getattr(model, name, None)
-        if module is not None:
-            module.requires_grad_(False)
+    model.load_state_dict(
+        strip_legacy_cls_weights(state["model_state_dict"]),
+        strict=True,
+    )
+    feature_decoder = getattr(model, "feature_decoder", None)
+    if feature_decoder is not None:
+        feature_decoder.requires_grad_(False)
     model._skip_feature_decoder = True
     if native_rms_norm:
         for module in model.modules():
@@ -150,6 +152,20 @@ def main():
     parser.add_argument("--compile-cache-limit", type=int, default=1024)
     parser.add_argument("--disable-ddp-optimizer", action="store_true")
     parser.add_argument(
+        "--sdpa-batch-head-limit",
+        type=int,
+        help="Override the model's SDPA batch/head chunk limit for an A/B benchmark.",
+    )
+    parser.add_argument(
+        "--allow-distributed-compile",
+        action="store_true",
+        help=(
+            "Allow a compiled benchmark under DDP. This is unsafe for cache "
+            "warmup because ranks can reach collectives while a peer is still "
+            "compiling; use a single process to populate compiler artifacts."
+        ),
+    )
+    parser.add_argument(
         "--shapes",
         type=parse_shapes,
         default=parse_shapes("256x64@0.5"),
@@ -165,9 +181,20 @@ def main():
     parser.add_argument("--checkpointing", choices=("auto", "on", "off"), default="auto")
     parser.add_argument("--output")
     args = parser.parse_args()
+    if args.sdpa_batch_head_limit is not None:
+        if args.sdpa_batch_head_limit <= 0:
+            parser.error("--sdpa-batch-head-limit must be positive")
+        model_layer.SDPA_BATCH_HEAD_LIMIT = args.sdpa_batch_head_limit
 
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     distributed = world_size > 1
+    if world_size > 1 and args.strategy != "eager" and not args.allow_distributed_compile:
+        parser.error(
+            "compiled cache warmup must use one process; multi-rank compilation "
+            "can strand peers in DDP collectives while another rank compiles. "
+            "Use one GPU, or pass --allow-distributed-compile only for an "
+            "intentional DDP benchmark against an already-warm cache"
+        )
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     if distributed:
         torch.cuda.set_device(local_rank)
@@ -227,7 +254,7 @@ def main():
         torch.cuda.synchronize(device)
         started = time.perf_counter()
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            output = model(x=x, y=y, eval_pos=eval_pos, task_type="reg")
+            output = model(x=x, y=y, eval_pos=eval_pos)
             target = y[:, eval_pos:].unsqueeze(-1)
             loss = (output["reg_output"].float() - target).square().mean()
         loss.backward()
@@ -252,6 +279,7 @@ def main():
     steady = [record["seconds"] for record in records if record["cycle"] > 0]
     summary = {
         "strategy": args.strategy,
+        "sdpa_batch_head_limit": model_layer.SDPA_BATCH_HEAD_LIMIT,
         "native_rms_norm": args.native_rms_norm,
         "batch_size": args.batch_size,
         "shape_count": len(args.shapes),

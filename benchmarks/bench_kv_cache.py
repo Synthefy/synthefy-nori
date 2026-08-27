@@ -1,11 +1,16 @@
 """Benchmark: KV-cache inference speedup for Nori (cache ON vs OFF).
 
+This benchmark is **Nori-only**: the KV cache is a Nori inference feature with no
+equivalent in TabPFN / TabICL, so (unlike the SHAP / SHAPIQ explanation-speed
+benchmarks) it is not run cross-model.
+
 The Nori inference path chunks a large test set into row-batches that each share
 the same fixed training context. The KV cache (``forward_cached_regression``)
 projects the train-side sequence K/V **once** and reuses it across every test
 chunk, instead of recomputing it per chunk. It is numerically equivalent to the
-uncached chunked path (predictions are identical) and is documented as ~2-3x
-faster on multi-chunk inference. It is controlled at *predict time* by:
+uncached chunked path (predictions are identical up to fp16 noise) and is
+documented as ~2-3x faster on multi-chunk inference. It is controlled at
+*predict time* by:
 
   * ``SYNTHEFY_ENABLE_CACHED_INFERENCE`` = ``"1"`` (on, default) / ``"0"`` (off)
   * ``SYNTHEFY_DISABLE_CACHED_INFERENCE=1``                      (kill switch)
@@ -19,15 +24,14 @@ several chunks per predict and thus a clear cache win.
 
 For each test-set size we measure the wall-clock of ``model.predict(X_test)``
 with the cache ON and OFF (best-of-2, after one throwaway warm-up predict, with
-``torch.cuda.synchronize()`` around each timed region), confirm the cache
-actually activated (multi-chunk), and verify the two prediction vectors are
-near-identical (max abs diff ~1e-5 or smaller).
+``torch.cuda.synchronize()`` around each timed region), and verify the two
+prediction vectors are near-identical.
 
 Data:
-    Expects ``<name>_train.csv`` / ``<name>_test.csv`` (header row, last column is
-    the target) for the 1024-feature ``QSAR-TID-11`` OpenML dataset. Point the
-    script at your local copy with the ``NORI_BENCH_DATA_DIR`` environment
-    variable; it defaults to ``cache/eval_datasets/QSAR-TID-11`` under the repo root.
+    Expects ``<name>_train.csv`` / ``<name>_test.csv`` (header row, last column
+    is the target) for the 1024-feature ``QSAR-TID-11`` OpenML dataset. Generate
+    them with ``uv run python benchmarks/prep_data.py`` (writes to
+    ``cache/eval_datasets/QSAR-TID-11``), or set ``NORI_BENCH_DATA_DIR``.
 
 Run:
     uv run python benchmarks/bench_kv_cache.py
@@ -53,10 +57,11 @@ import torch
 from synthefy_nori import NoriRegressor
 
 # --- Configuration -----------------------------------------------------------
-DATA_DIR = Path(os.environ.get("NORI_BENCH_DATA_DIR", "cache/eval_datasets/QSAR-TID-11"))
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = Path(os.environ.get("NORI_BENCH_DATA_DIR", REPO_ROOT / "cache" / "eval_datasets" / "QSAR-TID-11"))
 TRAIN_CSV = DATA_DIR / "QSAR-TID-11_train.csv"
 TEST_CSV = DATA_DIR / "QSAR-TID-11_test.csv"
-PLOT_PATH = Path("benchmarks/plots/kv_cache_speed.png")
+PLOT_PATH = REPO_ROOT / "benchmarks" / "plots" / "kv_cache_speed.png"
 
 # 1024-feature dataset; lower the per-row element budget so chunk_size lands at
 # its 256-row floor (forces MANY chunks -> the cache's per-chunk train-K/V reuse
@@ -70,7 +75,7 @@ PLOT_PATH = Path("benchmarks/plots/kv_cache_speed.png")
 MAX_ELEMENTS_BUDGET = 1_050_000
 
 TEST_SIZES = [512, 1024, 1536, 1723]  # 1723 = full QSAR test set; each > chunk_size=256
-DEVICE = "cuda:0"
+DEVICE = os.environ.get("BENCH_DEVICE", "cuda:0")
 SEED = 0
 N_REPEATS = 2  # best-of-N timing per configuration
 

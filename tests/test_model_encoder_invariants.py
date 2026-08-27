@@ -5,6 +5,7 @@ import json
 import pytest
 import torch
 
+from synthefy_nori.model.kv_cache_scaling import BlockwiseSeqKV
 from synthefy_nori.model.encoders import (
     MaskEmbEncoder,
     NanEncoder,
@@ -110,8 +111,8 @@ def test_direct_preprocessing_and_prediction_do_not_depend_on_query_batch():
     torch.testing.assert_close(one_preprocessed[:, 4], many_preprocessed[:, 4])
 
     with torch.no_grad():
-        one_prediction = model(one, y_train, 4, task_type="reg")
-        many_predictions = model(many, y_train, 4, task_type="reg")
+        one_prediction = model(one, y_train, 4)
+        many_predictions = model(many, y_train, 4)
     torch.testing.assert_close(one_prediction, many_predictions[:, :1], atol=1e-6, rtol=1e-6)
 
 
@@ -127,7 +128,7 @@ def test_features_per_group_three_padding_matches_direct_and_cache(num_features,
     assert grouped["data"].shape[-2:] == (2, 3)
 
     with torch.no_grad():
-        direct = model(values, y_train, 4, task_type="reg")
+        direct = model(values, y_train, 4)
         context = model.build_context_cache(values[:, :4], y_train)
         cached = model.apply_context_cache(values[:, 4:], context)
     assert context.valid_feature_num is not None
@@ -191,12 +192,112 @@ def test_nonfinite_values_are_missing_and_direct_matches_cache(
         assert model.encoder_x[0].in_keys == ["data", "nan_encoding"]
 
     with torch.no_grad():
-        direct = model(values, y_train, 4, task_type="reg")
+        direct = model(values, y_train, 4)
         context = model.build_context_cache(values[:, :4], y_train)
         cached = model.apply_context_cache(values[:, 4:], context)
     assert torch.isfinite(direct).all()
     assert torch.isfinite(cached).all()
     torch.testing.assert_close(cached, direct, atol=1e-6, rtol=1e-6)
+
+
+@pytest.mark.parametrize("cache_dtype", ["bf16", "int8"])
+@pytest.mark.parametrize("target_case", ["finite", "mixed", "all_nonfinite"])
+def test_streamed_context_matches_legacy_cache_and_stays_host_blockwise(cache_dtype, target_case):
+    torch.manual_seed(123)
+    model = _tiny_model(features_per_group=3)
+    values = torch.arange(9 * 5, dtype=torch.float32).reshape(1, 9, 5) / 7
+    y_train = torch.tensor([[0.0, 1.0, -1.0, 2.0, 3.0, -2.0]])
+    if target_case == "mixed":
+        values[0, 1, 2] = float("nan")
+        values[0, 3, 4] = float("inf")
+        y_train[0, 2] = float("nan")
+    elif target_case == "all_nonfinite":
+        y_train.fill_(float("nan"))
+
+    with torch.no_grad():
+        legacy = model.build_context_cache(
+            values[:, :6],
+            y_train,
+            cache_dtype=cache_dtype,
+            offload_kv_cache=True,
+            fit_row_chunk=2,
+        )
+        expected = model.apply_context_cache(values[:, 6:], legacy, row_chunk_size=2)
+        streamed = model.build_context_cache(
+            values[:, :6].cpu(),
+            y_train.cpu(),
+            cache_dtype=cache_dtype,
+            offload_kv_cache=True,
+            fit_row_chunk=2,
+            stream_context=True,
+        )
+        actual = model.apply_context_cache(values[:, 6:].cpu(), streamed, row_chunk_size=2)
+
+    assert torch.isfinite(expected).all()
+    assert torch.isfinite(actual).all()
+    torch.testing.assert_close(actual, expected, atol=5e-3, rtol=5e-3)
+    assert streamed.eval_pos == 6
+    assert streamed.y_train.numel() == 0
+    assert streamed.query_y_embedding.shape[1] == 1
+    for layer_cache in streamed.caches:
+        seq_kv = layer_cache["seq_kv"]
+        assert isinstance(seq_kv, BlockwiseSeqKV)
+        assert seq_kv.n_rows == 6
+        assert seq_kv.max_block_rows <= 2
+        assert seq_kv.max_staged_rows <= 2
+        assert seq_kv.resident_gpu_bytes() == 0
+        assert seq_kv.host_bytes() > 0
+        assert all(
+            payload.device.type == "cpu" and (scale is None or scale.device.type == "cpu")
+            for payload, scale in seq_kv._blocks
+        )
+
+
+def test_hybrid_resident_int8_prefill_matches_legacy_cache():
+    torch.manual_seed(321)
+    model = _tiny_model(features_per_group=3)
+    values = torch.arange(9 * 5, dtype=torch.float32).reshape(1, 9, 5) / 7
+    values[0, 2, 1] = float("nan")
+    y_train = torch.tensor([[0.0, 1.0, -1.0, 2.0, 3.0, -2.0]])
+
+    with torch.no_grad():
+        legacy = model.build_context_cache(
+            values[:, :6],
+            y_train,
+            cache_dtype="int8",
+            offload_kv_cache=False,
+            fit_row_chunk=2,
+        )
+        expected = model.apply_context_cache(values[:, 6:], legacy, row_chunk_size=2)
+        hybrid = model.build_context_cache(
+            values[:, :6].cpu(),
+            y_train.cpu(),
+            cache_dtype="int8",
+            offload_kv_cache=False,
+            fit_row_chunk=2,
+            _hybrid_resident_int8_prefill=True,
+        )
+        actual = model.apply_context_cache(values[:, 6:].cpu(), hybrid, row_chunk_size=2)
+
+    torch.testing.assert_close(actual, expected, atol=5e-3, rtol=5e-3)
+    assert hybrid.eval_pos == 6
+    assert hybrid.y_train.numel() == 0
+    assert hybrid.query_y_embedding.shape[1] == 1
+    for layer_cache in hybrid.caches:
+        seq_kv = layer_cache["seq_kv"]
+        assert isinstance(seq_kv, BlockwiseSeqKV)
+        assert seq_kv.quantized is True
+        assert seq_kv.offloaded is False
+        assert seq_kv.n_rows == 6
+        assert seq_kv.max_block_rows <= 2
+        assert seq_kv.resident_gpu_bytes() > 0
+        assert seq_kv.host_bytes() == 0
+        assert all(
+            payload.device == next(model.parameters()).device
+            and scale is not None
+            and scale.device == next(model.parameters()).device
+            for payload, scale in seq_kv._blocks
+        )
 
 
 def test_rbf_centers_are_deterministic_and_reconstructed_from_config():
@@ -328,7 +429,7 @@ def test_nan_handling_disabled_has_no_nan_stage_and_mask_metadata_still_works():
     y_train = torch.tensor([[0.0, 1.0, 2.0]])
 
     with torch.no_grad():
-        result = model(values, y_train, 3, task_type="reg")
+        result = model(values, y_train, 3)
     assert torch.isfinite(result["reg_output"]).all()
     process_config = result["process_config"]
     assert process_config["n_x_padding"] == 2

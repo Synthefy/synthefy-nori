@@ -52,15 +52,16 @@ FP16_OVERFLOW_START = 65520
         100000,  # a reported failing context
     ],
 )
-def test_qassmax_finite_above_fp16_row_count_limit(key_len):
+@pytest.mark.parametrize("mode", ["log_only", "base_only", "full"])
+def test_qassmax_finite_above_fp16_row_count_limit(key_len, mode):
     """A context longer than fp16 can represent must not poison the q scale."""
-    m = QASSMaxScaling(num_heads=2, head_dim=4).half()
+    m = QASSMaxScaling(num_heads=2, head_dim=4, qass_mode=mode).half()
     q = torch.randn(1, 8, 2, 4, dtype=torch.float16)
 
     out = m(q, key_len=key_len)
 
     assert torch.isfinite(out).all(), (
-        f"QASSMaxScaling produced non-finite q at key_len={key_len}: "
+        f"qass_mode={mode} produced non-finite q at key_len={key_len}: "
         f"nan={int(torch.isnan(out).sum())} inf={int(torch.isinf(out).sum())}. "
         "log(n) is being taken after casting n to fp16."
     )
@@ -68,12 +69,12 @@ def test_qassmax_finite_above_fp16_row_count_limit(key_len):
 
 @pytest.mark.parametrize("key_len", [FP16_OVERFLOW_START, 70000, 100000])
 def test_qassmax_scale_is_log_n_not_inf(key_len):
-    """The zero-initialized default is exactly q*log(n) — check the value, not just finiteness.
+    """log_only mode is exactly q*log(n) — check the value, not just finiteness.
 
     Finiteness alone would pass if log(n) were clamped to the fp16 max instead
     of actually computed, which would silently over-sharpen attention.
     """
-    m = QASSMaxScaling(num_heads=2, head_dim=4).half()
+    m = QASSMaxScaling(num_heads=2, head_dim=4, qass_mode="log_only").half()
     q = torch.ones(1, 4, 2, 4, dtype=torch.float16)
 
     scale = m(q, key_len=key_len).float().unique()
@@ -83,20 +84,21 @@ def test_qassmax_scale_is_log_n_not_inf(key_len):
 
 
 @pytest.mark.parametrize("key_len", [2, 100, 1024, 8000, 60000, FP16_MAX_FINITE])
-def test_qassmax_below_boundary_matches_exact_log(key_len):
+@pytest.mark.parametrize("mode", ["log_only", "base_only", "full"])
+def test_qassmax_below_boundary_matches_exact_log(key_len, mode):
     """Below the boundary, behavior is unchanged within fp16 tolerance.
 
     Computing log(n) in double and casting the ~11-magnitude result costs at
     most one fp16 ulp versus the old fp16-log-of-fp16-n, so predictions on
     every context length that used to work must not move meaningfully.
     """
-    m = QASSMaxScaling(num_heads=2, head_dim=4).half()
+    m = QASSMaxScaling(num_heads=2, head_dim=4, qass_mode=mode).half()
     q = torch.randn(1, 8, 2, 4, dtype=torch.float16)
 
     got = m(q, key_len=key_len).float()
 
     # Reference: same math in float32, exact log — no fp16 anywhere.
-    ref_m = QASSMaxScaling(num_heads=2, head_dim=4)
+    ref_m = QASSMaxScaling(num_heads=2, head_dim=4, qass_mode=mode)
     ref_m.load_state_dict({k: v.float() for k, v in m.state_dict().items()})
     expected = ref_m(q.float(), key_len=key_len)
 
@@ -106,7 +108,7 @@ def test_qassmax_below_boundary_matches_exact_log(key_len):
 def test_qassmax_respects_fp32_and_bf16():
     """The fix must not change the dtype of the scale it builds."""
     for dtype in (torch.float32, torch.bfloat16, torch.float16):
-        m = QASSMaxScaling(num_heads=2, head_dim=4).to(dtype)
+        m = QASSMaxScaling(num_heads=2, head_dim=4, qass_mode="log_only").to(dtype)
         q = torch.randn(1, 4, 2, 4, dtype=dtype)
         out = m(q, key_len=70000)
         assert out.dtype == dtype

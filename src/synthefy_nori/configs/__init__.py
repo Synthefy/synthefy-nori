@@ -13,7 +13,7 @@ Two artifacts for two phases, and they are not interchangeable:
 Resolve both through :func:`config_path` rather than repeating a filename. The
 inference config used to record its tuning values in its own name
 (``reg_allordinal_poly10_adaptive_svd256.json``); when those values changed the
-name became wrong, and it was wrong in a dozen places at once. Names here
+name became wrong, and it was wrong in twenty-odd places at once. Names here
 describe the phase, and the values live inside the file.
 """
 

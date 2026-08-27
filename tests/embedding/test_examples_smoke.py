@@ -1,11 +1,11 @@
 """Smoke tests for the shipped embedding examples.
 
 These exist because the examples were previously never executed by CI. That gap
-let an internal-only ``NoriRegressor(compile_model=...)`` kwarg ship in a public
-example, which crashes at construction on the public package. The fast test
-guards the exact public construction API the examples/README rely on; the slow
-tests import each example module and run its own ``extract_embeddings`` end-to-end
-on tiny data against the real checkpoint.
+let an internal-only ``NoriRegressor`` kwarg ship in a public example, which
+crashes at construction on the public package. The fast test guards the exact
+public construction API the examples/README rely on; the slow tests import each
+example module and run its own ``extract_embeddings`` end-to-end on tiny data
+against the real checkpoint.
 """
 
 import importlib.util
@@ -30,7 +30,8 @@ def _load_example(name):
 
 def test_public_construction_api_the_examples_use():
     """The exact public construction the examples/README rely on must not depend
-    on any internal-only kwarg. Regression guard for the ``compile_model`` leak.
+    on any internal-only kwarg. Regression guard against an internal-only
+    constructor kwarg leaking into a public example.
 
     Fast: construction is lazy (no checkpoint download), so this runs in the
     default (non-slow) suite and blocks the merge before an example can ship

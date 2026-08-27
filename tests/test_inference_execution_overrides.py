@@ -180,7 +180,7 @@ def test_forward_parity_reg_output_is_bit_identical():
     def run():
         torch.manual_seed(1234)  # feature positional embeddings are re-drawn
         with torch.inference_mode():
-            return model(x=x, y=y, eval_pos=eval_pos, task_type="reg")
+            return model(x=x, y=y, eval_pos=eval_pos)
 
     baseline = run()
     assert baseline["feature_pred"] is not None
@@ -191,4 +191,3 @@ def test_forward_parity_reg_output_is_bit_identical():
 
     assert skipped["feature_pred"] is None
     assert torch.equal(baseline["reg_output"], skipped["reg_output"])
-    assert torch.equal(baseline["cls_output"], skipped["cls_output"])

@@ -161,6 +161,23 @@ def test_distributed_imputation_fails_explicitly():
         )
 
 
+def test_distributed_memory_policy_fails_explicitly():
+    """DDP inference never resolves a MemoryPolicy or populates memory_report_,
+    so requesting one must fail at construction, not surface later as an empty
+    report a caller could mistake for a stale runtime."""
+    with pytest.raises(
+        ValueError,
+        match="inference_with_DDP does not support memory_policy",
+    ):
+        NoriPredictor(
+            device=torch.device("cpu"),
+            model=object(),
+            inference_config=[{}],
+            inference_with_DDP=True,
+            memory_policy={"cache_dtype": "int8"},
+        )
+
+
 @pytest.mark.parametrize("owns_process_group", [False, True])
 def test_distributed_runner_only_closes_owned_process_group(
     monkeypatch,
@@ -249,3 +266,79 @@ def test_feature_reconstruction_averages_context_and_concatenates_queries():
         result,
         np.array([[3.0], [5.0], [10.0], [11.0], [12.0]]),
     )
+
+
+def test_default_elements_budget_uses_accelerator_memory(monkeypatch):
+    predictor = NoriPredictor.__new__(NoriPredictor)
+    monkeypatch.setattr(predictor, "_total_vram_gb", lambda: 48.0)
+
+    assert predictor._default_max_elements_budget() == 4_000_000
+
+
+def test_pipeline_batching_routes_regression_task_type(monkeypatch):
+    original_to = torch.Tensor.to
+
+    def keep_cpu(tensor, *args, **kwargs):
+        if args and isinstance(args[0], torch.device) and args[0].type == "cuda":
+            return tensor
+        return original_to(tensor, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "to", keep_cpu)
+    monkeypatch.setattr(torch.cuda, "manual_seed_all", lambda _seed: None)
+
+    class TaskAwareModel:
+        mask_prediction = False
+        training = False
+
+        def __init__(self):
+            self.task_types = []
+
+        def to(self, _device):
+            return self
+
+        def __call__(self, *, x, y, eval_pos, task_type):
+            del y
+            self.task_types.append(task_type)
+            query = x[:, eval_pos:, :1]
+            return {
+                "reg_output": query,
+                "cls_output": query + 1000,
+            }
+
+    model = TaskAwareModel()
+    predictor = NoriPredictor.__new__(NoriPredictor)
+    predictor.device = torch.device("cuda")
+    predictor.model = model
+    predictor.seed = 0
+    predictor.mix_precision = False
+    predictor.mask_prediction = False
+    predictor.inference_with_DDP = False
+    predictor.memory_policy = "off"
+    predictor.preprocess_pipelines = [[], []]
+    predictor.inference_config = [{}, {}]
+    predictor.preprocess_num = 10
+    predictor.seeds = [0] * 20
+    predictor._warned_this_call = set()
+    predictor._logged_this_call = set()
+
+    x_train = np.arange(12, dtype=np.float32).reshape(4, 3)
+    x_test = np.arange(6, dtype=np.float32).reshape(2, 3)
+    y_train = np.arange(4, dtype=np.float32)
+    outputs = predictor._try_batched_ordinary_regression(
+        model,
+        x_train_base=x_train,
+        x_test_base=x_test,
+        y_train=y_train,
+        categorical_idx=[],
+        n_samples_train=4,
+        n_samples_test=2,
+        budget_n_features=3,
+        max_elements_budget=1_000_000,
+        dropped_context_rows=0,
+    )
+
+    assert outputs is not None
+    assert model.task_types == ["reg"]
+    assert len(outputs) == 2
+    for output in outputs:
+        torch.testing.assert_close(output, torch.from_numpy(x_test[:, :1]))

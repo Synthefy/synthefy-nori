@@ -1,12 +1,13 @@
 # Training acceleration and optional static-shape compilation
 
 This guide covers Nori's execution-only training speedups and the experimental
-static-shape path. The CLI controls remain opt-in. The bundled training
-launchers enable the curriculum-neutral subset by default: native RMSNorm,
-foreach EMA updates, and regional dynamic compilation. These options preserve
-the sampler, shape curriculum, and training hyperparameters; mixed-precision
-rounding can still differ at bf16 scale because the kernels reduce in a
-different order.
+static-shape path. The underlying CLI controls remain opt-in. The reviewed 10M
+V6 production recipe enables the curriculum-neutral subset: native RMSNorm,
+foreach EMA updates, regional dynamic compilation, and omission of the
+permanently unused feature decoder.
+These options preserve the sampler, shape curriculum, and training
+hyperparameters; mixed-precision rounding can still differ at bf16 scale
+because the kernels reduce in a different order.
 
 Static compilation remains explicitly opt-in because it requires a bounded
 shape palette, which changes the data curriculum and therefore needs a separate
@@ -42,18 +43,15 @@ execution contract.
 | `--skip-zero-feature-decoder` | Omits feature-decoder work when feature loss remains zero. |
 | `--ema-foreach` | Groups EMA updates into foreach kernels by device and dtype. |
 
-All flags are off by default **in the CLI**. The public training launchers
-(`scripts/train.sh` and `scripts/continue_training.sh`) turn on the
-curriculum-neutral subset — `--native-rms-norm`, `--ema-foreach`, and
-`--compile-encoder-layers dynamic` — through a `SPEEDUP_ARGS` block. Disable
-them per run with `NATIVE_RMS_NORM=0`, `EMA_FOREACH=0`, or
-`COMPILE_ENCODER_LAYERS=none`. The palette flags are never enabled there,
-because they change the data curriculum.
+All flags are off by default **in the underlying CLI**. Reviewed YAML recipes
+pin each value explicitly through `scripts/train`; there are no environment
+switches that can mutate a production recipe. Static palettes belong in the
+reviewed recipe because they change the data curriculum.
 
 `--skip-zero-feature-decoder` requires the feature
 loss to remain zero and unused-head freezing to remain enabled. It is
-deliberately NOT enabled by the scripts: `feature_loss_weight` defaults to 0.5,
-so a blanket enable would make the CLI reject the run.
+never inferred by the launcher: a recipe must enable it together with a
+permanently zero feature-loss schedule, or the underlying CLI rejects the run.
 Static encoder compilation requires either `--shape-palette` or `--fixed-size`
 and also requires `--context-ratio-palette`; the CLI rejects an unbounded static
 compile configuration before model execution.
@@ -115,79 +113,98 @@ the compiler. Isolating each effect:
 eager palette-only arm demonstrates on its own.
 
 So the real choice is not which compiler but whether to accept the curriculum
-change. **`dynamic` is the default in `scripts/*.sh`**: it delivers essentially
-the whole compiler win with no change to what the model trains on. Enable
-`static` plus the palette when you have validated that the nine-shape curriculum
-does not cost model quality -- that is worth roughly another 10 points, and it is
-a data decision, not a performance one.
+change. A reviewed production YAML must explicitly pin dynamic or static mode;
+there is no shell-script default. Enable `static` plus a palette only after
+validating that the discretized curriculum does not cost model quality -- that
+is worth roughly another 10 points, and it is a data decision, not a performance
+one.
 
 Caveat: the wall-clock arms are single runs, not a multi-seed performance
 study. An earlier pass used the trainer's default `{:.1f}` throughput logging,
 which quantizes to ~+/-4.5% at 1.1 steps/s;
 those numbers were withdrawn.
 
-## Build the cache
+## Cache policy
 
-The cache builder loads a checkpoint only to recover architecture and parameter
-shapes. Compiled graphs do not contain those particular weights and can be used
-by a newly initialized model with the same architecture.
+The old generic precompile shell helper was removed. It hard-coded architecture
+and import-time environment settings independently from the training recipe,
+which made it possible to warm a cache under a different QASS, SDPA, native
+RMSNorm, dtype, or DDP contract than the run that consumed it.
 
-```bash
-export TORCHINDUCTOR_CACHE_DIR="$PWD/cache/torchinductor/nori-training-static-b20"
+Compiled recipes pin a persistent TorchInductor cache directory, graph-cache
+controls, and compiler-worker count under `environment`. These are operational
+settings, but pinning them makes `plan` and `launch` share the same artifacts
+instead of relying on PyTorch's volatile `/tmp` default. The YAML also pins the
+settings that affect compilation semantics: shape/context palettes,
+microbatching policy, checkpointing, native RMSNorm, compiler mode/cache limit,
+and DDP-optimizer setting.
 
-CUDA_VISIBLE_DEVICES=4,5,6,7 \
-COMPILE_TEMPLATE_CHECKPOINT=/path/to/checkpoint.pt \
-BATCH_SIZE=20 \
-GRAD_CKPT_THRESHOLD=24576 \
-bash scripts/precompile_training_shapes.sh
-```
+When `scripts/train plan CONFIG.yaml` must profile planned microbatches, it does
+so on exactly one GPU and also populates the compiler cache. A matching bundled
+memory plan may skip that profile, in which case launch builds whichever
+regional dynamic guard variants its encountered shapes require. The variant
+count is workload-dependent; it is not a fixed part of the recipe contract. A
+bounded four-rank empty-cache smoke completed in about 55 seconds with the
+four-worker-per-rank cap, but that fixed-shape smoke does not bound cold-start
+time for the natural-shape curriculum. Do not reconstruct a raw multi-rank
+static precompile or `torchrun` command.
 
-Override `COMPILE_SHAPES` for another signature set:
+### Why the old multi-rank static warmup hung
 
-```bash
-COMPILE_SHAPES='128x16@0.4,128x16@0.7,512x64@0.4,512x64@0.7' \
-bash scripts/precompile_training_shapes.sh
-```
+A reproduced four-rank warmup completed the small and medium signatures, then
+stopped for roughly three hours. NCCL showed ranks 0, 2, and 3 waiting in
+all-reduce sequence 40 while rank 1 had only enqueued sequence 39. Rank 1 was
+still compiling or executing its local graph while the peers had entered the
+backward collective. The watchdog eventually terminated the job. At the same
+time, each rank could spawn PyTorch's default compiler-worker pool and contend
+for the same filesystem cache.
 
-The precompiler runs under DDP because the cache must match the training graph
-boundary. It writes `precompile_manifest.json` into the cache directory.
-The wrapper
-delegates to `benchmarks/bench_training_compile.py`, which can also be run directly
-to compare eager, regional dynamic, and regional static execution.
+Offline multi-signature cache generation is local code generation; it does not
+need DDP and should use one process. The standalone compile benchmark now
+rejects compiled multi-rank runs by default for this reason. Its explicit
+`--allow-distributed-compile` escape hatch is for deliberate DDP timing and
+cold-start qualification. The production path is different: it uses one
+regional dynamic function, a small workload-dependent set of guard variants, a
+persistent cache, and four compiler workers per rank. The bounded four-rank
+empty-cache path completed successfully. An independent eight-rank
+natural-shape run also completed 160 optimizer updates and checkpointed, but
+first-time code generation recurred as new guards were encountered. Replaying
+the populated cache shortened those pauses without eliminating process-local
+AOTAutograd setup. Treat these as finite cold-start pauses, not steady-state
+throughput.
 
-## Train with the cache
+The old fixed-batch warmup was also incompatible with planned microbatching. A
+hard-coded batch of 20 exceeded the safe memory plan on the largest signatures
+and triggered checkpoint retries. The planner now measures the physical
+microbatch for each shape and compiled qualification keeps checkpointing and
+reactive OOM recovery disabled.
 
-Use the same cache directory, batch size, gradient-checkpoint threshold, native
-RMSNorm setting, architecture, PyTorch/CUDA stack, and GPU architecture. The
-snippet below prepares the cache environment and static-compile arguments;
-append the resulting arguments to your existing `synthefy-nori-train` or
-`torchrun` invocation. The public shell launchers deliberately do not enable a
-shape palette for you:
+Do not confuse a slow single-GPU `plan` with this deadlock. A cold plan may be
+quiet for several minutes while it initializes the configured LimiX filter and
+builds the first dynamic graph. It then profiles every physical shape across
+all configured context ratios and candidate microbatches; the complete
+62-shape Tier-1 memory plan is intentionally a long, one-time hardware
+qualification. Healthy output advances through `[MEMORY-PLAN] i/62` on one
+GPU. A failed distributed warmup instead leaves several ranks in an NCCL
+collective with another rank on an earlier sequence number.
 
-```bash
-export TORCHINDUCTOR_CACHE_DIR="$PWD/cache/torchinductor/nori-training-static-b20"
-export TORCHINDUCTOR_FX_GRAPH_CACHE=1
-export TORCHINDUCTOR_AUTOGRAD_CACHE=1
+### Dynamic signature behavior on current main
 
-SHAPE_PALETTE='128x8:0.240,128x48:0.135,128x128:0.126,512x8:0.115,512x48:0.064,512x128:0.061,1536x8:0.124,1536x48:0.079,1536x128:0.056'
-
-STATIC_COMPILE_ARGS=(
-  --shape-palette "$SHAPE_PALETTE"
-  --context-ratio-palette 0.4,0.7
-  --native-rms-norm
-  --ema-foreach
-  --compile-encoder-layers static
-  --compile-mode default
-  --compile-cache-limit 1024
-  --compile-disable-ddp-optimizer
-)
-```
-
-Add `--skip-zero-feature-decoder` only when feature loss remains zero and
-unused-head freezing remains enabled.
-
-The first use in a new process still loads and attaches cached artifacts. It
-should not repeat cold code generation and autotuning.
+The regional dynamic compile was tested across changing row count, feature-token
+count, context split, and planned microbatch size. A guard-level test with the
+current H200 plan's microbatches, which are all at least two, recorded one
+regional-forward graph across those dimensions; batch size one formed one
+additional guard variant. A full single-GPU forward/backward smoke test over
+`128x8@0.4`, `512x48@0.7`, and `1536x128@0.4` produced two total Dynamo graphs,
+spent about 59 seconds on cold compilation, and then ran the three cache-hit
+steps in 0.24--0.35 seconds each. That count is not universal: a separate exact
+final-checkpoint benchmark over five representative shapes recorded three
+Dynamo graphs, and the natural-shape trainer encountered cached signatures
+progressively. Do not hard-code a graph count or assume that a fresh process
+will be pause-free merely because its FX cache is populated. These tests show
+that dynamic compilation can reuse graphs across shapes instead of necessarily
+creating the full Cartesian product of the 62-shape curriculum and context
+ratios.
 
 ## Additional implementation measurements
 

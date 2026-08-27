@@ -102,12 +102,12 @@ class NoriEmbedding(TransformerMixin, BaseEstimator):
         for train_idx, val_idx in cv.split(X):
             # Reuse the single self.model_ instance across folds instead of
             # clone()-ing per fold. NoriRegressor.fit only overwrites the stored
-            # context arrays and leaves the cached _predictor (checkpoint +
-            # torch.compile) intact, and get_embeddings takes the context
-            # explicitly, so nothing is fold-specific — one compiled predictor
-            # serves every fold. clone() resets _predictor (it is set in the
-            # __init__ body, not a get_params() param), which would pay the cold
-            # torch.compile (~minutes on CUDA) again on every fold.
+            # context arrays and leaves the cached _predictor (checkpoint)
+            # intact, and get_embeddings takes the context explicitly, so
+            # nothing is fold-specific — one predictor serves every fold.
+            # clone() resets _predictor (it is set in the __init__ body, not a
+            # get_params() param), which would reload the checkpoint again on
+            # every fold.
             self.model_.fit(X[train_idx], y[train_idx])
             chunks.append(self.model_.get_embeddings(X[val_idx], data_source="test"))
             val_indices.append(val_idx)

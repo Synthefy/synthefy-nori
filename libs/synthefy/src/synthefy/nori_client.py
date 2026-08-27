@@ -54,6 +54,7 @@ from synthefy.nori_data_models import (
     MAX_MULTI_TARGET_COPULA_PIT_JITTER,
     MAX_MULTI_TARGET_DRAWS,
     MemoryPolicyInput,
+    MemoryReport,
     MultiTargetPredictionPolicy,
     MultiTargetPredictionStrategy,
 )
@@ -630,6 +631,36 @@ def _local_memory_policy_available() -> bool:
         # when synthefy-nori is not installed at all (the base synthefy install, the
         # common case this check exists for) it raises here instead of returning None.
         return False
+
+
+def _local_stream_context_available() -> bool:
+    """Whether the installed local policy understands ``stream_context``.
+
+    The lightweight client can be newer than the separately installed model package.
+    A runtime that has the original ``memory_policy=`` surface therefore passes the
+    module-presence check above but would reject this newer field deep inside fit().
+    Inspect the authoritative local model only on the local execution path so remote
+    clients still do not import the heavyweight optional package.
+    """
+    from synthefy_nori.inference.memory_policy import MemoryPolicy as LocalMemoryPolicy
+
+    return "stream_context" in LocalMemoryPolicy.model_fields
+
+
+def _require_local_memory_policy_capabilities(memory_policy: MemoryPolicyInput) -> None:
+    """Fail with an upgrade hint before forwarding an unsupported local policy."""
+    if not _local_memory_policy_available():
+        raise ImportError(
+            "memory_policy= requires synthefy-nori >= 0.13.0 (the serving-memory policy). "
+            "Upgrade with: pip install -U synthefy-nori."
+        )
+    stream_context_was_sent = not isinstance(memory_policy, str) and "stream_context" in memory_policy.model_fields_set
+    if stream_context_was_sent and not _local_stream_context_available():
+        raise ImportError(
+            "memory_policy.stream_context requires a newer synthefy-nori; the "
+            "installed runtime's MemoryPolicy does not include the stream_context "
+            "field. Upgrade with: pip install -U synthefy-nori."
+        )
 
 
 def _local_large_context_available() -> bool:
@@ -1223,18 +1254,16 @@ class SynthefyNoriClient:
             self.api_key = api_key  # unused in local mode; may be None
             self.client = None
 
-        #: What the server did about ``memory_policy=`` on the most recent :meth:`predict`, or
+        #: What the runtime did about ``memory_policy=`` on the most recent :meth:`predict`, or
         #: ``None`` if that call did not set one. Mirrors the local package's
         #: ``NoriRegressor.memory_report_``: which fallback rung ran, the estimated and
         #: resident cache sizes, the query chunk, any dropped context rows, plus which fields
-        #: the server clamped and any coherence notes about the policy sent.
+        #: hosted serving clamped, any coherence notes, and the chronological attempt history.
         #:
-        #: Worth reading, because the rung is decided by the replica's free VRAM rather than
-        #: by the request -- it is not knowable from the client side.
+        #: Worth reading, because the rung is decided by available VRAM rather than by the
+        #: request -- it is not knowable before the prediction runs.
         #:
-        #: **Hosted modes only (remote/AWS).** In local mode the policy is honoured by the
-        #: estimator owned by this client, but no report is copied here. Use ``NoriRegressor``
-        #: directly and read ``memory_report_`` if you need the local report.
+        #: Populated in local, remote, and AWS modes whenever a memory policy is requested.
         self.last_memory_report: Optional[Dict[str, Any]] = None
         # Per-internal-call reports for the most recent hosted multi-target
         # prediction that explicitly set memory_policy.
@@ -1836,11 +1865,7 @@ class SynthefyNoriClient:
             init_kwargs["model"] = self._local_variant
         is_multi_target = np.asarray(request.y_train, dtype=float).ndim == 2
         if request.memory_policy is not None:
-            if not _local_memory_policy_available():
-                raise ImportError(
-                    "memory_policy= requires synthefy-nori >= 0.13.0 (the serving-memory policy). "
-                    "Upgrade with: pip install -U synthefy-nori."
-                )
+            _require_local_memory_policy_capabilities(request.memory_policy)
             # NoriRegressor belongs to another package and expects its own MemoryPolicy
             # class (or a plain input), not this client's equivalent pydantic class.
             init_kwargs["memory_policy"] = (
@@ -1942,6 +1967,16 @@ class SynthefyNoriClient:
                 == "autoregressive"
                 else None
             )
+            if request.memory_policy is not None:
+                report = getattr(regressor, "memory_report_", None)
+                if report is None:
+                    raise ValueError(
+                        "memory_policy= was sent to local synthefy-nori but no "
+                        "memory_report_ came back. The installed runtime predates "
+                        "this capability or ignored the policy; upgrade "
+                        "synthefy-nori or omit memory_policy=."
+                    )
+                self.last_memory_report = MemoryReport.model_validate(report).model_dump()
             if request.large_context_policy is not None:
                 self.last_large_context_report = _normalized_large_context_report(
                     request, getattr(regressor, "large_context_report_", None)
@@ -1992,7 +2027,11 @@ class SynthefyNoriClient:
         discretize: Optional[str] = None,
         categorical_levels: Optional[VectorLike] = None,
     ) -> List[float]:
-        if output_type != DEFAULT_OUTPUT_TYPE or request.large_context_policy is not None:
+        if (
+            output_type != DEFAULT_OUTPUT_TYPE
+            or request.large_context_policy is not None
+            or request.memory_policy is not None
+        ):
             # "median" is a point output but still needs the estimator API
             # (see _local_regressor_predict). Discretization cannot reach here:
             # _validate_output_type rejects that combination up front.
@@ -2025,11 +2064,7 @@ class SynthefyNoriClient:
             if categorical_levels is not None:
                 extra["categorical_levels"] = categorical_levels
         if request.memory_policy is not None:
-            if not _local_memory_policy_available():
-                raise ImportError(
-                    "memory_policy= requires synthefy-nori >= 0.13.0 (the serving-memory policy). "
-                    "Upgrade with: pip install -U synthefy-nori."
-                )
+            _require_local_memory_policy_capabilities(request.memory_policy)
             # A dict, not our MemoryPolicy instance: the library's coerce() accepts its OWN
             # class, a dict, a preset name or None -- a same-named class from this package is
             # none of those and would raise. exclude_unset for the same reason as the wire

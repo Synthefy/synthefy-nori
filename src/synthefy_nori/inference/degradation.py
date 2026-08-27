@@ -28,7 +28,7 @@ Because the categories form a tree, escalation is inherited: a future fallback
 adds one subclass here and every caller who already asked for a strict pipeline
 gets it, with no other file to edit.
 
-``synthefy_nori.evaluation``'s runner runs every scored predict call inside
+``synthefy_nori.evaluation``'s harness runs every scored predict call inside
 ``strict_pipeline(SvdFallbackWarning)``, so an eval records a failed row instead
 of scoring a broken projection. It deliberately does NOT escalate
 :class:`ContextSubsampledWarning`: trimming context to an element budget is
@@ -67,6 +67,18 @@ class ContextSubsampledWarning(DegradedPipelineWarning):
 
     The declarative way to refuse this is ``memory_policy={"allow_subsample": False}``,
     which raises before any prediction is computed.
+    """
+
+
+class CacheQuantizedWarning(DegradedPipelineWarning):
+    """The context key/value cache was quantized to int8 to keep it resident (or
+    offloadable) under the configured memory budget.
+
+    Measured cost is small (``|dR2| ~ 6e-6``), but it is a real, requested-then-
+    silently-granted-anyway fidelity loss, not merely a slowdown -- unlike
+    ``offload_to_host``, which moves bytes without changing them. The
+    declarative way to refuse this is ``memory_policy={"allow_quantization": False}``,
+    which keeps every rung bit-exact and offloads to host RAM sooner instead.
     """
 
 

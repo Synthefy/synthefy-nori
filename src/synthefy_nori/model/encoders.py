@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from synthefy_nori.model.layer import EncoderBaseLayer, MLP
-from typing import Any, Literal
-from torch.nn.init import orthogonal_
 import numpy as np
 import einops
 
@@ -129,9 +126,14 @@ class RBFembedding(nn.Module):
         as_tokenizer: bool = False,
         use_original_features: bool = False,
         dtype: torch.dtype = torch.float32,
+        compute_dtype: torch.dtype = torch.float64,
     ):
         super().__init__()
         self.dtype = dtype
+        # Precision of the RBF kernel computation (diff/exp). float64 (default)
+        # matches the reference --rbf-compute-dtype float64; float32 trades a
+        # little accuracy for speed.
+        self.compute_dtype = compute_dtype
         self.n_kernels = n_kernels
         self.exponent_digits = exponent_digits
         self.as_tokenizer = as_tokenizer
@@ -236,9 +238,9 @@ class RBFembedding(nn.Module):
         # x: shape (batch_size, n_features)
         x = x.squeeze(-1)
         S, F = x.shape[0], (x.shape[1] if x.ndim > 1 else 1)
-        # MPS does not implement float64. Keep the higher-precision path on
-        # CPU/CUDA and use float32 for the same calculation on Apple GPUs.
-        work_dtype = torch.float32 if x.device.type == "mps" else torch.float64
+        # MPS does not implement float64. Use the configured precision on
+        # CPU/CUDA and float32 for the same calculation on Apple GPUs.
+        work_dtype = torch.float32 if x.device.type == "mps" else self.compute_dtype
         x_work = x.to(work_dtype)
         if self.gate_mlp is not None:
             x_scaled, exp_i = self._rbf_scientific_decompose(x_work)
@@ -317,7 +319,7 @@ class MaskEmbEncoder(nn.Module):
         num_features: int,
         emsize: int,
         mask_embedding_size: int,
-        numeric_embed_type: str = "linear",
+        numeric_embed_type: str = "RBF",
         RBF_config: dict | None = None,
         PBLD_config: dict | None = None,
         nan_to_zero: bool = False,
@@ -342,27 +344,9 @@ class MaskEmbEncoder(nn.Module):
         # All masked positions use the same vector
         self.mask_embedding = nn.Parameter(torch.randn(self.mask_embedding_size))
 
-        # MLP for numerical features: input is 1, output is embedding_dim
-        self.numeric_mlp = nn.Sequential(
-            nn.Linear(1, self.embedding_dim // 2, bias=bias),
-            nn.LayerNorm(self.embedding_dim // 2),
-            nn.ReLU(),
-            nn.Linear(self.embedding_dim // 2, self.embedding_dim, bias=bias),
-            nn.LayerNorm(self.embedding_dim),
-            nn.ReLU(),
-        )
-
+        # Tokenizer for numerical features: input is 1, output is embedding_dim
         self.numeric_embed_type = numeric_embed_type
-        if numeric_embed_type == "linear":
-            self.numeric_mlp = nn.Sequential(
-                nn.Linear(1, self.embedding_dim // 2),
-                nn.LayerNorm(self.embedding_dim // 2),
-                nn.ReLU(),
-                nn.Linear(self.embedding_dim // 2, self.embedding_dim),
-                nn.LayerNorm(self.embedding_dim),
-                nn.ReLU(),
-            )
-        elif numeric_embed_type == "RBF":
+        if numeric_embed_type == "RBF":
             self.numeric_mlp = RBFembedding(
                 embedding_size=self.embedding_dim,
                 exponent_digits=1,
@@ -374,6 +358,9 @@ class MaskEmbEncoder(nn.Module):
                 center_range=(0.0, 10.0),
                 use_original_features=RBF_config["use_original_features"],
                 as_tokenizer=True,
+                compute_dtype={"float32": torch.float32, "float64": torch.float64}.get(
+                    RBF_config.get("compute_dtype"), torch.float64
+                ),
             )
         elif numeric_embed_type == "PBLD":
             self.numeric_mlp = PBLDEmbedding(
@@ -381,8 +368,16 @@ class MaskEmbEncoder(nn.Module):
                 n_frequencies=PBLD_config.get("n_frequencies", 48) if PBLD_config else 48,
                 as_tokenizer=True,
             )
+        elif numeric_embed_type == "linear":
+            raise ValueError(
+                "numeric_embed_type='linear' was removed with the classification "
+                "path: it was an untrained MLP tokenizer that no shipped "
+                "checkpoint used. A checkpoint whose encoder_config_x still says "
+                "'linear' predates that removal and cannot be loaded; rebuild it "
+                "with 'RBF' (the default) or 'PBLD'."
+            )
         else:
-            raise ValueError(f"Invalid numeric_embed_type: {numeric_embed_type}")
+            raise ValueError(f"Invalid numeric_embed_type: {numeric_embed_type!r} (expected 'RBF' or 'PBLD')")
 
         # Merging layer: maps the concatenated feature vectors back to embedding_dim.
         self.fusion_network = nn.Sequential(
@@ -543,7 +538,7 @@ class ValidFeatureEncoder(nn.Module):
             assert isinstance(frozen_valid_feature_num, torch.Tensor)
             valid_feature_num = frozen_valid_feature_num
         # Store on self for backward compat (inference predictor reads it),
-        # and also pass through dict for compile-friendly access.
+        # and also pass through the dict for downstream access.
         self.valid_feature_num = valid_feature_num.detach()
         input["_valid_feature_num"] = valid_feature_num
 
@@ -562,104 +557,6 @@ class ValidFeatureEncoder(nn.Module):
         x = torch.cat([x, zeros], -1)
 
         input[self.out_key] = x
-        return input
-
-
-class EmbYEncoderStep(nn.Module):
-    """A simple linear input encoder step."""
-
-    def __init__(
-        self,
-        *,
-        emsize: int,
-        n_classes: int = 10,
-        in_keys: list[str] = ["data"],
-        out_key: str = "data",
-    ):
-        """Initialize the EmbYEncoderStep.
-
-        Args:
-            emsize: The embedding size, i.e. the number of output features.
-            n_classes: Number of classes
-        """
-        super().__init__()
-
-        # Ensure the embedding dimension is large enough to support orthogonal initialization.
-        assert emsize > n_classes + 1, (
-            f"emsize ({emsize}) must be >= n_classes+1 ({n_classes + 1}) for orthogonal initialization"
-        )
-
-        # Generate an orthogonal matrix of size (n_classes + 1) × emsize
-        ortho_matrix = torch.empty(n_classes + 1, emsize)
-        orthogonal_(ortho_matrix)  # Initialize in-place as an orthogonal matrix
-
-        # Decompose the matrix: the first n_classes rows are used for y_embedding, and the last row is used for y_mask.
-        y_embed_weights = ortho_matrix[:n_classes, :]  # Shape (n_classes, emsize)
-        y_mask_weight = ortho_matrix[n_classes : n_classes + 1, :]  # Shape (1, emsize)
-
-        self.y_embedding = nn.Embedding(n_classes, emsize)
-        self.y_embedding.weight.data = y_embed_weights.clone()
-
-        self.y_mask = nn.Embedding(1, emsize)
-        self.y_mask.weight.data = y_mask_weight.clone()
-        self.in_keys = in_keys
-        self.out_key = out_key
-        if len(self.in_keys) > 1:
-            print(
-                "\033[30;43mWarning: The EmbYEncoderStepl function is only for processing Y, and in_keys must contain exactly one key.\033[0m"
-            )
-
-    def forward(self, input: dict[str, torch.Tensor | int]) -> dict[str, torch.Tensor]:
-        y = input[self.in_keys[0]]
-        eval_pos = input["eval_pos"]
-        y = y.int()  # type: ignore
-        y_train = y[:, :eval_pos]
-        y_test = torch.zeros_like(y[:, eval_pos:], dtype=torch.int)
-        y_train_emb = self.y_embedding(y_train)
-        y_test_emb = self.y_mask(y_test)
-        y_emb = torch.cat([y_train_emb, y_test_emb], dim=1)
-
-        input[self.out_key] = y_emb
-        return input
-
-
-class MulticlassTargetEncoder(nn.Module):
-    """Use the target's index as the class value, with each class corresponding to an index.
-
-    Rank-remaps arbitrary integer class labels to contiguous 0..K-1 based on
-    the sorted unique labels observed in the context rows.  The vectorised
-    implementation avoids per-batch Python loops and torch.unique so that
-    torch.compile can trace through this module without a graph break.
-    """
-
-    MAX_CLASSES: int = 10  # model hard-cap (matches decoder width)
-
-    def __init__(self, in_keys: list[str] = ["data"], out_key: str = "data"):
-        super().__init__()
-        self.in_keys = in_keys
-        self.out_key = out_key
-
-    def forward(self, input: dict[str, torch.Tensor | int]) -> dict[str, torch.Tensor]:
-        x: torch.Tensor = input[self.in_keys[0]]  # type: ignore  [B, S, 1]
-        eval_pos = input["eval_pos"]
-        max_cls = self.MAX_CLASSES
-
-        # Which classes appear in each batch's context?  [B, max_cls] bool
-        # Broadcasting: ctx[:, :, :, None] == arange[None, None, None, max_cls]
-        ctx = x[:, :eval_pos, :]  # [B, ep, 1]
-        class_ids = torch.arange(max_cls, device=x.device, dtype=x.dtype)  # [max_cls]
-        class_present = (ctx == class_ids).any(dim=1)  # [B, max_cls]
-
-        # Exclusive prefix-sum: ranks[b, c] = #present classes with index < c
-        cum = class_present.to(torch.long).cumsum(dim=1)  # [B, max_cls]
-        ranks = torch.zeros_like(cum)
-        ranks[:, 1:] = cum[:, :-1]  # [B, max_cls]
-
-        # Look up the rank for every position
-        x_idx = x[:, :, 0].to(torch.long).clamp(0, max_cls - 1)  # [B, S]
-        x_ranked = torch.gather(ranks, 1, x_idx).unsqueeze(-1)  # [B, S, 1]
-
-        input[self.out_key] = x_ranked.to(x.dtype)
         return input
 
 
@@ -711,7 +608,7 @@ class NormalizationEncoder(nn.Module):
             std = frozen.get("std") if frozen else None
             x, mean, std = normalize_mean0_std1(x, eval_pos=pos, mean=mean, std=std)
             # Store on self for backward compat (inference predictor reads it),
-            # and also pass through dict for compile-friendly access.
+            # and also pass through the dict for downstream access.
             self.mean = mean.detach()
             self.std = std.detach()
             input["_norm_mean"] = mean
@@ -732,7 +629,7 @@ def get_x_encoder(
     embedding_size: int,
     mask_embedding_size: int,
     encoder_use_bias: bool,
-    numeric_embed_type: str = "linear",
+    numeric_embed_type: str = "RBF",
     RBF_config: dict | None = None,
     PBLD_config: dict | None = None,
     in_keys: list = ["data"],
@@ -765,28 +662,11 @@ def get_x_encoder(
     )
 
 
-def get_cls_y_encoder(
-    *, num_inputs: int, embedding_size: int, nan_handling_y_encoder: bool, max_num_classes: int
-) -> nn.Module:
-    steps = []
-    inputs_to_merge = [{"name": "data", "dim": num_inputs}]
-    if nan_handling_y_encoder:
-        steps += [NanEncoder(in_keys=["data"], out_key="nan_encoding")]
-        inputs_to_merge += [{"name": "nan_indicators", "dim": num_inputs}]
-
-    if max_num_classes >= 2:
-        steps += [MulticlassTargetEncoder()]
-
-    steps += [EmbYEncoderStep(emsize=embedding_size, n_classes=max_num_classes)]
-    return nn.Sequential(*steps)
-
-
 def get_reg_y_encoder(
     *,
     num_inputs: int,
     embedding_size: int,
     nan_handling_y_encoder: bool,
-    max_num_classes: int = 10,
 ) -> nn.Module:
     steps = []
     inputs_to_merge = [{"name": "data", "dim": num_inputs}]

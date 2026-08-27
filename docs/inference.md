@@ -314,6 +314,6 @@ with strict_pipeline():          # evals / benchmarks: refuse to report a degrad
 
 Filters are restored on exit, so this is safe in a loop. Equivalent to
 `warnings.simplefilter("error", DegradedPipelineWarning)`, so `-W`, `PYTHONWARNINGS` and
-pytest's `filterwarnings` work as well. `synthefy_nori.evaluation`'s runner already
+pytest's `filterwarnings` work as well. `synthefy_nori.evaluation`'s harness already
 wraps every scored predict call in `strict_pipeline(SvdFallbackWarning)`. Full rationale:
 README, "Silent degradation".

@@ -1,17 +1,14 @@
 """Standalone tests for WS1 KV-cache scaling (torch-only, CPU-runnable)."""
 
-import torch
+import importlib.util, os, torch
 
-# A normal package import. The internal tier co-locates this file next to the module and
-# loads it by path; here it lives in tests/ with the rest of this tier's suite, where a
-# path-relative load would point at the wrong directory -- and the module is importable
-# anyway, so the path hack bought nothing.
-from synthefy_nori.model.kv_cache_scaling import (
-    ScalableSeqKV,
-    dequantize_int8,
-    quantize_int8,
-    scale_caches,
+_spec = importlib.util.spec_from_file_location(
+    "kv_cache_scaling", os.path.join(os.path.dirname(__file__), "kv_cache_scaling.py")
 )
+_m = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_m)
+ScalableSeqKV, scale_caches = _m.ScalableSeqKV, _m.scale_caches
+quantize_int8, dequantize_int8 = _m.quantize_int8, _m.dequantize_int8
 
 
 def test_quant_roundtrip():

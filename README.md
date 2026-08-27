@@ -403,37 +403,33 @@ only. Runnable example:
 [`examples/interpretability_regression.py`](examples/interpretability_regression.py);
 full guide in [docs/interpretability.md](docs/interpretability.md).
 
-### SHAPIQ explanation speed
+### Explanation speed (Nori vs TabICL vs TabPFN)
 
-SHAPIQ's baseline imputer stacks every coalition of an explanation into a single
-batched `model.predict` call, so on Nori the per-explanation wall-clock is
-dominated by one forward pass — encoding the fixed training context — and is
-essentially **flat in the coalition budget**. On a single H200 (superconductivity,
-top-12 features, 1500 context rows, mean over 5 test rows), order-1 Shapley values
-(`index="SV"`) cost ~2.2–2.3 s/explanation and order-2 pairwise interactions
-(`max_order=2`, k-SII) ~1.3–1.5 s/explanation across budgets of 32–512, both
-hovering near the ~1.9 s single-batched-predict floor. The takeaway: you can raise
-`budget` for far more accurate attributions at near-zero extra cost, and
-interaction order barely changes runtime.
+Because the explainers treat each model as a `model.predict` callable, the
+explanation-speed benchmarks run **cross-model** over Nori, TabICLv2, and TabPFN
+on the identical path (TabICL/TabPFN via their installed sklearn-style
+regressors in [`benchmarks/_bench_models.py`](benchmarks/_bench_models.py)). On a single H200
+(`superconductivity`, top-12 features, 1500 context rows, mean over 5 test rows):
 
-Reproduce (prints the results table and writes `benchmarks/plots/shapiq_speed.png`):
-`uv run python benchmarks/bench_shapiq_speed.py`
+- **SHAPIQ** — shapiq's baseline imputer stacks every coalition into one batched
+  `predict`, so per-explanation wall-clock is **flat in the coalition budget**
+  for every model (≈ one forward pass): ~0.2 s (TabICL), ~0.9 s (TabPFN), ~1.6 s
+  (Nori), roughly constant from budget 32 to 512 and across interaction order.
+  You can raise `budget` for far more accurate attributions at near-zero cost.
+- **SHAP** — `shap.PermutationExplainer` scales near-linearly with `max_evals`
+  (e.g. Nori ~3.7→21.6 s/row, TabPFN ~3.2→31.5 s/row), `shap.KernelExplainer`
+  stays roughly flat, and shapiq's imputation explainer is flat and fastest —
+  ~2–5× faster than Kernel and up to ~20× faster than Permutation at high budgets.
 
-### SHAP explanation speed
+Reproduce (writes plots to `benchmarks/plots/`; full tables in
+[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md)):
 
-The classic `shap` library also works on Nori via a `model.predict` callable. The
-benchmark below measures per-row explanation time as the evaluation budget grows on
-a 12-feature subset of `superconductivity` (context = 1500 rows, 5 test rows, H200).
-Because every coalition is one Nori forward pass, `shap.KernelExplainer` stays
-roughly flat (~3.0–3.7 s/row from nsamples 32 to 256, ~6.2 s/row at 512) while
-`shap.PermutationExplainer` scales near-linearly with `max_evals`, climbing from
-~5 s/row to ~28 s/row at 512. For comparison, shapiq's imputation explainer
-(`index="SV"`) computes the same single-feature Shapley values in ~0.9–1.6 s/row
-regardless of budget — roughly 2–4× faster than KernelExplainer and up to ~20×
-faster than PermutationExplainer at high budgets.
-
-Reproduce (prints the results table and writes `benchmarks/plots/shap_speed.png`):
-`uv run python benchmarks/bench_shap_speed.py`
+```bash
+uv sync --extra internal-eval            # tabpfn, tabicl, shap, shapiq, matplotlib, openml
+uv run python benchmarks/prep_data.py    # downloads the OpenML datasets
+uv run python benchmarks/bench_shapiq_speed.py
+uv run python benchmarks/bench_shap_speed.py
+```
 
 ## Benchmarks
 
@@ -564,7 +560,8 @@ mixed-precision noise (max abs diff ~3e-3, measured below) at identical R². The
 **preprocessing speedups** are **R²-neutral**:
 toggling them shifts individual predictions by a tiny, R²-equivalent amount (below
 cross-environment noise), not bit-for-bit. For the exact un-accelerated path, set
-each to its off value (see below).
+each to its off value (see below). **Pipeline batching** likewise preserves the
+ensemble math but can reassociate mixed-precision GEMMs at the last few bits.
 
 | Env var | Default | What it does |
 |---|---|---|
@@ -573,6 +570,8 @@ each to its off value (see below).
 | `SYNTHEFY_QUANTILE_MAX` / `SYNTHEFY_QUANTILE_SUBSAMPLE` | — | Tune the cap above (max quantiles / fit-subsample size). |
 | `SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE` | `2000` | Fit preprocessing on at most this many rows, apply to all rows. Acts on large context; set `0` to fit on all rows. |
 | `SYNTHEFY_ENABLE_CACHED_INFERENCE` | `1` (on) | Reuse the train-side attention K/V across test chunks (KV cache); ~2-3x faster on large test sets that chunk. Set `0` to disable (or `SYNTHEFY_DISABLE_CACHED_INFERENCE=1`). |
+| `SYNTHEFY_DISABLE_PIPELINE_BATCHING` | `0` (batching on) | Set `1` to run preprocessing-ensemble model calls one at a time. Batching groups up to four same-shaped members when each has at most 256 processed features. |
+| `SYNTHEFY_EXACT_CACHED_CUDAGRAPHS` | `0` (off) | Set `1` for exact B=1 resident-cache inference accelerated by eager CUDA-graph replay. This disables pipeline batching, requires CUDA plus `setuptools`, and safely falls back to eager B=1 when unavailable. |
 | `SYNTHEFY_MAX_ELEMENTS_BUDGET` | VRAM-aware | Inference element budget; raise on large GPUs for full-context inference. Prefer `memory_policy={"elements_budget": N}`. |
 
 > ⚠️ **`SYNTHEFY_CACHE_MAX_GB` has been removed** and now raises if set. It used to
@@ -601,22 +600,27 @@ NoriRegressor(model="nori-6m", memory_policy="exact")                   # never 
 NoriRegressor(model="nori-6m", memory_policy="max_context")             # fit the biggest table
 NoriRegressor(model="nori-6m", memory_policy="off")                     # no cache at all
 NoriRegressor(model="nori-6m", memory_policy={"gpu_budget_frac": 0.25}) # e.g. from a config file
+NoriRegressor(model="nori-6m", memory_policy={"stream_context": True})  # bounded GPU staging
 ```
 
-Under the hood it walks a ladder, using the cheapest rung that can serve the request:
+The ordinary policy walks a ladder using the cheapest rung that can serve the request;
+explicit streaming reports its own `stream_*` path:
 
 | rung | what it does | exact? |
 |---|---|---|
 | `resident_bf16` | cache fits VRAM at full precision | **yes** |
 | `resident_int8` | quantize to stay on the GPU instead of streaming | ~6e-6 R² |
 | `offload_int8` | cache lives in host RAM, streamed per layer | quantized |
+| `stream_bf16` | explicitly keep context/KV on the host and stage bounded row slices | numerically close |
+| `stream_int8` | the same bounded host-only path with quantized K/V | quantized |
 | `context_row_chunk` | after an OOM: also cap rows per build step | **yes** |
 | `plain_loop` | no cache; several times slower, may drop context rows | **yes** |
 
-**Only the int8 rungs cost accuracy, and `resident_int8` is only reached when full
-precision would not fit.** A table that serves correctly today keeps bit-exact
-predictions — accuracy is spent only to avoid a fallback that is slower or fatal. Use
-`memory_policy="exact"` to forbid quantizing outright (it offloads instead).
+**Only the int8 rungs quantize the cache, and `resident_int8` is only reached when full
+precision would not fit.** Explicit streaming is also not bit-exact, even at BF16,
+because chunked GEMMs and FP32 online attention change reduction order. A small CUDA
+comparison measured max prediction delta 2.93e-3 and mean delta 7.44e-4. Use
+`memory_policy="exact"` to forbid quantizing on the ordinary adaptive ladder.
 
 Budgets are **fractions of your hardware**, so one setting travels from a laptop GPU to
 an H200:
@@ -630,11 +634,26 @@ an H200:
 | `cache_dtype` | `"bf16"` | precision the cache **starts** at |
 | `allow_quantization` | `True` | may bf16 drop to int8 to stay resident? |
 | `offload_to_host` | `True` | may the cache move to host RAM? |
+| `stream_context` | `False` | explicitly keep full context/KV state on the host and bound GPU staging; resolves to `stream_bf16` or `stream_int8` |
 | `context_row_chunk` | `None` | cap context rows per build step (auto after an OOM) |
 | `elements_budget` | auto | per-forward element cap; drives chunking + subsampling |
 | `allow_subsample` | `True` | may context rows be dropped to fit? `False` = raise |
 
-> **Host offload needs RAM > 1.6 × VRAM at these defaults.** Offload only engages once
+Set `memory_policy={"stream_context": True}` when context-attention GPU memory should
+stop scaling with context length. Streaming forces the cache onto the host, disables
+cross-call context reuse, and resolves an omitted `context_row_chunk` from accelerator
+VRAM: **2048** rows below 40 GiB, **8192** rows from 40 GiB, and **16384** rows from
+80 GiB. An explicit value is preserved. The selected number is a maximum staged-row
+cap, not an exact internal block width: runtime may split K/V blocks smaller to stay
+within its attention workspace. After any larger resolved first attempt, fit-time OOMs
+retry the bounded **2048 → 1024 → 512 → 256** row ladder. This is still constant GPU
+memory with respect to total context length because the hardware
+tier does not grow with the dataset. The full context must fit the configured host
+budget. If it does not, Nori raises instead of silently falling back to `plain_loop` or
+dropping the requested mechanism.
+
+> **Ordinary adaptive host offload needs RAM > 1.6 × VRAM at these defaults.**
+> Offload only engages once
 > the cache exceeds the GPU budget, and it can only succeed within the host budget — so
 > `0.25 × RAM` has to exceed `0.4 × VRAM`. Below that ratio the offload rung is
 > unreachable and a spilling request goes straight to `plain_loop`. Concretely, a 143 GB
@@ -801,7 +820,7 @@ not harden the next one — safe inside a loop over datasets. It is a thin wrapp
 
 Because the categories form a tree, escalation is inherited: a new fallback adds one
 subclass and every caller who already asked for a strict pipeline gets it. **The eval
-runner (`synthefy_nori.evaluation`) already wraps every scored predict call in
+harness (`synthefy_nori.evaluation`) already wraps every scored predict call in
 `strict_pipeline(SvdFallbackWarning)`** — a broken SVD is recorded as a failed row
 rather than scored. It deliberately does not escalate `ContextSubsampledWarning`, since
 trimming context to a budget is expected on large tables.
@@ -820,6 +839,41 @@ mean R² unchanged (0.8087 → 0.8089). A large-scale A/B restricted to the tabl
 where they actually engage (n>5000) measured a mean ΔR² of +0.00002 (max |Δ|
 0.0004) — within run-to-run noise.
 
+### Preprocessing-ensemble batching (on by default)
+
+The default eight-member ensemble produces two natural groups of four members
+with identical model-input shapes. Nori now runs each group as one model batch,
+then restores configured member order and averages the full decoder outputs just
+as the one-at-a-time path does. It applies only to ordinary regression with a
+resident full-precision cache (or no cache), deterministic eval-mode models, and
+at most 256 processed features per member. Retrieval, imputation, DDP, dropout,
+int8/offloaded caches, wide tables, and memory-heavy requests stay on the existing
+one-at-a-time path. A CUDA OOM or unsupported output shape also retries the whole
+call there.
+
+On one H200 with the public 6M model, 512 context rows, 48 raw features, and the
+shipped eight-member config, batching reduced hot point-prediction latency from
+1.28 s to 0.80 s without a cache (1.59×), and from 0.88 s to 0.53 s with a reused
+resident cache (1.65×). The maximum point and full 999-quantile-bank differences
+versus one-at-a-time fp16 execution were both 1.90e-3. Peak VRAM rose by 0.74 GiB
+without a cache and 0.26 GiB with a
+resident cache on that workload. Set `SYNTHEFY_DISABLE_PIPELINE_BATCHING=1` for
+the legacy execution order or exact debugging comparisons.
+
+For fit-once/serve-many workloads that require bit-exact B=1 predictions, set
+`SYNTHEFY_EXACT_CACHED_CUDAGRAPHS=1`. This keeps all eight ensemble members at
+B=1 but captures the cached encoder-layer eager kernels and replays them without
+Python launch overhead. On the public 100M model (512 context rows, 600 query
+rows, 48 raw features), hot-cache latency fell from 2.81 s to 1.53 s (1.83×),
+with bit-exact point predictions and all 999 quantiles. Current B=4 execution was
+1.38 s on the same workload, so exact mode recovered most of its throughput.
+In separate processes, exact B=1 peaked at 12.63 GiB allocated versus 13.37 GiB
+for B=4. If the resident cache is not selected, this mode remains exact eager B=1
+rather than applying CUDA graphs to the ordinary forward.
+CUDA-graph setup is shape-specific and took a few seconds in this benchmark;
+use it for repeated resident-cache queries, not one-shot or rapidly changing
+table shapes.
+
 ### KV caching (on by default)
 
 The cached prediction path is **enabled by default**. It projects the train-side
@@ -836,18 +890,15 @@ host RAM or quantized rather than skipped** — see
 `SYNTHEFY_ENABLE_CACHED_INFERENCE=0` or the `SYNTHEFY_DISABLE_CACHED_INFERENCE=1`
 kill switch, or `memory_policy={"cache": False}`.
 
-On the 1024-feature QSAR-TID-11 set (single H200), `predict` wall-clock vs.
-test-set size with the cache OFF vs. ON shows the OFF time grows linearly
-with the chunk count while the ON time stays roughly flat, reaching a **2.57×**
-speedup on the full 1723-row test set (10.7 s vs. 27.4 s; ~1.3–1.9× at smaller
-sizes). Predictions are effectively identical (max abs diff ~1.5e-3, attributable
-to fp16 mixed precision — the cached path is mathematically equivalent). The cache
-engages automatically whenever inference already chunks (`n_test > chunk_size`),
-which happens readily on many-feature tables or large test sets (here forced via
-`SYNTHEFY_MAX_ELEMENTS_BUDGET=1050000`, driving `chunk_size` to its 256-row floor →
-7 chunks).
-
-Reproduce (prints the results table and writes `benchmarks/plots/kv_cache_speed.png`):
+On the 1024-feature QSAR-TID-11 set (single H200, element budget lowered so
+`chunk_size` hits its 256-row floor → ~7 chunks), `predict` wall-clock vs.
+test-set size with the cache OFF grows roughly linearly with the chunk count
+(17→39 s) while the ON time stays much flatter (15→22 s), up to a **2.04×**
+speedup on the full 1723-row test set. Predictions are equivalent up to fp16
+mixed-precision noise (max abs diff ~3e-3 — the cached path is mathematically
+equivalent). This benchmark is **Nori-only**: the KV cache has no TabPFN / TabICL
+equivalent. Reproduce (plot to `benchmarks/plots/`, table in
+[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md)):
 `uv run python benchmarks/bench_kv_cache.py`
 
 ```bash
@@ -855,70 +906,62 @@ Reproduce (prints the results table and writes `benchmarks/plots/kv_cache_speed.
 
 # To disable them all (e.g. for exact reproducibility / debugging):
 SYNTHEFY_GPU_SVD=0 SYNTHEFY_CAP_QUANTILES=0 SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE=0 \
-SYNTHEFY_ENABLE_CACHED_INFERENCE=0 \
+SYNTHEFY_ENABLE_CACHED_INFERENCE=0 SYNTHEFY_DISABLE_PIPELINE_BATCHING=1 \
 python your_inference_script.py
 ```
 
 ## Training
 
-Smoke test (2 steps, single GPU, no logging):
+Reviewed runs use a committed YAML recipe and the sole supported launcher:
 
 ```bash
-TOTAL_STEPS=2 NPROC_PER_NODE=1 WANDB_MODE=disabled bash scripts/train.sh
+scripts/train plan configs/training/production/<recipe>.yaml
+scripts/train launch configs/training/production/<recipe>.yaml
 ```
 
-Training runs entirely on synthetic data and **trains to completion**: there is
-no real-data validation in the loop, so no benchmark data needs to
-be downloaded to train, and no eval signal influences checkpoint selection. Each
-run writes periodic and final checkpoints, and each curriculum tier seeds from
-the previous tier's final checkpoint.
+Model dimensions, data mixture, schedule, execution settings, default world
+size, logical global optimizer batch, and the measured parameter count are
+explicit. `plan` profiles every configured table shape on the allocated GPU,
+caches a shape-to-microbatch table with configured HBM headroom, and launches no
+training. `launch` prefers a local plan, can reuse a committed plan on matching
+hardware, and otherwise launches without one at the researcher's OOM risk. Any
+selected plan is copied into the read-only run directory. Learning rate scales
+from the declared reference batch to the actual global batch, not directly from
+DDP world size. Unknown fields and changed trainer defaults fail closed. A
+launch also requires a clean checkout at the pushed tip of its same-named
+branch on `origin`, enough visible CUDA devices for the requested ranks, a normal
+interactive terminal, and a human digest confirmation; agents may plan and
+review runs but must not perform the final launch. GPU model is unrestricted,
+and a scheduler/user `CUDA_VISIBLE_DEVICES` mask is preserved. Override the
+default rank count with `--set launcher.nproc_per_node=N`. Any branch may launch:
+the launcher derives it automatically and verifies that `HEAD` is its exact
+same-named tip on `origin`, so branch selection never changes the recipe.
+Changing the rank count preserves the logical global batch and LR but changes
+local slicing, so it requires running `plan` again on that allocation.
 
-### Tier 1: from scratch
+Real-data membership, preprocessing, and scoring stay in the eval module. A
+recipe contains only an opaque eval-owned suite name plus a checkpoint cadence.
+At each interval, DDP training pauses, saves the checkpoint, invokes the real
+named-suite evaluator on rank 0's GPU, and logs the complete result back to the
+same W&B run. Failure is fatal. The command below remains an idempotent manual
+retry/debug interface:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train.sh
+scripts/train validate checkpoints/production/<run> \
+  --checkpoint checkpoints/production/<run>/checkpoint_step_1000.pt
 ```
 
-Configurable via environment variables (`TOTAL_STEPS`, `LR`, `BATCH_SIZE`,
-`CUDA_VISIBLE_DEVICES`, ...; see the script header). Checkpoints land in
-`checkpoints/<run>/tier1/`.
+The named suite—not the training config—owns dataset/task membership, exact
+fold IDs, preprocessing, metrics, and aggregation. Only a complete suite emits
+W&B macro/per-dataset metrics, using the checkpoint's optimizer step as a custom
+x-axis. The established `synthefy-nori-eval` public CLI remains supported
+separately.
 
-### Tiers 2 to 5: curriculum continuation
-
-One script runs the rest of the curriculum, each tier seeding from the previous
-tier's final checkpoint:
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/continue_training.sh
-```
-
-| Tier | Table shapes (N x F) | Focus |
-|---|---|---|
-| 2 | N ≤ 4K, F ≤ 384 | larger tables |
-| 3 | N ≤ 8K, F ≤ 768 | largest tables |
-| 4 | N ≤ 56K, F ≤ 96 | large-N / long-context specialist |
-| 5 | N ≤ 33K, F ≤ 1280 | both-large corner (N and F coupled by a cell budget) |
-
-It auto-detects the most recent tier-1 run, or point it at one with
-`RUN_ROOT=checkpoints/<run>`. Run a subset with `START_TIER` / `END_TIER`
-(e.g. `END_TIER=3` for tiers 2 to 3 only).
-
-> **Tiers 4 and 5 push N up to 56K rows.** Dense O(N²) sample attention at that
-> scale forces `batch=1` with large gradient accumulation, and can OOM or hang
-> depending on GPU memory. Smoke-probe them first; see the script header.
-
-Training uses the **Muon** optimizer (EMA 0.999), a **pinball** loss with 999
-quantiles + a monotonicity penalty, and bf16 mixed precision with DDP. Pass
-`--seed` for reproducible runs.
-
-### Training acceleration
-
-The bundled launchers enable native RMSNorm, foreach EMA updates, and regional
-dynamic `torch.compile` by default. These preserve the natural shape curriculum;
-disable them per run with `NATIVE_RMS_NORM=0`, `EMA_FOREACH=0`, or
-`COMPILE_ENCODER_LAYERS=none`. Exact static-shape compilation is also available,
-but requires an explicit shape palette that changes the curriculum and must be
-validated separately.
+Training W&B telemetry distinguishes physical execution from the scientific
+batch contract: `progress/global_optimizer_batches_completed` counts completed
+global updates, `progress/global_tables_processed` counts their tables, and
+`throughput/global_optimizer_batches_per_sec` reports full logical batches per
+second. Physical microbatch metrics remain separate.
 
 See [docs/training.md](docs/training.md) for the full training options and
 [the acceleration guide](docs/training_static_compile.md) for compiler modes,

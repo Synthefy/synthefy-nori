@@ -20,8 +20,10 @@ from pydantic import ValidationError
 
 from synthefy_nori.inference import memory_policy as _mp
 from synthefy_nori.inference.memory_policy import (
+    DEFAULT_STREAM_CONTEXT_ROW_CHUNK,
     DEFAULT_GPU_BUDGET_FRAC,
     MEMORY_PRESETS,
+    ContextTooLargeError,
     MemoryPolicy,
     estimate_cache_gb,
     int8_footprint_gb,
@@ -216,6 +218,159 @@ class TestAutoLadder:
         # One type in, one type out: a resolved policy is just one with no "auto"
         # left, which is why there is no separate decision object to keep straight.
         assert isinstance(resolve(1.0), MemoryPolicy)
+
+    def test_runtime_fallbacks_reuse_resolve_candidate_order(self):
+        requested = MemoryPolicy(gpu_budget_absolute_gb=100.0, host_budget_absolute_gb=200.0)
+        resolved = requested.resolve(
+            est_cache_gb=1.0,
+            bytes_per_element=2,
+            head_dim=64,
+            total_vram_gb=80.0,
+            total_ram_gb=800.0,
+        )
+        assert [policy.rung for policy in requested.runtime_fallbacks(resolved, bytes_per_element=2, head_dim=64)] == [
+            "resident_bf16",
+            "resident_int8",
+            "offload_bf16",
+            "offload_int8",
+        ]
+
+    def test_runtime_fallbacks_respect_precision_and_offload_permissions(self):
+        requested = MemoryPolicy(
+            allow_quantization=False,
+            offload_to_host=False,
+            gpu_budget_absolute_gb=100.0,
+        )
+        resolved = requested.resolve(
+            est_cache_gb=1.0,
+            bytes_per_element=2,
+            head_dim=64,
+            total_vram_gb=80.0,
+            total_ram_gb=800.0,
+        )
+        assert [policy.rung for policy in requested.runtime_fallbacks(resolved, bytes_per_element=2, head_dim=64)] == [
+            "resident_bf16"
+        ]
+
+
+class TestExplicitContextStreaming:
+    """The opt-in path is host-only and bounded; it never becomes plain_loop."""
+
+    def test_default_policy_does_not_enable_streaming(self):
+        policy = MemoryPolicy()
+        assert policy.stream_context is False
+        assert policy.context_row_chunk is None
+
+        requested = MemoryPolicy(stream_context=True)
+        assert not requested.is_bit_exact
+
+    def test_streaming_forces_a_host_rung_and_uses_the_80gb_default(self):
+        policy = resolve(1.0, MemoryPolicy(stream_context=True))
+
+        assert policy.rung == "stream_bf16"
+        assert policy.cache and policy.offload_to_host
+        assert policy.gpu_budget_absolute_gb == 0.0
+        assert policy.reuse_context_cache is False
+        assert DEFAULT_STREAM_CONTEXT_ROW_CHUNK == 2048
+        assert policy.context_row_chunk == 8192
+
+    @pytest.mark.parametrize(
+        ("total_vram_gb", "expected_chunk"),
+        [
+            (None, 2048),
+            (39.9, 2048),
+            (40.0, 8192),
+            (79.9, 8192),
+            (80.0, 16384),
+            (139.8, 16384),
+        ],
+    )
+    def test_omitted_chunk_adapts_to_accelerator_vram(self, total_vram_gb, expected_chunk):
+        policy = MemoryPolicy(stream_context=True).resolve(
+            est_cache_gb=1.0,
+            bytes_per_element=2,
+            head_dim=HEAD_DIM,
+            total_vram_gb=total_vram_gb,
+            total_ram_gb=BIG_RAM,
+        )
+        assert policy.context_row_chunk == expected_chunk
+
+    def test_explicit_chunk_is_the_reported_maximum(self):
+        policy = MemoryPolicy(stream_context=True, context_row_chunk=4096).resolve(
+            est_cache_gb=1.0,
+            bytes_per_element=2,
+            head_dim=HEAD_DIM,
+            total_vram_gb=139.8,
+            total_ram_gb=BIG_RAM,
+        )
+
+        assert policy.context_row_chunk == 4096
+        assert "maximum staged context rows=4096" in policy.describe()
+
+    def test_streaming_quantizes_only_when_bf16_exceeds_host_capacity(self):
+        # 4 GiB bf16 exceeds the 2.5 GiB host budget; int8 is ~2.1 GiB and fits.
+        policy = resolve(
+            4.0,
+            MemoryPolicy(stream_context=True),
+            total_ram_gb=10.0,
+        )
+        assert policy.rung == "stream_int8"
+        assert policy.cache_dtype == "int8"
+
+    @pytest.mark.parametrize("dtype", ["bf16", "int8"])
+    def test_both_streaming_rungs_are_non_bit_exact_and_degraded(self, dtype):
+        policy = resolve(
+            1.0,
+            MemoryPolicy(stream_context=True, cache_dtype=dtype),
+        )
+        assert policy.rung == f"stream_{dtype}"
+        assert not policy.is_bit_exact
+        assert policy.is_degraded
+
+    def test_runtime_fallbacks_stay_on_streaming_rungs(self):
+        requested = MemoryPolicy(stream_context=True)
+        resolved = resolve(1.0, requested)
+        attempts = requested.runtime_fallbacks(
+            resolved,
+            bytes_per_element=2,
+            head_dim=HEAD_DIM,
+        )
+
+        assert [attempt.rung for attempt in attempts] == [
+            "stream_bf16",
+            "stream_int8",
+        ]
+        assert all(attempt.offload_to_host for attempt in attempts)
+        assert all(not attempt.reuse_context_cache for attempt in attempts)
+
+    def test_host_capacity_failure_raises_instead_of_selecting_plain_loop(self):
+        with pytest.raises(ContextTooLargeError, match="will not silently use plain_loop"):
+            resolve(
+                20.0,
+                MemoryPolicy(stream_context=True),
+                total_ram_gb=10.0,
+            )
+
+    def test_streaming_cannot_be_resolved_as_ineligible_or_escalated_to_plain_loop(self):
+        requested = MemoryPolicy(stream_context=True)
+        with pytest.raises(ValueError, match="cannot resolve to no_cache or plain_loop"):
+            resolve(0.0, requested, cache_eligible=False)
+
+        resolved = resolve(1.0, requested)
+        with pytest.raises(ValueError, match="instead of silently using plain_loop"):
+            resolved.escalated("plain_loop")
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            ({"cache": False}, "requires cache=True"),
+            ({"offload_to_host": False}, "requires offload_to_host=True"),
+            ({"reuse_context_cache": True}, "reuse_context_cache=True"),
+        ],
+    )
+    def test_incoherent_streaming_requests_are_rejected(self, kwargs, message):
+        with pytest.raises(ValidationError, match=message):
+            MemoryPolicy(stream_context=True, **kwargs)
 
 
 class TestPinnedPrecision:
@@ -416,6 +571,24 @@ class TestPredictorEnvSurface:
         # Shipped and documented in public/README.md, so it keeps working.
         monkeypatch.setenv("SYNTHEFY_ENABLE_CACHED_INFERENCE", "0")
         assert self._policy_of().cache is False
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            ("SYNTHEFY_DISABLE_CACHED_INFERENCE", "1"),
+            ("SYNTHEFY_ENABLE_CACHED_INFERENCE", "0"),
+        ],
+    )
+    def test_stream_context_fails_closed_under_cache_kill_switch(self, monkeypatch, name, value):
+        monkeypatch.setenv(name, value)
+        with pytest.raises(RuntimeError, match="stream_context=True cannot run"):
+            self._policy_of(
+                {
+                    "stream_context": True,
+                    "elements_budget": 8,
+                    "allow_subsample": False,
+                }
+            )
 
     def test_removed_cache_max_gb_fails_loudly(self, monkeypatch):
         # It shipped with a DIFFERENT meaning (skip vs offload), so silently ignoring
@@ -676,7 +849,7 @@ class TestEstimatorRedeclaresMemory:
     ``NoriRegressor`` caches its predictor because the predictor owns the loaded
     checkpoint. Every other constructor argument is therefore fixed at first use,
     which is correct for them and wrong for ``memory_policy``: it is a per-call resource
-    decision, and a long-lived server (``serving/nori_serving/engine.py``) sets it
+    decision, and a long-lived server (``serving/core/nori_inference/engine.py``) sets it
     per request on one reused estimator. If the cached predictor kept the first
     value, request 2 would silently run request 1's policy.
 
