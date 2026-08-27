@@ -24,7 +24,7 @@ class _PlainModel:
     def to(self, _device):
         return self
 
-    def __call__(self, *, x, y, eval_pos):
+    def __call__(self, *, x, y, eval_pos, task_type="reg"):
         del y
         self.calls.append(x.shape[0])
         if self.oom_above is not None and x.shape[0] > self.oom_above:
@@ -37,7 +37,7 @@ class _QuantileModel(_PlainModel):
 
     num_reg_quantiles = 5
 
-    def __call__(self, *, x, y, eval_pos):
+    def __call__(self, *, x, y, eval_pos, task_type="reg"):
         del y
         self.calls.append(x.shape[0])
         base = x[:, eval_pos:, 0]
@@ -56,7 +56,7 @@ class _QuantileModel(_PlainModel):
 class _BatchSqueezingModel(_PlainModel):
     """A custom wrapper that violates the required batched output contract."""
 
-    def __call__(self, *, x, y, eval_pos):
+    def __call__(self, *, x, y, eval_pos, task_type="reg"):
         del y
         self.calls.append(x.shape[0])
         output = x[:, eval_pos:, :1]
@@ -66,7 +66,7 @@ class _BatchSqueezingModel(_PlainModel):
 class _RNGModel(_PlainModel):
     """Consume RNG by feature width, as feature positional embeddings do."""
 
-    def __call__(self, *, x, y, eval_pos):
+    def __call__(self, *, x, y, eval_pos, task_type="reg"):
         del y
         self.calls.append((x.shape[0], x.shape[-1]))
         torch.rand(x.shape[-1])

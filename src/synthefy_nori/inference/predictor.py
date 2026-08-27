@@ -2205,10 +2205,12 @@ class NoriPredictor:
             x_test_ = x_test_base.copy()
             y_ = y_train.copy()
             categorical_idx_ = categorical_idx.copy()
+            # Internal bails out here on retrieval steps (InferenceAttentionMap,
+            # SubSampleData), which reshape the context between pipelines and so
+            # break the identical-shape grouping this path depends on. Neither
+            # class exists in this tier's inference_method, so no pipeline can
+            # contain one and the check would be dead code.
             for id_step, step in enumerate(pipe):
-                if isinstance(step, (InferenceAttentionMap, SubSampleData)):
-                    self._clear_pipeline_batch_contexts()
-                    return None
                 x_train_, x_test_, categorical_idx_ = self._fit_transform_step_inductive(
                     step, x_train_, x_test_, categorical_idx_,
                     self.seeds[id_pipe * self.preprocess_num + self._seed_step_index(pipe, id_step)],
@@ -2303,7 +2305,8 @@ class NoriPredictor:
                                 bare_model.apply_context_cache(
                                     x_test_t, context, row_chunk_size=chunk_size,
                                     adaptive_query_chunk=policy.adaptive_query_chunk,
-                                )
+                                ),
+                                task_type="reg",
                             )
                         finally:
                             if not policy.reuse_context_cache:
@@ -2320,7 +2323,8 @@ class NoriPredictor:
                                 y_train_t.new_zeros(len(group), end - start),
                             ], dim=1)
                             chunks.append(self._unwrap_model_output(
-                                self.model(x=x_in, y=y_in, eval_pos=n_samples_train)
+                                self.model(x=x_in, y=y_in, eval_pos=n_samples_train, task_type="reg"),
+                                task_type="reg",
                             ))
                         group_output = torch.cat(chunks, dim=1)
                 if (
