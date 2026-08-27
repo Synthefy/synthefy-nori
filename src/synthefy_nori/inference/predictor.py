@@ -1228,9 +1228,19 @@ class NoriPredictor:
         if isinstance(cache, dict):
             cache.pop(id_pipe, None)
 
-    def _memory_rung_sort_key(self, policy: MemoryPolicy) -> tuple[int, float, float]:
-        """Comparable "how bad/complete is this outcome" key: rank, then
-        context_row_chunk degradation, then query_chunk degradation.
+    def _memory_rung_sort_key(self, policy: MemoryPolicy) -> tuple[int, int, float, float]:
+        """Comparable "how bad/complete is this outcome" key: rank, then dropped
+        context rows, then context_row_chunk degradation, then query_chunk
+        degradation.
+
+        dropped_context_rows ranks directly under the rung because losing context
+        rows is the most severe thing that can happen within one: a subsampled
+        answer used less data than the caller supplied. It is computed once per
+        predict() call, so it never oscillates — it only separates the opening
+        ``resolve()`` policy, published before subsampling is known and therefore
+        carrying 0, from the later outcome policy that carries the real count.
+        Without it those two tie and the strict ``>`` below keeps the opening one,
+        which reports dropped_context_rows=0 for a call that did drop rows.
 
         A smaller ``context_row_chunk`` is a more degraded outcome within that one
         rung (a harder-won escalation), so it sorts worse than a larger one. Every
@@ -1246,11 +1256,12 @@ class NoriPredictor:
         too, or the published report understates how hard-won the recovery was.
         """
         rank = self._MEMORY_RUNG_SEVERITY.get(policy.rung or "no_cache", -1)
+        dropped_component = int(policy.dropped_context_rows or 0)
         chunk = policy.context_row_chunk
         chunk_component = -chunk if chunk is not None else float("-inf")
         query_chunk = policy.query_chunk
         query_component = -query_chunk if query_chunk is not None else float("-inf")
-        return rank, chunk_component, query_component
+        return rank, dropped_component, chunk_component, query_component
 
     def _publish_memory_policy(self, policy: MemoryPolicy) -> None:
         """Publish the worst successful/selected rung seen in this predict call."""
