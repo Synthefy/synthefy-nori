@@ -10,6 +10,10 @@ from synthefy_nori.inference.degradation import (
     strict_pipeline,
 )
 from synthefy_nori.inference.memory_policy import ContextTooLargeError, MemoryPolicy
+from synthefy_nori.multi_target import (
+    DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY,
+    MultiTargetPredictionPolicy,
+)
 from synthefy_nori.configs import DEFAULT_INFERENCE_CONFIG, DEFAULT_MODEL_CONFIG
 from synthefy_nori.api import (
     NoriRegressor,
@@ -20,13 +24,15 @@ from synthefy_nori.api import (
 from synthefy_nori.embedding import NoriEmbedding
 from synthefy_nori.pricing import billable_price
 
-__version__ = "0.19.0"
+__version__ = "0.20.0"
 
 __all__ = [
     "ContextSubsampledWarning",
     "ContextTooLargeError",
     "DegradedPipelineWarning",
     "MemoryPolicy",
+    "DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY",
+    "MultiTargetPredictionPolicy",
     "SvdFallbackWarning",
     "strict_pipeline",
     "NoriRegressor",

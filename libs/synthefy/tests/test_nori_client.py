@@ -40,6 +40,7 @@ from synthefy.nori_client import (
     _resolve_remote_levels,
     _resolve_text_device,
     _snap_to_levels,
+    _validate_multi_target_controls,
     _widen_text_columns,
 )
 
@@ -1387,6 +1388,8 @@ def test_request_model_roundtrip():
         "large_context_policy": None,
         "large_context_threshold": None,
         "large_context_seed": None,
+        "multi_target_prediction_strategy": None,
+        "multi_target_prediction_policy": None,
     }
 
 
@@ -1401,6 +1404,168 @@ def test_request_model_omits_unset_distribution_fields_on_the_wire():
         "X_test": [[4.0, 5.0]],
         "task": "regression",
     }
+
+
+def test_remote_multi_target_samples_are_one_call_and_shape_checked():
+    capture: Dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        capture["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "task": "regression",
+                "model": "nori-30m",
+                "predictions": [[1.0, 2.0], [3.0, 4.0]],
+                "samples": [
+                    [[0.5, 1.5], [1.5, 2.5]],
+                    [[2.5, 3.5], [3.5, 4.5]],
+                ],
+                "output_type": "samples",
+                "multi_target_prediction_strategy": "independent",
+            },
+        )
+
+    client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
+    _attach_mock(client, handler)
+    result = client.predict(
+        [[0.0], [1.0], [2.0]],
+        [[0.0, 1.0], [1.0, 0.0], [2.0, 2.0]],
+        [[3.0], [4.0]],
+        output_type="samples",
+        multi_target_prediction_strategy="independent",
+        multi_target_prediction_policy={"n_draws": 2, "random_state": 42},
+    )
+
+    assert np.asarray(result).shape == (2, 2, 2)
+    assert capture["body"]["y_train"] == [[0.0, 1.0], [1.0, 0.0], [2.0, 2.0]]
+    assert capture["body"]["multi_target_prediction_policy"] == {"n_draws": 2, "random_state": 42}
+
+
+def test_remote_multi_target_samples_reject_wrong_draw_count():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "task": "regression",
+                "model": "nori-30m",
+                "predictions": [[1.0, 2.0]],
+                "samples": [[[0.5, 1.5]]],
+                "output_type": "samples",
+                "multi_target_prediction_strategy": "independent",
+            },
+        )
+
+    client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
+    _attach_mock(client, handler)
+
+    with pytest.raises(ValueError, match=r"expected \(1, 2, 2\)"):
+        client.predict(
+            [[0.0], [1.0]],
+            [[0.0, 1.0], [1.0, 0.0]],
+            [[2.0]],
+            output_type="samples",
+            multi_target_prediction_strategy="independent",
+            multi_target_prediction_policy={"n_draws": 2},
+        )
+
+
+def test_multi_target_samples_reject_as_pandas_before_transport():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("transport must not be called")
+
+    client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
+    _attach_mock(client, handler)
+
+    with pytest.raises(ValueError, match="as_pandas=True is not supported"):
+        client.predict(
+            [[0.0], [1.0]],
+            [[0.0, 1.0], [1.0, 0.0]],
+            [[2.0]],
+            output_type="samples",
+            as_pandas=True,
+        )
+
+
+def test_multi_target_work_bounds_apply_only_to_hosted_modes():
+    controls = {
+        "y_train": [[0.0, 1.0], [1.0, 0.0]],
+        "output_type": "samples",
+        "strategy": "autoregressive",
+        "policy": {
+            "n_draws": 1_001,
+            "copula_cv": 21,
+            "copula_pit_jitter": 0.2,
+            "autoregressive_n_orders": 9,
+        },
+        "large_context_policy": None,
+        "discretizing": False,
+        "model": "synthefy/nori-30m",
+    }
+
+    assert _validate_multi_target_controls(**controls, mode="local") is True
+    with pytest.raises(ValueError, match="n_draws must be <= 1000 for hosted inference"):
+        _validate_multi_target_controls(**controls, mode="remote")
+
+
+def test_remote_autoregressive_orders_are_sent_and_exposed():
+    capture: Dict = {}
+    orders = [[1, 0], [0, 1]]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        capture["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "task": "regression",
+                "model": "nori-30m",
+                "predictions": [[1.0, 2.0]],
+                "multi_target_prediction_strategy": "autoregressive",
+                "target_orders": orders,
+            },
+        )
+
+    client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
+    _attach_mock(client, handler)
+    client.predict(
+        [[0.0], [1.0]],
+        [[0.0, 1.0], [1.0, 0.0]],
+        [[2.0]],
+        multi_target_prediction_strategy="autoregressive",
+        multi_target_prediction_policy={"autoregressive_orders": orders},
+    )
+
+    assert capture["body"]["multi_target_prediction_policy"] == {"autoregressive_orders": orders}
+    assert client.last_target_orders == orders
+
+
+def test_remote_multi_target_memory_reports_are_exposed():
+    reports = [{**_REPORT, "strategy": "independent", "target": target, "order": None} for target in range(2)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "task": "regression",
+                "model": "nori-30m",
+                "predictions": [[1.0, 2.0]],
+                "multi_target_prediction_strategy": "independent",
+                "multi_target_memory_reports": reports,
+            },
+        )
+
+    client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
+    _attach_mock(client, handler)
+    client.predict(
+        [[0.0], [1.0]],
+        [[0.0, 1.0], [1.0, 0.0]],
+        [[2.0]],
+        memory_policy="exact",
+        multi_target_prediction_strategy="independent",
+    )
+
+    assert client.last_memory_report is None
+    assert client.last_multi_target_memory_reports == reports
 
 
 def test_response_model_parses_predictions():

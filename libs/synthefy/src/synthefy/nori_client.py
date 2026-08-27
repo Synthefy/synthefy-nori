@@ -44,11 +44,18 @@ from synthefy.data_models import NoriPredictRequest, NoriPredictResponse
 from synthefy.nori_data_models import (
     DEFAULT_LARGE_CONTEXT_SEED,
     DEFAULT_LARGE_CONTEXT_THRESHOLD,
+    DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY,
     LargeContextPolicy,
     LargeContextReport,
     MAX_LARGE_CONTEXT_SEED,
     MAX_LARGE_CONTEXT_THRESHOLD,
+    MAX_MULTI_TARGET_AUTOREGRESSIVE_ORDERS,
+    MAX_MULTI_TARGET_COPULA_CV,
+    MAX_MULTI_TARGET_COPULA_PIT_JITTER,
+    MAX_MULTI_TARGET_DRAWS,
     MemoryPolicyInput,
+    MultiTargetPredictionPolicy,
+    MultiTargetPredictionStrategy,
 )
 from synthefy.errors import (
     APIConnectionError,
@@ -173,7 +180,8 @@ DEFAULT_TASK = "regression"
 #   distribution  -> the quantile function itself (prediction intervals, CRPS, ...)
 _POINT_OUTPUT_TYPES = ("mean", "median")
 _DISTRIBUTION_OUTPUT_TYPES = ("quantiles", "full")
-_OUTPUT_TYPES = _POINT_OUTPUT_TYPES + _DISTRIBUTION_OUTPUT_TYPES
+_JOINT_OUTPUT_TYPES = ("samples",)
+_OUTPUT_TYPES = _POINT_OUTPUT_TYPES + _DISTRIBUTION_OUTPUT_TYPES + _JOINT_OUTPUT_TYPES
 DEFAULT_OUTPUT_TYPE = "mean"
 
 Mode = Literal["remote", "local", "sagemaker"]
@@ -302,20 +310,17 @@ def _coerce_matrix(arr: MatrixLike, name: str) -> np.ndarray:
 
 
 def _coerce_vector(arr: VectorLike, name: str) -> np.ndarray:
-    """Coerce an array-like into a 1D float ``np.ndarray`` or raise ``ValueError``.
+    """Coerce targets into a 1D vector or 2D multi-target matrix.
 
     Accepts nested Python sequences, numpy arrays, a pandas Series, or a
     single-column pandas DataFrame. NaN/missing values are preserved and
     forwarded for server-side imputation.
     """
     if isinstance(arr, pd.DataFrame):
-        if arr.shape[1] != 1:
-            raise ValueError(
-                f"{name} must be 1D; got a DataFrame with {arr.shape[1]} "
-                "columns. Pass a single column (a Series) for the targets."
-            )
         _reject_non_numeric_columns(arr, name)
-        vector = arr.to_numpy(dtype=float).reshape(-1)
+        vector = arr.to_numpy(dtype=float)
+        if vector.shape[1] == 1:
+            vector = vector.reshape(-1)
     elif isinstance(arr, pd.Series):
         if not pd.api.types.is_numeric_dtype(arr):
             raise ValueError(f"{name} must be numeric; got a non-numeric Series (dtype {arr.dtype}).")
@@ -325,8 +330,12 @@ def _coerce_vector(arr: VectorLike, name: str) -> np.ndarray:
             vector = np.asarray(arr, dtype=float)
         except (ValueError, TypeError) as exc:
             raise ValueError(f"{name} must be a numeric 1D array/list; got error: {exc}") from exc
-    if vector.ndim != 1:
-        raise ValueError(f"{name} must be 1D with shape (n_rows,); got {vector.ndim}D with shape {vector.shape}")
+    if vector.ndim not in (1, 2):
+        raise ValueError(
+            f"{name} must be 1D (n_rows,) or 2D (n_rows, n_targets); got {vector.ndim}D with shape {vector.shape}"
+        )
+    if vector.ndim == 2 and vector.shape[1] < 2:
+        vector = vector.reshape(-1)
     return vector
 
 
@@ -344,6 +353,8 @@ def _build_nori_request(
     large_context_policy: Optional[LargeContextPolicy] = None,
     large_context_threshold: Optional[int] = None,
     large_context_seed: Optional[int] = None,
+    multi_target_prediction_strategy: Optional[MultiTargetPredictionStrategy] = None,
+    multi_target_prediction_policy: Optional[MultiTargetPredictionPolicy] = None,
 ) -> NoriPredictRequest:
     """Validate shapes and build a :class:`NoriPredictRequest`.
 
@@ -412,6 +423,8 @@ def _build_nori_request(
         large_context_policy=large_context_policy,
         large_context_threshold=large_context_threshold,
         large_context_seed=large_context_seed,
+        multi_target_prediction_strategy=multi_target_prediction_strategy,
+        multi_target_prediction_policy=multi_target_prediction_policy,
     )
 
 
@@ -484,6 +497,89 @@ def _validate_output_type(
     if not np.all(np.isfinite(levels)) or np.any((levels <= 0.0) | (levels >= 1.0)):
         raise ValueError(f"quantiles must lie strictly in (0, 1); got {quantiles!r}.")
     return [float(level) for level in levels]
+
+
+def _validate_multi_target_controls(
+    y_train: VectorLike,
+    *,
+    output_type: str,
+    strategy: Optional[MultiTargetPredictionStrategy],
+    policy: Optional[MultiTargetPredictionPolicy],
+    large_context_policy: Optional[LargeContextPolicy],
+    discretizing: bool,
+    model: Optional[str],
+    mode: str,
+) -> bool:
+    """Validate combinations that only make sense for matrix-valued targets."""
+    targets = _coerce_vector(y_train, "y_train")
+    is_multi = targets.ndim == 2
+    if not is_multi:
+        if strategy is not None or policy is not None or output_type == "samples":
+            raise ValueError(
+                "multi_target_prediction_strategy, multi_target_prediction_policy, "
+                "and output_type='samples' require a 2D y_train target matrix."
+            )
+        return False
+    if output_type not in ("mean", "samples"):
+        raise ValueError(f"Multi-target prediction supports output_type='mean' or 'samples'; got {output_type!r}.")
+    if large_context_policy is not None:
+        raise ValueError("large_context_policy is not supported with matrix-valued y_train.")
+    if discretizing:
+        raise ValueError("discretize and categorical_levels are not supported with matrix-valued y_train.")
+    if _is_thinking_model(model):
+        raise ValueError(
+            "Multi-target prediction is not available on Nori Thinking variants; "
+            "use a base nori-6m, nori-30m, or nori-100m model."
+        )
+    resolved_strategy = strategy or DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY
+    resolved_policy = (
+        policy if isinstance(policy, MultiTargetPredictionPolicy) else MultiTargetPredictionPolicy(**(policy or {}))
+    )
+    if mode != "local":
+        hosted_bounds = (
+            ("n_draws", resolved_policy.n_draws, MAX_MULTI_TARGET_DRAWS),
+            ("copula_cv", resolved_policy.copula_cv, MAX_MULTI_TARGET_COPULA_CV),
+            (
+                "autoregressive_n_orders",
+                resolved_policy.autoregressive_n_orders,
+                MAX_MULTI_TARGET_AUTOREGRESSIVE_ORDERS,
+            ),
+        )
+        for name, value, maximum in hosted_bounds:
+            if value > maximum:
+                raise ValueError(
+                    f"multi_target_prediction_policy.{name} must be <= {maximum} for hosted inference; got {value}."
+                )
+        if resolved_policy.copula_pit_jitter > MAX_MULTI_TARGET_COPULA_PIT_JITTER:
+            raise ValueError(
+                "multi_target_prediction_policy.copula_pit_jitter must be <= "
+                f"{MAX_MULTI_TARGET_COPULA_PIT_JITTER} for hosted inference; "
+                f"got {resolved_policy.copula_pit_jitter}."
+            )
+        if (
+            resolved_policy.autoregressive_orders is not None
+            and len(resolved_policy.autoregressive_orders) > MAX_MULTI_TARGET_AUTOREGRESSIVE_ORDERS
+        ):
+            raise ValueError(
+                "multi_target_prediction_policy.autoregressive_orders must contain at most "
+                f"{MAX_MULTI_TARGET_AUTOREGRESSIVE_ORDERS} orders for hosted inference; "
+                f"got {len(resolved_policy.autoregressive_orders)}."
+            )
+    if resolved_policy.autoregressive_orders is not None:
+        if resolved_strategy != "autoregressive":
+            raise ValueError(
+                "multi_target_prediction_policy.autoregressive_orders requires "
+                "multi_target_prediction_strategy='autoregressive'."
+            )
+        expected = list(range(targets.shape[1]))
+        for index, order in enumerate(resolved_policy.autoregressive_orders):
+            if sorted(order) != expected:
+                raise ValueError(
+                    "multi_target_prediction_policy.autoregressive_orders"
+                    f"[{index}] must be a complete permutation of target indices "
+                    f"{expected}; got {order}."
+                )
+    return True
 
 
 def _load_local_regressor() -> Any:
@@ -1140,10 +1236,17 @@ class SynthefyNoriClient:
         #: estimator owned by this client, but no report is copied here. Use ``NoriRegressor``
         #: directly and read ``memory_report_`` if you need the local report.
         self.last_memory_report: Optional[Dict[str, Any]] = None
+        # Per-internal-call reports for the most recent hosted multi-target
+        # prediction that explicitly set memory_policy.
+        self.last_multi_target_memory_reports: Optional[List[Dict[str, Any]]] = None
         # Typed capability handshake for the most recent call that set a
         # large-context policy, in every mode. Cleared before every call so an
         # error or ordinary prediction cannot expose stale provenance.
         self.last_large_context_report: Optional[Dict[str, Any]] = None
+        # Resolved autoregressive target-index permutations from the most recent
+        # multi-target call. Explicit orders are echoed and verified; automatic
+        # orders make order-sensitive experiments reproducible after the call.
+        self.last_target_orders: Optional[List[List[int]]] = None
 
     # Context manager support (sync) and utilities
     def __enter__(self) -> "SynthefyNoriClient":
@@ -1189,6 +1292,8 @@ class SynthefyNoriClient:
         large_context_policy: Optional[LargeContextPolicy] = None,
         large_context_threshold: Optional[int] = None,
         large_context_seed: Optional[int] = None,
+        multi_target_prediction_strategy: Optional[MultiTargetPredictionStrategy] = None,
+        multi_target_prediction_policy: Optional[MultiTargetPredictionPolicy] = None,
         timeout: Optional[float] = None,
         extra_headers: Optional[Dict[str, str]] = None,
     ) -> Union[List[float], pd.Series, List[List[float]], pd.DataFrame, Dict[str, Any]]:
@@ -1466,7 +1571,9 @@ class SynthefyNoriClient:
         # validation so even a rejected call cannot expose an earlier call's
         # provenance as its own.
         self.last_memory_report = None
+        self.last_multi_target_memory_reports = None
         self.last_large_context_report = None
+        self.last_target_orders = None
 
         # Validate the output contract first: a bad output_type/quantiles pair is
         # caught before the expensive steps below (loading a sentence encoder for
@@ -1487,6 +1594,20 @@ class SynthefyNoriClient:
             quantiles,
             discretizing=discretize is not None or categorical_levels is not None,
         )
+        is_multi_target = _validate_multi_target_controls(
+            y_train,
+            output_type=output_type,
+            strategy=multi_target_prediction_strategy,
+            policy=multi_target_prediction_policy,
+            large_context_policy=large_context_policy,
+            discretizing=discretize is not None or categorical_levels is not None,
+            model=self.model,
+            mode=self.mode,
+        )
+        if is_multi_target and output_type == "samples" and as_pandas:
+            raise ValueError(
+                "as_pandas=True is not supported for 3D multi-target samples; use the default nested-list return."
+            )
         _validate_large_context_controls(
             policy=large_context_policy,
             threshold=large_context_threshold,
@@ -1547,7 +1668,19 @@ class SynthefyNoriClient:
             large_context_policy=large_context_policy,
             large_context_threshold=resolved_large_context_threshold,
             large_context_seed=resolved_large_context_seed,
+            multi_target_prediction_strategy=multi_target_prediction_strategy,
+            multi_target_prediction_policy=multi_target_prediction_policy,
         )
+        if is_multi_target:
+            return self._predict_multi_target_request(
+                request,
+                output_type=output_type,
+                timeout=timeout,
+                extra_headers=extra_headers,
+                as_pandas=as_pandas,
+                X_test=X_test,
+                y_train=y_train,
+            )
         # Distribution output is shaped separately: it is not one value per query
         # row, so it does not flow through the point-prediction path below.
         if output_type in _DISTRIBUTION_OUTPUT_TYPES:
@@ -1622,6 +1755,47 @@ class SynthefyNoriClient:
     # Local mode
     # ------------------------------------------------------------------ #
 
+    def _predict_multi_target_request(
+        self,
+        request: NoriPredictRequest,
+        *,
+        output_type: str,
+        timeout: Optional[float],
+        extra_headers: Optional[Dict[str, str]],
+        as_pandas: bool,
+        X_test: MatrixLike,
+        y_train: VectorLike,
+    ) -> Union[List[List[float]], pd.DataFrame]:
+        """Run and shape the single multi-target path for every transport."""
+        if self.mode == "local":
+            joint = self._local_regressor_predict(request, output_type=output_type, quantile_levels=None)
+        else:
+            parsed = (
+                self._invoke_sagemaker_predict(request, output_type=output_type)
+                if self.mode == "sagemaker"
+                else self._post_predict(
+                    request,
+                    output_type=output_type,
+                    timeout=timeout,
+                    extra_headers=extra_headers,
+                )
+            )
+            joint = self._parse_hosted_multi_target(request, parsed=parsed, output_type=output_type)
+
+        joint_array = np.asarray(joint, dtype=float)
+        if not as_pandas:
+            return joint_array.tolist()
+        columns = (
+            list(y_train.columns)
+            if isinstance(y_train, pd.DataFrame)
+            else [f"prediction_{i}" for i in range(joint_array.shape[1])]
+        )
+        return pd.DataFrame(
+            joint_array,
+            index=_result_index(X_test),
+            columns=columns,
+        )
+
     def _local_regressor_predict(
         self,
         request: NoriPredictRequest,
@@ -1660,6 +1834,7 @@ class SynthefyNoriClient:
                     "pip install -U synthefy-nori."
                 )
             init_kwargs["model"] = self._local_variant
+        is_multi_target = np.asarray(request.y_train, dtype=float).ndim == 2
         if request.memory_policy is not None:
             if not _local_memory_policy_available():
                 raise ImportError(
@@ -1699,6 +1874,12 @@ class SynthefyNoriClient:
                     "large_context_cache_entries": 1,
                 }
             )
+        if request.multi_target_prediction_strategy is not None:
+            init_kwargs["multi_target_prediction_strategy"] = request.multi_target_prediction_strategy
+        if request.multi_target_prediction_policy is not None:
+            init_kwargs["multi_target_prediction_policy"] = request.multi_target_prediction_policy.model_dump(
+                exclude_unset=True
+            )
         # Everything below mutates or reads the cached, shared regressor's
         # memory_policy/large_context_* attributes and its fit/predict/report
         # sequence -- one lock per client instance, so a concurrent call on the
@@ -1735,6 +1916,15 @@ class SynthefyNoriClient:
                         "with the large-context estimator controls. Upgrade with: "
                         "pip install -U synthefy-nori."
                     ) from exc
+            if hasattr(regressor, "multi_target_prediction_strategy"):
+                regressor.multi_target_prediction_strategy = (
+                    request.multi_target_prediction_strategy or DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY
+                )
+                regressor.multi_target_prediction_policy = (
+                    request.multi_target_prediction_policy.model_dump(exclude_unset=True)
+                    if request.multi_target_prediction_policy is not None
+                    else None
+                )
             regressor.fit(request.X_train, request.y_train)
             predict_kwargs: Dict[str, Any] = {
                 "output_type": output_type,
@@ -1745,6 +1935,13 @@ class SynthefyNoriClient:
             if categorical_levels is not None:
                 predict_kwargs["categorical_levels"] = categorical_levels
             result = regressor.predict(request.X_test, **predict_kwargs)
+            self.last_target_orders = (
+                [list(order) for order in getattr(regressor, "target_orders_", [])]
+                if np.asarray(request.y_train, dtype=float).ndim == 2
+                and (request.multi_target_prediction_strategy or DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY)
+                == "autoregressive"
+                else None
+            )
             if request.large_context_policy is not None:
                 self.last_large_context_report = _normalized_large_context_report(
                     request, getattr(regressor, "large_context_report_", None)
@@ -1875,13 +2072,24 @@ class SynthefyNoriClient:
     ) -> NoriPredictResponse:
         """Validate a response shared by both hosted transports."""
         parsed = NoriPredictResponse(**response_data)
+        is_multi_target = np.asarray(request.y_train, dtype=float).ndim == 2
         if request.memory_policy is not None:
             # The capability handshake. A deployment that predates `memory_policy` ignores the field
             # and answers with default-memory predictions that are numerically valid, so
             # nothing in `predictions` reveals that the policy was dropped. The server echoes
             # `memory_report` precisely so this is detectable -- refuse to let a caller believe
             # a policy took effect when it did not.
-            if parsed.memory_report is None:
+            if is_multi_target:
+                if not parsed.multi_target_memory_reports:
+                    raise ValueError(
+                        "memory_policy= was sent for a multi-target request but the "
+                        "deployment omitted multi_target_memory_reports. The endpoint "
+                        "ignored the policy or predates multi-target memory reporting."
+                    )
+                self.last_multi_target_memory_reports = [
+                    report.model_dump() for report in parsed.multi_target_memory_reports
+                ]
+            elif parsed.memory_report is None:
                 raise ValueError(
                     "memory_policy= was sent but the deployment did not report back on it, which "
                     "means it was ignored: the predictions are valid but the policy had no "
@@ -1890,7 +2098,8 @@ class SynthefyNoriClient:
                 )
             # Validated through MemoryReport, exposed as a dict: the library's own
             # memory_report_ is a dict, and `report["rung"]` is how it is read.
-            self.last_memory_report = parsed.memory_report.model_dump()
+            else:
+                self.last_memory_report = parsed.memory_report.model_dump()
         if request.large_context_policy is not None:
             report = parsed.large_context_report
             if report is None:
@@ -1925,6 +2134,32 @@ class SynthefyNoriClient:
                     "The client cannot prove the requested policy was honored."
                 )
             self.last_large_context_report = report.model_dump()
+        if is_multi_target:
+            expected_strategy = request.multi_target_prediction_strategy or DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY
+            if parsed.multi_target_prediction_strategy != expected_strategy:
+                honored = parsed.multi_target_prediction_strategy
+                raise ValueError(
+                    "The hosted deployment did not prove it honored multi-target "
+                    f"strategy {expected_strategy!r}; response reported {honored!r}. "
+                    "Upgrade/deploy a server with multi-target support."
+                )
+            if expected_strategy == "autoregressive":
+                if not parsed.target_orders:
+                    raise ValueError(
+                        "The hosted deployment omitted resolved target_orders for an "
+                        "autoregressive request. Upgrade/deploy a compatible server."
+                    )
+                requested = (
+                    request.multi_target_prediction_policy.autoregressive_orders
+                    if request.multi_target_prediction_policy is not None
+                    else None
+                )
+                if requested is not None and parsed.target_orders != requested:
+                    raise ValueError(
+                        "The hosted deployment returned target_orders that differ from "
+                        f"the explicit request: {parsed.target_orders!r} != {requested!r}."
+                    )
+                self.last_target_orders = parsed.target_orders
         if output_type != DEFAULT_OUTPUT_TYPE and parsed.output_type != output_type:
             honored = (
                 "omitted the output_type field entirely, so it predates distribution output"
@@ -2163,6 +2398,35 @@ class SynthefyNoriClient:
     ) -> Tuple["np.ndarray", "np.ndarray", "np.ndarray"]:
         parsed = self._invoke_sagemaker_predict(request, output_type=output_type)
         return self._parse_hosted_distribution(request, parsed=parsed, output_type=output_type)
+
+    def _parse_hosted_multi_target(
+        self,
+        request: NoriPredictRequest,
+        *,
+        parsed: NoriPredictResponse,
+        output_type: str,
+    ) -> "np.ndarray":
+        """Validate and normalize a hosted joint mean or sample response."""
+        n_query = len(request.X_test)
+        n_targets = np.asarray(request.y_train, dtype=float).shape[1]
+        if output_type == "samples":
+            if parsed.samples is None:
+                raise ValueError(
+                    "The hosted deployment echoed output_type='samples' but returned no joint sample block."
+                )
+            values = np.asarray(parsed.samples, dtype=float)
+            policy = request.multi_target_prediction_policy or MultiTargetPredictionPolicy()
+            expected = (n_query, policy.n_draws, n_targets)
+            if values.shape != expected:
+                raise ValueError(f"The server returned joint samples of shape {values.shape}; expected {expected}.")
+            return values
+        values = np.asarray(parsed.predictions, dtype=float)
+        expected = (n_query, n_targets)
+        if values.shape != expected:
+            raise ValueError(
+                f"The server returned multi-target predictions of shape {values.shape}; expected {expected}."
+            )
+        return values
 
     def _parse_hosted_distribution(
         self,

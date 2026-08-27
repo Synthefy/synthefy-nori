@@ -144,6 +144,82 @@ shrink.
 Field-by-field reference, the budget knobs, and the measured saving per lever:
 [README, "Serving memory on large tables"](../README.md#serving-memory-on-large-tables).
 
+## Multi-target regression
+
+Pass a two-dimensional target matrix with at least two columns to use one
+`NoriRegressor` for a joint prediction. The default `"copula"` strategy fits
+cross-validated probability-integral-transform values and an order-invariant
+vine copula over Nori's conditional marginals. Copula support is included in
+the standard `synthefy-nori` install.
+
+```python
+from synthefy_nori import MultiTargetPredictionPolicy, NoriRegressor
+
+regressor = NoriRegressor(model="nori-6m").fit(X_train, Y_train)
+mean = regressor.predict(X_test)  # (n_test, n_targets)
+samples = regressor.predict(
+    X_test,
+    output_type="samples",
+    multi_target_prediction_policy=MultiTargetPredictionPolicy(
+        n_draws=1_000,
+        random_state=42,
+    ),
+)  # (n_test, 1_000, n_targets)
+```
+
+Set `multi_target_prediction_strategy="independent"` for the lowest-cost
+product of marginals, or `"autoregressive"` for the strongest measured joint
+accuracy at draw- and target-order-scaled inference cost. Scalar targets retain
+their existing behavior. The first
+release supports joint means and samples; marginal quantiles remain out of scope.
+
+For reproducible autoregressive experiments or domain-informed factorization,
+provide complete target-index permutations. Orders control the predictive
+factorization and do not imply causality:
+
+```python
+policy = MultiTargetPredictionPolicy(
+    autoregressive_orders=[[0, 1, 2], [2, 0, 1]],
+)
+regressor = NoriRegressor(
+    model="nori-6m",
+    multi_target_prediction_strategy="autoregressive",
+    multi_target_prediction_policy=policy,
+).fit(X_train, Y_train)
+assert regressor.target_orders_ == [(0, 1, 2), (2, 0, 1)]
+```
+
+Omitting `autoregressive_orders` generates deterministic unique permutations;
+the requested count is capped at `n_targets!` rather than repeating an order.
+
+The lightweight client sends the same operation to a hosted base-model deployment
+in one API call:
+
+```python
+from synthefy import MultiTargetPredictionPolicy, SynthefyNoriClient
+
+client = SynthefyNoriClient(model="nori-6m")
+samples = client.predict(
+    X_train,
+    Y_train,
+    X_test,
+    output_type="samples",
+    multi_target_prediction_strategy="copula",
+    multi_target_prediction_policy=MultiTargetPredictionPolicy(
+        n_draws=300,
+        random_state=42,
+    ),
+)
+```
+
+Hosted responses cap targets, draws, and total returned sample cells. Thinking and
+large-context policies do not yet compose with matrix-valued targets. The server
+echoes the honored strategy so the client fails closed against an older deployment.
+For autoregressive calls, `client.last_target_orders` records the resolved orders.
+When a hosted matrix-target request sets `memory_policy`,
+`client.last_multi_target_memory_reports` records one resolved report per internal
+marginal or chain call; scalar calls continue to use `client.last_memory_report`.
+
 ## Categorical / ordinal targets (`discretize=` / `categorical_levels=`)
 
 When the target only takes a small set of discrete values (ratings, counts,

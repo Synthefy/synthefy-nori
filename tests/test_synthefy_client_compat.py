@@ -300,6 +300,14 @@ def test_migrated_client_matches_frozen_6_3_except_the_v7_categorical_contract(m
     # difference; every other transport, result, model, and error stays frozen.
     current_dataframe = current.pop("remote_dataframe")
     golden_dataframe = golden.pop("remote_dataframe")
+    # Multi-target response fields are additive and null for every frozen 6.3
+    # scalar trace. Keep the 6.3 oracle immutable while isolating the reviewed
+    # schema extension, just as the DataFrame encoding change is isolated below.
+    current_response = current["wire_models"]["response"]
+    current_response.pop("samples", None)
+    current_response.pop("multi_target_prediction_strategy", None)
+    current_response.pop("target_orders", None)
+    current_response.pop("multi_target_memory_reports", None)
     assert current == golden
     assert golden_dataframe["transport"]["body"]["X_test"][0] == [4.0, -1.0]
     expected_dataframe = copy.deepcopy(golden_dataframe)
