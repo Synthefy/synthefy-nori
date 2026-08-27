@@ -2443,7 +2443,11 @@ class NoriPredictor:
             or self.mask_prediction
             or bool(getattr(bare_model, "mask_prediction", False))
             or not self._model_supports_pipeline_batching(bare_model)
-            or any(config["retrieval_config"]["use_retrieval"] for config in self.inference_config)
+            # Internal also excludes retrieval-enabled configs here, for the same
+            # reason it excludes retrieval preprocessing steps below: they reshape
+            # the context per pipeline and break the identical-shape grouping.
+            # This tier has no retrieval, so its inference configs carry no
+            # "retrieval_config" key at all and reading one raises KeyError.
         ):
             self._clear_pipeline_batch_contexts()
             return None

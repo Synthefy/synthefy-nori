@@ -1343,7 +1343,9 @@ def test_cached_group_failure_clears_slot_and_restarts_b1(fake_cuda_tensors, err
         "ddp",
         "predictor-mask",
         "model-mask",
-        "retrieval",
+        # Internal also parametrizes "retrieval" here. This tier has no
+        # retrieval: its inference configs carry no "retrieval_config" key, so
+        # there is no such execution mode to exclude.
         "training",
         "dropout",
     ],
@@ -1363,8 +1365,6 @@ def test_execution_mode_exclusions_do_not_enter_batching(fake_cuda_tensors, excl
         predictor.mask_prediction = True
     elif excluded == "model-mask":
         model.mask_prediction = True
-    elif excluded == "retrieval":
-        predictor.inference_config[0]["retrieval_config"]["use_retrieval"] = True
     elif excluded == "training":
         model.training = True
     elif excluded == "dropout":
