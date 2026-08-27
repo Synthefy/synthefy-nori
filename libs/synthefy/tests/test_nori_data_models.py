@@ -54,8 +54,12 @@ requires_library = pytest.mark.skipif(
 #: Fields the server DECIDES; they belong to the report, not the policy. Mirrors the split in
 #: the library's openapi generator, which is the one place that split is written down.
 DECIDED_FIELDS = {
-    "rung", "est_cache_gb", "resident_gb", "query_chunk",
-    "dropped_context_rows", "attempt_history",
+    "rung",
+    "est_cache_gb",
+    "resident_gb",
+    "query_chunk",
+    "dropped_context_rows",
+    "attempt_history",
 }
 
 
@@ -124,7 +128,6 @@ def test_attempt_history_keeps_newer_server_fields():
     )
     assert report.model_dump()["attempt_history"][0]["new_attempt_detail"] == "kept"
     assert report.model_dump()["attempt_history"][0]["query_chunk"] == 128
-
 
 
 def test_defaults_match_the_documented_behaviour():
@@ -220,8 +223,7 @@ def test_each_memory_attempt_field_matches_the_library_on_type_bounds_and_defaul
     theirs = Authoritative.model_json_schema()["properties"][field]
     for key in ("type", "enum", "default", "exclusiveMinimum", "minimum", "maximum", "anyOf"):
         assert mine.get(key) == theirs.get(key), (
-            f"MemoryAttempt.{field}.{key}: client has {mine.get(key)!r}, "
-            f"library has {theirs.get(key)!r}"
+            f"MemoryAttempt.{field}.{key}: client has {mine.get(key)!r}, library has {theirs.get(key)!r}"
         )
 
 

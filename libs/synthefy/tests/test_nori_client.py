@@ -2625,13 +2625,12 @@ def test_local_mode_uses_estimator_and_surfaces_memory_report(monkeypatch):
     monkeypatch.setattr(module, "_local_memory_policy_available", lambda: True)
     monkeypatch.setattr(module, "_load_local_regressor", lambda: FakeRegressor)
     monkeypatch.setattr(
-        module, "_load_local_predict",
+        module,
+        "_load_local_predict",
         lambda: (_ for _ in ()).throw(AssertionError("functional path used")),
     )
     client = SynthefyNoriClient(model="nori-30m", mode="local")
-    predictions = client.predict(
-        _X_TRAIN, _Y_TRAIN, _X_TEST, memory_policy={"cache_dtype": "int8"}
-    )
+    predictions = client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST, memory_policy={"cache_dtype": "int8"})
 
     assert predictions == [0.1, 0.2]
     assert seen["model"] == "nori-30m"

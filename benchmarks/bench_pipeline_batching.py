@@ -149,10 +149,7 @@ def clear_context_cache(predictor) -> None:
 def context_cache_signature(predictor) -> dict:
     """Bundle identities, used to prove a nominal hot call did not rebuild."""
     cache = getattr(predictor, "_context_cache", None) or {}
-    return {
-        key: id(entry[3])
-        for key, entry in cache.items()
-    }
+    return {key: id(entry[3]) for key, entry in cache.items()}
 
 
 def assert_hot_cache_reused(predictor, expected: dict, *, label: str) -> None:
@@ -161,8 +158,7 @@ def assert_hot_cache_reused(predictor, expected: dict, *, label: str) -> None:
         raise RuntimeError(f"{label} warmup retained no context cache")
     if actual != expected:
         raise RuntimeError(
-            f"{label} rebuilt or replaced its context cache during the timed call: "
-            f"before={expected}, after={actual}"
+            f"{label} rebuilt or replaced its context cache during the timed call: before={expected}, after={actual}"
         )
 
 
@@ -281,17 +277,10 @@ def benchmark_case(
             )
             if report is None or report.get("rung") != expected_rung:
                 actual = None if report is None else report.get("rung")
+                raise RuntimeError(f"{name}/{label} reached memory rung {actual!r}; expected {expected_rung!r}")
+            if expected_query_chunk is not None and report.get("query_chunk") != expected_query_chunk:
                 raise RuntimeError(
-                    f"{name}/{label} reached memory rung {actual!r}; "
-                    f"expected {expected_rung!r}"
-                )
-            if (
-                expected_query_chunk is not None
-                and report.get("query_chunk") != expected_query_chunk
-            ):
-                raise RuntimeError(
-                    f"{name}/{label} used query_chunk={report.get('query_chunk')!r}; "
-                    f"expected {expected_query_chunk}"
+                    f"{name}/{label} used query_chunk={report.get('query_chunk')!r}; expected {expected_query_chunk}"
                 )
             durations[label].append(elapsed_ms)
             peaks[label].append(peak_gib)
@@ -326,10 +315,7 @@ def benchmark_case(
             distributions["batching_off"]["taus"],
         ),
     ]
-    arm_results = {
-        label: summarize_arm(durations[label], peaks[label], reports[label])
-        for label, _ in arms
-    }
+    arm_results = {label: summarize_arm(durations[label], peaks[label], reports[label]) for label, _ in arms}
     baseline_ms = arm_results["batching_off"]["median_ms"]
     candidate_ms = arm_results["batching_on"]["median_ms"]
     return (
@@ -456,9 +442,7 @@ def main() -> None:
             "host_cache_cap_gb": args.host_cache_cap_gb,
             "cached_measurement": "hot_context_reuse" if args.include_resident_cache else None,
         },
-        "geomean_speedup": math.exp(
-            sum(math.log(speedup) for speedup in speedups) / len(speedups)
-        ),
+        "geomean_speedup": math.exp(sum(math.log(speedup) for speedup in speedups) / len(speedups)),
         "cases": cases,
         "parity": parity,
     }
