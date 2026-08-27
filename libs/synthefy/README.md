@@ -392,6 +392,8 @@ preds = client.predict(X_train, y_train, X_test, memory_policy="max_context")  #
 
 # ...individual fields...
 preds = client.predict(X_train, y_train, X_test, memory_policy={"cache_dtype": "int8"})
+preds = client.predict(X_train, y_train, X_test,
+                       memory_policy={"stream_context": True})  # bounded GPU staging
 
 # ...or the typed model, which ships with the client — no synthefy-nori needed. Validated
 # before the request goes out, so a typo or an out-of-range value costs no round trip.
@@ -408,26 +410,36 @@ request, so it is not knowable from your side.
 
 | field | meaning |
 |---|---|
-| `rung` | which fallback served it — `resident_bf16` → `resident_int8` → `offload_bf16` → `offload_int8` → `plain_loop` → `no_cache` |
-| `est_cache_gb` / `resident_gb` | the cache's full-precision size, and what stayed in GPU memory |
+| `rung` | which path served it — ordinary `resident_*` / `offload_*`, explicit `stream_bf16` / `stream_int8`, or a lower fallback |
+| `est_cache_gb` / `resident_gb` | the cache's full-precision size, and its footprint at the chosen precision |
 | `query_chunk` | query rows per forward pass |
-| `dropped_context_rows` | context rows discarded to fit — **the one accuracy loss worth checking**, `0` unless subsampling engaged |
+| `dropped_context_rows` | context rows discarded to fit, `0` unless subsampling engaged |
 | `clamped` | fields the server capped (host-RAM budgets only) |
 | `notes` | remarks about the policy you sent, e.g. a budget that cannot take effect |
 
-**Only the int8 rungs trade accuracy**, and they are reached only when full precision
-will not fit. `offload_*` moves bytes to host RAM rather than approximating, so it is
-bit-identical to staying resident. Set `memory_policy={"allow_subsample": False}` to turn a
-silently shortened context into an error instead.
+**Only the int8 rungs quantize the cache.** Ordinary `offload_*` moves bytes to host
+RAM rather than approximating, so BF16 offload is bit-identical to staying resident.
+Explicit streaming is numerically close but not bit-exact even at BF16 because bounded
+online attention changes floating-point reduction order.
+
+Use `memory_policy={"stream_context": True}` when context-attention GPU memory should
+stop scaling with context length. It keeps the full context/KV state on the host, reports
+`stream_bf16` or `stream_int8`, disables cross-call context reuse, and defaults to a
+maximum staged-row cap of 2048. Runtime may use smaller K/V blocks to honor its fixed
+FP32 workspace cap; fit-time OOMs retry a bounded 2048 → 1024 → 512 → 256 row ladder.
+If the full cache cannot fit the allowed host budget, the request fails clearly
+instead of silently switching to `plain_loop`. Set
+`memory_policy={"allow_subsample": False}` to turn ordinary element-budget context
+shortening into an error as well.
 
 One field behaves differently over the network: **`elements_budget`**. The cache is only
 built when the query set spans more than one chunk, and at default settings that needs
 far more query rows than the hosted request-body limit (~64 MiB) allows — so lowering
 `elements_budget` is what lets a hosted request reach the cached path at all.
 
-In `mode="local"` the same argument works, but needs `synthefy-nori >= 0.13.0`; older
-builds raise `ImportError` with an upgrade hint. `last_memory_report` stays `None`
-locally — use `NoriRegressor` and read `memory_report_` if you need it there.
+In `mode="local"` the same argument works when the installed `synthefy-nori` exposes
+the field. An older runtime raises `ImportError` with an upgrade hint before inference.
+`last_memory_report` exposes the resolved local report just as it does for hosted calls.
 
 ### Choosing Context on Large Tables (`large_context_policy=`)
 

@@ -82,7 +82,8 @@ class TestPolicyReachesInference:
         assert report["rung"] == "resident_bf16", (
             f"expected the cached path to engage; got {report['rung']}. If this is "
             f'"no_cache", SMALL_ELEMENTS_BUDGET is too large for this table and the '
-            f'rest of this suite is testing nothing.')
+            f"rest of this suite is testing nothing."
+        )
         assert _policy_from_report(report).is_bit_exact
 
     def test_report_round_trips_into_the_policy_type(self, regressor_cls, table):

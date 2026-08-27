@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from dataclasses import dataclass
 from synthefy_nori.model.layer import EncoderBaseLayer, MLP, LayerStack, RMSNorm
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 
 @dataclass
@@ -31,6 +31,9 @@ class ContextCache:
     - ``valid_feature_num``: the context-only count used by
       ``ValidFeatureEncoder`` to keep feature-group scaling independent of the
       query rows presented in a particular call.
+    - ``query_y_embedding``: the context-derived embedding of one NaN query
+      target. Streaming expands this one row per query chunk instead of encoding
+      ``N_context + N_query`` targets during decode.
     - ``y_train``: context targets, to reconstruct the query y-placeholder embedding
       exactly as the transductive path does (query rows are NaN-masked anyway).
     - ``eval_pos``: number of context rows (``n_train``).
@@ -41,8 +44,11 @@ class ContextCache:
     or query rows get stats derived from THEMSELVES instead of the context: a silent,
     data-dependent divergence rather than an error. With them, the cached
     path stays within float-reassociation distance of the transductive forward (~3e-05
-    on nori-6m) for finite, NaN- and Inf-bearing tables alike; it is bit-identical to
-    ``forward_cached_regression``, which is literally this build/apply pair.
+    on nori-6m) for finite, NaN- and Inf-bearing tables alike. The legacy cached pair
+    is bit-identical to ``forward_cached_regression``, which is literally that
+    build/apply pair. Streamed BF16 preserves the same rows and statistics, but its
+    chunked GEMMs and FP32 online-softmax reduction are only numerically close, not
+    bit-exact.
     """
 
     caches: list
@@ -52,6 +58,7 @@ class ContextCache:
     eval_pos: int
     nan_mean: torch.Tensor | None = None
     valid_feature_num: torch.Tensor | None = None
+    query_y_embedding: torch.Tensor | None = None
 
 
 from synthefy_nori.model.encoders import get_x_encoder, get_cls_y_encoder, get_reg_y_encoder, preprocesss_4_x
@@ -642,7 +649,7 @@ class FeaturesTransformer(nn.Module):
                 which ``NoriPredictor.predict`` resolves before calling here.
             offload_kv_cache: keep the cache in host RAM, streaming slices back.
             fit_row_chunk: bound the fit-time build working set to this many
-                context rows (bit-exact). ``None`` = off.
+                context rows (deterministic, with small floating-point reassociation differences). ``None`` = off.
             adaptive_query_chunk: on a decode OOM, halve the query chunk and
                 retry rather than raising.
             quantize_kv_cache: alias for ``cache_dtype``, accepted so the WS1
@@ -712,6 +719,8 @@ class FeaturesTransformer(nn.Module):
         offload_kv_cache: bool = False,
         fit_row_chunk: int | None = None,
         quantize_kv_cache: bool | None = None,
+        stream_context: bool = False,
+        _hybrid_resident_int8_prefill: bool = False,
     ) -> ContextCache:
         """Encode a fixed context (train) table once into a reusable ``ContextCache``.
 
@@ -723,6 +732,9 @@ class FeaturesTransformer(nn.Module):
 
         ``cache_dtype`` / ``offload_kv_cache`` / ``fit_row_chunk`` behave exactly as
         in :meth:`forward_cached_regression` (which is now a wrapper over this pair).
+        ``stream_context=True`` additionally requires CPU inputs, host offload, and a
+        concrete row cap; it never materializes a full-N activation or K/V layer on
+        the compute device.
         """
         if quantize_kv_cache is not None and cache_dtype == "bf16":
             cache_dtype = "int8" if quantize_kv_cache else "bf16"
@@ -752,6 +764,27 @@ class FeaturesTransformer(nn.Module):
             raise AssertionError("x_train must have at least one context row")
         if y_train.shape[1] < eval_pos:
             raise AssertionError("y_train must cover all context rows")
+        if _hybrid_resident_int8_prefill and (
+            stream_context or offload_kv_cache or cache_dtype != "int8" or fit_row_chunk is None
+        ):
+            raise ValueError(
+                "hybrid resident INT8 prefill requires cache_dtype='int8', "
+                "offload_kv_cache=False, stream_context=False, and a concrete "
+                "context_row_chunk"
+            )
+        if stream_context or _hybrid_resident_int8_prefill:
+            if stream_context and not offload_kv_cache:
+                raise ValueError("stream_context requires offload_kv_cache=True")
+            if fit_row_chunk is None:
+                requested = "stream_context" if stream_context else "hybrid resident INT8 prefill"
+                raise ValueError(f"{requested} requires a concrete context_row_chunk")
+            return self._build_context_cache_streaming(
+                x_train,
+                y_train[:, :eval_pos],
+                cache_dtype=cache_dtype,
+                fit_row_chunk=fit_row_chunk,
+                _hybrid_resident_int8_prefill=_hybrid_resident_int8_prefill,
+            )
 
         x_dict, _feature_to_add = self._build_x_preprocess_inputs(x_train, eval_pos)
         preprocessed_x = self.x_preprocess(x_dict)
@@ -830,6 +863,7 @@ class FeaturesTransformer(nn.Module):
         *,
         row_chunk_size: int | None = None,
         adaptive_query_chunk: bool = True,
+        query_chunk_attempt_callback: (Callable[[int, Literal["success", "oom"]], None] | None) = None,
     ) -> torch.Tensor:
         """Score query rows against a prebuilt :class:`ContextCache`.
 
@@ -837,6 +871,11 @@ class FeaturesTransformer(nn.Module):
         query) pair, but the context forward is skipped: only the query rows stream
         through the cached per-layer K/V. Safe to call repeatedly with different
         query batches for the same context -- it mutates nothing on ``context``.
+
+        ``query_chunk_attempt_callback`` is an internal observability hook. It is
+        called for every decode OOM with the chunk limit that failed, then once
+        with the effective chunk limit after the full query batch succeeds. If
+        retries are exhausted, the final event is the OOM at chunk size one.
         """
         if self.mask_prediction:
             raise NotImplementedError("apply_context_cache requires mask_prediction=False")
@@ -852,36 +891,59 @@ class FeaturesTransformer(nn.Module):
         # eval_pos here only feeds the (overridden) NormalizationEncoder split point.
         x_dict, _feature_to_add = self._build_x_preprocess_inputs(x_test, n_test)
         if context.norm_stats is not None:
-            x_dict["_frozen_norm_stats"] = context.norm_stats
+            x_dict["_frozen_norm_stats"] = {key: value.to(x_test.device) for key, value in context.norm_stats.items()}
         if context.nan_mean is not None:
-            x_dict["_frozen_nan_mean"] = context.nan_mean
+            x_dict["_frozen_nan_mean"] = context.nan_mean.to(x_test.device)
         if context.valid_feature_num is not None:
-            x_dict["_frozen_valid_feature_num"] = context.valid_feature_num
+            x_dict["_frozen_valid_feature_num"] = context.valid_feature_num.to(x_test.device)
         preprocessed_x = self.x_preprocess(x_dict)
         preprocessed_x = self.process_4_x(preprocessed_x)
 
-        # Query-row y is NaN-masked in the transductive path regardless of its value;
-        # reconstruct the SAME query embedding by encoding [context y ; NaN query]
-        # and slicing the query tail, so the y-encoder's context normalization matches.
-        _, embedded_y_full = self._encode_y_full(
-            context.y_train,
-            total_rows=eval_pos + n_test,
-            eval_pos=eval_pos,
-            task_type="reg",
-        )
-        embedded_y_query = embedded_y_full[:, eval_pos:]
+        streaming_context = context.query_y_embedding is not None
+        if not streaming_context:
+            # Legacy bundles retain context y. Query-row y is NaN-masked in the
+            # transductive path regardless of its value, so reconstruct the SAME
+            # query embedding by encoding [context y ; NaN query] and slicing the
+            # tail, keeping the y-encoder's context normalization matched.
+            _, embedded_y_full = self._encode_y_full(
+                context.y_train,
+                total_rows=eval_pos + n_test,
+                eval_pos=eval_pos,
+                task_type="reg",
+            )
+            embedded_y_query = embedded_y_full[:, eval_pos:]
 
         if row_chunk_size is None or row_chunk_size <= 0:
             row_chunk_size = n_test
 
         def _run_chunk(start: int, end: int) -> torch.Tensor:
-            x_q = self._encode_x_rows(
-                preprocessed_x,
-                slice(start, end),
-                total_rows=n_test,
-                feature_pos_emb=context.feature_pos_emb,
-            )
-            test_tokens = torch.cat((x_q, embedded_y_query[:, start:end].unsqueeze(2)), dim=2)
+            if streaming_context:
+                # Keep the raw query matrix and its parameter-free preprocessing
+                # on the host. Only this query slice and its one-row y placeholder
+                # are resident on the compute device.
+                width = end - start
+                host_chunk = self._slice_preprocessed_x(preprocessed_x, slice(start, end), n_test)
+                compute_device = next(self.parameters()).device
+                staged = {
+                    key: value.to(compute_device) if isinstance(value, torch.Tensor) else value
+                    for key, value in host_chunk.items()
+                }
+                x_q = self._encode_x_rows(
+                    staged,
+                    slice(0, width),
+                    total_rows=width,
+                    feature_pos_emb=context.feature_pos_emb,
+                )
+                y_q = context.query_y_embedding.to(compute_device).expand(-1, width, -1)
+            else:
+                x_q = self._encode_x_rows(
+                    preprocessed_x,
+                    slice(start, end),
+                    total_rows=n_test,
+                    feature_pos_emb=context.feature_pos_emb,
+                )
+                y_q = embedded_y_query[:, start:end]
+            test_tokens = torch.cat((x_q, y_q.unsqueeze(2)), dim=2)
             test_out = self.transformer_encoder.forward_test_with_cache(
                 test_tokens,
                 context.caches,
@@ -899,6 +961,8 @@ class FeaturesTransformer(nn.Module):
                 outputs.append(_run_chunk(start, end))
                 start = end
             except torch.cuda.OutOfMemoryError:
+                if query_chunk_attempt_callback is not None:
+                    query_chunk_attempt_callback(chunk, "oom")
                 # Adaptive halving: degrade the query chunk instead of dying. The
                 # reduced chunk is deliberately NOT restored for later chunks --
                 # whatever made this one not fit is a property of the request, so
@@ -907,6 +971,8 @@ class FeaturesTransformer(nn.Module):
                     raise
                 torch.cuda.empty_cache()
                 chunk = max(1, chunk // 2)
+        if query_chunk_attempt_callback is not None:
+            query_chunk_attempt_callback(chunk, "success")
         return torch.cat(outputs, dim=1)
 
     def apply_target_aware_embedding(
@@ -997,3 +1063,137 @@ class FeaturesTransformer(nn.Module):
         else:
             raise ValueError(f"Unknown feature_positional_embedding_type={self.feature_positional_embedding_type}")
         return x
+
+    def _build_context_cache_streaming(
+        self,
+        x_train: torch.Tensor,
+        y_train: torch.Tensor,
+        *,
+        cache_dtype: str,
+        fit_row_chunk: int,
+        _hybrid_resident_int8_prefill: bool = False,
+    ) -> ContextCache:
+        """Build a context cache without a full-N tensor on the compute device."""
+        if x_train.device.type != "cpu" or y_train.device.type != "cpu":
+            mode = "hybrid resident INT8 prefill" if _hybrid_resident_int8_prefill else "stream_context"
+            raise ValueError(
+                f"{mode} requires CPU x_train/y_train; upload only row chunks, not the full training matrix"
+            )
+        compute_device = next(self.parameters()).device
+        eval_pos = x_train.shape[1]
+
+        # Preprocessing reductions are context-wide but parameter-free, so keep
+        # their small raw-feature representation and derived stats on CPU.
+        x_dict, _feature_to_add = self._build_x_preprocess_inputs(x_train, eval_pos)
+        preprocessed_x = self.x_preprocess(x_dict)
+        captured = preprocessed_x.get("_norm_stats") or {}
+        norm_stats = {k: v.detach() for k, v in captured.items()} if captured else None
+        captured_nan_mean = preprocessed_x.get("_nan_mean")
+        nan_mean = captured_nan_mean.detach() if isinstance(captured_nan_mean, torch.Tensor) else None
+        captured_valid_feature_num = preprocessed_x.get("_valid_feature_num")
+        valid_feature_num = (
+            captured_valid_feature_num.detach() if isinstance(captured_valid_feature_num, torch.Tensor) else None
+        )
+        n_groups = (x_train.shape[2] + self.features_per_group - 1) // self.features_per_group
+        feature_pos_emb = self.make_feature_positional_embeddings(
+            int(n_groups),
+            device=compute_device,
+            dtype=x_train.dtype,
+        )
+        # The full pass above exists only to derive context-wide frozen stats.
+        # Re-run the parameter-free preprocessing per row chunk below so it does
+        # not overlap a full preprocessed table with the O(N) token buffer.
+        del x_dict, preprocessed_x, captured, captured_nan_mean
+        del captured_valid_feature_num
+
+        # Query y is always NaN-masked. Cache its one-row embedding, derived from
+        # the full context mean, rather than recreating an N_context+N_query y
+        # activation at decode time.
+        y_values = y_train.unsqueeze(-1)
+        y_finite = torch.isfinite(y_values)
+        y_count = y_finite.sum(dim=1).clamp_min(1)
+        y_nan_mean = torch.where(y_finite, y_values, torch.zeros_like(y_values)).sum(dim=1) / y_count
+        y_nan_mean_device = y_nan_mean.to(compute_device)
+        query_y_input = {
+            "data": torch.full(
+                (y_train.shape[0], 1, 1),
+                float("nan"),
+                device=compute_device,
+                dtype=y_train.dtype,
+            ),
+            "eval_pos": 1,
+            "_frozen_nan_mean": y_nan_mean_device,
+        }
+        query_y_embedding = self.reg_y_encoder(query_y_input)["data"].squeeze(2).detach()
+
+        train_tokens = None
+        for row_start in range(0, eval_pos, fit_row_chunk):
+            row_end = min(row_start + fit_row_chunk, eval_pos)
+            width = row_end - row_start
+            chunk, _ = self._build_x_preprocess_inputs(x_train[:, row_start:row_end], width)
+            if norm_stats is not None:
+                chunk["_frozen_norm_stats"] = norm_stats
+            if nan_mean is not None:
+                chunk["_frozen_nan_mean"] = nan_mean
+            if valid_feature_num is not None:
+                chunk["_frozen_valid_feature_num"] = valid_feature_num
+            chunk = self.x_preprocess(chunk)
+            chunk = self.process_4_x(chunk)
+            staged = {
+                key: value.to(compute_device) if isinstance(value, torch.Tensor) else value
+                for key, value in chunk.items()
+            }
+            x_encoded = self._encode_x_rows(
+                staged,
+                slice(0, width),
+                total_rows=width,
+                feature_pos_emb=feature_pos_emb,
+            )
+            y_rows = y_train[:, row_start:row_end].to(compute_device)
+            # Streaming is a cached-inference path and so always regression;
+            # internal's model dropped task_type entirely, this tier's has not.
+            x_encoded = self.apply_target_aware_embedding(x_encoded, y_rows, eval_pos=width, task_type="reg")
+            y_input = {
+                "data": y_rows.unsqueeze(-1),
+                "eval_pos": width,
+                "_frozen_nan_mean": y_nan_mean_device,
+            }
+            y_encoded = self.reg_y_encoder(y_input)["data"].squeeze(2)
+            tokens = torch.cat((x_encoded, y_encoded.unsqueeze(2)), dim=2)
+            host_tokens = tokens.detach().to("cpu")
+            if train_tokens is None:
+                train_tokens = torch.empty(
+                    (x_train.shape[0], eval_pos, *host_tokens.shape[2:]),
+                    dtype=host_tokens.dtype,
+                    device="cpu",
+                )
+            train_tokens[:, row_start:row_end].copy_(host_tokens)
+            del chunk, staged, x_encoded, y_rows, y_encoded, tokens, host_tokens
+        if train_tokens is None:
+            raise ValueError("stream_context received an empty context")
+
+        empty_y_train = y_train[:, :0].detach()
+        del x_train, y_train, y_values, y_finite, y_count, y_nan_mean
+        del y_nan_mean_device, query_y_input
+
+        final_tokens, caches = self.transformer_encoder.build_train_cache(
+            train_tokens,
+            feature_atten_mask=None,
+            quantize_kv_cache=cache_dtype == "int8",
+            offload_kv_cache=not _hybrid_resident_int8_prefill,
+            fit_row_chunk=fit_row_chunk,
+            device=compute_device,
+            stream_context=not _hybrid_resident_int8_prefill,
+            _hybrid_resident_int8_prefill=_hybrid_resident_int8_prefill,
+        )
+        del train_tokens, final_tokens
+        return ContextCache(
+            caches=caches,
+            feature_pos_emb=feature_pos_emb,
+            norm_stats=norm_stats,
+            y_train=empty_y_train,
+            eval_pos=eval_pos,
+            nan_mean=nan_mean,
+            valid_feature_num=valid_feature_num,
+            query_y_embedding=query_y_embedding,
+        )

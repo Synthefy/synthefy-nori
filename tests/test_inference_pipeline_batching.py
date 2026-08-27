@@ -158,15 +158,39 @@ class _RetryingCachedModel(_CachedModel):
         self.success_at = success_at
         self.cache_attempts = []
 
-    def build_context_cache(
-        self, x_train, y_train, *, cache_dtype, offload_kv_cache, fit_row_chunk
-    ):
+    def build_context_cache(self, x_train, y_train, *, cache_dtype, offload_kv_cache, fit_row_chunk):
         attempt = (cache_dtype, offload_kv_cache, fit_row_chunk)
         self.cache_attempts.append(attempt)
         if attempt != self.success_at:
             raise torch.cuda.OutOfMemoryError("synthetic cache-build OOM")
         return x_train, y_train
 
+
+class _AdaptiveDecodeModel(_CachedModel):
+    """Emit the model's adaptive query-chunk events without requiring CUDA."""
+
+    def __init__(self, succeed_at: int | None):
+        super().__init__()
+        self.succeed_at = succeed_at
+
+    def apply_context_cache(
+        self,
+        x_test,
+        context,
+        *,
+        row_chunk_size,
+        query_chunk_attempt_callback,
+        **_kwargs,
+    ):
+        chunk = row_chunk_size
+        while chunk != self.succeed_at:
+            query_chunk_attempt_callback(chunk, "oom")
+            if chunk <= 1:
+                raise torch.cuda.OutOfMemoryError("synthetic exhausted adaptive decode")
+            chunk = max(1, chunk // 2)
+        query_chunk_attempt_callback(chunk, "success")
+        x_train, _ = context
+        return x_test[:, :, :1] + 0.0 * x_train[:, :1, :1]
 
 
 class _RowChunkUnsupportedModel(_CachedModel):
@@ -175,9 +199,7 @@ class _RowChunkUnsupportedModel(_CachedModel):
 
     def build_context_cache(self, x_train, y_train, *, cache_dtype, offload_kv_cache, fit_row_chunk):
         if fit_row_chunk is not None:
-            raise NotImplementedError(
-                "context_row_chunk is not supported for serial sequence attention"
-            )
+            raise NotImplementedError("context_row_chunk is not supported for serial sequence attention")
         self.build_batches.append(x_train.shape[0])
         return x_train, y_train
 
@@ -199,6 +221,44 @@ class _CountedOOMCachedModel(_CachedModel):
             raise torch.cuda.OutOfMemoryError("synthetic cross-pipe OOM")
         self.build_batches.append(x_train.shape[0])
         return x_train, y_train
+
+
+class _StreamingRetryModel(_CachedModel):
+    """Record the bounded host-streaming ladder and fail before one rung."""
+
+    def __init__(self, success_at=None, *, error_type=torch.cuda.OutOfMemoryError):
+        super().__init__()
+        self.success_at = success_at
+        self.error_type = error_type
+        self.cache_attempts = []
+        self.train_rows = []
+        self.build_devices = []
+        self.apply_devices = []
+        self.apply_kwargs = []
+
+    def build_context_cache(
+        self,
+        x_train,
+        y_train,
+        *,
+        cache_dtype,
+        offload_kv_cache,
+        fit_row_chunk,
+        stream_context,
+    ):
+        attempt = (cache_dtype, offload_kv_cache, fit_row_chunk, stream_context)
+        self.cache_attempts.append(attempt)
+        self.train_rows.append(x_train.shape[1])
+        self.build_devices.append((x_train.device.type, y_train.device.type))
+        if attempt != self.success_at:
+            raise self.error_type("synthetic streamed-cache failure")
+        return x_train, y_train
+
+    def apply_context_cache(self, x_test, context, **kwargs):
+        self.apply_devices.append(x_test.device.type)
+        self.apply_kwargs.append(kwargs)
+        x_train, _ = context
+        return x_test[:, :, :1] + 0.0 * x_train[:, :1, :1]
 
 
 class _PipeTransform:
@@ -318,7 +378,8 @@ def test_plain_path_batches_and_kill_switch_restores_b1(fake_cuda_tensors, monke
 
 
 def test_exact_cached_cudagraph_mode_preserves_b1_execution(
-    fake_cuda_tensors, monkeypatch,
+    fake_cuda_tensors,
+    monkeypatch,
 ):
     monkeypatch.setenv(EXACT_CACHED_CUDAGRAPHS_ENV, "1")
     x_train, y_train, x_test = _table()
@@ -345,7 +406,9 @@ def test_exact_cached_cudagraphs_compile_one_unbound_layer_method(monkeypatch):
     predictor._logged_this_call = set()
     monkeypatch.setenv(EXACT_CACHED_CUDAGRAPHS_ENV, "1")
     monkeypatch.setattr(
-        predictor_module.importlib.util, "find_spec", lambda _name: object(),
+        predictor_module.importlib.util,
+        "find_spec",
+        lambda _name: object(),
     )
     compile_calls = []
 
@@ -387,7 +450,9 @@ def test_exact_cached_cudagraphs_fall_back_without_setuptools(monkeypatch):
     predictor._logged_this_call = set()
     monkeypatch.setenv(EXACT_CACHED_CUDAGRAPHS_ENV, "1")
     monkeypatch.setattr(
-        predictor_module.importlib.util, "find_spec", lambda _name: None,
+        predictor_module.importlib.util,
+        "find_spec",
+        lambda _name: None,
     )
     monkeypatch.setattr(
         torch,
@@ -486,9 +551,7 @@ def test_wide_b1_groups_use_prepared_transforms_once(fake_cuda_tensors):
     )
 
 
-def test_mixed_width_groups_preserve_legacy_post_call_rng_state(
-    fake_cuda_tensors, monkeypatch
-):
+def test_mixed_width_groups_preserve_legacy_post_call_rng_state(fake_cuda_tensors, monkeypatch):
     x_train, y_train, x_test = _table()
 
     def mixed_predictor():
@@ -500,12 +563,9 @@ def test_mixed_width_groups_preserve_legacy_post_call_rng_state(
             [_PipeTransform(0.0)],
         ]
         predictor.inference_config = [
-            {"retrieval_config": {"use_retrieval": False}}
-            for _ in predictor.preprocess_pipelines
+            {"retrieval_config": {"use_retrieval": False}} for _ in predictor.preprocess_pipelines
         ]
-        predictor.seeds = [0] * (
-            len(predictor.preprocess_pipelines) * predictor.preprocess_num
-        )
+        predictor.seeds = [0] * (len(predictor.preprocess_pipelines) * predictor.preprocess_num)
         return predictor
 
     batched = mixed_predictor()
@@ -583,9 +643,7 @@ def test_worst_pipeline_report_and_history_survive_later_resident_success():
     predictor = _predictor(_PlainModel())
     predictor._memory_attempt_history = []
     predictor._memory_outcome_policy = None
-    requested = MemoryPolicy(
-        gpu_budget_absolute_gb=1.0, host_budget_absolute_gb=2.0
-    )
+    requested = MemoryPolicy(gpu_budget_absolute_gb=1.0, host_budget_absolute_gb=2.0)
     resident = requested.resolve(
         est_cache_gb=0.1,
         bytes_per_element=2,
@@ -597,35 +655,41 @@ def test_worst_pipeline_report_and_history_survive_later_resident_success():
 
     predictor._publish_memory_policy(plain)
     predictor._record_memory_attempt(
-        plain, pipeline_ids=[0], path="plain_loop", rung="plain_loop",
-        context_row_chunk=None, outcome="success",
-        reason="fallback_after_oom", dropped_context_rows=0,
+        plain,
+        pipeline_ids=[0],
+        path="plain_loop",
+        rung="plain_loop",
+        context_row_chunk=None,
+        outcome="success",
+        reason="fallback_after_oom",
+        dropped_context_rows=0,
     )
     predictor._publish_memory_policy(resident)
     predictor._record_memory_attempt(
-        resident, pipeline_ids=[1], path="cached", rung="resident_bf16",
-        context_row_chunk=None, outcome="success", reason="resolved",
+        resident,
+        pipeline_ids=[1],
+        path="cached",
+        rung="resident_bf16",
+        context_row_chunk=None,
+        outcome="success",
+        reason="resolved",
         dropped_context_rows=0,
     )
 
     assert predictor.memory_report_["rung"] == "plain_loop"
-    assert [
-        attempt["pipeline_ids"] for attempt in predictor.memory_report_["attempt_history"]
-    ] == [[0], [1]]
-
+    assert [attempt["pipeline_ids"] for attempt in predictor.memory_report_["attempt_history"]] == [[0], [1]]
 
 
 def test_explicit_fit_row_chunk_is_a_retry_cap():
-    assert NoriPredictor._fit_row_chunk_attempts(None) == [2048, 1024, 512]
-    assert NoriPredictor._fit_row_chunk_attempts(4096) == [2048, 1024, 512]
-    assert NoriPredictor._fit_row_chunk_attempts(1024) == [512]
+    assert NoriPredictor._fit_row_chunk_attempts(None) == [2048, 1024, 512, 256]
+    assert NoriPredictor._fit_row_chunk_attempts(16384) == [2048, 1024, 512, 256]
+    assert NoriPredictor._fit_row_chunk_attempts(4096) == [2048, 1024, 512, 256]
+    assert NoriPredictor._fit_row_chunk_attempts(1024) == [512, 256]
+    assert NoriPredictor._fit_row_chunk_attempts(512) == [256]
     assert NoriPredictor._fit_row_chunk_attempts(256) == []
 
 
-
-def test_apply_oom_releases_retained_context_and_output_before_retry(
-    fake_cuda_tensors, monkeypatch
-):
+def test_apply_oom_releases_retained_context_and_output_before_retry(fake_cuda_tensors, monkeypatch):
     monkeypatch.setenv("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "1")
 
     class Context:
@@ -638,13 +702,9 @@ def test_apply_oom_releases_retained_context_and_output_before_retry(
             self.cache_attempts = []
             self.context_refs = []
 
-        def build_context_cache(
-            self, x_train, y_train, *, cache_dtype, offload_kv_cache, fit_row_chunk
-        ):
+        def build_context_cache(self, x_train, y_train, *, cache_dtype, offload_kv_cache, fit_row_chunk):
             del y_train
-            self.cache_attempts.append(
-                (cache_dtype, offload_kv_cache, fit_row_chunk)
-            )
+            self.cache_attempts.append((cache_dtype, offload_kv_cache, fit_row_chunk))
             context = Context(x_train)
             self.context_refs.append(weakref.ref(context))
             return context
@@ -691,18 +751,11 @@ def test_apply_oom_releases_retained_context_and_output_before_retry(
         ("bf16", False, None),
         ("int8", False, None),
     ]
-    assert [
-        attempt["outcome"] for attempt in predictor.memory_report_["attempt_history"]
-    ] == ["oom", "success"]
-    torch.testing.assert_close(
-        output, torch.from_numpy(x_test[:, 0]), rtol=0, atol=1e-5
-    )
+    assert [attempt["outcome"] for attempt in predictor.memory_report_["attempt_history"]] == ["oom", "success"]
+    torch.testing.assert_close(output, torch.from_numpy(x_test[:, 0]), rtol=0, atol=1e-5)
 
 
-
-def test_runtime_oom_walks_every_allowed_rung_then_bounded_fit_chunks(
-    fake_cuda_tensors, monkeypatch
-):
+def test_runtime_oom_walks_every_allowed_rung_then_bounded_fit_chunks(fake_cuda_tensors, monkeypatch):
     monkeypatch.setenv("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "1")
     x_train, y_train, x_test = _table(n_train=12, n_test=300)
     model = _RetryingCachedModel(("int8", True, 512))
@@ -736,11 +789,9 @@ def test_runtime_oom_walks_every_allowed_rung_then_bounded_fit_chunks(
     history = report["attempt_history"]
     assert [attempt["outcome"] for attempt in history] == ["oom"] * 6 + ["success"]
     assert [
-        (attempt["cache_dtype"], attempt["offload_to_host"], attempt["context_row_chunk"])
-        for attempt in history
+        (attempt["cache_dtype"], attempt["offload_to_host"], attempt["context_row_chunk"]) for attempt in history
     ] == expected
     assert all(attempt["dropped_context_rows"] == 0 for attempt in history)
-
 
 
 def test_oom_on_one_pipe_does_not_evict_a_sibling_pipes_cache(fake_cuda_tensors, monkeypatch):
@@ -775,10 +826,11 @@ def test_oom_on_one_pipe_does_not_evict_a_sibling_pipes_cache(fake_cuda_tensors,
     assert set(predictor._context_cache) == {0, 1}
     assert len(predictor._context_cache[0]) == 1
     assert len(predictor._context_cache[1]) == 1
-    assert [
-        attempt["outcome"] for attempt in predictor.memory_report_["attempt_history"]
-    ] == ["success", "oom", "success"]
-
+    assert [attempt["outcome"] for attempt in predictor.memory_report_["attempt_history"]] == [
+        "success",
+        "oom",
+        "success",
+    ]
 
 
 def test_pinned_context_row_chunk_on_unsupported_checkpoint_raises(fake_cuda_tensors, monkeypatch):
@@ -806,9 +858,7 @@ def test_pinned_context_row_chunk_on_unsupported_checkpoint_raises(fake_cuda_ten
         predictor._predict_reg_single(x_train, y_train, x_test)
 
 
-def test_precision_only_recovery_logs_regardless_of_chunk_change(
-    fake_cuda_tensors, monkeypatch, caplog
-):
+def test_precision_only_recovery_logs_regardless_of_chunk_change(fake_cuda_tensors, monkeypatch, caplog):
     """A recovery via precision/placement alone (no context_row_chunk change) must
     still log "Nori recovered on rung", not only chunk-based recoveries.
     """
@@ -876,6 +926,307 @@ def test_int8_cache_warns_but_bf16_cache_does_not(fake_cuda_tensors, monkeypatch
     assert bf16_predictor.memory_report_["rung"] == "resident_bf16"
 
 
+def test_resident_int8_row_chunk_uses_private_hybrid_without_changing_report(fake_cuda_tensors, monkeypatch):
+    monkeypatch.setenv("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "1")
+
+    class HybridModel(_CachedModel):
+        def __init__(self):
+            super().__init__()
+            self.builds = []
+
+        def build_context_cache(
+            self,
+            x_train,
+            y_train,
+            *,
+            cache_dtype,
+            offload_kv_cache,
+            fit_row_chunk,
+            stream_context=False,
+            _hybrid_resident_int8_prefill=False,
+        ):
+            self.builds.append(
+                {
+                    "cache_dtype": cache_dtype,
+                    "offload": offload_kv_cache,
+                    "fit_row_chunk": fit_row_chunk,
+                    "stream_context": stream_context,
+                    "hybrid": _hybrid_resident_int8_prefill,
+                    "devices": (x_train.device.type, y_train.device.type),
+                }
+            )
+            return x_train, y_train
+
+    x_train, y_train, x_test = _table(n_train=12, n_test=300)
+    model = HybridModel()
+    predictor = _predictor(
+        model,
+        memory_policy={
+            "elements_budget": 1_072,
+            "cache_dtype": "int8",
+            "context_row_chunk": 4,
+            "gpu_budget_absolute_gb": 1.0,
+            "host_budget_absolute_gb": 2.0,
+        },
+    )
+    predictor.preprocess_pipelines = [[]]
+    predictor.inference_config = [{}]
+
+    output = predictor._predict_reg_single(x_train, y_train, x_test)
+
+    assert model.builds == [
+        {
+            "cache_dtype": "int8",
+            "offload": False,
+            "fit_row_chunk": 4,
+            "stream_context": False,
+            "hybrid": True,
+            "devices": ("cpu", "cpu"),
+        }
+    ]
+    report = predictor.memory_report_
+    assert report["rung"] == "resident_int8"
+    assert report["stream_context"] is False
+    assert report["context_row_chunk"] == 4
+    assert report["attempt_history"][0]["rung"] == "resident_int8"
+    torch.testing.assert_close(output, torch.from_numpy(x_test[:, 0]), rtol=0, atol=1e-5)
+
+
+def _streaming_predictor(model, **policy_overrides):
+    policy = {
+        "stream_context": True,
+        "elements_budget": 8,
+        "allow_subsample": False,
+        "gpu_budget_absolute_gb": 0.0,
+        "host_budget_absolute_gb": 2.0,
+    }
+    policy.update(policy_overrides)
+    predictor = _predictor(model, memory_policy=policy)
+    predictor.preprocess_pipelines = [[]]
+    predictor.inference_config = [{}]
+    predictor.seeds = [0] * predictor.preprocess_num
+    return predictor
+
+
+def test_stream_context_keeps_all_rows_on_cpu_and_runs_for_one_query(fake_cuda_tensors, monkeypatch):
+    monkeypatch.setenv("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "1")
+    x_train, y_train, x_test = _table(n_train=12, n_test=1)
+    model = _StreamingRetryModel(("bf16", True, 8192, True))
+    predictor = _streaming_predictor(model, allow_subsample=True)
+    monkeypatch.setattr(predictor, "_total_vram_gb", lambda: 64.0)
+    monkeypatch.setattr(predictor, "_resolve_max_elements_budget", lambda: 8)
+
+    output = predictor._predict_reg_single(x_train, y_train, x_test)
+
+    assert model.cache_attempts == [("bf16", True, 8192, True)]
+    assert model.train_rows == [len(x_train)]
+    assert model.build_devices == [("cpu", "cpu")]
+    assert model.apply_devices == ["cpu"]
+    assert model.calls == []
+    assert len(model.apply_kwargs) == 1
+    assert callable(model.apply_kwargs[0].pop("query_chunk_attempt_callback"))
+    assert model.apply_kwargs == [
+        {
+            "row_chunk_size": 1,
+            "adaptive_query_chunk": True,
+        }
+    ]
+    torch.testing.assert_close(output, torch.from_numpy(x_test[:, 0]), rtol=0, atol=1e-5)
+    report = predictor.memory_report_
+    assert report["rung"] == "stream_bf16"
+    assert report["context_row_chunk"] == 8192
+    assert report["query_chunk"] == 1
+    assert report["dropped_context_rows"] == 0
+    assert report["attempt_history"][0]["outcome"] == "success"
+
+
+def test_adaptive_decode_halving_is_reported_with_effective_query_chunk(fake_cuda_tensors, monkeypatch):
+    monkeypatch.setenv("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "1")
+    x_train, y_train, x_test = _table(n_train=12, n_test=300)
+    predictor = _predictor(
+        _AdaptiveDecodeModel(succeed_at=128),
+        memory_policy={
+            "elements_budget": 1_072,
+            "gpu_budget_absolute_gb": 1.0,
+            "host_budget_absolute_gb": 2.0,
+        },
+    )
+    predictor.preprocess_pipelines = [[]]
+    predictor.inference_config = [{}]
+
+    output = predictor._predict_reg_single(x_train, y_train, x_test)
+
+    torch.testing.assert_close(output, torch.from_numpy(x_test[:, 0]), rtol=0, atol=1e-5)
+    report = predictor.memory_report_
+    assert report["query_chunk"] == 128
+    assert [
+        (attempt["query_chunk"], attempt["outcome"], attempt["reason"]) for attempt in report["attempt_history"]
+    ] == [
+        (256, "oom", "resolved"),
+        (128, "success", "oom_retry"),
+    ]
+
+
+def test_pipeline_batched_adaptive_decode_reports_the_same_trace(
+    fake_cuda_tensors,
+):
+    x_train, y_train, x_test = _table(n_train=12, n_test=300)
+    predictor = _predictor(
+        _AdaptiveDecodeModel(succeed_at=128),
+        memory_policy={
+            "elements_budget": 1_072,
+            "gpu_budget_absolute_gb": 1.0,
+            "host_budget_absolute_gb": 2.0,
+        },
+    )
+
+    predictor._predict_reg_single(x_train, y_train, x_test)
+
+    report = predictor.memory_report_
+    assert report["query_chunk"] == 128
+    assert [
+        (
+            attempt["path"],
+            attempt["pipeline_ids"],
+            attempt["query_chunk"],
+            attempt["outcome"],
+        )
+        for attempt in report["attempt_history"]
+    ] == [
+        ("pipeline_batch", [0, 1, 2], 256, "oom"),
+        ("pipeline_batch", [0, 1, 2], 128, "success"),
+    ]
+
+
+def test_exhausted_adaptive_decode_reports_every_halving_and_reraises(fake_cuda_tensors, monkeypatch):
+    monkeypatch.setenv("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "1")
+    x_train, y_train, x_test = _table(n_train=12, n_test=300)
+    predictor = _streaming_predictor(
+        _AdaptiveDecodeModel(succeed_at=None),
+        cache_dtype="int8",
+        context_row_chunk=256,
+    )
+    monkeypatch.setattr(predictor, "_total_vram_gb", lambda: 64.0)
+
+    with pytest.raises(torch.cuda.OutOfMemoryError, match="exhausted adaptive decode"):
+        predictor._predict_reg_single(x_train, y_train, x_test)
+
+    report = predictor.memory_report_
+    assert report["query_chunk"] == 1
+    assert [attempt["query_chunk"] for attempt in report["attempt_history"]] == [256, 128, 64, 32, 16, 8, 4, 2, 1]
+    assert all(attempt["outcome"] == "oom" for attempt in report["attempt_history"])
+    assert all(
+        attempt["path"] == "cached" and attempt["rung"] == "stream_int8" for attempt in report["attempt_history"]
+    )
+
+
+def test_stream_context_uses_shared_precision_then_row_chunk_ladder(fake_cuda_tensors, monkeypatch):
+    monkeypatch.setenv("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "1")
+    x_train, y_train, x_test = _table(n_train=12, n_test=1)
+    model = _StreamingRetryModel(("int8", True, 256, True))
+    predictor = _streaming_predictor(model)
+    monkeypatch.setattr(predictor, "_total_vram_gb", lambda: 64.0)
+
+    output = predictor._predict_reg_single(x_train, y_train, x_test)
+
+    expected = [
+        ("bf16", True, 8192, True),
+        ("int8", True, 8192, True),
+        ("int8", True, 2048, True),
+        ("int8", True, 1024, True),
+        ("int8", True, 512, True),
+        ("int8", True, 256, True),
+    ]
+    assert model.cache_attempts == expected
+    assert model.train_rows == [len(x_train)] * len(expected)
+    assert model.calls == []
+    torch.testing.assert_close(output, torch.from_numpy(x_test[:, 0]), rtol=0, atol=1e-5)
+    report = predictor.memory_report_
+    assert report["rung"] == "stream_int8"
+    assert report["context_row_chunk"] == 256
+    assert report["query_chunk"] == 1
+    assert [attempt["outcome"] for attempt in report["attempt_history"]] == [
+        "oom",
+        "oom",
+        "oom",
+        "oom",
+        "oom",
+        "success",
+    ]
+    assert [
+        (
+            attempt["cache_dtype"],
+            attempt["offload_to_host"],
+            attempt["context_row_chunk"],
+        )
+        for attempt in report["attempt_history"]
+    ] == [attempt[:3] for attempt in expected]
+    assert all(attempt["path"] == "cached" and attempt["rung"] != "plain_loop" for attempt in report["attempt_history"])
+    assert all(attempt["dropped_context_rows"] == 0 for attempt in report["attempt_history"])
+
+
+def test_stream_context_exhaustion_reraises_without_plain_loop(fake_cuda_tensors, monkeypatch):
+    monkeypatch.setenv("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "1")
+    x_train, y_train, x_test = _table(n_train=12, n_test=1)
+    model = _StreamingRetryModel()
+    predictor = _streaming_predictor(model)
+    monkeypatch.setattr(predictor, "_total_vram_gb", lambda: 64.0)
+
+    with pytest.raises(torch.cuda.OutOfMemoryError, match="synthetic streamed-cache failure"):
+        predictor._predict_reg_single(x_train, y_train, x_test)
+
+    assert model.cache_attempts == [
+        ("bf16", True, 8192, True),
+        ("int8", True, 8192, True),
+        ("int8", True, 2048, True),
+        ("int8", True, 1024, True),
+        ("int8", True, 512, True),
+        ("int8", True, 256, True),
+    ]
+    assert model.calls == []
+    history = predictor.memory_report_["attempt_history"]
+    assert [attempt["outcome"] for attempt in history] == ["oom"] * 6
+    assert all(attempt["path"] == "cached" for attempt in history)
+    assert all(attempt["rung"] != "plain_loop" for attempt in history)
+
+
+def test_stream_context_unsupported_reraises_without_retry_or_plain_loop(fake_cuda_tensors, monkeypatch):
+    monkeypatch.setenv("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "1")
+    x_train, y_train, x_test = _table(n_train=12, n_test=1)
+    model = _StreamingRetryModel(error_type=NotImplementedError)
+    predictor = _streaming_predictor(model, context_row_chunk=256)
+
+    with pytest.raises(NotImplementedError, match="synthetic streamed-cache failure"):
+        predictor._predict_reg_single(x_train, y_train, x_test)
+
+    assert model.cache_attempts == [("bf16", True, 256, True)]
+    assert model.calls == []
+    history = predictor.memory_report_["attempt_history"]
+    assert [attempt["outcome"] for attempt in history] == ["unsupported"]
+    assert history[0]["context_row_chunk"] == 256
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("SYNTHEFY_DISABLE_CACHED_INFERENCE", "1"),
+        ("SYNTHEFY_ENABLE_CACHED_INFERENCE", "0"),
+    ],
+)
+def test_stream_context_cache_kill_switch_fails_before_rows_or_model_call(fake_cuda_tensors, monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    x_train, y_train, x_test = _table(n_train=12, n_test=1)
+    model = _StreamingRetryModel(("bf16", True, 2048, True))
+    predictor = _streaming_predictor(model)
+
+    with pytest.raises(RuntimeError, match="stream_context=True cannot run"):
+        predictor._predict_reg_single(x_train, y_train, x_test)
+
+    assert model.cache_attempts == []
+    assert model.train_rows == []
+    assert model.calls == []
+    assert predictor.memory_report_ is None
+
 
 def test_nonreused_group_context_is_released_before_next_build(fake_cuda_tensors):
     x_train, y_train, x_test = _table(n_train=12, n_test=300, n_features=5)
@@ -896,12 +1247,9 @@ def test_nonreused_group_context_is_released_before_next_build(fake_cuda_tensors
         [_PipeTransform(0.0, drop_last=True)],
     ]
     predictor.inference_config = [
-        {"retrieval_config": {"use_retrieval": False}}
-        for _ in predictor.preprocess_pipelines
+        {"retrieval_config": {"use_retrieval": False}} for _ in predictor.preprocess_pipelines
     ]
-    predictor.seeds = [0] * (
-        len(predictor.preprocess_pipelines) * predictor.preprocess_num
-    )
+    predictor.seeds = [0] * (len(predictor.preprocess_pipelines) * predictor.preprocess_num)
 
     predictor._predict_reg_single(x_train, y_train, x_test)
 

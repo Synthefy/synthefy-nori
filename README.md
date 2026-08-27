@@ -604,22 +604,27 @@ NoriRegressor(model="nori-6m", memory_policy="exact")                   # never 
 NoriRegressor(model="nori-6m", memory_policy="max_context")             # fit the biggest table
 NoriRegressor(model="nori-6m", memory_policy="off")                     # no cache at all
 NoriRegressor(model="nori-6m", memory_policy={"gpu_budget_frac": 0.25}) # e.g. from a config file
+NoriRegressor(model="nori-6m", memory_policy={"stream_context": True})  # bounded GPU staging
 ```
 
-Under the hood it walks a ladder, using the cheapest rung that can serve the request:
+The ordinary policy walks a ladder using the cheapest rung that can serve the request;
+explicit streaming reports its own `stream_*` path:
 
 | rung | what it does | exact? |
 |---|---|---|
 | `resident_bf16` | cache fits VRAM at full precision | **yes** |
 | `resident_int8` | quantize to stay on the GPU instead of streaming | ~6e-6 R² |
 | `offload_int8` | cache lives in host RAM, streamed per layer | quantized |
+| `stream_bf16` | explicitly keep context/KV on the host and stage bounded row slices | numerically close |
+| `stream_int8` | the same bounded host-only path with quantized K/V | quantized |
 | `context_row_chunk` | after an OOM: also cap rows per build step | **yes** |
 | `plain_loop` | no cache; several times slower, may drop context rows | **yes** |
 
-**Only the int8 rungs cost accuracy, and `resident_int8` is only reached when full
-precision would not fit.** A table that serves correctly today keeps bit-exact
-predictions — accuracy is spent only to avoid a fallback that is slower or fatal. Use
-`memory_policy="exact"` to forbid quantizing outright (it offloads instead).
+**Only the int8 rungs quantize the cache, and `resident_int8` is only reached when full
+precision would not fit.** Explicit streaming is also not bit-exact, even at BF16,
+because chunked GEMMs and FP32 online attention change reduction order. A small CUDA
+comparison measured max prediction delta 2.93e-3 and mean delta 7.44e-4. Use
+`memory_policy="exact"` to forbid quantizing on the ordinary adaptive ladder.
 
 Budgets are **fractions of your hardware**, so one setting travels from a laptop GPU to
 an H200:
@@ -633,11 +638,26 @@ an H200:
 | `cache_dtype` | `"bf16"` | precision the cache **starts** at |
 | `allow_quantization` | `True` | may bf16 drop to int8 to stay resident? |
 | `offload_to_host` | `True` | may the cache move to host RAM? |
+| `stream_context` | `False` | explicitly keep full context/KV state on the host and bound GPU staging; resolves to `stream_bf16` or `stream_int8` |
 | `context_row_chunk` | `None` | cap context rows per build step (auto after an OOM) |
 | `elements_budget` | auto | per-forward element cap; drives chunking + subsampling |
 | `allow_subsample` | `True` | may context rows be dropped to fit? `False` = raise |
 
-> **Host offload needs RAM > 1.6 × VRAM at these defaults.** Offload only engages once
+Set `memory_policy={"stream_context": True}` when context-attention GPU memory should
+stop scaling with context length. Streaming forces the cache onto the host, disables
+cross-call context reuse, and resolves an omitted `context_row_chunk` from accelerator
+VRAM: **2048** rows below 40 GiB, **8192** rows from 40 GiB, and **16384** rows from
+80 GiB. An explicit value is preserved. The selected number is a maximum staged-row
+cap, not an exact internal block width: runtime may split K/V blocks smaller to stay
+within its attention workspace. After any larger resolved first attempt, fit-time OOMs
+retry the bounded **2048 → 1024 → 512 → 256** row ladder. This is still constant GPU
+memory with respect to total context length because the hardware
+tier does not grow with the dataset. The full context must fit the configured host
+budget. If it does not, Nori raises instead of silently falling back to `plain_loop` or
+dropping the requested mechanism.
+
+> **Ordinary adaptive host offload needs RAM > 1.6 × VRAM at these defaults.**
+> Offload only engages once
 > the cache exceeds the GPU budget, and it can only succeed within the host budget — so
 > `0.25 × RAM` has to exceed `0.4 × VRAM`. Below that ratio the offload rung is
 > unreachable and a spilling request goes straight to `plain_loop`. Concretely, a 143 GB

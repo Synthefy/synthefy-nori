@@ -51,6 +51,8 @@ MEMORY_RUNGS = (
     "resident_int8",
     "offload_bf16",
     "offload_int8",
+    "stream_bf16",
+    "stream_int8",
     "context_row_chunk",
     "plain_loop",
 )
@@ -266,13 +268,26 @@ class MemoryPolicy(BaseModel):
         ),
     )
 
+    stream_context: bool = Field(
+        False,
+        description=(
+            "Keep the full context and K/V cache in host RAM and stage only bounded "
+            "row slices on the GPU. This forces the host-only stream_bf16/stream_int8 "
+            "path, disables cross-call context reuse, and uses "
+            "context_row_chunk=2048 as the maximum staged-row cap when no cap is "
+            "supplied. Runtime may split K/V blocks smaller to honor its fixed FP32 "
+            "online-attention workspace ceiling. Streaming never silently falls back "
+            "to plain_loop."
+        ),
+    )
+
     context_row_chunk: Optional[int] = Field(
         None,
         gt=0,
         description=(
             "Bound prefill to this many context rows (deterministic, with small "
-            "floating-point reassociation differences). None = off, with 2048, 1024, "
-            "then 512 tried after OOMs. An explicit value is a first-attempt cap; retries "
+            "floating-point reassociation differences). None = off, with 2048, 1024, 512, "
+            "then 256 tried after OOMs. An explicit value is a first-attempt cap; retries "
             "stay at or below it. "
         ),
     )
@@ -317,6 +332,7 @@ class MemoryAttempt(BaseModel):
     cache_dtype: Literal["bf16", "int8"]
     offload_to_host: bool
     context_row_chunk: Optional[int] = Field(None, gt=0)
+    query_chunk: Optional[int] = Field(None, gt=0)
     outcome: Literal["success", "oom", "unsupported"]
     reason: Literal[
         "resolved",
@@ -348,9 +364,10 @@ class MemoryReport(BaseModel):
             "Which fallback the server used, in decreasing memory cost: resident_bf16 "
             "(cache in GPU memory, exact), resident_int8 (quantized), offload_bf16 / "
             "offload_int8 (cache in host RAM, streamed back per layer, exact transport), "
-            "context_row_chunk (cache built in row chunks), plain_loop (no cache; the "
-            "context re-read per query batch), no_cache (the cached path did not apply). "
-            "Decided per request, not requestable. "
+            "stream_bf16 / stream_int8 (explicit bounded host-only context streaming; "
+            "not bit-exact), context_row_chunk (cache built in row chunks), plain_loop "
+            "(no cache; the context re-read per query batch), no_cache (the cached path "
+            "did not apply). Decided per request, not requestable. "
         ),
     )
 
@@ -370,9 +387,10 @@ class MemoryReport(BaseModel):
     query_chunk: Optional[int] = Field(
         None,
         description=(
-            "Query rows per decode forward, as the cached path was entered with. "
-            "Reported, not set. NOTE: a decode OOM may halve this further inside the "
-            "model, and that further reduction is not currently reported here. "
+            "Effective query rows per decode forward on the successful cached path. "
+            "If decoding exhausted its retries and raised, this is the last attempted "
+            "size. Every adaptive reduction is also recorded in attempt_history. "
+            "Reported, not set. "
         ),
     )
 
@@ -388,8 +406,9 @@ class MemoryReport(BaseModel):
 
     attempt_history: List[MemoryAttempt] = Field(
         default_factory=list,
-        description="Chronological memory execution attempts, including runtime OOMs, "
-                    "fit-row retries, and the successful fallback.",
+        description="Chronological memory execution attempts, including cache-build "
+        "OOMs, decode query-chunk retries, fit-row retries, and the "
+        "successful fallback.",
     )
 
     clamped: List[str] = Field(

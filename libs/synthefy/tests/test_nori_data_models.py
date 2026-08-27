@@ -90,22 +90,40 @@ def test_the_report_keeps_fields_this_version_does_not_know():
     assert report.model_dump()["something_new"] == 17
 
 
+def test_streaming_report_keeps_the_resolved_policy_details():
+    report = MemoryReport(
+        rung="stream_bf16",
+        stream_context=True,
+        context_row_chunk=2048,
+        reuse_context_cache=False,
+    )
+    dumped = report.model_dump()
+    assert dumped["rung"] == "stream_bf16"
+    assert dumped["stream_context"] is True
+    assert dumped["context_row_chunk"] == 2048
+    assert dumped["reuse_context_cache"] is False
+
+
 def test_attempt_history_keeps_newer_server_fields():
     report = MemoryReport(
-        attempt_history=[{
-            "pipeline_ids": [0],
-            "path": "cached",
-            "rung": "resident_bf16",
-            "cache_dtype": "bf16",
-            "offload_to_host": False,
-            "context_row_chunk": None,
-            "outcome": "success",
-            "reason": "resolved",
-            "dropped_context_rows": 0,
-            "new_attempt_detail": "kept",
-        }]
+        attempt_history=[
+            {
+                "pipeline_ids": [0],
+                "path": "cached",
+                "rung": "resident_bf16",
+                "cache_dtype": "bf16",
+                "offload_to_host": False,
+                "context_row_chunk": None,
+                "query_chunk": 128,
+                "outcome": "success",
+                "reason": "resolved",
+                "dropped_context_rows": 0,
+                "new_attempt_detail": "kept",
+            }
+        ]
     )
     assert report.model_dump()["attempt_history"][0]["new_attempt_detail"] == "kept"
+    assert report.model_dump()["attempt_history"][0]["query_chunk"] == 128
 
 
 
@@ -115,7 +133,14 @@ def test_defaults_match_the_documented_behaviour():
     assert policy.cache_dtype == "bf16"
     assert policy.allow_quantization is True and policy.offload_to_host is True
     assert policy.gpu_budget_frac == 0.4 and policy.host_budget_frac == 0.25
+    assert policy.stream_context is False
     assert policy.allow_subsample is True
+
+
+def test_stream_context_remains_a_partial_wire_policy():
+    policy = MemoryPolicy(stream_context=True)
+    assert policy.model_dump(exclude_unset=True) == {"stream_context": True}
+    assert {"stream_bf16", "stream_int8"} <= set(MEMORY_RUNGS)
 
 
 # ------------------------------------------------- and matches the authority

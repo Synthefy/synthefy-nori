@@ -633,6 +633,36 @@ def _local_memory_policy_available() -> bool:
         return False
 
 
+def _local_stream_context_available() -> bool:
+    """Whether the installed local policy understands ``stream_context``.
+
+    The lightweight client can be newer than the separately installed model package.
+    A runtime that has the original ``memory_policy=`` surface therefore passes the
+    module-presence check above but would reject this newer field deep inside fit().
+    Inspect the authoritative local model only on the local execution path so remote
+    clients still do not import the heavyweight optional package.
+    """
+    from synthefy_nori.inference.memory_policy import MemoryPolicy as LocalMemoryPolicy
+
+    return "stream_context" in LocalMemoryPolicy.model_fields
+
+
+def _require_local_memory_policy_capabilities(memory_policy: MemoryPolicyInput) -> None:
+    """Fail with an upgrade hint before forwarding an unsupported local policy."""
+    if not _local_memory_policy_available():
+        raise ImportError(
+            "memory_policy= requires synthefy-nori >= 0.13.0 (the serving-memory policy). "
+            "Upgrade with: pip install -U synthefy-nori."
+        )
+    stream_context_was_sent = not isinstance(memory_policy, str) and "stream_context" in memory_policy.model_fields_set
+    if stream_context_was_sent and not _local_stream_context_available():
+        raise ImportError(
+            "memory_policy.stream_context requires a newer synthefy-nori; the "
+            "installed runtime's MemoryPolicy does not include the stream_context "
+            "field. Upgrade with: pip install -U synthefy-nori."
+        )
+
+
 def _local_large_context_available() -> bool:
     """Return ``True`` if the installed ``synthefy-nori`` accepts ``large_context_policy=``.
 
@@ -1835,11 +1865,7 @@ class SynthefyNoriClient:
             init_kwargs["model"] = self._local_variant
         is_multi_target = np.asarray(request.y_train, dtype=float).ndim == 2
         if request.memory_policy is not None:
-            if not _local_memory_policy_available():
-                raise ImportError(
-                    "memory_policy= requires synthefy-nori >= 0.13.0 (the serving-memory policy). "
-                    "Upgrade with: pip install -U synthefy-nori."
-                )
+            _require_local_memory_policy_capabilities(request.memory_policy)
             # NoriRegressor belongs to another package and expects its own MemoryPolicy
             # class (or a plain input), not this client's equivalent pydantic class.
             init_kwargs["memory_policy"] = (
@@ -2038,11 +2064,7 @@ class SynthefyNoriClient:
             if categorical_levels is not None:
                 extra["categorical_levels"] = categorical_levels
         if request.memory_policy is not None:
-            if not _local_memory_policy_available():
-                raise ImportError(
-                    "memory_policy= requires synthefy-nori >= 0.13.0 (the serving-memory policy). "
-                    "Upgrade with: pip install -U synthefy-nori."
-                )
+            _require_local_memory_policy_capabilities(request.memory_policy)
             # A dict, not our MemoryPolicy instance: the library's coerce() accepts its OWN
             # class, a dict, a preset name or None -- a same-named class from this package is
             # none of those and would raise. exclude_unset for the same reason as the wire

@@ -1,17 +1,85 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from typing import Callable, Literal, Optional
 import functools
+import inspect
+from typing import Callable, Literal, Optional
 import math
 import os
 
 import torch
 import torch.nn as nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
+import torch.nn.attention.flex_attention as flex_attention_module
 from torch.utils.checkpoint import checkpoint
+from synthefy_nori.model.kv_cache_scaling import BlockwiseSeqKV, ScalableSeqKV, scale_caches
 from functools import partial
 from torch.amp import autocast
+
+# Hard ceiling for the only block-local tensor whose width is Q x K: the FP32
+# attention score/weight workspace. The row cap below derives K from the actual
+# [batch*groups, heads, query_rows] shape, so a caller may request a larger
+# context_row_chunk without making this tensor grow past 256 MiB.
+BLOCKWISE_SCORE_WORKSPACE_BYTES = 256 * 1024**2
+FP32_ELEMENT_BYTES = 4
+
+flex_attention = flex_attention_module.flex_attention
+_FLEX_SUPPORTS_RETURN_AUX = "return_aux" in inspect.signature(flex_attention).parameters
+_FLEX_AUX_REQUEST = getattr(flex_attention_module, "AuxRequest", None)
+if _FLEX_SUPPORTS_RETURN_AUX and _FLEX_AUX_REQUEST is None:
+    raise RuntimeError("FlexAttention exposes return_aux without AuxRequest")
+_FLEX_LSE_REQUEST = _FLEX_AUX_REQUEST(lse=True) if _FLEX_SUPPORTS_RETURN_AUX else None
+
+
+@functools.lru_cache(maxsize=1)
+def _compiled_flex_attention():
+    """Compile FlexAttention once for streamed CUDA K/V blocks."""
+    return torch.compile(flex_attention)
+
+
+def _flex_attention_with_lse(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    scale: float,
+    enable_gqa: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run fused exact attention and retain each block's softmax normalizer."""
+    compiled = _compiled_flex_attention()
+    if _FLEX_LSE_REQUEST is not None:
+        out, aux = compiled(
+            q,
+            k,
+            v,
+            scale=scale,
+            enable_gqa=enable_gqa,
+            return_aux=_FLEX_LSE_REQUEST,
+        )
+        if aux.lse is None:
+            raise RuntimeError("FlexAttention did not return the requested LSE")
+        return out, aux.lse
+    out, lse = compiled(
+        q,
+        k,
+        v,
+        scale=scale,
+        enable_gqa=enable_gqa,
+        return_lse=True,
+    )
+    return out, lse
+
+
+# Internal defines HAVE_FLASH_ATTN / HAVE_FLASH_ATTN_4 here and dispatches
+# cached attention to flash-attn when present. This tier has no flash path, so
+# the probes are omitted rather than left as unread constants. It also disables
+# cuDNN SDPA process-wide at import; the per-call sdpa_kernel guard below does
+# the same job without mutating global torch state, so that block is omitted too.
+
+#: Working dtype for the FlexAttention blockwise kernel. Named for the flash
+#: kernels it was introduced alongside; the blockwise path uses it whether or
+#: not flash-attn is installed.
+FLASH_ATTN_DTYPE = torch.bfloat16
 
 from typing_extensions import override
 
@@ -442,18 +510,14 @@ class MultiheadAttention(torch.nn.Module):
         else:
             kv = torch.nn.functional.linear(
                 x_kv_flat,
-                kv_proj_weight.reshape(
-                    2 * self.num_heads * self.head_dim, self.embed_dim
-                ),
-            ).view(
-                *x_kv_flat.shape[:-1], 2, self.num_heads, self.head_dim
-            )
+                kv_proj_weight.reshape(2 * self.num_heads * self.head_dim, self.embed_dim),
+            ).view(*x_kv_flat.shape[:-1], 2, self.num_heads, self.head_dim)
         return {"kv": kv.contiguous(), "batch": B, "groups": S}
 
     def forward_with_kv_cache(
         self,
         x: torch.Tensor,
-        kv_cache: dict[str, torch.Tensor | int],
+        kv_cache: dict[str, torch.Tensor | int] | BlockwiseSeqKV,
         *,
         calculate_sample_attention: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
@@ -472,17 +536,37 @@ class MultiheadAttention(torch.nn.Module):
             x_flat,
             q_proj_weight.reshape(self.num_heads * self.head_dim, self.embed_dim),
         ).view(*x_flat.shape[:-1], self.num_heads, self.head_dim)
-        kv = kv_cache["kv"]
-        assert isinstance(kv, torch.Tensor)
+        blockwise = isinstance(kv_cache, BlockwiseSeqKV)
+        kv = None if blockwise else kv_cache["kv"]
+        if kv is not None:
+            assert isinstance(kv, torch.Tensor)
+        n_keys = kv_cache.n_rows if blockwise else int(kv.shape[1])
         if self.use_qassmax:
-            q = self.apply_qassmax(q, kv.shape[1])
+            q = self.apply_qassmax(q, n_keys)
 
-        kv_perhead = self._kv_for_kernel(kv, needs_explicit_heads=False)
-        atten_out = self.compute_attention_by_torch(None, q, kv_perhead, None)
+        if blockwise:
+            if calculate_sample_attention:
+                raise NotImplementedError("sample-attention diagnostics are not available for streamed K/V")
+            if self._attention_dropout_p() != 0.0:
+                raise RuntimeError("blockwise K/V attention is inference-only (dropout must be zero)")
+            # ``compute_attention_by_torch`` applies the logN / learnable
+            # temperature to q itself, which the blockwise path does not go
+            # through — so apply it here to give both paths the same effective
+            # query. Internal instead folds that factor into an ``sdpa_scale``
+            # argument; passing None keeps this tier's already-scaled q on the
+            # blockwise kernel's default 1/sqrt(head_dim).
+            q = self._apply_extra_attn_scale(q, n_keys)
+            atten_out = self.compute_attention_blockwise(q, kv_cache, sdpa_scale=None)
+        else:
+            kv_perhead = self._kv_for_kernel(kv, needs_explicit_heads=False)
+            atten_out = self.compute_attention_by_torch(None, q, kv_perhead, None)
 
         atten_out = atten_out.reshape(x_flat.shape[0], x_flat.shape[1], self.num_heads, self.head_dim)
         sample_attention = None
         if calculate_sample_attention:
+            # Broadcast a single-head (MQA) cache so the diagnostic score has
+            # the same per-head shape it had when the cache was materialized.
+            assert kv is not None
             k, _ = self._kv_for_kernel(kv, needs_explicit_heads=True).unbind(dim=2)
             sample_attention = self.caculate_attention_score(q[-1], k[-1])
         out = torch.einsum(
@@ -491,6 +575,170 @@ class MultiheadAttention(torch.nn.Module):
             self.out_proj_weight,
         )
         return out.reshape(B, S, *out.shape[1:]), sample_attention
+
+    def compute_attention_blockwise(
+        self,
+        q: torch.Tensor,
+        kv_cache: BlockwiseSeqKV,
+        *,
+        sdpa_scale: float | None = None,
+    ) -> torch.Tensor:
+        """Exact-context attention with a stable online softmax over CPU K/V blocks.
+
+        ``q`` is ``[BG, Q, H, D]`` and every yielded K/V block is
+        ``[BG, Kb, 2, Hkv, D]`` (``Hkv`` is either ``H`` or one for MQA). The
+        accumulator is FP32 and has no key-length dimension, so GPU working memory
+        is O(Q * H * D + block_rows * Hkv * D), independent of total context rows.
+        The total key count was already used for QASS/log-N/temperature before this
+        method is called; block size never changes model scaling.
+        """
+        if self._attention_dropout_p() != 0.0:
+            raise RuntimeError("blockwise K/V attention is inference-only (dropout must be zero)")
+
+        if kv_cache.device != q.device:
+            raise RuntimeError(
+                "streamed K/V cache device does not match the query/model device: "
+                f"cache={kv_cache.device}, query={q.device}; rebuild the context cache"
+            )
+        if q.device.type == "cuda":
+            return self._compute_attention_blockwise_flex(
+                q,
+                kv_cache,
+                sdpa_scale=sdpa_scale,
+            )
+        batch_groups, n_query, n_heads, head_dim = q.shape
+        score_bytes_per_key_row = batch_groups * n_heads * n_query * FP32_ELEMENT_BYTES
+        # At least one key row must be processed. If even one row exceeds the
+        # workspace target, adaptive query chunking is the remaining lever.
+        score_limited_rows = max(
+            1,
+            BLOCKWISE_SCORE_WORKSPACE_BYTES // max(score_bytes_per_key_row, 1),
+        )
+        block_rows = min(kv_cache.max_block_rows, score_limited_rows)
+        running_max = torch.full(
+            (batch_groups, n_heads, n_query, 1),
+            float("-inf"),
+            device=q.device,
+            dtype=torch.float32,
+        )
+        denominator = torch.zeros_like(running_max)
+        numerator = torch.zeros(
+            (batch_groups, n_heads, n_query, head_dim),
+            device=q.device,
+            dtype=torch.float32,
+        )
+        scale = (1.0 / math.sqrt(float(head_dim))) if sdpa_scale is None else sdpa_scale
+        q_fp32 = q.to(torch.float32)
+
+        for kv_block in kv_cache.iter_kv_blocks(block_rows=block_rows):
+            if kv_block.ndim != 5 or kv_block.shape[0] != batch_groups:
+                raise ValueError(f"streamed K/V block must be [BG, K, 2, Hkv, D], got {tuple(kv_block.shape)}")
+            k, v = kv_block.unbind(dim=2)
+            k_fp32 = k.to(torch.float32)
+            v_fp32 = v.to(torch.float32)
+            logits = torch.einsum("bqhd,bkhd->bhqk", q_fp32, k_fp32) * scale
+            block_max = logits.amax(dim=-1, keepdim=True)
+            new_max = torch.maximum(running_max, block_max)
+            old_scale = torch.where(
+                denominator > 0,
+                torch.exp(running_max - new_max),
+                torch.zeros_like(new_max),
+            )
+            # Reuse the score allocation as softmax weights. Keeping both FP32
+            # [BG,H,Q,K] tensors doubled the very workspace this path bounds.
+            logits.sub_(new_max).exp_()
+            block_denominator = logits.sum(dim=-1, keepdim=True)
+            block_numerator = torch.einsum("bhqk,bkhd->bhqd", logits, v_fp32)
+            numerator = numerator * old_scale + block_numerator
+            denominator = denominator * old_scale + block_denominator
+            running_max = new_max
+            del (
+                kv_block,
+                k,
+                v,
+                k_fp32,
+                v_fp32,
+                logits,
+                block_max,
+                new_max,
+                old_scale,
+                block_denominator,
+                block_numerator,
+            )
+
+        # BlockwiseSeqKV rejects an empty cache and this path has no attention mask,
+        # so every query has positive mass. Avoid a device sync just to re-prove it.
+        return (numerator / denominator).to(q.dtype).permute(0, 2, 1, 3)
+
+    def _compute_attention_blockwise_flex(
+        self,
+        q: torch.Tensor,
+        kv_cache: BlockwiseSeqKV,
+        *,
+        sdpa_scale: float | None = None,
+    ) -> torch.Tensor:
+        """Fuse each K/V block and merge its normalized output by exact LSE.
+
+        FlexAttention never materializes ``[BG, H, Q, K]`` scores. Each call
+        returns the block-local normalized output and log-sum-exp; combining
+        those pairs in FP32 is algebraically identical to one softmax over all
+        context rows while retaining only O(BG * H * Q * D) accumulators.
+        """
+        batch_groups, n_query, n_heads, head_dim = q.shape
+        scale = (1.0 / math.sqrt(float(head_dim))) if sdpa_scale is None else sdpa_scale
+        q_flex = q.to(FLASH_ATTN_DTYPE).permute(0, 2, 1, 3).contiguous()
+        running_lse = torch.full(
+            (batch_groups, n_heads, n_query),
+            float("-inf"),
+            device=q.device,
+            dtype=torch.float32,
+        )
+        running_output = torch.zeros(
+            (batch_groups, n_heads, n_query, head_dim),
+            device=q.device,
+            dtype=torch.float32,
+        )
+
+        for kv_block in kv_cache.iter_kv_blocks():
+            if kv_block.ndim != 5 or kv_block.shape[0] != batch_groups:
+                raise ValueError(f"streamed K/V block must be [BG, K, 2, Hkv, D], got {tuple(kv_block.shape)}")
+            k, v = kv_block.unbind(dim=2)
+            k_flex = k.to(FLASH_ATTN_DTYPE).permute(0, 2, 1, 3).contiguous()
+            v_flex = v.to(FLASH_ATTN_DTYPE).permute(0, 2, 1, 3).contiguous()
+            block_output, block_lse = _flex_attention_with_lse(
+                q_flex,
+                k_flex,
+                v_flex,
+                scale=scale,
+                enable_gqa=k_flex.shape[1] != n_heads,
+            )
+            if block_lse.shape != running_lse.shape:
+                raise RuntimeError(
+                    "FlexAttention returned an unexpected LSE shape: "
+                    f"expected {tuple(running_lse.shape)}, "
+                    f"got {tuple(block_lse.shape)}"
+                )
+            block_lse = block_lse.to(torch.float32)
+            new_lse = torch.logaddexp(running_lse, block_lse)
+            old_weight = torch.exp(running_lse - new_lse).unsqueeze(-1)
+            block_weight = torch.exp(block_lse - new_lse).unsqueeze(-1)
+            running_output.mul_(old_weight)
+            running_output.add_(block_output.to(torch.float32) * block_weight)
+            running_lse = new_lse
+            del (
+                kv_block,
+                k,
+                v,
+                k_flex,
+                v_flex,
+                block_output,
+                block_lse,
+                new_lse,
+                old_weight,
+                block_weight,
+            )
+
+        return running_output.to(q.dtype).permute(0, 2, 1, 3)
 
     def compute_attention_by_torch(
         self, qkv: torch.Tensor | None, q: torch.Tensor | None, kv: torch.Tensor | None, attn_mask: torch.Tensor | None
@@ -965,7 +1213,17 @@ class EncoderBaseLayer(nn.Module):
         return layer_norm(out + residual)
 
     def _project_kv_cache_rowchunked(
-        self, attn_mod, x_kv_src, copy_kv, row_chunk, *, norm=None, offload=False, quantize=False, device=None
+        self,
+        attn_mod,
+        x_kv_src,
+        copy_kv,
+        row_chunk,
+        *,
+        norm=None,
+        offload=False,
+        quantize=False,
+        device=None,
+        streaming=False,
     ):
         """Build attn_mod's K/V cache over the row axis in chunks.
 
@@ -992,15 +1250,15 @@ class EncoderBaseLayer(nn.Module):
             offload: store the finished cache on host RAM.
             quantize: store the finished cache int8.
             device: compute device reads are staged back to.
+            streaming: retain separate blocks and forbid full-device staging.
 
         Returns:
-            A ``ScalableSeqKV`` when quantizing/offloading, else the plain
-            ``{"kv", "batch", "groups"}`` dict.
+            A blockwise cache when streaming, ``ScalableSeqKV`` when merely
+            quantizing/offloading, else the plain cache dict.
         """
-        from synthefy_nori.model.kv_cache_scaling import ScalableSeqKV
-
         N = x_kv_src.shape[1]
         B, groups = x_kv_src.shape[0], x_kv_src.shape[2]
+        compute_device = torch.device(device) if device is not None else attn_mod.qkv_proj_weight.device
 
         def _row_slices():
             """Yield each row-slice's projected K/V, one at a time.
@@ -1011,10 +1269,26 @@ class EncoderBaseLayer(nn.Module):
             for r0 in range(0, N, row_chunk):
                 sl = slice(r0, min(r0 + row_chunk, N))
                 rows = x_kv_src[:, sl]
+                if rows.device != compute_device:
+                    rows = rows.to(compute_device)
                 if norm is not None:
                     rows = norm(rows)
-                yield attn_mod.project_kv_cache(rows.transpose(1, 2), copy_first_head_kv=copy_kv)["kv"]
+                projected = attn_mod.project_kv_cache(rows.transpose(1, 2), copy_first_head_kv=copy_kv)["kv"]
+                del rows
+                yield projected
+                del projected
 
+        if streaming:
+            return BlockwiseSeqKV.from_row_slices(
+                _row_slices(),
+                B,
+                groups,
+                quantize=quantize,
+                device=compute_device,
+                dtype=x_kv_src.dtype,
+                offload=offload,
+                n_rows=N,
+            )
         if not (quantize or offload):
             # Nothing to fold in; the plain dict is what the uninstrumented path uses.
             return {"kv": torch.cat(list(_row_slices()), dim=1), "batch": B, "groups": groups}
@@ -1024,9 +1298,129 @@ class EncoderBaseLayer(nn.Module):
             groups,
             quantize=quantize,
             offload=offload,
-            device=device or x_kv_src.device,
+            device=compute_device,
             dtype=x_kv_src.dtype,
         )
+
+    def _forward_train_cache_streaming(
+        self,
+        x_train,
+        feature_atten_mask,
+        pre_seq_steps,
+        seq_step,
+        post_seq_steps,
+        index1,
+        index2,
+        row_chunk,
+        quantize,
+        device,
+        *,
+        cross_cache_offload=True,
+    ):
+        """Run one context layer with only row-bounded tensors on the GPU.
+
+        The complete layer input/output and self-attention K/V representation live
+        on CPU. Each row block is staged for row-local work; self-attention scans
+        CPU K/V blocks with FP32 online softmax, so neither an N-row activation nor
+        a full layer's BF16 K/V is ever materialized on the GPU. Explicit context
+        streaming also offloads the reusable cross-cache. The private hybrid path
+        instead writes that cache directly into preallocated resident INT8 storage.
+
+        Sequence-serial layers are rejected by the caller: their cross-cache source
+        is the complete self-attention output, which needs a different two-pass
+        schedule to preserve the same semantics.
+        """
+        compute_device = torch.device(device) if device is not None else next(self.parameters()).device
+        if feature_atten_mask is not None:
+            raise NotImplementedError(
+                "stream_context does not yet support feature_atten_mask; staging "
+                "a full mask would violate the bounded-GPU-memory contract"
+            )
+        if x_train.device.type != "cpu":
+            raise ValueError(
+                "stream_context requires CPU-resident context activations; the "
+                "predictor must not upload the full training matrix"
+            )
+        seq_attn_train = self.sequence_attentions[index1]
+        seq_attn_test = self.sequence_attentions[index2]
+        seq_norm = self.layer_norms[seq_step]
+        n_rows = x_train.shape[1]
+
+        def _write_host(source, transform):
+            if n_rows <= 0:
+                raise ValueError("stream_context received an empty context")
+            for row_start in range(0, n_rows, row_chunk):
+                row_end = min(row_start + row_chunk, n_rows)
+                row_slice = slice(row_start, row_end)
+                staged = source[:, row_slice].to(compute_device)
+                staged = transform(staged)
+                host = staged.detach().to("cpu")
+                source[:, row_slice].copy_(host)
+                del staged, host
+            return source
+
+        def _run_steps(staged, steps):
+            for step_idx in steps:
+                staged = self._run_non_sequence_step(
+                    staged,
+                    step_idx=step_idx,
+                    feature_atten_mask=feature_atten_mask,
+                    eval_pos=staged.shape[1],
+                )
+            return staged
+
+        # FMFMSM's feature/MLP steps are row-local, but every row must reach the
+        # sequence-attention input before any K/V is projected.
+        prepared = _write_host(x_train, lambda rows: _run_steps(rows, pre_seq_steps)) if pre_seq_steps else x_train
+        del x_train
+        norm = seq_norm if self.pre_norm else None
+
+        def _project(module, copy_first_head, *, quantize_cache, offload_cache):
+            return self._project_kv_cache_rowchunked(
+                module,
+                prepared,
+                copy_first_head,
+                row_chunk,
+                norm=norm,
+                quantize=quantize_cache,
+                offload=offload_cache,
+                device=compute_device,
+                streaming=True,
+            )
+
+        # Prefill self-attention remains full precision. Only the reusable cross
+        # cache follows cache_dtype=int8, matching the existing cached path.
+        train_cache = _project(
+            seq_attn_train,
+            self.self_share_all_kv_heads,
+            quantize_cache=False,
+            offload_cache=True,
+        )
+        test_cache = _project(
+            seq_attn_test,
+            self.cross_share_all_kv_heads,
+            quantize_cache=quantize,
+            offload_cache=cross_cache_offload,
+        )
+
+        def _self_attention_and_post(rows):
+            residual = rows
+            if self.pre_norm:
+                attention = seq_attn_train.forward_with_kv_cache(
+                    seq_norm(rows).transpose(1, 2),
+                    train_cache,
+                )[0].transpose(1, 2)
+                rows = self._residual_add(residual, attention)
+            else:
+                attention = seq_attn_train.forward_with_kv_cache(
+                    rows.transpose(1, 2),
+                    train_cache,
+                )[0].transpose(1, 2)
+                rows = seq_norm(attention + residual)
+            return _run_steps(rows, post_seq_steps)
+
+        output = _write_host(prepared, _self_attention_and_post)
+        return output, {"seq_kv": test_cache}
 
     def _forward_train_cache_memsaving(
         self,
@@ -1113,6 +1507,8 @@ class EncoderBaseLayer(nn.Module):
         quantize_kv_cache: bool = False,
         offload_kv_cache: bool = False,
         device=None,
+        stream_context: bool = False,
+        _hybrid_resident_int8_prefill: bool = False,
     ) -> tuple[torch.Tensor, dict[str, dict[str, torch.Tensor | int]]]:
         """Run the train rows through one layer and cache train K/V for tests.
 
@@ -1124,7 +1520,10 @@ class EncoderBaseLayer(nn.Module):
         memory-bounded build (TabPFN-3-style: chunked queries + in-place
         residual + chunked/offloaded cache projection) that keeps only the
         resident K/V tensor full-size. Supported for non-serial seq attention;
-        serial falls back to the standard monolithic path.
+        serial raises rather than silently ignoring the requested memory cap.
+
+        stream_context additionally keeps full-N activations and every K/V layer
+        on CPU; only ``fit_row_chunk`` rows are staged on the compute device.
         """
 
         if self.layer_arch == "fmfmsm":
@@ -1151,12 +1550,39 @@ class EncoderBaseLayer(nn.Module):
         # requested memory lever is how a caller ends up believing the cap applied
         # while the build still peaks at O(N); the predictor catches this to decide
         # whether to escalate elsewhere.
-        if fit_row_chunk and self.seq_attn_serial:
+        bounded_prefill = stream_context or _hybrid_resident_int8_prefill
+        if (fit_row_chunk or bounded_prefill) and self.seq_attn_serial:
+            requested = "stream_context" if stream_context else "context_row_chunk"
             raise NotImplementedError(
-                "context_row_chunk is not supported for serial sequence attention: "
+                f"{requested} is not supported for serial sequence attention: "
                 "the serial variant's test cache reads the self-attention output, so "
-                "the chunked build would have to materialise all rows anyway. Use "
-                "memory={'context_row_chunk': None} on this checkpoint."
+                "the bounded build needs a different two-pass schedule. Use a "
+                "non-serial checkpoint for streaming, or disable context_row_chunk "
+                "only when the full context safely fits."
+            )
+        if bounded_prefill:
+            if not fit_row_chunk:
+                requested = "stream_context" if stream_context else "hybrid resident INT8 prefill"
+                raise ValueError(f"{requested} requires a concrete context_row_chunk")
+            if stream_context and not offload_kv_cache:
+                raise ValueError("stream_context requires offload_kv_cache=True")
+            if _hybrid_resident_int8_prefill and (stream_context or offload_kv_cache or not quantize_kv_cache):
+                raise ValueError(
+                    "hybrid resident INT8 prefill requires stream_context=False, "
+                    "offload_kv_cache=False, and quantize_kv_cache=True"
+                )
+            return self._forward_train_cache_streaming(
+                x_train,
+                feature_atten_mask,
+                pre_seq_steps,
+                seq_step,
+                post_seq_steps,
+                index1,
+                index2,
+                fit_row_chunk,
+                quantize_kv_cache,
+                device,
+                cross_cache_offload=not _hybrid_resident_int8_prefill,
             )
         if fit_row_chunk:
             return self._forward_train_cache_memsaving(
@@ -1377,8 +1803,8 @@ class LayerStack(nn.Module):
         offload = kwargs.get("offload_kv_cache", False)
         device = kwargs.get("device", None)
         fit_row_chunk = kwargs.get("fit_row_chunk", None)
-        if quantize or offload:
-            from synthefy_nori.model.kv_cache_scaling import scale_caches
+        stream_context = kwargs.get("stream_context", False)
+        hybrid_resident_int8_prefill = kwargs.get("_hybrid_resident_int8_prefill", False)
         for layer in self.layers:
             x_train, layer_cache = layer.forward_train_cache(
                 x_train,
@@ -1387,8 +1813,10 @@ class LayerStack(nn.Module):
                 quantize_kv_cache=quantize,
                 offload_kv_cache=offload,
                 device=device,
+                stream_context=stream_context,
+                _hybrid_resident_int8_prefill=hybrid_resident_int8_prefill,
             )
-            if quantize or offload:
+            if (quantize or offload) and not stream_context and not hybrid_resident_int8_prefill:
                 # Scale in place, per layer: the full-precision GPU tensor is
                 # dropped as soon as the CPU/int8 copy is stored, so the next
                 # layer builds against a freed allocator slot. (No-op if the

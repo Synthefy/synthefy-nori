@@ -2359,17 +2359,20 @@ _REPORT = {
     "resident_gb": 0.0065,
     "query_chunk": 256,
     "dropped_context_rows": 0,
-    "attempt_history": [{
-        "pipeline_ids": [0],
-        "path": "cached",
-        "rung": "resident_int8",
-        "cache_dtype": "int8",
-        "offload_to_host": False,
-        "context_row_chunk": None,
-        "outcome": "success",
-        "reason": "resolved",
-        "dropped_context_rows": 0,
-    }],
+    "attempt_history": [
+        {
+            "pipeline_ids": [0],
+            "path": "cached",
+            "rung": "resident_int8",
+            "cache_dtype": "int8",
+            "offload_to_host": False,
+            "context_row_chunk": None,
+            "query_chunk": None,
+            "outcome": "success",
+            "reason": "resolved",
+            "dropped_context_rows": 0,
+        }
+    ],
     "clamped": [],
     "notes": [],
 }
@@ -2401,8 +2404,15 @@ def test_a_request_without_memory_does_not_send_the_field():
 
 @pytest.mark.parametrize(
     "policy",
-    ["exact", "max_context", "off", {"cache_dtype": "int8"}, {"elements_budget": 4000}],
-    ids=["exact", "max_context", "off", "dict", "elements_budget"],
+    [
+        "exact",
+        "max_context",
+        "off",
+        {"cache_dtype": "int8"},
+        {"elements_budget": 4000},
+        {"stream_context": True},
+    ],
+    ids=["exact", "max_context", "off", "dict", "elements_budget", "stream_context"],
 )
 def test_a_policy_is_sent_verbatim(policy):
     capture: Dict = {}
@@ -2520,6 +2530,76 @@ def test_local_mode_refuses_memory_on_an_old_synthefy_nori(monkeypatch):
     client = SynthefyNoriClient(model="nori-30m", mode="local")
     with pytest.raises(ImportError, match="0.13.0"):
         client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST, memory_policy="exact")
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_local_mode_refuses_stream_field_when_installed_policy_lacks_it(monkeypatch, enabled):
+    """Even explicit False is forwarded, so an older policy would reject either value."""
+    from synthefy import nori_client as module
+
+    initialized = []
+
+    class PreStreamingRegressor:
+        def __init__(self, model=None, memory_policy=None):
+            initialized.append((model, memory_policy))
+
+        def predict(self, X, *, output_type="mean"):
+            return [0.0] * len(X)
+
+    monkeypatch.setattr(module, "_local_memory_policy_available", lambda: True)
+    monkeypatch.setattr(module, "_local_stream_context_available", lambda: False)
+    monkeypatch.setattr(module, "_load_local_regressor", lambda: PreStreamingRegressor)
+
+    client = SynthefyNoriClient(model="nori-30m", mode="local")
+    with pytest.raises(ImportError, match="MemoryPolicy does not include.*stream_context"):
+        client.predict(
+            _X_TRAIN,
+            _Y_TRAIN,
+            _X_TEST,
+            memory_policy={"stream_context": enabled},
+        )
+    assert initialized == [], "capability guard must run before estimator construction"
+
+
+def test_local_mode_forwards_stream_context_when_installed_policy_supports_it(monkeypatch):
+    from synthefy import nori_client as module
+
+    seen: Dict = {}
+
+    class StreamingRegressor:
+        def __init__(self, model=None, memory_policy=None):
+            seen["memory_policy"] = memory_policy
+            self.memory_policy = memory_policy
+            self.memory_report_ = None
+
+        def fit(self, X, y):
+            return self
+
+        def predict(self, X, *, output_type="mean", quantiles=None):
+            self.memory_report_ = {
+                **_REPORT,
+                "rung": "stream_bf16",
+                "stream_context": True,
+                "context_row_chunk": 2048,
+                "reuse_context_cache": False,
+            }
+            return [0.1] * len(X)
+
+    monkeypatch.setattr(module, "_local_memory_policy_available", lambda: True)
+    monkeypatch.setattr(module, "_local_stream_context_available", lambda: True)
+    monkeypatch.setattr(module, "_load_local_regressor", lambda: StreamingRegressor)
+
+    client = SynthefyNoriClient(model="nori-30m", mode="local")
+    client.predict(
+        _X_TRAIN,
+        _Y_TRAIN,
+        _X_TEST,
+        memory_policy={"stream_context": True},
+    )
+
+    assert seen["memory_policy"] == {"stream_context": True}
+    assert client.last_memory_report["rung"] == "stream_bf16"
+    assert client.last_memory_report["context_row_chunk"] == 2048
 
 
 def test_local_mode_uses_estimator_and_surfaces_memory_report(monkeypatch):
