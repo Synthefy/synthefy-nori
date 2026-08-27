@@ -29,12 +29,14 @@ resident_int8      bf16 would not fit but int8 does, so the cache stays on the
                    fast on-GPU path instead of paying PCIe streaming. Costs
                    |dR2| ~ 6e-6 (per-(row, head) absmax quantization).
                    Requires ``allow_quantization``.
-offload_bf16       cannot stay resident and quantizing is not allowed -> the
-                   full-precision cache lives in host RAM. Bit-exact, slower.
+offload_bf16       cannot stay resident (or resident attempts OOM) -> the
+                   full-precision cache lives in host RAM. Bit-exact, slower;
+                   may follow resident_int8 to recover precision while moving host-side.
 offload_int8       cannot stay resident at any precision -> quantized cache in
                    host RAM, each layer's slice streamed back on demand.
 context_row_chunk  an actual OOM happened -> re-run bounding the prefill
-                   working set too (bit-exact; see layer.py).
+                   working set too (deterministic, with small floating-point
+                   reassociation differences; see layer.py).
 plain_loop         nothing above worked. **No cache at all: every query chunk
                    recomputes the context K/V, so this is several times slower,
                    and if the context alone exceeds the element budget the
@@ -126,6 +128,11 @@ DEFAULT_HOST_BUDGET_FRAC = 0.25
 
 #: Fit-time row chunk engaged automatically after an OOM on the cached path.
 FIT_ROW_CHUNK_ON_OOM = 2048
+
+#: Bounded, deterministic prefill retries before abandoning the cache. Keeping the
+#: floor explicit prevents an OOM from turning into an unbounded retry loop while
+#: still giving large contexts two materially smaller working sets after 2048.
+FIT_ROW_CHUNK_RETRY_LADDER: tuple[int, ...] = (2048, 1024, 512)
 
 #: Fields that only mean anything while the cached path is in use. Asking for any of
 #: them with ``cache=False`` is incoherent, so it is rejected rather than silently
@@ -414,6 +421,54 @@ def total_host_ram_gb() -> float:
     return limit or physical
 
 
+MemoryAttemptOutcome = Literal["success", "oom", "unsupported"]
+MemoryAttemptPath = Literal["pipeline_batch", "cached", "plain_loop"]
+MemoryAttemptReason = Literal[
+    "resolved",
+    "oom_retry",
+    "fallback_after_oom",
+    "fallback_after_unsupported",
+]
+
+
+class MemoryAttempt(BaseModel):
+    """One execution attempt contributing to a prediction's memory outcome."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    pipeline_ids: list[int] = Field(
+        default_factory=list,
+        description="Preprocessing-pipeline members covered by this attempt. More than "
+                    "one means the pipeline-batched fast path was used.",
+    )
+    path: MemoryAttemptPath = Field(
+        description="Execution path attempted: batched cache, per-pipeline cache, or plain loop.",
+    )
+    rung: MemoryRung = Field(description="Memory ladder rung used for this attempt.")
+    cache_dtype: CacheDtype = Field(
+        description="Cache precision used by this attempt.",
+    )
+    offload_to_host: bool = Field(
+        description="Whether this attempt streamed its cache from host RAM.",
+    )
+    context_row_chunk: int | None = Field(
+        None,
+        gt=0,
+        description="Context rows per prefill chunk for this attempt; null means unchunked prefill.",
+    )
+    outcome: MemoryAttemptOutcome = Field(
+        description="Whether the attempt succeeded, OOMed, or lacked checkpoint support.",
+    )
+    reason: MemoryAttemptReason = Field(
+        description="Why this attempt ran: initial resolution, an OOM retry, or a plain-loop fallback.",
+    )
+    dropped_context_rows: int = Field(
+        0,
+        ge=0,
+        description="Context rows already removed before this attempt. Non-zero is always explicit.",
+    )
+
+
 class MemoryPolicy(BaseModel):
     """What inference may spend on memory, and where the K/V cache goes.
 
@@ -513,10 +568,10 @@ class MemoryPolicy(BaseModel):
         None,
         gt=0,
         description="Bound the fit-time build working set to this many context rows "
-        f"(bit-exact). None = off, with {FIT_ROW_CHUNK_ON_OOM} engaged "
-        "automatically after an OOM. Pinning a value uses it from the "
-        "first attempt — which also costs you that escalation, since "
-        "there is then nothing left to escalate to.",
+                    f"(deterministic, with small floating-point reassociation differences). "
+                    f"None = off, with {FIT_ROW_CHUNK_ON_OOM}, 1024, "
+                    "then 512 tried automatically after OOMs. An explicit value is "
+                    "a first-attempt cap, then retries step through smaller safe rungs.",
     )
     adaptive_query_chunk: bool = Field(
         True,
@@ -569,12 +624,26 @@ class MemoryPolicy(BaseModel):
         "currently reported here.",
     )
     dropped_context_rows: int = Field(
-        0,
-        ge=0,
-        description="Context rows the caller had to subsample away to fit. Non-zero "
-        "only on the plain_loop rung; recorded so a shrunk context is "
-        "visible in memory_report_ rather than inferred from the score.",
+        0, ge=0,
+        json_schema_extra={"readOnly": True},
+        description="Context rows the caller had to subsample away before cache "
+                    "resolution to fit the element budget. Recorded on cached and "
+                    "plain-loop outcomes alike so a shrunk context is "
+                    "visible in memory_report_ rather than inferred from the score.")
+    attempt_history: list[MemoryAttempt] = Field(
+        default_factory=list,
+        json_schema_extra={"readOnly": True},
+        description="Chronological execution attempts across every preprocessing "
+                    "pipeline in this predict call, including OOMs, fit-row retries, "
+                    "unsupported cached paths, and the successful fallback. This "
+                    "distinguishes a requested cached mechanism that recovered via "
+                    "plain_loop from a request that selected plain_loop initially.",
     )
+
+    def __hash__(self) -> int:
+        # Every other field is a scalar; this one is the sole list, so it is the sole
+        # field pydantic's frozen-model hash (which hashes every field) cannot handle.
+        return hash(tuple(v for k, v in self.__dict__.items() if k != "attempt_history"))
 
     @model_validator(mode="after")
     def _check_rung(self) -> "MemoryPolicy":
@@ -888,6 +957,60 @@ class MemoryPolicy(BaseModel):
             return self.host_budget_absolute_gb
         return self.host_budget_frac * total_ram_gb
 
+    def _precision_candidates(
+        self,
+        *,
+        est_cache_gb: float,
+        bytes_per_element: int,
+        head_dim: int,
+    ) -> list[tuple[CacheDtype, float]]:
+        """Return allowed cache precisions and footprints, best accuracy first."""
+        int8_gb = int8_footprint_gb(
+            est_cache_gb,
+            bytes_per_element=bytes_per_element,
+            head_dim=head_dim,
+        )
+        if self.cache_dtype == "int8":
+            return [("int8", int8_gb)]
+        if self.allow_quantization:
+            return [("bf16", est_cache_gb), ("int8", int8_gb)]
+        return [("bf16", est_cache_gb)]
+
+    def _placement_candidates(
+        self,
+        *,
+        est_cache_gb: float,
+        bytes_per_element: int,
+        head_dim: int,
+        gpu_budget_gb: float,
+        host_budget_gb: float,
+    ) -> list[tuple[str, CacheDtype, bool, float]]:
+        """Return every allowed, budget-feasible cache placement in ladder order.
+
+        Both opening-rung resolution and runtime OOM retries consume this exact list.
+        Keeping candidate construction here prevents the two paths from drifting on
+        precision permissions, budget checks, or placement order.
+        """
+        precisions = self._precision_candidates(
+            est_cache_gb=est_cache_gb,
+            bytes_per_element=bytes_per_element,
+            head_dim=head_dim,
+        )
+
+        candidates: list[tuple[str, CacheDtype, bool, float]] = []
+        candidates.extend(
+            (f"resident_{dtype}", dtype, False, footprint)
+            for dtype, footprint in precisions
+            if footprint <= gpu_budget_gb
+        )
+        if self.offload_to_host:
+            candidates.extend(
+                (f"offload_{dtype}", dtype, True, footprint)
+                for dtype, footprint in precisions
+                if footprint <= host_budget_gb
+            )
+        return candidates
+
     @property
     def is_resolved(self) -> bool:
         """Whether a rung has been chosen for a specific request."""
@@ -944,8 +1067,6 @@ class MemoryPolicy(BaseModel):
         ram = total_host_ram_gb() if total_ram_gb is None else total_ram_gb
         gpu_budget_gb = self.gpu_budget(vram)
         host_budget_gb = self.host_budget(ram)
-        bf16_gb = est_cache_gb
-        int8_gb = int8_footprint_gb(est_cache_gb, bytes_per_element=bytes_per_element, head_dim=head_dim)
 
         def decided(
             rung: str, dtype: str, offload: bool, resident: float, cache: bool, budgets: bool = True
@@ -969,30 +1090,16 @@ class MemoryPolicy(BaseModel):
             # "budget 9.6 GiB" on an 80 GB card is worse than one that says nothing.
             return decided("no_cache", self.cache_dtype, False, 0.0, cache=False, budgets=False)
 
-        # Precisions this request may use, cheapest-accuracy-cost first. Starting at
-        # int8 means bf16 is not a candidate at all — the caller asked for the smaller
-        # cache; allow_quantization only governs DOWNGRADING from bf16.
-        if self.cache_dtype == "int8":
-            candidates = [("int8", int8_gb)]
-        elif self.allow_quantization:
-            candidates = [("bf16", bf16_gb), ("int8", int8_gb)]
-        else:
-            candidates = [("bf16", bf16_gb)]
-
-        for dtype, footprint in candidates:
-            if footprint <= gpu_budget_gb:
-                return decided(f"resident_{dtype}", dtype, False, footprint, cache=True)
-
-        if self.offload_to_host:
-            # Offload the LARGEST (i.e. most precise) candidate host RAM can hold, not
-            # the smallest. Offload transport is bit-exact at either precision, so
-            # quantizing here buys only PCIe bandwidth -- and spending accuracy for
-            # speed is exactly what this ladder exists not to do. int8 is used only
-            # when bf16 will not fit host either. Callers who would rather have the
-            # faster stream ask for it: cache_dtype="int8" or memory_policy="max_context".
-            for dtype, footprint in candidates:
-                if footprint <= host_budget_gb:
-                    return decided(f"offload_{dtype}", dtype, True, footprint, cache=True)
+        placements = self._placement_candidates(
+            est_cache_gb=est_cache_gb,
+            bytes_per_element=bytes_per_element,
+            head_dim=head_dim,
+            gpu_budget_gb=gpu_budget_gb,
+            host_budget_gb=host_budget_gb,
+        )
+        if placements:
+            rung, dtype, offload, footprint = placements[0]
+            return decided(rung, dtype, offload, footprint, cache=True)
 
         # Rule 6: we needed a fallback and offload could not provide one. Warn HERE
         # rather than up-front: a host budget below the GPU budget makes offload
@@ -1014,17 +1121,64 @@ class MemoryPolicy(BaseModel):
                 f"loop. Raise host_budget_frac / host_budget_absolute_gb above the GPU "
                 f"budget to make offload reachable.",
             )
-        worst_dtype, worst_footprint = candidates[-1]
+        worst_dtype, worst_footprint = self._precision_candidates(
+            est_cache_gb=est_cache_gb,
+            bytes_per_element=bytes_per_element,
+            head_dim=head_dim,
+        )[-1]
         return decided("plain_loop", worst_dtype, False, worst_footprint, cache=False)
 
-    def escalated(
+    def runtime_fallbacks(
         self,
-        rung: str,
+        resolved: "MemoryPolicy",
         *,
-        context_row_chunk: int | None = None,
-        dropped_context_rows: int | None = None,
-        query_chunk: int | None = None,
-    ) -> "MemoryPolicy":
+        bytes_per_element: int,
+        head_dim: int,
+    ) -> list["MemoryPolicy"]:
+        """Ordered budget-feasible precision/placement attempts after resolution.
+
+        Recomputes ``_placement_candidates()`` from ``resolved``'s own stored
+        est_cache_gb/budget fields rather than reusing whatever list ``resolve()``
+        built moments earlier, so this stays callable on its own with just a
+        resolved policy and fresh measurements -- exactly how the tests above use
+        it, independent of any particular ``resolve()`` call. Passing
+        ``bytes_per_element``/``head_dim`` that do not match the ones ``resolved``
+        was actually resolved with is a caller error, not something this method
+        can detect; the ``resolved.rung not in labels`` fallback below exists for
+        exactly that mismatch.
+        """
+        if resolved.rung not in {
+            "resident_bf16", "resident_int8", "offload_bf16", "offload_int8"
+        }:
+            return []
+
+        placements = self._placement_candidates(
+            est_cache_gb=resolved.est_cache_gb or 0.0,
+            bytes_per_element=bytes_per_element,
+            head_dim=head_dim,
+            gpu_budget_gb=resolved.gpu_budget_absolute_gb or 0.0,
+            host_budget_gb=resolved.host_budget_absolute_gb or 0.0,
+        )
+        attempts = [
+            resolved._revalidated_copy(
+                cache=True,
+                reuse_context_cache=self.reuse_context_cache,
+                cache_dtype=dtype,
+                offload_to_host=offload,
+                rung=rung,
+                resident_gb=footprint,
+                context_row_chunk=self.context_row_chunk,
+            )
+            for rung, dtype, offload, footprint in placements
+        ]
+        labels = [attempt.rung for attempt in attempts]
+        if resolved.rung not in labels:
+            return [resolved]
+        return attempts[labels.index(resolved.rung):]
+
+    def escalated(self, rung: str, *, context_row_chunk: int | None = None,
+                  dropped_context_rows: int | None = None,
+                  query_chunk: int | None = None) -> "MemoryPolicy":
         """Return a copy recording an escalation the caller made after an OOM.
 
         Args:
@@ -1045,6 +1199,8 @@ class MemoryPolicy(BaseModel):
             updates["query_chunk"] = query_chunk
         if rung == "plain_loop":
             updates["cache"] = False
+            updates["reuse_context_cache"] = False
+            updates["offload_to_host"] = False
         return self._revalidated_copy(**updates)
 
     def describe(self) -> str:

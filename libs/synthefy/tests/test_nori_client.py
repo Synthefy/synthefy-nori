@@ -2359,6 +2359,17 @@ _REPORT = {
     "resident_gb": 0.0065,
     "query_chunk": 256,
     "dropped_context_rows": 0,
+    "attempt_history": [{
+        "pipeline_ids": [0],
+        "path": "cached",
+        "rung": "resident_int8",
+        "cache_dtype": "int8",
+        "offload_to_host": False,
+        "context_row_chunk": None,
+        "outcome": "success",
+        "reason": "resolved",
+        "dropped_context_rows": 0,
+    }],
     "clamped": [],
     "notes": [],
 }
@@ -2497,35 +2508,56 @@ def test_local_mode_refuses_memory_on_an_old_synthefy_nori(monkeypatch):
     """An opaque TypeError from deep inside the library is not an acceptable answer."""
     from synthefy import nori_client as module
 
+    class OldRegressor:
+        def __init__(self, model=None):
+            self.model = model
+
+        def predict(self, X, *, output_type="mean"):
+            return [0.0] * len(X)
+
     monkeypatch.setattr(module, "_local_memory_policy_available", lambda: False)
-    monkeypatch.setattr(module, "_load_local_predict", lambda: lambda *a, **k: [0.0, 0.0])
+    monkeypatch.setattr(module, "_load_local_regressor", lambda: OldRegressor)
     client = SynthefyNoriClient(model="nori-30m", mode="local")
     with pytest.raises(ImportError, match="0.13.0"):
         client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST, memory_policy="exact")
 
 
-def test_local_mode_forwards_the_policy_when_supported(monkeypatch):
+def test_local_mode_uses_estimator_and_surfaces_memory_report(monkeypatch):
     from synthefy import nori_client as module
 
     seen: Dict = {}
 
-    def fake_predict(X_train, y_train, X_test, *, model=None, **kwargs):
-        # `model` is explicit because the client gates the local variant on
-        # signature(local_predict).parameters, exactly as synthefy_nori.predict declares it.
-        seen["model"] = model
-        seen.update(kwargs)
-        return [0.1, 0.2]
+    class FakeRegressor:
+        def __init__(self, model=None, memory_policy=None):
+            seen["model"] = model
+            seen["memory_policy"] = memory_policy
+            self.memory_policy = memory_policy
+            self.memory_report_ = None
+
+        def fit(self, X, y):
+            seen["fit"] = (X, y)
+            return self
+
+        def predict(self, X, *, output_type="mean", quantiles=None, **_kwargs):
+            self.memory_report_ = dict(_REPORT)
+            return [0.1, 0.2]
 
     monkeypatch.setattr(module, "_local_memory_policy_available", lambda: True)
-    monkeypatch.setattr(module, "_load_local_predict", lambda: fake_predict)
+    monkeypatch.setattr(module, "_load_local_regressor", lambda: FakeRegressor)
+    monkeypatch.setattr(
+        module, "_load_local_predict",
+        lambda: (_ for _ in ()).throw(AssertionError("functional path used")),
+    )
     client = SynthefyNoriClient(model="nori-30m", mode="local")
-    client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST, memory_policy={"cache_dtype": "int8"})
-    # Forwarded as a DICT, not our MemoryPolicy class: the library's coerce() accepts its own
-    # class, a dict, a preset or None, and a same-named class from this package is none of them.
+    predictions = client.predict(
+        _X_TRAIN, _Y_TRAIN, _X_TEST, memory_policy={"cache_dtype": "int8"}
+    )
+
+    assert predictions == [0.1, 0.2]
+    assert seen["model"] == "nori-30m"
     assert seen["memory_policy"] == {"cache_dtype": "int8"}
-    # Documented asymmetry: the functional local path discards the estimator that holds the
-    # report, so there is nothing to surface.
-    assert client.last_memory_report is None
+    assert client.last_memory_report["rung"] == "resident_int8"
+    assert client.last_memory_report["attempt_history"][0]["outcome"] == "success"
 
 
 # --------------------------------- the model in synthefy-nori IS the schema
@@ -3432,11 +3464,13 @@ def _fake_regressor_class(seen: Dict, *, with_model=True, with_output_type=True)
             seen["init_model"] = model
             seen["init_memory_policy"] = memory_policy
             self.memory_policy = memory_policy
+            self.memory_report_ = None
     else:
 
         def __init__(self):  # noqa: E306 - old build: no model= selector
             seen["init_count"] = seen.get("init_count", 0) + 1
             seen["init_model"] = "<absent>"
+            self.memory_report_ = None
 
     def fit(self, X, y):
         seen["fit"] = (X, y)
@@ -3450,6 +3484,8 @@ def _fake_regressor_class(seen: Dict, *, with_model=True, with_output_type=True)
                 "output_type": output_type,
                 "quantiles": quantiles,
             }
+            if getattr(self, "memory_policy", None) is not None:
+                self.memory_report_ = dict(_REPORT)
             n = len(X)
             if output_type == "quantiles":
                 # (n_levels, n_query), the shape NoriRegressor returns.

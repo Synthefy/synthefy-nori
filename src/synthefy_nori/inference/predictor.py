@@ -10,12 +10,17 @@ from synthefy_nori.inference.preprocess import (
     HighDimFeatureSelector,
     MaxFeatureSubsampler,
     MADWinsorizer,
-    PolynomialInteractionGenerator,
+    PolynomialInteractionGenerator)
+from synthefy_nori.inference.degradation import (
+    CacheQuantizedWarning,
+    ContextSubsampledWarning,
+    DegradedPipelineWarning,
 )
-from synthefy_nori.inference.degradation import ContextSubsampledWarning, DegradedPipelineWarning
 from synthefy_nori.inference.memory_policy import (
-    FIT_ROW_CHUNK_ON_OOM,
+    FIT_ROW_CHUNK_RETRY_LADDER,
+    RUNGS,
     ContextTooLargeError,
+    MemoryAttempt,
     MemoryPolicy,
     estimate_cache_gb,
     total_host_ram_gb,
@@ -187,7 +192,23 @@ class NoriPredictor:
         self.native_rms_norm = None if native_rms_norm is None else bool(native_rms_norm)
         self.inference_with_DDP = inference_with_DDP
         if self.inference_with_DDP and self.mask_prediction:
-            raise ValueError("inference_with_DDP does not support mask_prediction")
+            raise ValueError(
+                "inference_with_DDP does not support mask_prediction"
+            )
+        if self.inference_with_DDP and memory_policy is not None:
+            # The DDP branch of predict() never resolves a MemoryPolicy or
+            # populates memory_report_ -- it is a structurally separate path, not
+            # a missing feature. Reject this combination here, loudly and at
+            # construction time, rather than silently leaving memory_report_ at
+            # None and letting a caller downstream (e.g. the client) misdiagnose
+            # it as an out-of-date runtime.
+            raise ValueError(
+                "inference_with_DDP does not support memory_policy: the DDP "
+                "path never resolves a memory policy, so memory_report_ would "
+                "stay None regardless of what was requested. Pass "
+                "memory_policy=None with inference_with_DDP=True, or drop "
+                "inference_with_DDP to use the memory-policy-aware path."
+            )
         # Optional inference-time augmentations. Currently supports:
         #   'yj': Yeo-Johnson target transform ensemble — fit PowerTransformer
         #         on y_train, predict in transformed space, inverse-transform,
@@ -588,6 +609,14 @@ class NoriPredictor:
         # config); these make them once per user-visible predict instead.
         self._warned_this_call = set()
         self._logged_this_call = set()
+        self._exact_cudagraph_step_marked = False
+        self.memory_report_ = None
+        self._memory_attempt_history = []
+        self._memory_outcome_policy = None
+        if not self._exact_cached_cudagraphs_requested():
+            bare_model = self._bare_model()
+            if getattr(bare_model, "_exact_cudagraphs_enabled", False):
+                self._disable_exact_cached_cudagraphs(bare_model)
         with self._execution_overrides():
             if return_distribution:
                 return self._predict_reg(x_train, y_train, x_test, return_distribution=True)
@@ -1168,6 +1197,89 @@ class NoriPredictor:
     #: quietly dropped to ``plain_loop``, the one rung that may subsample the context,
     #: is indistinguishable from a fast one except by its numbers.
     memory_report_: dict | None = None
+
+    # Derived from RUNGS (not hand-duplicated) so a rung added there cannot silently
+    # fall back to severity -1 here and be treated as never-worse-than-anything.
+    _MEMORY_RUNG_SEVERITY = {rung: index for index, rung in enumerate(RUNGS)}
+
+    @staticmethod
+    def _fit_row_chunk_attempts(pinned: int | None) -> list[int]:
+        """Return the smaller-than-`pinned` retry ladder (the pinned/None value
+        itself is never a new attempt: it is already the first cache_attempts entry
+        built from the placement ladder)."""
+        return [
+            chunk for chunk in FIT_ROW_CHUNK_RETRY_LADDER
+            if pinned is None or chunk < pinned
+        ]
+
+    def _evict_pipe_cache(self, id_pipe) -> None:
+        """Drop only this pipe's own retained context-cache entry.
+
+        Used by the per-pipe cached-retry loop's OOM/unsupported handlers: a bad
+        attempt for ONE pipe must not evict every OTHER pipe's already-built,
+        reusable K/V cache.
+        """
+        cache = getattr(self, "_context_cache", None)
+        if isinstance(cache, dict):
+            cache.pop(id_pipe, None)
+
+    def _memory_rung_sort_key(self, policy: MemoryPolicy) -> tuple[int, float]:
+        """Comparable "how bad is this outcome" key: rank first, then chunk size.
+
+        A smaller ``context_row_chunk`` is a more degraded outcome within that one
+        rung (a harder-won escalation), so it sorts worse than a larger one. Every
+        other rung always has ``context_row_chunk is None``, which sorts lowest, so
+        rank alone decides ties there.
+        """
+        rank = self._MEMORY_RUNG_SEVERITY.get(policy.rung or "no_cache", -1)
+        chunk = policy.context_row_chunk
+        return rank, (-chunk if chunk is not None else float("-inf"))
+
+    def _publish_memory_policy(self, policy: MemoryPolicy) -> None:
+        """Publish the worst successful/selected rung seen in this predict call."""
+        current = getattr(self, "_memory_outcome_policy", None)
+        if current is None or self._memory_rung_sort_key(policy) > self._memory_rung_sort_key(current):
+            self._memory_outcome_policy = policy
+            current = policy
+        report = current.model_dump()
+        # Reference, not copy: ``_memory_attempt_history`` is reassigned to a fresh
+        # list at the start of every predict() call (never appended-to across
+        # calls), so sharing this call's list is safe and avoids an O(attempts^2)
+        # copy across a multi-attempt OOM-retry sequence.
+        report["attempt_history"] = getattr(self, "_memory_attempt_history", [])
+        self.memory_report_ = report
+
+    def _record_memory_attempt(
+        self,
+        policy: MemoryPolicy,
+        *,
+        pipeline_ids: list[int],
+        path: str,
+        rung: str,
+        context_row_chunk: int | None,
+        outcome: str,
+        reason: str,
+        dropped_context_rows: int,
+    ) -> None:
+        """Append one validated attempt and refresh the public report."""
+        attempt = MemoryAttempt(
+            pipeline_ids=pipeline_ids,
+            path=path,
+            rung=rung,
+            cache_dtype=policy.cache_dtype,
+            offload_to_host=policy.offload_to_host,
+            context_row_chunk=context_row_chunk,
+            outcome=outcome,
+            reason=reason,
+            dropped_context_rows=dropped_context_rows,
+        ).model_dump()
+        history = getattr(self, "_memory_attempt_history", None)
+        if history is None:
+            history = self._memory_attempt_history = []
+        history.append(attempt)
+        current = getattr(self, "_memory_outcome_policy", None)
+        if current is not None:
+            self._publish_memory_policy(current)
 
     def _coerced_memory_policy(self) -> MemoryPolicy:
         """This predictor's :class:`MemoryPolicy`.
@@ -2280,7 +2392,9 @@ class NoriPredictor:
         self._clear_pipeline_batch_contexts(keep=active_batch_slots)
         self._clear_pipeline_member_contexts(active_batch_slots)
 
+        self._publish_memory_policy(policy)
         outputs: list[torch.Tensor | None] = [None] * len(prepared)
+        ids: tuple[int, ...] = ()
         try:
             for group in groups:
                 ids = tuple(item[0] for item in group)
@@ -2342,7 +2456,28 @@ class NoriPredictor:
                 )
                 for (id_pipe, *_), member_output in zip(group, group_output.unbind(0)):
                     outputs[id_pipe] = member_output
-        except (NotImplementedError, torch.cuda.OutOfMemoryError):
+                self._record_memory_attempt(
+                    policy,
+                    pipeline_ids=list(ids),
+                    path="pipeline_batch",
+                    rung=policy.rung,
+                    context_row_chunk=None,
+                    outcome="success",
+                    reason="resolved",
+                    dropped_context_rows=dropped_context_rows,
+                )
+        except (NotImplementedError, torch.cuda.OutOfMemoryError) as exc:
+            self._record_memory_attempt(
+                policy,
+                pipeline_ids=list(ids),
+                path="pipeline_batch",
+                rung=policy.rung,
+                context_row_chunk=None,
+                outcome=("oom" if isinstance(exc, torch.cuda.OutOfMemoryError)
+                         else "unsupported"),
+                reason="resolved",
+                dropped_context_rows=dropped_context_rows,
+            )
             cache = getattr(self, "_context_cache", None)
             if isinstance(cache, dict):
                 # The failed attempt may already have built singleton groups.
@@ -2356,7 +2491,7 @@ class NoriPredictor:
             dropped_context_rows=dropped_context_rows,
             **({"query_chunk": chunk_size} if policy.rung == "resident_bf16" else {}),
         )
-        self.memory_report_ = used.model_dump()
+        self._publish_memory_policy(used)
         self._log_once_per_call(
             "rung", logging.INFO,
             f"Nori serving-memory rung: {used.describe()}",
@@ -2585,7 +2720,8 @@ class NoriPredictor:
                 # defaults, or pass a preset name ("exact", "max_context", "off"), a
                 # dict, or a MemoryPolicy. No env var configures this; only the
                 # SYNTHEFY_DISABLE_CACHED_INFERENCE kill switch is honoured.
-                policy = self._coerced_memory_policy()
+                requested_policy = self._coerced_memory_policy()
+                policy = requested_policy
                 use_cached = (
                     hasattr(bare_model, "forward_cached_regression")
                     and not self.mask_prediction
@@ -2594,11 +2730,12 @@ class NoriPredictor:
                 )
                 if use_cached:
                     fpg = max(int(getattr(bare_model, "features_per_group", 2)), 1)
-                    n_groups = (budget_n_features + fpg - 1) // fpg
+                    n_groups = (x_train_.shape[-1] + fpg - 1) // fpg
                     embed_dim = int(getattr(bare_model, "embed_dim", 128))
                     nlayers = int(getattr(bare_model, "nlayers", 16))
                     nhead = max(int(getattr(bare_model, "nhead", 2)), 1)
                     bytes_per = 2 if self.mix_precision else 4
+                    head_dim = max(embed_dim // nhead, 1)
                     policy = policy.resolve(
                         est_cache_gb=estimate_cache_gb(
                             n_context_rows=n_samples_train,
@@ -2608,7 +2745,7 @@ class NoriPredictor:
                             bytes_per_element=bytes_per,
                         ),
                         bytes_per_element=bytes_per,
-                        head_dim=max(embed_dim // nhead, 1),
+                        head_dim=head_dim,
                         total_vram_gb=self._total_vram_gb(),
                         total_ram_gb=total_host_ram_gb(),
                     )
@@ -2620,6 +2757,7 @@ class NoriPredictor:
                         head_dim=1,
                         cache_eligible=False,
                     )
+                self._publish_memory_policy(policy)
                 # Announce the opening rung. WARNING when it is already a fallback
                 # (offload / plain loop), because that is a real slowdown the caller
                 # should see by default; INFO on the fast rungs so a normal run stays
@@ -2631,21 +2769,40 @@ class NoriPredictor:
                 )
 
                 cached_done = False
+                fallback_reason = "resolved"
                 if use_cached:
                     self.model.to(self.device)
-                    # Sequential fallback. Attempt 1 uses the resolved rung; on an
-                    # OOM, escalate to fit-time row chunking (bit-exact — it bounds
-                    # the O(N*groups) build working set, which offload alone cannot)
-                    # before dropping to the plain loop.
+                    # Walk every allowed, budget-feasible precision/placement rung,
+                    # then bound the final rung's prefill working set at 2048, 1024,
+                    # and 512 rows before giving up on the cache. An explicit chunk is
+                    # the first-attempt cap; no retry can exceed it.
                     #
-                    # A policy that PINS context_row_chunk uses it from attempt 1, which
-                    # also means there is nothing left to escalate to. That is the
-                    # documented cost of pinning it.
-                    pinned = policy.context_row_chunk
-                    fit_chunk_attempts = [pinned]
-                    if pinned is None:
-                        fit_chunk_attempts.append(FIT_ROW_CHUNK_ON_OOM)
-                    for attempt_fit_chunk in fit_chunk_attempts:
+                    # Chunking is tried LAST, combined only with the worst placement,
+                    # not first against the bit-exact rung: it only bounds the
+                    # transient BUILD peak, not the finished cache's resident size,
+                    # so it cannot rescue an OOM caused by the cache itself being too
+                    # big to fit -- only the placement ladder above can. It also is
+                    # not supported on every checkpoint (serial sequence attention
+                    # raises NotImplementedError). RUNGS already ranks
+                    # context_row_chunk below offload_int8, so this matches that.
+                    pinned = requested_policy.context_row_chunk
+                    placement_policies = requested_policy.runtime_fallbacks(
+                        policy,
+                        bytes_per_element=bytes_per,
+                        head_dim=head_dim,
+                    )
+                    cache_attempts = [
+                        (candidate, pinned) for candidate in placement_policies
+                    ]
+                    final_policy = placement_policies[-1]
+                    for retry_chunk in self._fit_row_chunk_attempts(pinned):
+                        cache_attempts.append((final_policy, retry_chunk))
+                    fallback_reason = "fallback_after_oom"
+                    for attempt_index, (attempt_policy, attempt_fit_chunk) in enumerate(cache_attempts):
+                        policy = attempt_policy
+                        attempt_reason = "resolved" if attempt_index == 0 else "oom_retry"
+                        ctx_bundle = None
+                        output = None
                         try:
                             with (
                                 torch.autocast(
@@ -2688,19 +2845,74 @@ class NoriPredictor:
                             )
                             outputs.append(output)
                             cached_done = True
-                            if attempt_fit_chunk is not None and pinned is None:
-                                policy = policy.escalated("context_row_chunk", context_row_chunk=attempt_fit_chunk)
-                                logger.warning("Nori recovered on rung %s", policy.describe())
-                            policy = policy.escalated(
-                                policy.rung, dropped_context_rows=dropped_context_rows, query_chunk=chunk_size
+                            self._record_memory_attempt(
+                                attempt_policy,
+                                pipeline_ids=[id_pipe],
+                                path="cached",
+                                rung=attempt_policy.rung,
+                                context_row_chunk=attempt_fit_chunk,
+                                outcome="success",
+                                reason=attempt_reason,
+                                dropped_context_rows=dropped_context_rows,
                             )
-                            self.memory_report_ = policy.model_dump()
+                            if attempt_policy.cache_dtype == "int8":
+                                # Unlike offload (moves bytes unchanged) or chunking
+                                # (bit-exact by design), quantizing the cache is a
+                                # real fidelity loss -- the DegradedPipelineWarning
+                                # family exists so a scored caller (strict_pipeline())
+                                # can catch exactly this, not just see it in the logs.
+                                self._warn_once_per_call(
+                                    "cache_quantized",
+                                    "Nori quantized the context cache to int8: "
+                                    f"{attempt_policy.describe()}. Predictions carry "
+                                    "a small numerical difference from bf16 (|dR2| ~ "
+                                    "6e-6 measured). Raise memory_policy={'gpu_budget_frac': "
+                                    "...} / 'host_budget_frac' / 'elements_budget' for more "
+                                    "headroom, or set memory_policy={'allow_quantization': "
+                                    "False} to keep every rung bit-exact (offloads sooner "
+                                    "instead).",
+                                    CacheQuantizedWarning,
+                                )
+                            if (
+                                attempt_fit_chunk is not None
+                                and (pinned is None or attempt_fit_chunk < pinned)
+                            ):
+                                policy = attempt_policy.escalated(
+                                    "context_row_chunk",
+                                    context_row_chunk=attempt_fit_chunk)
+                            else:
+                                policy = attempt_policy
+                            if attempt_index > 0:
+                                # Recovered after at least one earlier attempt failed --
+                                # whether via a smaller chunk (above) or precision/
+                                # placement alone. Log it either way, or a lossy/slow
+                                # recovery that never touched context_row_chunk is
+                                # invisible in the logs.
+                                logger.warning(
+                                    "Nori recovered on rung %s", policy.describe())
+                            policy = policy.escalated(
+                                policy.rung, dropped_context_rows=dropped_context_rows,
+                                query_chunk=chunk_size)
+                            self._publish_memory_policy(policy)
                             break
                         except NotImplementedError as exc:
+                            self._record_memory_attempt(
+                                attempt_policy,
+                                pipeline_ids=[id_pipe],
+                                path="cached",
+                                rung=attempt_policy.rung,
+                                context_row_chunk=attempt_fit_chunk,
+                                outcome="unsupported",
+                                reason=attempt_reason,
+                                dropped_context_rows=dropped_context_rows,
+                            )
+                            fallback_reason = "fallback_after_unsupported"
                             # This checkpoint cannot do context-row chunking (serial
                             # sequence attention). If the CALLER pinned it, that is
                             # their error and it propagates. If we chose it ourselves
                             # as an OOM escalation, degrade quietly to the next rung.
+                            self._evict_pipe_cache(id_pipe)
+                            del ctx_bundle, output
                             if pinned is not None:
                                 raise
                             logger.warning(
@@ -2711,20 +2923,33 @@ class NoriPredictor:
                             cached_done = False
                             break
                         except torch.cuda.OutOfMemoryError:
+                            self._record_memory_attempt(
+                                attempt_policy,
+                                pipeline_ids=[id_pipe],
+                                path="cached",
+                                rung=attempt_policy.rung,
+                                context_row_chunk=attempt_fit_chunk,
+                                outcome="oom",
+                                reason=attempt_reason,
+                                dropped_context_rows=dropped_context_rows,
+                            )
+                            self._evict_pipe_cache(id_pipe)
+                            del ctx_bundle, output
                             torch.cuda.empty_cache()
                             cached_done = False
                             # Name the OOM and what happens next, or the escalation is
                             # invisible in the logs and a slow run looks inexplicable.
-                            next_step = (
-                                f"retrying with fit_row_chunk={FIT_ROW_CHUNK_ON_OOM}"
-                                if attempt_fit_chunk is None and pinned is None
-                                else "falling back to the plain chunked loop"
-                            )
+                            if attempt_index + 1 < len(cache_attempts):
+                                next_policy, next_chunk = cache_attempts[attempt_index + 1]
+                                next_step = (
+                                    f"retrying rung {next_policy.rung} "
+                                    f"with context_row_chunk={next_chunk}"
+                                )
+                            else:
+                                next_step = "falling back to the plain chunked loop"
                             logger.warning(
-                                "Nori OOM on rung %s (fit_row_chunk=%s); %s",
-                                policy.rung,
-                                attempt_fit_chunk,
-                                next_step,
+                                "Nori OOM on rung %s (context_row_chunk=%s); %s",
+                                policy.rung, attempt_fit_chunk, next_step,
                             )
                 if not cached_done:
                     # Every cached rung failed, or the policy never chose one. This
@@ -2750,77 +2975,98 @@ class NoriPredictor:
                         self._log_once_per_call("plain_loop", logging.WARNING, msg)
                         self._warn_once_per_call("plain_loop", msg, RuntimeWarning)
                     else:
-                        policy = policy.escalated(policy.rung, dropped_context_rows=dropped_context_rows)
-                    self.memory_report_ = policy.model_dump()
+                        policy = policy.escalated(
+                            policy.rung, dropped_context_rows=dropped_context_rows)
+                    self._publish_memory_policy(policy)
 
                 # Chunk the test data (skipped entirely if the cached path ran)
-                all_outputs = []
-                for i in [] if cached_done else range(0, n_samples_test, chunk_size):
-                    end_idx = min(i + chunk_size, n_samples_test)
-                    x_chunk_test = x_[len(y_train) + i : len(y_train) + end_idx]
+                try:
+                    all_outputs = []
+                    for i in ([] if cached_done else range(0, n_samples_test, chunk_size)):
+                        end_idx = min(i + chunk_size, n_samples_test)
+                        x_chunk_test = x_[len(y_train) + i : len(y_train) + end_idx]
+                    
+                        # Recombine train + test chunk
+                        x_chunk_combined = torch.cat([x_[:len(y_train)], x_chunk_test], dim=0)
+                    
+                        # Create dummy y for test chunk
+                        y_chunk_test = torch.zeros(end_idx - i, dtype=y_.dtype, device=y_.device)
+                        y_chunk_combined = torch.cat([y_[:len(y_train)], y_chunk_test], dim=0)
 
-                    # Recombine train + test chunk
-                    x_chunk_combined = torch.cat([x_[: len(y_train)], x_chunk_test], dim=0)
+                        self.model.to(self.device)
+                        with torch.autocast(device_type=self.device.type if isinstance(self.device, torch.device) else self.device, enabled=self.mix_precision), torch.inference_mode():
+                            x_in = x_chunk_combined.unsqueeze(0)
+                            y_in = y_chunk_combined.unsqueeze(0)
 
-                    # Create dummy y for test chunk
-                    y_chunk_test = torch.zeros(end_idx - i, dtype=y_.dtype, device=y_.device)
-                    y_chunk_combined = torch.cat([y_[: len(y_train)], y_chunk_test], dim=0)
+                            chunk_output = self.model(
+                                x=x_in, y=y_in, eval_pos=len(y_train), task_type='reg'
+                            )
 
-                    self.model.to(self.device)
-                    with (
-                        torch.autocast(
-                            device_type=self.device.type if isinstance(self.device, torch.device) else self.device,
-                            enabled=self.mix_precision,
-                        ),
-                        torch.inference_mode(),
-                    ):
-                        x_in = x_chunk_combined.unsqueeze(0)
-                        y_in = y_chunk_combined.unsqueeze(0)
-
-                        chunk_output = self.model(x=x_in, y=y_in, eval_pos=len(y_train), task_type="reg")
-
-                    if self.mask_prediction:
-                        process_config = chunk_output["process_config"]
-                        chunk_output_feature_pred = self.PostProcessInModel(
-                            chunk_output["feature_pred"], process_config
-                        )
-                        source_row_indices = np.concatenate(
-                            (
+                        if self.mask_prediction:
+                            process_config = chunk_output['process_config']
+                            chunk_output_feature_pred = self.PostProcessInModel(chunk_output['feature_pred'], process_config)
+                            source_row_indices = np.concatenate((
                                 np.arange(len(y_train), dtype=np.int64),
                                 np.arange(
                                     len(y_train) + i,
                                     len(y_train) + end_idx,
                                     dtype=np.int64,
                                 ),
+                            ))
+                            chunk_output_feature_pred = self.PostProcess(
+                                chunk_output_feature_pred,
+                                pipe,
+                                process_config,
+                                source_row_indices=source_row_indices,
+                            )
+                            pipeline_mask_chunks.append(chunk_output_feature_pred)
+                            chunk_output = chunk_output['reg_output']
+
+                        chunk_output = self._unwrap_model_output(
+                            chunk_output, task_type="reg"
+                        ).squeeze(0)
+                        chunk_output = self._reject_nonfinite_output(
+                            chunk_output, path="plain chunked loop",
+                            n_train=n_samples_train, n_test=end_idx - i)
+                        all_outputs.append(chunk_output)
+
+                    # Concatenate all test chunks (cached path already appended above)
+                    if not cached_done:
+                        output = torch.cat(all_outputs, dim=0)
+                        outputs.append(output)
+                    if pipeline_mask_chunks:
+                        mask_predictions.append(
+                            self._aggregate_feature_reconstruction_chunks(
+                                pipeline_mask_chunks,
+                                len(y_train),
                             )
                         )
-                        chunk_output_feature_pred = self.PostProcess(
-                            chunk_output_feature_pred,
-                            pipe,
-                            process_config,
-                            source_row_indices=source_row_indices,
+                    if not cached_done:
+                        self._record_memory_attempt(
+                            policy,
+                            pipeline_ids=[id_pipe],
+                            path="plain_loop",
+                            rung=policy.rung,
+                            context_row_chunk=None,
+                            outcome="success",
+                            reason=fallback_reason,
+                            dropped_context_rows=dropped_context_rows,
                         )
-                        pipeline_mask_chunks.append(chunk_output_feature_pred)
-                        chunk_output = chunk_output["reg_output"]
-
-                    chunk_output = self._unwrap_model_output(chunk_output, task_type="reg").squeeze(0)
-                    chunk_output = self._reject_nonfinite_output(
-                        chunk_output, path="plain chunked loop", n_train=n_samples_train, n_test=end_idx - i
+                except torch.cuda.OutOfMemoryError:
+                    self._record_memory_attempt(
+                        policy,
+                        pipeline_ids=[id_pipe],
+                        path="plain_loop",
+                        rung=policy.rung,
+                        context_row_chunk=None,
+                        outcome="oom",
+                        reason=fallback_reason,
+                        dropped_context_rows=dropped_context_rows,
                     )
-                    all_outputs.append(chunk_output)
-
-                # Concatenate all test chunks (cached path already appended above)
-                if not cached_done:
-                    output = torch.cat(all_outputs, dim=0)
-                    outputs.append(output)
-                if pipeline_mask_chunks:
-                    mask_predictions.append(
-                        self._aggregate_feature_reconstruction_chunks(
-                            pipeline_mask_chunks,
-                            len(y_train),
-                        )
-                    )
-
+                    self._evict_pipe_cache(id_pipe)
+                    torch.cuda.empty_cache()
+                    raise
+            
         output = torch.stack(outputs).mean(dim=0)
         if return_distribution:
             # Return the ensemble-averaged decoder output BEFORE collapse: the

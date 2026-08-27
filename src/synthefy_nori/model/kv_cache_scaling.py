@@ -12,10 +12,11 @@ module lets that cache be:
 dequantizing + staging to the compute device lazily when the attention code reads
 ``cache["kv"]`` — so it is transparent to ``MultiheadAttention.forward_with_kv_cache``.
 
-This mirrors TabPFN-3's serving recipe (int8 KV + host offload + chunked prefill):
-GPU high-water-mark stays ~flat in N (weights + per-chunk activations + a staged
-slice), while the O(N) cache lives in host RAM. Compute is unchanged; this is a
-memory lever only.
+This follows the int8/offload/chunked-prefill serving recipe: the O(N) stored
+cache may live in host RAM and fit-time chunk-local transients are bounded. The
+current layer path still keeps O(N) input/self-KV tensors on GPU and stages a
+full layer during decode, so total GPU high-water can still grow with N.
+
 """
 
 from __future__ import annotations

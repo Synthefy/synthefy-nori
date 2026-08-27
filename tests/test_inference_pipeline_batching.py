@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import warnings
 import weakref
 
 import numpy as np
@@ -9,8 +11,12 @@ import pytest
 import torch
 
 import synthefy_nori.inference.predictor as predictor_module
-from synthefy_nori.inference.predictor import NoriPredictor
-from synthefy_nori.inference.memory_policy import estimate_cache_gb
+from synthefy_nori.inference.predictor import (
+    EXACT_CACHED_CUDAGRAPHS_ENV,
+    NoriPredictor,
+)
+from synthefy_nori.inference.degradation import CacheQuantizedWarning
+from synthefy_nori.inference.memory_policy import MemoryPolicy, estimate_cache_gb
 
 
 class _PlainModel:
@@ -142,6 +148,57 @@ class _FailingCachedApplyModel(_CachedModel):
             raise self.error_type("synthetic grouped-cache failure")
         x_train, _ = context
         return x_test[:, :, :1] + 0.0 * x_train[:, :1, :1]
+
+
+class _RetryingCachedModel(_CachedModel):
+    """Synthetic cache builder that succeeds only on one exact fallback rung."""
+
+    def __init__(self, success_at):
+        super().__init__()
+        self.success_at = success_at
+        self.cache_attempts = []
+
+    def build_context_cache(
+        self, x_train, y_train, *, cache_dtype, offload_kv_cache, fit_row_chunk
+    ):
+        attempt = (cache_dtype, offload_kv_cache, fit_row_chunk)
+        self.cache_attempts.append(attempt)
+        if attempt != self.success_at:
+            raise torch.cuda.OutOfMemoryError("synthetic cache-build OOM")
+        return x_train, y_train
+
+
+
+class _RowChunkUnsupportedModel(_CachedModel):
+    """Raise NotImplementedError whenever asked to row-chunk the build, as a
+    checkpoint with serial sequence attention would."""
+
+    def build_context_cache(self, x_train, y_train, *, cache_dtype, offload_kv_cache, fit_row_chunk):
+        if fit_row_chunk is not None:
+            raise NotImplementedError(
+                "context_row_chunk is not supported for serial sequence attention"
+            )
+        self.build_batches.append(x_train.shape[0])
+        return x_train, y_train
+
+
+class _CountedOOMCachedModel(_CachedModel):
+    """Raise a synthetic OOM on exactly the Nth build_context_cache call; every
+    other call succeeds. Used to make one specific attempt -- and only that
+    attempt -- fail, regardless of which pipeline or which rung it belongs to.
+    """
+
+    def __init__(self, oom_on_call):
+        super().__init__()
+        self.oom_on_call = oom_on_call
+        self.build_calls = 0
+
+    def build_context_cache(self, x_train, y_train, **_kwargs):
+        self.build_calls += 1
+        if self.build_calls == self.oom_on_call:
+            raise torch.cuda.OutOfMemoryError("synthetic cross-pipe OOM")
+        self.build_batches.append(x_train.shape[0])
+        return x_train, y_train
 
 
 class _PipeTransform:
@@ -437,6 +494,304 @@ def test_resident_cache_batches_build_and_apply(fake_cuda_tensors):
     assert list(predictor._context_cache) == [("pipeline_batch", (0, 1, 2))]
     torch.testing.assert_close(first, torch.from_numpy(x_test[:, 0]), rtol=0, atol=1e-5)
     torch.testing.assert_close(second, torch.from_numpy(second_x_test[:, 0]), rtol=0, atol=1e-5)
+
+
+def test_worst_pipeline_report_and_history_survive_later_resident_success():
+    predictor = _predictor(_PlainModel())
+    predictor._memory_attempt_history = []
+    predictor._memory_outcome_policy = None
+    requested = MemoryPolicy(
+        gpu_budget_absolute_gb=1.0, host_budget_absolute_gb=2.0
+    )
+    resident = requested.resolve(
+        est_cache_gb=0.1,
+        bytes_per_element=2,
+        head_dim=4,
+        total_vram_gb=8.0,
+        total_ram_gb=16.0,
+    )
+    plain = resident.escalated("plain_loop")
+
+    predictor._publish_memory_policy(plain)
+    predictor._record_memory_attempt(
+        plain, pipeline_ids=[0], path="plain_loop", rung="plain_loop",
+        context_row_chunk=None, outcome="success",
+        reason="fallback_after_oom", dropped_context_rows=0,
+    )
+    predictor._publish_memory_policy(resident)
+    predictor._record_memory_attempt(
+        resident, pipeline_ids=[1], path="cached", rung="resident_bf16",
+        context_row_chunk=None, outcome="success", reason="resolved",
+        dropped_context_rows=0,
+    )
+
+    assert predictor.memory_report_["rung"] == "plain_loop"
+    assert [
+        attempt["pipeline_ids"] for attempt in predictor.memory_report_["attempt_history"]
+    ] == [[0], [1]]
+
+
+
+def test_explicit_fit_row_chunk_is_a_retry_cap():
+    assert NoriPredictor._fit_row_chunk_attempts(None) == [2048, 1024, 512]
+    assert NoriPredictor._fit_row_chunk_attempts(4096) == [2048, 1024, 512]
+    assert NoriPredictor._fit_row_chunk_attempts(1024) == [512]
+    assert NoriPredictor._fit_row_chunk_attempts(256) == []
+
+
+
+def test_apply_oom_releases_retained_context_and_output_before_retry(
+    fake_cuda_tensors, monkeypatch
+):
+    monkeypatch.setenv("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "1")
+
+    class Context:
+        def __init__(self, x_train):
+            self.x_train = x_train
+
+    class ApplyOOMModel(_CachedModel):
+        def __init__(self):
+            super().__init__()
+            self.cache_attempts = []
+            self.context_refs = []
+
+        def build_context_cache(
+            self, x_train, y_train, *, cache_dtype, offload_kv_cache, fit_row_chunk
+        ):
+            del y_train
+            self.cache_attempts.append(
+                (cache_dtype, offload_kv_cache, fit_row_chunk)
+            )
+            context = Context(x_train)
+            self.context_refs.append(weakref.ref(context))
+            return context
+
+        def apply_context_cache(self, x_test, context, **_kwargs):
+            return x_test[:, :, :1] + 0.0 * context.x_train[:, :1, :1]
+
+    x_train, y_train, x_test = _table(n_train=12, n_test=300)
+    model = ApplyOOMModel()
+    predictor = _predictor(
+        model,
+        memory_policy={
+            "elements_budget": 1_072,
+            "gpu_budget_absolute_gb": 1.0,
+            "host_budget_absolute_gb": 2.0,
+        },
+    )
+    predictor.preprocess_pipelines = [[]]
+    predictor.inference_config = [{}]
+    real_unwrap = predictor._unwrap_model_output
+    output_refs = []
+
+    def oom_after_apply(value, *args, **kwargs):
+        if not output_refs:
+            output_refs.append(weakref.ref(value))
+            del value
+            raise torch.cuda.OutOfMemoryError("synthetic post-apply OOM")
+        return real_unwrap(value, *args, **kwargs)
+
+    predictor._unwrap_model_output = oom_after_apply
+    cleanup_checks = []
+
+    def assert_released_before_empty_cache():
+        cleanup_checks.append(True)
+        assert predictor._context_cache == {}
+        assert model.context_refs[0]() is None
+        assert output_refs[0]() is None
+
+    monkeypatch.setattr(torch.cuda, "empty_cache", assert_released_before_empty_cache)
+    output = predictor._predict_reg_single(x_train, y_train, x_test)
+
+    assert cleanup_checks == [True]
+    assert model.cache_attempts[:2] == [
+        ("bf16", False, None),
+        ("int8", False, None),
+    ]
+    assert [
+        attempt["outcome"] for attempt in predictor.memory_report_["attempt_history"]
+    ] == ["oom", "success"]
+    torch.testing.assert_close(
+        output, torch.from_numpy(x_test[:, 0]), rtol=0, atol=1e-5
+    )
+
+
+
+def test_runtime_oom_walks_every_allowed_rung_then_bounded_fit_chunks(
+    fake_cuda_tensors, monkeypatch
+):
+    monkeypatch.setenv("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "1")
+    x_train, y_train, x_test = _table(n_train=12, n_test=300)
+    model = _RetryingCachedModel(("int8", True, 512))
+    predictor = _predictor(
+        model,
+        memory_policy={
+            "elements_budget": 1_072,
+            "gpu_budget_absolute_gb": 1.0,
+            "host_budget_absolute_gb": 2.0,
+        },
+    )
+    predictor.preprocess_pipelines = [[]]
+    predictor.inference_config = [{}]
+
+    output = predictor._predict_reg_single(x_train, y_train, x_test)
+
+    expected = [
+        ("bf16", False, None),
+        ("int8", False, None),
+        ("bf16", True, None),
+        ("int8", True, None),
+        ("int8", True, 2048),
+        ("int8", True, 1024),
+        ("int8", True, 512),
+    ]
+    assert model.cache_attempts == expected
+    torch.testing.assert_close(output, torch.from_numpy(x_test[:, 0]), rtol=0, atol=1e-5)
+    report = predictor.memory_report_
+    assert report["rung"] == "context_row_chunk"
+    assert report["context_row_chunk"] == 512
+    history = report["attempt_history"]
+    assert [attempt["outcome"] for attempt in history] == ["oom"] * 6 + ["success"]
+    assert [
+        (attempt["cache_dtype"], attempt["offload_to_host"], attempt["context_row_chunk"])
+        for attempt in history
+    ] == expected
+    assert all(attempt["dropped_context_rows"] == 0 for attempt in history)
+
+
+
+def test_oom_on_one_pipe_does_not_evict_a_sibling_pipes_cache(fake_cuda_tensors, monkeypatch):
+    """An OOM while building pipe 1's context cache must evict only pipe 1's own
+    (failed) cache entry -- never pipe 0's already-built, reusable one.
+
+    Regression coverage for the _evict_pipe_cache scope fix: the pre-fix code
+    called cache.clear() on the whole shared _context_cache dict from every
+    OOM/unsupported handler in this loop, which would have wiped pipe 0's entry
+    here even though pipe 0 never touched the failing build.
+    """
+    monkeypatch.setenv("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "1")
+    x_train, y_train, x_test = _table(n_train=12, n_test=300)
+    # Call 1: pipe 0's only attempt (bf16) -> succeeds, gets cached under id_pipe=0.
+    # Call 2: pipe 1's first attempt (bf16) -> OOMs.
+    # Call 3: pipe 1's retry (int8) -> succeeds, gets cached under id_pipe=1.
+    model = _CountedOOMCachedModel(oom_on_call=2)
+    predictor = _predictor(
+        model,
+        memory_policy={
+            "elements_budget": 1_072,
+            "gpu_budget_absolute_gb": 1.0,
+            "host_budget_absolute_gb": 2.0,
+        },
+    )
+    predictor.preprocess_pipelines = [[], []]
+    predictor.inference_config = [{}, {}]
+
+    predictor._predict_reg_single(x_train, y_train, x_test)
+
+    assert model.build_calls == 3
+    assert set(predictor._context_cache) == {0, 1}
+    assert len(predictor._context_cache[0]) == 1
+    assert len(predictor._context_cache[1]) == 1
+    assert [
+        attempt["outcome"] for attempt in predictor.memory_report_["attempt_history"]
+    ] == ["success", "oom", "success"]
+
+
+
+def test_pinned_context_row_chunk_on_unsupported_checkpoint_raises(fake_cuda_tensors, monkeypatch):
+    """A caller who explicitly pins context_row_chunk on a checkpoint that cannot
+    honor it must see the NotImplementedError, not a silent fallback to the plain
+    loop -- only a chunk WE chose ourselves as an OOM escalation may degrade
+    quietly. See the "if pinned is not None: raise" branch this pins.
+    """
+    monkeypatch.setenv("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "1")
+    x_train, y_train, x_test = _table(n_train=12, n_test=300)
+    model = _RowChunkUnsupportedModel()
+    predictor = _predictor(
+        model,
+        memory_policy={
+            "elements_budget": 1_072,
+            "gpu_budget_absolute_gb": 1.0,
+            "host_budget_absolute_gb": 2.0,
+            "context_row_chunk": 2048,
+        },
+    )
+    predictor.preprocess_pipelines = [[]]
+    predictor.inference_config = [{}]
+
+    with pytest.raises(NotImplementedError, match="serial sequence attention"):
+        predictor._predict_reg_single(x_train, y_train, x_test)
+
+
+def test_precision_only_recovery_logs_regardless_of_chunk_change(
+    fake_cuda_tensors, monkeypatch, caplog
+):
+    """A recovery via precision/placement alone (no context_row_chunk change) must
+    still log "Nori recovered on rung", not only chunk-based recoveries.
+    """
+    monkeypatch.setenv("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "1")
+    x_train, y_train, x_test = _table(n_train=12, n_test=300)
+    # Attempt 1 (bf16, unoffloaded, no chunk) OOMs; attempt 2 (int8, unoffloaded,
+    # no chunk) succeeds -- a pure precision recovery, attempt_fit_chunk is None
+    # throughout.
+    model = _RetryingCachedModel(("int8", False, None))
+    predictor = _predictor(
+        model,
+        memory_policy={
+            "elements_budget": 1_072,
+            "gpu_budget_absolute_gb": 1.0,
+            "host_budget_absolute_gb": 2.0,
+        },
+    )
+    predictor.preprocess_pipelines = [[]]
+    predictor.inference_config = [{}]
+
+    with caplog.at_level(logging.WARNING, logger="synthefy_nori.inference.predictor"):
+        predictor._predict_reg_single(x_train, y_train, x_test)
+
+    assert model.cache_attempts == [("bf16", False, None), ("int8", False, None)]
+    assert any("Nori recovered on rung" in record.message for record in caplog.records)
+    assert predictor.memory_report_["rung"] == "resident_int8"
+
+
+def test_int8_cache_warns_but_bf16_cache_does_not(fake_cuda_tensors, monkeypatch):
+    """Landing on an int8 rung must raise CacheQuantizedWarning (a real, catchable
+    fidelity-loss signal for strict_pipeline()/scored callers), not just a log
+    line -- and a bit-exact bf16 rung must NOT raise it.
+    """
+    monkeypatch.setenv("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "1")
+    x_train, y_train, x_test = _table(n_train=12, n_test=300)
+
+    int8_model = _RetryingCachedModel(("int8", False, None))
+    int8_predictor = _predictor(
+        int8_model,
+        memory_policy={
+            "elements_budget": 1_072,
+            "gpu_budget_absolute_gb": 1.0,
+            "host_budget_absolute_gb": 2.0,
+        },
+    )
+    int8_predictor.preprocess_pipelines = [[]]
+    int8_predictor.inference_config = [{}]
+    with pytest.warns(CacheQuantizedWarning):
+        int8_predictor._predict_reg_single(x_train, y_train, x_test)
+
+    bf16_model = _CachedModel()
+    bf16_predictor = _predictor(
+        bf16_model,
+        memory_policy={
+            "elements_budget": 1_072,
+            "gpu_budget_absolute_gb": 1.0,
+            "host_budget_absolute_gb": 2.0,
+        },
+    )
+    bf16_predictor.preprocess_pipelines = [[]]
+    bf16_predictor.inference_config = [{}]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", CacheQuantizedWarning)
+        bf16_predictor._predict_reg_single(x_train, y_train, x_test)
+    assert bf16_predictor.memory_report_["rung"] == "resident_bf16"
+
 
 
 def test_nonreused_group_context_is_released_before_next_build(fake_cuda_tensors):

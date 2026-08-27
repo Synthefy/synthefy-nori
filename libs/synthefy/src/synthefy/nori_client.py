@@ -54,6 +54,7 @@ from synthefy.nori_data_models import (
     MAX_MULTI_TARGET_COPULA_PIT_JITTER,
     MAX_MULTI_TARGET_DRAWS,
     MemoryPolicyInput,
+    MemoryReport,
     MultiTargetPredictionPolicy,
     MultiTargetPredictionStrategy,
 )
@@ -1223,18 +1224,16 @@ class SynthefyNoriClient:
             self.api_key = api_key  # unused in local mode; may be None
             self.client = None
 
-        #: What the server did about ``memory_policy=`` on the most recent :meth:`predict`, or
+        #: What the runtime did about ``memory_policy=`` on the most recent :meth:`predict`, or
         #: ``None`` if that call did not set one. Mirrors the local package's
         #: ``NoriRegressor.memory_report_``: which fallback rung ran, the estimated and
         #: resident cache sizes, the query chunk, any dropped context rows, plus which fields
-        #: the server clamped and any coherence notes about the policy sent.
+        #: hosted serving clamped, any coherence notes, and the chronological attempt history.
         #:
-        #: Worth reading, because the rung is decided by the replica's free VRAM rather than
-        #: by the request -- it is not knowable from the client side.
+        #: Worth reading, because the rung is decided by available VRAM rather than by the
+        #: request -- it is not knowable before the prediction runs.
         #:
-        #: **Hosted modes only (remote/AWS).** In local mode the policy is honoured by the
-        #: estimator owned by this client, but no report is copied here. Use ``NoriRegressor``
-        #: directly and read ``memory_report_`` if you need the local report.
+        #: Populated in local, remote, and AWS modes whenever a memory policy is requested.
         self.last_memory_report: Optional[Dict[str, Any]] = None
         # Per-internal-call reports for the most recent hosted multi-target
         # prediction that explicitly set memory_policy.
@@ -1942,6 +1941,16 @@ class SynthefyNoriClient:
                 == "autoregressive"
                 else None
             )
+            if request.memory_policy is not None:
+                report = getattr(regressor, "memory_report_", None)
+                if report is None:
+                    raise ValueError(
+                        "memory_policy= was sent to local synthefy-nori but no "
+                        "memory_report_ came back. The installed runtime predates "
+                        "this capability or ignored the policy; upgrade "
+                        "synthefy-nori or omit memory_policy=."
+                    )
+                self.last_memory_report = MemoryReport.model_validate(report).model_dump()
             if request.large_context_policy is not None:
                 self.last_large_context_report = _normalized_large_context_report(
                     request, getattr(regressor, "large_context_report_", None)
@@ -1992,7 +2001,11 @@ class SynthefyNoriClient:
         discretize: Optional[str] = None,
         categorical_levels: Optional[VectorLike] = None,
     ) -> List[float]:
-        if output_type != DEFAULT_OUTPUT_TYPE or request.large_context_policy is not None:
+        if (
+            output_type != DEFAULT_OUTPUT_TYPE
+            or request.large_context_policy is not None
+            or request.memory_policy is not None
+        ):
             # "median" is a point output but still needs the estimator API
             # (see _local_regressor_predict). Discretization cannot reach here:
             # _validate_output_type rejects that combination up front.

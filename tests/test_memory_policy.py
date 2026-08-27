@@ -218,6 +218,51 @@ class TestAutoLadder:
         assert isinstance(resolve(1.0), MemoryPolicy)
 
 
+    def test_runtime_fallbacks_reuse_resolve_candidate_order(self):
+        requested = MemoryPolicy(
+            gpu_budget_absolute_gb=100.0, host_budget_absolute_gb=200.0
+        )
+        resolved = requested.resolve(
+            est_cache_gb=1.0,
+            bytes_per_element=2,
+            head_dim=64,
+            total_vram_gb=80.0,
+            total_ram_gb=800.0,
+        )
+        assert [
+            policy.rung
+            for policy in requested.runtime_fallbacks(
+                resolved, bytes_per_element=2, head_dim=64
+            )
+        ] == [
+            "resident_bf16",
+            "resident_int8",
+            "offload_bf16",
+            "offload_int8",
+        ]
+
+    def test_runtime_fallbacks_respect_precision_and_offload_permissions(self):
+        requested = MemoryPolicy(
+            allow_quantization=False,
+            offload_to_host=False,
+            gpu_budget_absolute_gb=100.0,
+        )
+        resolved = requested.resolve(
+            est_cache_gb=1.0,
+            bytes_per_element=2,
+            head_dim=64,
+            total_vram_gb=80.0,
+            total_ram_gb=800.0,
+        )
+        assert [
+            policy.rung
+            for policy in requested.runtime_fallbacks(
+                resolved, bytes_per_element=2, head_dim=64
+            )
+        ] == ["resident_bf16"]
+
+
+
 class TestPinnedPrecision:
     def test_exact_preset_offloads_rather_than_quantizing(self):
         # "exact" must stay exact: when it will not fit the GPU the answer is host

@@ -64,6 +64,13 @@ def _predict(regressor_cls, table, memory_policy):
     return np.asarray(model.predict(x_test), dtype=np.float64), model.memory_report_
 
 
+def _policy_from_report(report):
+    """Round-trip the reported dict straight back through MemoryPolicy."""
+    assert set(report) == set(MemoryPolicy().model_dump())
+    assert isinstance(report["attempt_history"], list)
+    return MemoryPolicy(**report)
+
+
 class TestPolicyReachesInference:
     def test_report_is_none_before_predicting(self, regressor_cls):
         model = regressor_cls(model="nori-6m", device="cpu")
@@ -75,13 +82,12 @@ class TestPolicyReachesInference:
         assert report["rung"] == "resident_bf16", (
             f"expected the cached path to engage; got {report['rung']}. If this is "
             f'"no_cache", SMALL_ELEMENTS_BUDGET is too large for this table and the '
-            f"rest of this suite is testing nothing."
-        )
-        assert MemoryPolicy(**report).is_bit_exact
+            f'rest of this suite is testing nothing.')
+        assert _policy_from_report(report).is_bit_exact
 
     def test_report_round_trips_into_the_policy_type(self, regressor_cls, table):
         _, report = _predict(regressor_cls, table, None)
-        assert MemoryPolicy(**report).rung == report["rung"]
+        assert _policy_from_report(report).rung == report["rung"]
 
     def test_requesting_int8_changes_the_reported_rung(self, regressor_cls, table):
         # The load-bearing assertion: a different memory_policy= must produce a different
@@ -89,7 +95,7 @@ class TestPolicyReachesInference:
         _, default_report = _predict(regressor_cls, table, None)
         _, int8_report = _predict(regressor_cls, table, {"cache_dtype": "int8"})
         assert int8_report["cache_dtype"] == "int8"
-        assert not MemoryPolicy(**int8_report).is_bit_exact
+        assert not _policy_from_report(int8_report).is_bit_exact
         assert default_report["rung"] == "resident_bf16"
         assert int8_report["rung"] == "resident_int8"
 

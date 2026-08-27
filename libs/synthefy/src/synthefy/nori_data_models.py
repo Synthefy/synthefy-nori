@@ -270,10 +270,10 @@ class MemoryPolicy(BaseModel):
         None,
         gt=0,
         description=(
-            "Bound the fit-time build working set to this many context rows (bit-exact). "
-            "None = off, with 2048 engaged automatically after an OOM. Pinning a value "
-            "uses it from the first attempt — which also costs you that escalation, since "
-            "there is then nothing left to escalate to. "
+            "Bound prefill to this many context rows (deterministic, with small "
+            "floating-point reassociation differences). None = off, with 2048, 1024, "
+            "then 512 tried after OOMs. An explicit value is a first-attempt cap; retries "
+            "stay at or below it. "
         ),
     )
 
@@ -304,6 +304,27 @@ class MemoryPolicy(BaseModel):
             "makes that an error instead of a silent accuracy loss. "
         ),
     )
+
+
+class MemoryAttempt(BaseModel):
+    """One execution attempt contributing to a prediction's memory outcome."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    pipeline_ids: List[int] = Field(default_factory=list)
+    path: Literal["pipeline_batch", "cached", "plain_loop"]
+    rung: str
+    cache_dtype: Literal["bf16", "int8"]
+    offload_to_host: bool
+    context_row_chunk: Optional[int] = Field(None, gt=0)
+    outcome: Literal["success", "oom", "unsupported"]
+    reason: Literal[
+        "resolved",
+        "oom_retry",
+        "fallback_after_oom",
+        "fallback_after_unsupported",
+    ]
+    dropped_context_rows: int = Field(0, ge=0)
 
 
 class MemoryReport(BaseModel):
@@ -359,10 +380,16 @@ class MemoryReport(BaseModel):
         0,
         ge=0,
         description=(
-            "Context rows the caller had to subsample away to fit. Non-zero only on the "
-            "plain_loop rung; recorded so a shrunk context is visible in memory_report_ "
+            "Context rows subsampled before cache resolution to fit the element budget; "
+            "recorded on cached and plain-loop outcomes so a shrunk context is visible "
             "rather than inferred from the score. "
         ),
+    )
+
+    attempt_history: List[MemoryAttempt] = Field(
+        default_factory=list,
+        description="Chronological memory execution attempts, including runtime OOMs, "
+                    "fit-row retries, and the successful fallback.",
     )
 
     clamped: List[str] = Field(
