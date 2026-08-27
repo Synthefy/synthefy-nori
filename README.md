@@ -575,6 +575,7 @@ ensemble math but can reassociate mixed-precision GEMMs at the last few bits.
 | `SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE` | `2000` | Fit preprocessing on at most this many rows, apply to all rows. Acts on large context; set `0` to fit on all rows. |
 | `SYNTHEFY_ENABLE_CACHED_INFERENCE` | `1` (on) | Reuse the train-side attention K/V across test chunks (KV cache); ~2-3x faster on large test sets that chunk. Set `0` to disable (or `SYNTHEFY_DISABLE_CACHED_INFERENCE=1`). |
 | `SYNTHEFY_DISABLE_PIPELINE_BATCHING` | `0` (batching on) | Set `1` to run preprocessing-ensemble model calls one at a time. Batching groups up to four same-shaped members when each has at most 256 processed features. |
+| `SYNTHEFY_EXACT_CACHED_CUDAGRAPHS` | `0` (off) | Set `1` for exact B=1 resident-cache inference accelerated by eager CUDA-graph replay. This disables pipeline batching, requires CUDA plus `setuptools`, and safely falls back to eager B=1 when unavailable. |
 | `SYNTHEFY_MAX_ELEMENTS_BUDGET` | VRAM-aware | Inference element budget; raise on large GPUs for full-context inference. Prefer `memory_policy={"elements_budget": N}`. |
 
 > ⚠️ **`SYNTHEFY_CACHE_MAX_GB` has been removed** and now raises if set. It used to
@@ -842,6 +843,20 @@ versus one-at-a-time fp16 execution were both 1.90e-3. Peak VRAM rose by 0.74 Gi
 without a cache and 0.26 GiB with a
 resident cache on that workload. Set `SYNTHEFY_DISABLE_PIPELINE_BATCHING=1` for
 the legacy execution order or exact debugging comparisons.
+
+For fit-once/serve-many workloads that require bit-exact B=1 predictions, set
+`SYNTHEFY_EXACT_CACHED_CUDAGRAPHS=1`. This keeps all eight ensemble members at
+B=1 but captures the cached encoder-layer eager kernels and replays them without
+Python launch overhead. On the public 100M model (512 context rows, 600 query
+rows, 48 raw features), hot-cache latency fell from 2.81 s to 1.53 s (1.83×),
+with bit-exact point predictions and all 999 quantiles. Current B=4 execution was
+1.38 s on the same workload, so exact mode recovered most of its throughput.
+In separate processes, exact B=1 peaked at 12.63 GiB allocated versus 13.37 GiB
+for B=4. If the resident cache is not selected, this mode remains exact eager B=1
+rather than applying CUDA graphs to the ordinary forward.
+CUDA-graph setup is shape-specific and took a few seconds in this benchmark;
+use it for repeated resident-cache queries, not one-shot or rapidly changing
+table shapes.
 
 ### KV caching (on by default)
 

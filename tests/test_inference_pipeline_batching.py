@@ -317,6 +317,89 @@ def test_plain_path_batches_and_kill_switch_restores_b1(fake_cuda_tensors, monke
     torch.testing.assert_close(batched, legacy, rtol=0, atol=0)
 
 
+def test_exact_cached_cudagraph_mode_preserves_b1_execution(
+    fake_cuda_tensors, monkeypatch,
+):
+    monkeypatch.setenv(EXACT_CACHED_CUDAGRAPHS_ENV, "1")
+    x_train, y_train, x_test = _table()
+    model = _PlainModel()
+    predictor = _predictor(model)
+    predictor._predict_reg_single(x_train, y_train, x_test)
+    assert model.calls == [1, 1, 1]
+
+
+def test_exact_cached_cudagraphs_compile_one_unbound_layer_method(monkeypatch):
+    class Layer:
+        def forward_test_with_cache(self, x_test, cache, feature_atten_mask=None):
+            del self, cache, feature_atten_mask
+            return x_test
+
+    class Encoder:
+        layers = [Layer(), Layer(), Layer()]
+
+    class Model:
+        transformer_encoder = Encoder()
+
+    predictor = NoriPredictor.__new__(NoriPredictor)
+    predictor.device = torch.device("cuda")
+    predictor._logged_this_call = set()
+    monkeypatch.setenv(EXACT_CACHED_CUDAGRAPHS_ENV, "1")
+    monkeypatch.setattr(
+        predictor_module.importlib.util, "find_spec", lambda _name: object(),
+    )
+    compile_calls = []
+
+    def compile_once(function, **kwargs):
+        compile_calls.append((function, kwargs))
+        return function
+
+    monkeypatch.setattr(torch, "compile", compile_once)
+    model = Model()
+    assert predictor._maybe_enable_exact_cached_cudagraphs(model)
+    assert predictor._maybe_enable_exact_cached_cudagraphs(model)
+    assert len(compile_calls) == 1
+    assert compile_calls[0][1] == {
+        "backend": "cudagraphs",
+        "dynamic": False,
+        "fullgraph": False,
+    }
+    for layer in model.transformer_encoder.layers:
+        assert layer.forward_test_with_cache("value", {}) == "value"
+
+    predictor._disable_exact_cached_cudagraphs(model)
+    assert not model._exact_cudagraphs_enabled
+
+
+def test_exact_cached_cudagraphs_fall_back_without_setuptools(monkeypatch):
+    class Layer:
+        def forward_test_with_cache(self, x_test, cache):
+            del self, cache
+            return x_test
+
+    class Encoder:
+        layers = [Layer()]
+
+    class Model:
+        transformer_encoder = Encoder()
+
+    predictor = NoriPredictor.__new__(NoriPredictor)
+    predictor.device = torch.device("cuda")
+    predictor._logged_this_call = set()
+    monkeypatch.setenv(EXACT_CACHED_CUDAGRAPHS_ENV, "1")
+    monkeypatch.setattr(
+        predictor_module.importlib.util, "find_spec", lambda _name: None,
+    )
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda *_args, **_kwargs: pytest.fail("torch.compile must not run"),
+    )
+
+    model = Model()
+    assert not predictor._maybe_enable_exact_cached_cudagraphs(model)
+    assert model.transformer_encoder.layers[0].forward_test_with_cache("value", {}) == "value"
+
+
 def test_distribution_member_order_and_collapse_match_b1(fake_cuda_tensors, monkeypatch):
     x_train, y_train, x_test = _table()
     offsets = (30.0, 10.0, 60.0, 20.0, 50.0, 40.0)

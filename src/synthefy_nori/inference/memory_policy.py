@@ -76,9 +76,9 @@ import contextlib
 import os
 import threading
 import warnings
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema, model_validator
 
 #: Named starting points, for callers who do not want to set fields individually.
 #: Each one CHANGES something. There is deliberately no "auto"/"default" preset:
@@ -99,6 +99,14 @@ RUNGS: tuple[str, ...] = (
     "context_row_chunk",
     "plain_loop",
 )
+
+#: A rung name, carrying the closed set into any generated JSON schema. Internal
+#: introduced this alongside its serving wire-contract check; the field
+#: annotations promoted with #516 reference it, so it is defined here too.
+MemoryRung = Annotated[
+    str,
+    WithJsonSchema({"type": "string", "enum": list(RUNGS)}),
+]
 
 # --- unit + shape constants (no bare numbers in the arithmetic below) ---------
 

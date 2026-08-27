@@ -28,7 +28,9 @@ from synthefy_nori.inference.memory_policy import (
 from synthefy_nori.model.layer import RMSNorm
 from synthefy_nori.utils.loading import load_model
 import contextlib
+import importlib.util
 import torch
+import types
 from typing import List, Literal
 import random
 from sklearn.utils.validation import check_X_y, check_array
@@ -60,6 +62,13 @@ PIPELINE_BATCH_MAX_FEATURES = 256
 # partners. The legacy path streams one transformed table at a time; falling
 # back above this cap preserves that behavior for very large query sets.
 PIPELINE_BATCH_HOST_BUDGET_BYTES = 512 * 1024**2
+# Opt-in exact-serving mode: keep every ensemble member at B=1, but replay the
+# cached per-layer eager kernels through CUDA graphs. This preserves B=1
+# arithmetic while removing most Python/kernel-launch overhead on repeated,
+# fixed-shape resident-cache queries. It is deliberately not the default:
+# graph capture has a cold-start and persistent-memory cost, and is intended
+# for fit-once/serve-many workloads.
+EXACT_CACHED_CUDAGRAPHS_ENV = "SYNTHEFY_EXACT_CACHED_CUDAGRAPHS"
 
 
 class NoriPredictor:
@@ -2235,6 +2244,97 @@ class NoriPredictor:
                 return False
         return True
 
+    @staticmethod
+    def _exact_cached_cudagraphs_requested() -> bool:
+        return os.environ.get(EXACT_CACHED_CUDAGRAPHS_ENV, "0") == "1"
+
+    def _maybe_enable_exact_cached_cudagraphs(self, bare_model) -> bool:
+        """Compile cached B=1 encoder layers with the eager CUDA-graph backend.
+
+        Unlike Inductor, the ``cudagraphs`` backend replays the original eager
+        kernels and therefore preserves B=1 output bits. The compiled unbound
+        method is shared by every encoder layer, mirroring training's regional
+        compilation pattern without compiling one graph per layer instance.
+        """
+        if not self._exact_cached_cudagraphs_requested():
+            return False
+        attempted = getattr(bare_model, "_exact_cudagraphs_attempted", False)
+        if attempted:
+            return bool(getattr(bare_model, "_exact_cudagraphs_enabled", False))
+        bare_model._exact_cudagraphs_attempted = True
+
+        try:
+            device = self.device if isinstance(self.device, torch.device) else torch.device(self.device)
+        except (TypeError, RuntimeError):
+            return False
+        layers = getattr(getattr(bare_model, "transformer_encoder", None), "layers", None)
+        if device.type != "cuda" or not layers or not hasattr(torch, "compile"):
+            return False
+        # Torch's backend discovery imports setuptools through its CPU ISA probe.
+        # Serving-minimal environments may intentionally omit it; exact mode must
+        # then remain a safe eager B=1 fallback instead of failing a request.
+        if importlib.util.find_spec("setuptools") is None:
+            self._log_once_per_call(
+                "exact_cudagraphs_unavailable",
+                logging.WARNING,
+                f"{EXACT_CACHED_CUDAGRAPHS_ENV}=1 requested, but setuptools is "
+                "unavailable; using exact eager B=1 inference.",
+            )
+            return False
+        try:
+            original = type(layers[0]).forward_test_with_cache
+            compiled = torch.compile(
+                original,
+                backend="cudagraphs",
+                dynamic=False,
+                fullgraph=False,
+            )
+        except Exception as exc:  # pragma: no cover - backend availability varies
+            self._log_once_per_call(
+                "exact_cudagraphs_unavailable",
+                logging.WARNING,
+                f"Could not initialize exact cached CUDA graphs "
+                f"({type(exc).__name__}: {exc}); using eager B=1 inference.",
+            )
+            return False
+        for layer in layers:
+            layer.forward_test_with_cache = types.MethodType(compiled, layer)
+        bare_model._exact_cudagraphs_original = original
+        bare_model._exact_cudagraphs_enabled = True
+        return True
+
+    @staticmethod
+    def _is_torch_compiler_failure(exc: Exception) -> bool:
+        module = type(exc).__module__
+        return module.startswith(("torch._dynamo", "torch._inductor"))
+
+    def _disable_exact_cached_cudagraphs(self, bare_model) -> None:
+        original = getattr(bare_model, "_exact_cudagraphs_original", None)
+        layers = getattr(getattr(bare_model, "transformer_encoder", None), "layers", ())
+        if original is not None:
+            for layer in layers:
+                layer.forward_test_with_cache = types.MethodType(original, layer)
+        bare_model._exact_cudagraphs_enabled = False
+
+    def _apply_context_cache_exact_safe(self, bare_model, x_test, context, **kwargs):
+        enabled = self._maybe_enable_exact_cached_cudagraphs(bare_model)
+        if enabled and not getattr(self, "_exact_cudagraph_step_marked", False):
+            torch.compiler.cudagraph_mark_step_begin()
+            self._exact_cudagraph_step_marked = True
+        try:
+            return bare_model.apply_context_cache(x_test, context, **kwargs)
+        except Exception as exc:
+            if not enabled or not self._is_torch_compiler_failure(exc):
+                raise
+            self._disable_exact_cached_cudagraphs(bare_model)
+            self._log_once_per_call(
+                "exact_cudagraphs_runtime_fallback",
+                logging.WARNING,
+                f"Exact cached CUDA-graph compilation failed at runtime "
+                f"({type(exc).__name__}: {exc}); retrying with eager B=1 inference.",
+            )
+            return bare_model.apply_context_cache(x_test, context, **kwargs)
+
     def _try_batched_ordinary_regression(
             self, bare_model, *, x_train_base, x_test_base, y_train,
             categorical_idx, n_samples_train, n_samples_test,
@@ -2259,6 +2359,7 @@ class NoriPredictor:
         if (
             device.type != "cuda"
             or os.environ.get("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "0") == "1"
+            or self._exact_cached_cudagraphs_requested()
             or len(self.preprocess_pipelines) < 2
             or self.inference_with_DDP
             or self.mask_prediction
@@ -2833,13 +2934,36 @@ class NoriPredictor:
                                     reuse_context_cache=policy.reuse_context_cache,
                                     cache_entries=self.context_cache_entries,
                                 )
-                                output = bare_model.apply_context_cache(
-                                    x_[n_ctx:].unsqueeze(0),
-                                    ctx_bundle,
-                                    row_chunk_size=chunk_size,
-                                    adaptive_query_chunk=policy.adaptive_query_chunk,
-                                )
-                            output = self._unwrap_model_output(output, task_type="reg").squeeze(0)
+                                apply_kwargs = {
+                                    "row_chunk_size": chunk_size,
+                                    "adaptive_query_chunk": policy.adaptive_query_chunk,
+                                }
+                                if (
+                                    policy.rung == "resident_bf16"
+                                    and policy.cache_dtype == "bf16"
+                                    and not policy.offload_to_host
+                                    and attempt_fit_chunk is None
+                                ):
+                                    output = self._apply_context_cache_exact_safe(
+                                        bare_model,
+                                        x_[n_ctx:].unsqueeze(0),
+                                        ctx_bundle,
+                                        **apply_kwargs,
+                                    )
+                                else:
+                                    if getattr(
+                                        bare_model, "_exact_cudagraphs_enabled", False
+                                    ):
+                                        self._disable_exact_cached_cudagraphs(bare_model)
+                                    output = bare_model.apply_context_cache(
+                                        x_[n_ctx:].unsqueeze(0),
+                                        ctx_bundle,
+                                        **apply_kwargs,
+                                    )
+                            output = self._unwrap_model_output(
+                                output,
+                                task_type="reg",
+                            ).squeeze(0)
                             output = self._reject_nonfinite_output(
                                 output, path=f"cached ({policy.rung})", n_train=n_samples_train, n_test=n_samples_test
                             )
