@@ -564,7 +564,8 @@ mixed-precision noise (max abs diff ~3e-3, measured below) at identical R². The
 **preprocessing speedups** are **R²-neutral**:
 toggling them shifts individual predictions by a tiny, R²-equivalent amount (below
 cross-environment noise), not bit-for-bit. For the exact un-accelerated path, set
-each to its off value (see below).
+each to its off value (see below). **Pipeline batching** likewise preserves the
+ensemble math but can reassociate mixed-precision GEMMs at the last few bits.
 
 | Env var | Default | What it does |
 |---|---|---|
@@ -573,6 +574,8 @@ each to its off value (see below).
 | `SYNTHEFY_QUANTILE_MAX` / `SYNTHEFY_QUANTILE_SUBSAMPLE` | — | Tune the cap above (max quantiles / fit-subsample size). |
 | `SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE` | `2000` | Fit preprocessing on at most this many rows, apply to all rows. Acts on large context; set `0` to fit on all rows. |
 | `SYNTHEFY_ENABLE_CACHED_INFERENCE` | `1` (on) | Reuse the train-side attention K/V across test chunks (KV cache); ~2-3x faster on large test sets that chunk. Set `0` to disable (or `SYNTHEFY_DISABLE_CACHED_INFERENCE=1`). |
+| `SYNTHEFY_DISABLE_PIPELINE_BATCHING` | `0` (batching on) | Set `1` to run preprocessing-ensemble model calls one at a time. Batching groups up to four same-shaped members when each has at most 256 processed features. |
+| `SYNTHEFY_EXACT_CACHED_CUDAGRAPHS` | `0` (off) | Set `1` for exact B=1 resident-cache inference accelerated by eager CUDA-graph replay. This disables pipeline batching, requires CUDA plus `setuptools`, and safely falls back to eager B=1 when unavailable. |
 | `SYNTHEFY_MAX_ELEMENTS_BUDGET` | VRAM-aware | Inference element budget; raise on large GPUs for full-context inference. Prefer `memory_policy={"elements_budget": N}`. |
 
 > ⚠️ **`SYNTHEFY_CACHE_MAX_GB` has been removed** and now raises if set. It used to
@@ -601,22 +604,27 @@ NoriRegressor(model="nori-6m", memory_policy="exact")                   # never 
 NoriRegressor(model="nori-6m", memory_policy="max_context")             # fit the biggest table
 NoriRegressor(model="nori-6m", memory_policy="off")                     # no cache at all
 NoriRegressor(model="nori-6m", memory_policy={"gpu_budget_frac": 0.25}) # e.g. from a config file
+NoriRegressor(model="nori-6m", memory_policy={"stream_context": True})  # bounded GPU staging
 ```
 
-Under the hood it walks a ladder, using the cheapest rung that can serve the request:
+The ordinary policy walks a ladder using the cheapest rung that can serve the request;
+explicit streaming reports its own `stream_*` path:
 
 | rung | what it does | exact? |
 |---|---|---|
 | `resident_bf16` | cache fits VRAM at full precision | **yes** |
 | `resident_int8` | quantize to stay on the GPU instead of streaming | ~6e-6 R² |
 | `offload_int8` | cache lives in host RAM, streamed per layer | quantized |
+| `stream_bf16` | explicitly keep context/KV on the host and stage bounded row slices | numerically close |
+| `stream_int8` | the same bounded host-only path with quantized K/V | quantized |
 | `context_row_chunk` | after an OOM: also cap rows per build step | **yes** |
 | `plain_loop` | no cache; several times slower, may drop context rows | **yes** |
 
-**Only the int8 rungs cost accuracy, and `resident_int8` is only reached when full
-precision would not fit.** A table that serves correctly today keeps bit-exact
-predictions — accuracy is spent only to avoid a fallback that is slower or fatal. Use
-`memory_policy="exact"` to forbid quantizing outright (it offloads instead).
+**Only the int8 rungs quantize the cache, and `resident_int8` is only reached when full
+precision would not fit.** Explicit streaming is also not bit-exact, even at BF16,
+because chunked GEMMs and FP32 online attention change reduction order. A small CUDA
+comparison measured max prediction delta 2.93e-3 and mean delta 7.44e-4. Use
+`memory_policy="exact"` to forbid quantizing on the ordinary adaptive ladder.
 
 Budgets are **fractions of your hardware**, so one setting travels from a laptop GPU to
 an H200:
@@ -630,11 +638,26 @@ an H200:
 | `cache_dtype` | `"bf16"` | precision the cache **starts** at |
 | `allow_quantization` | `True` | may bf16 drop to int8 to stay resident? |
 | `offload_to_host` | `True` | may the cache move to host RAM? |
+| `stream_context` | `False` | explicitly keep full context/KV state on the host and bound GPU staging; resolves to `stream_bf16` or `stream_int8` |
 | `context_row_chunk` | `None` | cap context rows per build step (auto after an OOM) |
 | `elements_budget` | auto | per-forward element cap; drives chunking + subsampling |
 | `allow_subsample` | `True` | may context rows be dropped to fit? `False` = raise |
 
-> **Host offload needs RAM > 1.6 × VRAM at these defaults.** Offload only engages once
+Set `memory_policy={"stream_context": True}` when context-attention GPU memory should
+stop scaling with context length. Streaming forces the cache onto the host, disables
+cross-call context reuse, and resolves an omitted `context_row_chunk` from accelerator
+VRAM: **2048** rows below 40 GiB, **8192** rows from 40 GiB, and **16384** rows from
+80 GiB. An explicit value is preserved. The selected number is a maximum staged-row
+cap, not an exact internal block width: runtime may split K/V blocks smaller to stay
+within its attention workspace. After any larger resolved first attempt, fit-time OOMs
+retry the bounded **2048 → 1024 → 512 → 256** row ladder. This is still constant GPU
+memory with respect to total context length because the hardware
+tier does not grow with the dataset. The full context must fit the configured host
+budget. If it does not, Nori raises instead of silently falling back to `plain_loop` or
+dropping the requested mechanism.
+
+> **Ordinary adaptive host offload needs RAM > 1.6 × VRAM at these defaults.**
+> Offload only engages once
 > the cache exceeds the GPU budget, and it can only succeed within the host budget — so
 > `0.25 × RAM` has to exceed `0.4 × VRAM`. Below that ratio the offload rung is
 > unreachable and a spilling request goes straight to `plain_loop`. Concretely, a 143 GB
@@ -820,6 +843,41 @@ mean R² unchanged (0.8087 → 0.8089). A large-scale A/B restricted to the tabl
 where they actually engage (n>5000) measured a mean ΔR² of +0.00002 (max |Δ|
 0.0004) — within run-to-run noise.
 
+### Preprocessing-ensemble batching (on by default)
+
+The default eight-member ensemble produces two natural groups of four members
+with identical model-input shapes. Nori now runs each group as one model batch,
+then restores configured member order and averages the full decoder outputs just
+as the one-at-a-time path does. It applies only to ordinary regression with a
+resident full-precision cache (or no cache), deterministic eval-mode models, and
+at most 256 processed features per member. Retrieval, imputation, DDP, dropout,
+int8/offloaded caches, wide tables, and memory-heavy requests stay on the existing
+one-at-a-time path. A CUDA OOM or unsupported output shape also retries the whole
+call there.
+
+On one H200 with the public 6M model, 512 context rows, 48 raw features, and the
+shipped eight-member config, batching reduced hot point-prediction latency from
+1.28 s to 0.80 s without a cache (1.59×), and from 0.88 s to 0.53 s with a reused
+resident cache (1.65×). The maximum point and full 999-quantile-bank differences
+versus one-at-a-time fp16 execution were both 1.90e-3. Peak VRAM rose by 0.74 GiB
+without a cache and 0.26 GiB with a
+resident cache on that workload. Set `SYNTHEFY_DISABLE_PIPELINE_BATCHING=1` for
+the legacy execution order or exact debugging comparisons.
+
+For fit-once/serve-many workloads that require bit-exact B=1 predictions, set
+`SYNTHEFY_EXACT_CACHED_CUDAGRAPHS=1`. This keeps all eight ensemble members at
+B=1 but captures the cached encoder-layer eager kernels and replays them without
+Python launch overhead. On the public 100M model (512 context rows, 600 query
+rows, 48 raw features), hot-cache latency fell from 2.81 s to 1.53 s (1.83×),
+with bit-exact point predictions and all 999 quantiles. Current B=4 execution was
+1.38 s on the same workload, so exact mode recovered most of its throughput.
+In separate processes, exact B=1 peaked at 12.63 GiB allocated versus 13.37 GiB
+for B=4. If the resident cache is not selected, this mode remains exact eager B=1
+rather than applying CUDA graphs to the ordinary forward.
+CUDA-graph setup is shape-specific and took a few seconds in this benchmark;
+use it for repeated resident-cache queries, not one-shot or rapidly changing
+table shapes.
+
 ### KV caching (on by default)
 
 The cached prediction path is **enabled by default**. It projects the train-side
@@ -855,7 +913,7 @@ Reproduce (prints the results table and writes `benchmarks/plots/kv_cache_speed.
 
 # To disable them all (e.g. for exact reproducibility / debugging):
 SYNTHEFY_GPU_SVD=0 SYNTHEFY_CAP_QUANTILES=0 SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE=0 \
-SYNTHEFY_ENABLE_CACHED_INFERENCE=0 \
+SYNTHEFY_ENABLE_CACHED_INFERENCE=0 SYNTHEFY_DISABLE_PIPELINE_BATCHING=1 \
 python your_inference_script.py
 ```
 

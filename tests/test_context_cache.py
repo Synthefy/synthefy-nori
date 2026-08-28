@@ -40,6 +40,8 @@ import numpy as np
 import pytest
 import torch
 
+from synthefy_nori.model.transformer import ContextCache, FeaturesTransformer
+
 N_TRAIN, N_TEST, N_FEATURES = 300, 120, 8
 
 
@@ -76,6 +78,96 @@ def _split(model, xt, yt, eval_pos, seed=0):
     with torch.no_grad():
         bundle = model.build_context_cache(xt[:, :eval_pos], yt[:, :eval_pos])
         return model.apply_context_cache(xt[:, eval_pos:], bundle, row_chunk_size=0)
+
+
+class _DecodeOOMEncoder:
+    def __init__(self, fits_at: int | None):
+        self.fits_at = fits_at
+        self.widths = []
+
+    def forward_test_with_cache(self, test_tokens, _caches, feature_atten_mask=None):
+        del feature_atten_mask
+        width = test_tokens.shape[1]
+        self.widths.append(width)
+        if self.fits_at is None or width > self.fits_at:
+            raise torch.cuda.OutOfMemoryError("synthetic decode OOM")
+        return test_tokens
+
+
+class _ApplyContextHarness:
+    """Minimum protocol needed to drive apply_context_cache without weights."""
+
+    mask_prediction = False
+
+    def __init__(self, fits_at: int | None):
+        self.transformer_encoder = _DecodeOOMEncoder(fits_at)
+        self.encoder_out_norm = lambda value: value
+        self.reg_y_decoder = lambda value: value
+
+    def _build_x_preprocess_inputs(self, x_test, _eval_pos):
+        return {"data": x_test}, None
+
+    def x_preprocess(self, values):
+        return values
+
+    def process_4_x(self, values):
+        return values
+
+    def _encode_y_full(self, _y_train, *, total_rows, eval_pos, task_type="reg"):
+        del eval_pos
+        target = torch.zeros(1, total_rows)
+        embedded = torch.zeros(1, total_rows, 1)
+        return target, embedded
+
+    def _encode_x_rows(self, values, row_slice, *, total_rows, feature_pos_emb):
+        del total_rows, feature_pos_emb
+        start = row_slice.start or 0
+        stop = row_slice.stop
+        return values["data"].new_zeros(values["data"].shape[0], stop - start, 1, 1)
+
+
+def _empty_context():
+    return ContextCache(
+        caches=[],
+        feature_pos_emb=None,
+        norm_stats=None,
+        y_train=torch.zeros(1, 2),
+        eval_pos=2,
+    )
+
+
+def test_apply_context_cache_observes_oom_halving_and_effective_success():
+    model = _ApplyContextHarness(fits_at=2)
+    events = []
+
+    output = FeaturesTransformer.apply_context_cache(
+        model,
+        torch.zeros(1, 5, 1),
+        _empty_context(),
+        row_chunk_size=5,
+        query_chunk_attempt_callback=lambda chunk, outcome: events.append((chunk, outcome)),
+    )
+
+    assert model.transformer_encoder.widths == [5, 2, 2, 1]
+    assert events == [(5, "oom"), (2, "success")]
+    assert output.shape == (1, 5, 1)
+
+
+def test_apply_context_cache_observes_every_oom_when_retries_exhaust():
+    model = _ApplyContextHarness(fits_at=None)
+    events = []
+
+    with pytest.raises(torch.cuda.OutOfMemoryError, match="synthetic decode OOM"):
+        FeaturesTransformer.apply_context_cache(
+            model,
+            torch.zeros(1, 4, 1),
+            _empty_context(),
+            row_chunk_size=4,
+            query_chunk_attempt_callback=lambda chunk, outcome: events.append((chunk, outcome)),
+        )
+
+    assert model.transformer_encoder.widths == [4, 2, 1]
+    assert events == [(4, "oom"), (2, "oom"), (1, "oom")]
 
 
 @pytest.mark.slow

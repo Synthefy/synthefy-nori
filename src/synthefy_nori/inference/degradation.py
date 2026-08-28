@@ -70,6 +70,18 @@ class ContextSubsampledWarning(DegradedPipelineWarning):
     """
 
 
+class CacheQuantizedWarning(DegradedPipelineWarning):
+    """The context key/value cache was quantized to int8 to keep it resident (or
+    offloadable) under the configured memory budget.
+
+    Measured cost is small (``|dR2| ~ 6e-6``), but it is a real, requested-then-
+    silently-granted-anyway fidelity loss, not merely a slowdown -- unlike
+    ``offload_to_host``, which moves bytes without changing them. The
+    declarative way to refuse this is ``memory_policy={"allow_quantization": False}``,
+    which keeps every rung bit-exact and offloads to host RAM sooner instead.
+    """
+
+
 @contextmanager
 def strict_pipeline(*categories: type[Warning]):
     """Make degradation warnings fatal for the duration of the block.

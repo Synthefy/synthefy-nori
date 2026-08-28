@@ -29,12 +29,19 @@ resident_int8      bf16 would not fit but int8 does, so the cache stays on the
                    fast on-GPU path instead of paying PCIe streaming. Costs
                    |dR2| ~ 6e-6 (per-(row, head) absmax quantization).
                    Requires ``allow_quantization``.
-offload_bf16       cannot stay resident and quantizing is not allowed -> the
-                   full-precision cache lives in host RAM. Bit-exact, slower.
+offload_bf16       cannot stay resident (or resident attempts OOM) -> the
+                   full-precision cache lives in host RAM. Bit-exact, slower;
+                   may follow resident_int8 to recover precision while moving host-side.
 offload_int8       cannot stay resident at any precision -> quantized cache in
                    host RAM, each layer's slice streamed back on demand.
+stream_bf16        caller-requested bounded streaming: context activations and
+                   K/V stay in host RAM while at most ``context_row_chunk`` rows
+                   are staged on the GPU. Never falls through to ``plain_loop``.
+                   Not bit-exact because online attention changes reduction order.
+stream_int8        the same bounded host-only path with an int8 K/V cache.
 context_row_chunk  an actual OOM happened -> re-run bounding the prefill
-                   working set too (bit-exact; see layer.py).
+                   working set too (deterministic, with small floating-point
+                   reassociation differences; see layer.py).
 plain_loop         nothing above worked. **No cache at all: every query chunk
                    recomputes the context K/V, so this is several times slower,
                    and if the context alone exceeds the element budget the
@@ -44,16 +51,19 @@ plain_loop         nothing above worked. **No cache at all: every query chunk
                    dropped, how many.
 =================  ========================================================
 
-**Only the int8 rungs are lossy, and ``resident_int8`` is reached only when the
-full-precision cache does not fit.** That ordering is the point: a table that serves
-correctly today keeps bit-exact predictions, and accuracy is spent only to avoid a
-fallback that would otherwise be slower or fatal. A measured cost for int8
-(|dR2| = 5.8e-6) is not a licence to charge it to requests that had no memory
-problem in the first place.
+**Only the int8 rungs quantize the cache.** The explicitly requested streaming rungs
+are also not bit-exact, including ``stream_bf16``, because bounded online attention
+reassociates floating-point reductions. The measured CUDA difference for BF16 streaming
+is small rather than zero (max prediction delta 2.93e-3, mean 7.44e-4). Outside
+streaming, ``resident_int8`` is reached only when the full-precision cache does not fit.
+That ordering is the point: a table that serves correctly today keeps bit-exact
+predictions, and accuracy is spent only to avoid a fallback that would otherwise be
+slower or fatal.
 
-``context_row_chunk`` and ``plain_loop`` are *reactions* to an OutOfMemoryError, so the
-caller escalates into them via :meth:`MemoryPolicy.escalated`; :meth:`resolve` picks
-the opening rung.
+Outside explicit ``stream_context=True``, ``context_row_chunk`` and ``plain_loop`` are
+*reactions* to an OutOfMemoryError, so the caller escalates into them via
+:meth:`MemoryPolicy.escalated`; :meth:`resolve` picks the opening rung. Streaming starts
+with a concrete row cap instead and raises if its host-only contract cannot be honoured.
 
 Budgets are **fractions of the hardware** rather than absolute GB so one setting is
 portable from a 24 GB laptop card to a 143 GB H200. The ``*_absolute_gb`` overrides
@@ -74,9 +84,9 @@ import contextlib
 import os
 import threading
 import warnings
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema, model_validator
 
 #: Named starting points, for callers who do not want to set fields individually.
 #: Each one CHANGES something. There is deliberately no "auto"/"default" preset:
@@ -94,9 +104,21 @@ RUNGS: tuple[str, ...] = (
     "resident_int8",
     "offload_bf16",
     "offload_int8",
+    "stream_bf16",
+    "stream_int8",
     "context_row_chunk",
     "plain_loop",
 )
+
+STREAM_RUNGS: tuple[str, ...] = ("stream_bf16", "stream_int8")
+
+#: A rung name, carrying the closed set into any generated JSON schema. Internal
+#: introduced this alongside its serving wire-contract check; the field
+#: annotations promoted with #516 reference it, so it is defined here too.
+MemoryRung = Annotated[
+    str,
+    WithJsonSchema({"type": "string", "enum": list(RUNGS)}),
+]
 
 # --- unit + shape constants (no bare numbers in the arithmetic below) ---------
 
@@ -127,6 +149,24 @@ DEFAULT_HOST_BUDGET_FRAC = 0.25
 #: Fit-time row chunk engaged automatically after an OOM on the cached path.
 FIT_ROW_CHUNK_ON_OOM = 2048
 
+#: Conservative maximum context rows staged at once by the explicitly requested
+#: host-streaming path when accelerator capacity is unknown or below 40 GiB.
+#: Larger accelerators select a larger default in
+#: :func:`default_stream_context_row_chunk`; an explicit caller value always wins.
+DEFAULT_STREAM_CONTEXT_ROW_CHUNK = 2048
+
+#: Hardware-adaptive streamed-context row chunks. Bigger chunks amortize the
+#: block-attention launch/transfer overhead; they do not change the O(1)-in-context
+#: GPU-memory contract because the staged row count remains a fixed hardware choice.
+STREAM_CONTEXT_ROW_CHUNK_40_GIB = 8192
+STREAM_CONTEXT_ROW_CHUNK_80_GIB = 16384
+
+#: Bounded, deterministic prefill retries before abandoning the cache. Keeping the
+#: floor explicit prevents an OOM from turning into an unbounded retry loop. The
+#: final 256-row halving materially lowers the workspace after a 512-row OOM; 128 is
+#: left as an explicit caller override rather than another costly automatic rebuild.
+FIT_ROW_CHUNK_RETRY_LADDER: tuple[int, ...] = (2048, 1024, 512, 256)
+
 #: Fields that only mean anything while the cached path is in use. Asking for any of
 #: them with ``cache=False`` is incoherent, so it is rejected rather than silently
 #: dropped — the failure mode where a caller spells everything correctly and still
@@ -135,6 +175,7 @@ CACHE_ONLY_FIELDS: tuple[str, ...] = (
     "cache_dtype",
     "allow_quantization",
     "offload_to_host",
+    "stream_context",
     "context_row_chunk",
     # adaptive_query_chunk is passed only to forward_cached_regression, so it is
     # inert on the plain loop as well -- it belongs here for the same reason.
@@ -151,6 +192,22 @@ CACHE_ONLY_FIELDS: tuple[str, ...] = (
 #: torch will not describe). Conservative on purpose; the OOM fallback is the real
 #: safety net regardless of how good this estimate is.
 ASSUMED_VRAM_GB = 24.0
+
+
+def default_stream_context_row_chunk(total_vram_gb: float | None) -> int:
+    """Choose the omitted streamed-context row cap from accelerator capacity.
+
+    Explicit ``context_row_chunk`` values never pass through this helper. Unknown
+    devices use :data:`ASSUMED_VRAM_GB`, deliberately selecting the conservative
+    2,048-row tier; runtime OOM recovery may only retry smaller chunks.
+    """
+    vram = ASSUMED_VRAM_GB if total_vram_gb is None else total_vram_gb
+    if vram >= 80.0:
+        return STREAM_CONTEXT_ROW_CHUNK_80_GIB
+    if vram >= 40.0:
+        return STREAM_CONTEXT_ROW_CHUNK_40_GIB
+    return DEFAULT_STREAM_CONTEXT_ROW_CHUNK
+
 
 #: Config warnings already emitted this process. These describe a *configuration*, not
 #: a request, so saying it once is enough -- and the alternative is genuine spam:
@@ -177,12 +234,12 @@ def warn_once(message: str) -> None:
 
 
 class ContextTooLargeError(RuntimeError):
-    """The context does not fit the element budget and may not be subsampled.
+    """The context cannot fit without a fallback the caller's policy forbids.
 
-    A **caller** condition, not a server fault: the context size, ``elements_budget`` and
-    ``allow_subsample`` are all things the caller chose, and changing any one of them
-    makes the same request work. The message names which setting forbade the shrink and
-    what to raise.
+    A **caller** condition, not a server fault. This covers both a context that exceeds
+    ``elements_budget`` while ``allow_subsample=False`` and an explicitly streamed
+    context whose cache exceeds the permitted host budget. In each case the message
+    names which caller-controlled setting to change.
 
     Typed so that a server can tell it apart from the other ``RuntimeError`` that reaches
     the same place -- a CUDA OOM, which really is a server condition. Without the
@@ -414,6 +471,61 @@ def total_host_ram_gb() -> float:
     return limit or physical
 
 
+MemoryAttemptOutcome = Literal["success", "oom", "unsupported"]
+MemoryAttemptPath = Literal["pipeline_batch", "cached", "plain_loop"]
+MemoryAttemptReason = Literal[
+    "resolved",
+    "oom_retry",
+    "fallback_after_oom",
+    "fallback_after_unsupported",
+]
+
+
+class MemoryAttempt(BaseModel):
+    """One execution attempt contributing to a prediction's memory outcome."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    pipeline_ids: list[int] = Field(
+        default_factory=list,
+        description="Preprocessing-pipeline members covered by this attempt. More than "
+        "one means the pipeline-batched fast path was used.",
+    )
+    path: MemoryAttemptPath = Field(
+        description="Execution path attempted: batched cache, per-pipeline cache, or plain loop.",
+    )
+    rung: MemoryRung = Field(description="Memory ladder rung used for this attempt.")
+    cache_dtype: CacheDtype = Field(
+        description="Cache precision used by this attempt.",
+    )
+    offload_to_host: bool = Field(
+        description="Whether this attempt streamed its cache from host RAM.",
+    )
+    context_row_chunk: int | None = Field(
+        None,
+        gt=0,
+        description="Context rows per prefill chunk for this attempt; null means unchunked prefill.",
+    )
+    query_chunk: int | None = Field(
+        None,
+        gt=0,
+        description="Query-chunk limit attempted by this decode step. A cached decode "
+        "OOM is followed by another history entry with the smaller retry "
+        "limit; null means the attempt failed before query decoding began.",
+    )
+    outcome: MemoryAttemptOutcome = Field(
+        description="Whether the attempt succeeded, OOMed, or lacked checkpoint support.",
+    )
+    reason: MemoryAttemptReason = Field(
+        description="Why this attempt ran: initial resolution, an OOM retry, or a plain-loop fallback.",
+    )
+    dropped_context_rows: int = Field(
+        0,
+        ge=0,
+        description="Context rows already removed before this attempt. Non-zero is always explicit.",
+    )
+
+
 class MemoryPolicy(BaseModel):
     """What inference may spend on memory, and where the K/V cache goes.
 
@@ -509,14 +621,25 @@ class MemoryPolicy(BaseModel):
         "resolves to, and that case has to degrade to 'no offload' rather "
         "than fail.",
     )
+    stream_context: bool = Field(
+        False,
+        description="Keep the full context and K/V cache in host RAM and stage only "
+        "bounded row slices on the GPU. This forces the host-only "
+        "stream_bf16/stream_int8 path, disables cross-call context reuse, "
+        "and chooses an omitted context_row_chunk from accelerator VRAM "
+        "as the maximum staged-row cap (2048 below 40 GiB, 8192 from "
+        "40 GiB, 16384 from 80 GiB). Runtime "
+        "may split K/V blocks smaller to honor its fixed FP32 online-attention "
+        "workspace ceiling. Streaming never silently falls back to plain_loop.",
+    )
     context_row_chunk: int | None = Field(
         None,
         gt=0,
         description="Bound the fit-time build working set to this many context rows "
-        f"(bit-exact). None = off, with {FIT_ROW_CHUNK_ON_OOM} engaged "
-        "automatically after an OOM. Pinning a value uses it from the "
-        "first attempt — which also costs you that escalation, since "
-        "there is then nothing left to escalate to.",
+        f"(deterministic, with small floating-point reassociation differences). "
+        f"None = off, with {FIT_ROW_CHUNK_ON_OOM}, 1024, 512, "
+        "then 256 tried automatically after OOMs. An explicit value is "
+        "a first-attempt cap, then retries step through smaller safe rungs.",
     )
     adaptive_query_chunk: bool = Field(
         True,
@@ -547,7 +670,8 @@ class MemoryPolicy(BaseModel):
         description="Which fallback the server used, in decreasing memory cost: "
         "resident_bf16 (cache in GPU memory, exact), resident_int8 (quantized), "
         "offload_bf16 / offload_int8 (cache in host RAM, streamed back per layer, "
-        "exact transport), context_row_chunk (cache built in row chunks), "
+        "exact transport), stream_bf16 / stream_int8 (explicit bounded host-only "
+        "context streaming; not bit-exact), context_row_chunk (cache built in row chunks), "
         "plain_loop (no cache; the context re-read per query batch), no_cache "
         "(the cached path did not apply). Decided per request, not requestable.",
     )
@@ -563,24 +687,87 @@ class MemoryPolicy(BaseModel):
     query_chunk: int | None = Field(
         None,
         gt=0,
-        description="Query rows per decode forward, as the cached path was entered "
-        "with. Reported, not set. NOTE: a decode OOM may halve this "
-        "further inside the model, and that further reduction is not "
-        "currently reported here.",
+        json_schema_extra={"readOnly": True},
+        description="Effective query rows per decode forward on the successful cached "
+        "path. If decoding exhausted its retries and raised, this is the "
+        "last attempted size. Every adaptive reduction is also recorded in "
+        "attempt_history. Reported, not set.",
     )
     dropped_context_rows: int = Field(
         0,
         ge=0,
-        description="Context rows the caller had to subsample away to fit. Non-zero "
-        "only on the plain_loop rung; recorded so a shrunk context is "
+        json_schema_extra={"readOnly": True},
+        description="Context rows the caller had to subsample away before cache "
+        "resolution to fit the element budget. Recorded on cached and "
+        "plain-loop outcomes alike so a shrunk context is "
         "visible in memory_report_ rather than inferred from the score.",
     )
+    attempt_history: list[MemoryAttempt] = Field(
+        default_factory=list,
+        json_schema_extra={"readOnly": True},
+        description="Chronological execution attempts across every preprocessing "
+        "pipeline in this predict call, including OOMs, fit-row retries, "
+        "unsupported cached paths, and the successful fallback. This "
+        "distinguishes a requested cached mechanism that recovered via "
+        "plain_loop from a request that selected plain_loop initially.",
+    )
+
+    def __hash__(self) -> int:
+        # Every other field is a scalar; this one is the sole list, so it is the sole
+        # field pydantic's frozen-model hash (which hashes every field) cannot handle.
+        return hash(tuple(v for k, v in self.__dict__.items() if k != "attempt_history"))
 
     @model_validator(mode="after")
     def _check_rung(self) -> "MemoryPolicy":
         """Reject an unrecognised rung so a typo cannot masquerade as a decision."""
         if self.rung is not None and self.rung not in RUNGS:
             raise ValueError(f"rung must be one of {RUNGS}, got {self.rung!r}")
+        return self
+
+    @model_validator(mode="after")
+    def _check_streaming_contract(self) -> "MemoryPolicy":
+        """Keep explicit context streaming host-only, bounded, and observable."""
+        if self.rung in STREAM_RUNGS and not self.stream_context:
+            raise ValueError(
+                f"rung={self.rung!r} requires stream_context=True; streaming rungs "
+                "cannot describe an ordinary cache request."
+            )
+        if not self.stream_context:
+            return self
+
+        if not self.cache:
+            raise ValueError(
+                "stream_context=True requires cache=True: the bounded path streams "
+                "the context K/V cache and has no silent plain_loop fallback."
+            )
+        if not self.offload_to_host:
+            raise ValueError(
+                "stream_context=True requires offload_to_host=True: streamed context "
+                "activations and K/V are host-resident by contract."
+            )
+        if self.rung is None:
+            if "reuse_context_cache" in self.model_fields_set and self.reuse_context_cache:
+                raise ValueError(
+                    "stream_context=True cannot be combined with "
+                    "reuse_context_cache=True: streaming owns one request-scoped "
+                    "host context and never retains it across predict() calls."
+                )
+            return self
+
+        if self.rung not in STREAM_RUNGS:
+            raise ValueError(
+                f"stream_context=True must resolve to one of {STREAM_RUNGS}, got "
+                f"rung={self.rung!r}; it never silently falls back to plain_loop."
+            )
+        if self.rung != f"stream_{self.cache_dtype}":
+            raise ValueError(
+                f"rung={self.rung!r} contradicts cache_dtype={self.cache_dtype!r}; "
+                f"the resolved streaming rung must be stream_{self.cache_dtype}."
+            )
+        if self.context_row_chunk is None:
+            raise ValueError("a resolved stream_context policy requires a concrete context_row_chunk maximum")
+        if self.reuse_context_cache:
+            raise ValueError("a resolved stream_context policy requires reuse_context_cache=False")
         return self
 
     @model_validator(mode="after")
@@ -682,6 +869,7 @@ class MemoryPolicy(BaseModel):
         # box, so resolve() carries the same check for it.
         if (
             self.offload_to_host
+            and not self.stream_context
             and self.gpu_budget_absolute_gb is not None
             and self.host_budget_absolute_gb is not None
             and self.host_budget_absolute_gb <= self.gpu_budget_absolute_gb
@@ -888,6 +1076,60 @@ class MemoryPolicy(BaseModel):
             return self.host_budget_absolute_gb
         return self.host_budget_frac * total_ram_gb
 
+    def _precision_candidates(
+        self,
+        *,
+        est_cache_gb: float,
+        bytes_per_element: int,
+        head_dim: int,
+    ) -> list[tuple[CacheDtype, float]]:
+        """Return allowed cache precisions and footprints, best accuracy first."""
+        int8_gb = int8_footprint_gb(
+            est_cache_gb,
+            bytes_per_element=bytes_per_element,
+            head_dim=head_dim,
+        )
+        if self.cache_dtype == "int8":
+            return [("int8", int8_gb)]
+        if self.allow_quantization:
+            return [("bf16", est_cache_gb), ("int8", int8_gb)]
+        return [("bf16", est_cache_gb)]
+
+    def _placement_candidates(
+        self,
+        *,
+        est_cache_gb: float,
+        bytes_per_element: int,
+        head_dim: int,
+        gpu_budget_gb: float,
+        host_budget_gb: float,
+    ) -> list[tuple[str, CacheDtype, bool, float]]:
+        """Return every allowed, budget-feasible cache placement in ladder order.
+
+        Both opening-rung resolution and runtime OOM retries consume this exact list.
+        Keeping candidate construction here prevents the two paths from drifting on
+        precision permissions, budget checks, or placement order.
+        """
+        precisions = self._precision_candidates(
+            est_cache_gb=est_cache_gb,
+            bytes_per_element=bytes_per_element,
+            head_dim=head_dim,
+        )
+
+        candidates: list[tuple[str, CacheDtype, bool, float]] = []
+        candidates.extend(
+            (f"resident_{dtype}", dtype, False, footprint)
+            for dtype, footprint in precisions
+            if footprint <= gpu_budget_gb
+        )
+        if self.offload_to_host:
+            candidates.extend(
+                (f"offload_{dtype}", dtype, True, footprint)
+                for dtype, footprint in precisions
+                if footprint <= host_budget_gb
+            )
+        return candidates
+
     @property
     def is_resolved(self) -> bool:
         """Whether a rung has been chosen for a specific request."""
@@ -897,9 +1139,10 @@ class MemoryPolicy(BaseModel):
     def is_bit_exact(self) -> bool:
         """Whether the cache is stored losslessly.
 
-        Offload moves bytes without changing them, so only precision decides this.
+        Ordinary offload moves bytes without changing them. Streaming also changes
+        floating-point reduction order, so both streaming rungs are non-bit-exact.
         """
-        return self.cache_dtype != "int8"
+        return self.cache_dtype != "int8" and not self.stream_context
 
     @property
     def is_degraded(self) -> bool:
@@ -908,7 +1151,14 @@ class MemoryPolicy(BaseModel):
         ``no_cache`` is not degraded — it means the request never needed a cache.
         Used by the predictor to decide whether to log at warning level.
         """
-        return self.rung in ("offload_bf16", "offload_int8", "context_row_chunk", "plain_loop")
+        return self.rung in (
+            "offload_bf16",
+            "offload_int8",
+            "stream_bf16",
+            "stream_int8",
+            "context_row_chunk",
+            "plain_loop",
+        )
 
     def resolve(
         self,
@@ -944,22 +1194,56 @@ class MemoryPolicy(BaseModel):
         ram = total_host_ram_gb() if total_ram_gb is None else total_ram_gb
         gpu_budget_gb = self.gpu_budget(vram)
         host_budget_gb = self.host_budget(ram)
-        bf16_gb = est_cache_gb
-        int8_gb = int8_footprint_gb(est_cache_gb, bytes_per_element=bytes_per_element, head_dim=head_dim)
 
         def decided(
             rung: str, dtype: str, offload: bool, resident: float, cache: bool, budgets: bool = True
         ) -> "MemoryPolicy":
+            streaming = rung in STREAM_RUNGS
             return self._revalidated_copy(
                 cache=cache,
                 cache_dtype=dtype,
                 offload_to_host=offload,
-                reuse_context_cache=bool(cache and self.reuse_context_cache),
-                gpu_budget_absolute_gb=gpu_budget_gb if budgets else None,
+                reuse_context_cache=False if streaming else bool(cache and self.reuse_context_cache),
+                gpu_budget_absolute_gb=0.0 if streaming else (gpu_budget_gb if budgets else None),
                 host_budget_absolute_gb=host_budget_gb if budgets else None,
+                context_row_chunk=(
+                    (self.context_row_chunk or default_stream_context_row_chunk(vram))
+                    if streaming
+                    else self.context_row_chunk
+                ),
                 rung=rung,
                 est_cache_gb=est_cache_gb,
                 resident_gb=resident,
+            )
+
+        if self.stream_context:
+            if not cache_eligible:
+                raise ValueError(
+                    "stream_context=True requires a cache-eligible regression path; "
+                    "it cannot resolve to no_cache or plain_loop."
+                )
+            precisions = self._precision_candidates(
+                est_cache_gb=est_cache_gb,
+                bytes_per_element=bytes_per_element,
+                head_dim=head_dim,
+            )
+            for dtype, footprint in precisions:
+                if footprint <= host_budget_gb:
+                    return decided(
+                        f"stream_{dtype}",
+                        dtype,
+                        True,
+                        footprint,
+                        cache=True,
+                    )
+            smallest_dtype, smallest_footprint = precisions[-1]
+            raise ContextTooLargeError(
+                "stream_context=True requires a host-resident context cache, but "
+                f"even the smallest allowed {smallest_dtype} cache "
+                f"({smallest_footprint:.1f} GiB) exceeds the host budget "
+                f"({host_budget_gb:.1f} GiB). Raise host_budget_frac / "
+                "host_budget_absolute_gb, allow int8 quantization, or disable "
+                "stream_context explicitly; Nori will not silently use plain_loop."
             )
 
         if not self.cache or not cache_eligible:
@@ -969,30 +1253,16 @@ class MemoryPolicy(BaseModel):
             # "budget 9.6 GiB" on an 80 GB card is worse than one that says nothing.
             return decided("no_cache", self.cache_dtype, False, 0.0, cache=False, budgets=False)
 
-        # Precisions this request may use, cheapest-accuracy-cost first. Starting at
-        # int8 means bf16 is not a candidate at all — the caller asked for the smaller
-        # cache; allow_quantization only governs DOWNGRADING from bf16.
-        if self.cache_dtype == "int8":
-            candidates = [("int8", int8_gb)]
-        elif self.allow_quantization:
-            candidates = [("bf16", bf16_gb), ("int8", int8_gb)]
-        else:
-            candidates = [("bf16", bf16_gb)]
-
-        for dtype, footprint in candidates:
-            if footprint <= gpu_budget_gb:
-                return decided(f"resident_{dtype}", dtype, False, footprint, cache=True)
-
-        if self.offload_to_host:
-            # Offload the LARGEST (i.e. most precise) candidate host RAM can hold, not
-            # the smallest. Offload transport is bit-exact at either precision, so
-            # quantizing here buys only PCIe bandwidth -- and spending accuracy for
-            # speed is exactly what this ladder exists not to do. int8 is used only
-            # when bf16 will not fit host either. Callers who would rather have the
-            # faster stream ask for it: cache_dtype="int8" or memory_policy="max_context".
-            for dtype, footprint in candidates:
-                if footprint <= host_budget_gb:
-                    return decided(f"offload_{dtype}", dtype, True, footprint, cache=True)
+        placements = self._placement_candidates(
+            est_cache_gb=est_cache_gb,
+            bytes_per_element=bytes_per_element,
+            head_dim=head_dim,
+            gpu_budget_gb=gpu_budget_gb,
+            host_budget_gb=host_budget_gb,
+        )
+        if placements:
+            rung, dtype, offload, footprint = placements[0]
+            return decided(rung, dtype, offload, footprint, cache=True)
 
         # Rule 6: we needed a fallback and offload could not provide one. Warn HERE
         # rather than up-front: a host budget below the GPU budget makes offload
@@ -1014,8 +1284,79 @@ class MemoryPolicy(BaseModel):
                 f"loop. Raise host_budget_frac / host_budget_absolute_gb above the GPU "
                 f"budget to make offload reachable.",
             )
-        worst_dtype, worst_footprint = candidates[-1]
+        worst_dtype, worst_footprint = self._precision_candidates(
+            est_cache_gb=est_cache_gb,
+            bytes_per_element=bytes_per_element,
+            head_dim=head_dim,
+        )[-1]
         return decided("plain_loop", worst_dtype, False, worst_footprint, cache=False)
+
+    def runtime_fallbacks(
+        self,
+        resolved: "MemoryPolicy",
+        *,
+        bytes_per_element: int,
+        head_dim: int,
+    ) -> list["MemoryPolicy"]:
+        """Ordered budget-feasible precision/placement attempts after resolution.
+
+        Recomputes ``_placement_candidates()`` from ``resolved``'s own stored
+        est_cache_gb/budget fields rather than reusing whatever list ``resolve()``
+        built moments earlier, so this stays callable on its own with just a
+        resolved policy and fresh measurements -- exactly how the tests above use
+        it, independent of any particular ``resolve()`` call. Passing
+        ``bytes_per_element``/``head_dim`` that do not match the ones ``resolved``
+        was actually resolved with is a caller error, not something this method
+        can detect; the ``resolved.rung not in labels`` fallback below exists for
+        exactly that mismatch.
+        """
+        if resolved.rung in STREAM_RUNGS:
+            attempts = [
+                resolved._revalidated_copy(
+                    cache=True,
+                    reuse_context_cache=False,
+                    cache_dtype=dtype,
+                    offload_to_host=True,
+                    rung=f"stream_{dtype}",
+                    resident_gb=footprint,
+                    context_row_chunk=(resolved.context_row_chunk or DEFAULT_STREAM_CONTEXT_ROW_CHUNK),
+                )
+                for dtype, footprint in self._precision_candidates(
+                    est_cache_gb=resolved.est_cache_gb or 0.0,
+                    bytes_per_element=bytes_per_element,
+                    head_dim=head_dim,
+                )
+                if footprint <= (resolved.host_budget_absolute_gb or 0.0)
+            ]
+            labels = [attempt.rung for attempt in attempts]
+            return attempts[labels.index(resolved.rung) :]
+
+        if resolved.rung not in {"resident_bf16", "resident_int8", "offload_bf16", "offload_int8"}:
+            return []
+
+        placements = self._placement_candidates(
+            est_cache_gb=resolved.est_cache_gb or 0.0,
+            bytes_per_element=bytes_per_element,
+            head_dim=head_dim,
+            gpu_budget_gb=resolved.gpu_budget_absolute_gb or 0.0,
+            host_budget_gb=resolved.host_budget_absolute_gb or 0.0,
+        )
+        attempts = [
+            resolved._revalidated_copy(
+                cache=True,
+                reuse_context_cache=self.reuse_context_cache,
+                cache_dtype=dtype,
+                offload_to_host=offload,
+                rung=rung,
+                resident_gb=footprint,
+                context_row_chunk=self.context_row_chunk,
+            )
+            for rung, dtype, offload, footprint in placements
+        ]
+        labels = [attempt.rung for attempt in attempts]
+        if resolved.rung not in labels:
+            return [resolved]
+        return attempts[labels.index(resolved.rung) :]
 
     def escalated(
         self,
@@ -1036,6 +1377,12 @@ class MemoryPolicy(BaseModel):
         Returns:
             The updated policy.
         """
+        if self.stream_context and rung not in STREAM_RUNGS:
+            raise ValueError(
+                f"stream_context=True cannot escalate to rung={rung!r}; it remains "
+                f"on one of {STREAM_RUNGS} or raises instead of silently using "
+                "plain_loop."
+            )
         updates: dict[str, object] = {"rung": rung}
         if context_row_chunk is not None:
             updates["context_row_chunk"] = context_row_chunk
@@ -1045,6 +1392,8 @@ class MemoryPolicy(BaseModel):
             updates["query_chunk"] = query_chunk
         if rung == "plain_loop":
             updates["cache"] = False
+            updates["reuse_context_cache"] = False
+            updates["offload_to_host"] = False
         return self._revalidated_copy(**updates)
 
     def describe(self) -> str:
@@ -1057,6 +1406,14 @@ class MemoryPolicy(BaseModel):
         if not self.is_resolved:
             return "unresolved"
         parts = [self.rung]
+        if self.rung in STREAM_RUNGS:
+            parts.append(
+                f"(host-streamed cache {self.est_cache_gb:.1f} GiB -> "
+                f"{self.resident_gb:.1f} GiB {self.cache_dtype}, host budget "
+                f"{self.host_budget_absolute_gb:.1f} GiB)"
+            )
+            parts.append(f"maximum staged context rows={self.context_row_chunk}")
+            return " ".join(parts)
         if self.est_cache_gb and self.gpu_budget_absolute_gb is not None:
             parts.append(
                 f"(cache {self.est_cache_gb:.1f} GiB -> {self.resident_gb:.1f} GiB "
@@ -1068,3 +1425,30 @@ class MemoryPolicy(BaseModel):
         if self.dropped_context_rows:
             parts.append(f"DROPPED {self.dropped_context_rows} context rows")
         return " ".join(parts)
+
+
+def _require_every_report_field(schema: dict) -> None:
+    """Mark every field that ``model_dump()`` emits as required in the response schema."""
+    schema["required"] = list(schema["properties"])
+
+
+class MemoryReport(MemoryPolicy):
+    """Reports how Nori applied the requested memory policy."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        json_schema_extra=_require_every_report_field,
+    )
+
+    attempt_history: list[MemoryAttempt] = Field(
+        default_factory=list,
+        description="Chronological execution attempts across every preprocessing "
+        "pipeline in this predict call, including cache-build OOMs, decode "
+        "query-chunk retries, fit-row retries, unsupported cached paths, "
+        "and the successful fallback. This "
+        "distinguishes a requested cached mechanism that recovered via "
+        "plain_loop from a request that selected plain_loop initially.",
+    )
+    clamped: list[str]
+    notes: list[str]

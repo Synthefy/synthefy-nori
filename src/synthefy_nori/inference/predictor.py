@@ -12,10 +12,16 @@ from synthefy_nori.inference.preprocess import (
     MADWinsorizer,
     PolynomialInteractionGenerator,
 )
-from synthefy_nori.inference.degradation import ContextSubsampledWarning, DegradedPipelineWarning
+from synthefy_nori.inference.degradation import (
+    CacheQuantizedWarning,
+    ContextSubsampledWarning,
+    DegradedPipelineWarning,
+)
 from synthefy_nori.inference.memory_policy import (
-    FIT_ROW_CHUNK_ON_OOM,
+    FIT_ROW_CHUNK_RETRY_LADDER,
+    RUNGS,
     ContextTooLargeError,
+    MemoryAttempt,
     MemoryPolicy,
     estimate_cache_gb,
     total_host_ram_gb,
@@ -23,7 +29,9 @@ from synthefy_nori.inference.memory_policy import (
 from synthefy_nori.model.layer import RMSNorm
 from synthefy_nori.utils.loading import load_model
 import contextlib
+import importlib.util
 import torch
+import types
 from typing import List, Literal
 import random
 from sklearn.utils.validation import check_X_y, check_array
@@ -42,6 +50,26 @@ import warnings
 logger = logging.getLogger(__name__)
 
 NA_PLACEHOLDER = "__MISSING__"
+# The default eight-member ensemble naturally forms two shape groups of four.
+# Cap custom configs at that measured sweet spot so batching cannot multiply
+# activation/context-cache memory without bound.
+PIPELINE_BATCH_MAX = 4
+# Batched GEMMs are launch-bound and much faster on narrow/medium tables, but
+# the gain disappears on very wide transformed tables while memory rises. The
+# H200 crossover was between 146 and 352 processed features, so keep the first
+# rollout on the conservative side and leave wide members at B=1.
+PIPELINE_BATCH_MAX_FEATURES = 256
+# Bound the extra host copies retained while pipelines wait for same-shape
+# partners. The legacy path streams one transformed table at a time; falling
+# back above this cap preserves that behavior for very large query sets.
+PIPELINE_BATCH_HOST_BUDGET_BYTES = 512 * 1024**2
+# Opt-in exact-serving mode: keep every ensemble member at B=1, but replay the
+# cached per-layer eager kernels through CUDA graphs. This preserves B=1
+# arithmetic while removing most Python/kernel-launch overhead on repeated,
+# fixed-shape resident-cache queries. It is deliberately not the default:
+# graph capture has a cold-start and persistent-memory cost, and is intended
+# for fit-once/serve-many workloads.
+EXACT_CACHED_CUDAGRAPHS_ENV = "SYNTHEFY_EXACT_CACHED_CUDAGRAPHS"
 
 
 class NoriPredictor:
@@ -175,6 +203,20 @@ class NoriPredictor:
         self.inference_with_DDP = inference_with_DDP
         if self.inference_with_DDP and self.mask_prediction:
             raise ValueError("inference_with_DDP does not support mask_prediction")
+        if self.inference_with_DDP and memory_policy is not None:
+            # The DDP branch of predict() never resolves a MemoryPolicy or
+            # populates memory_report_ -- it is a structurally separate path, not
+            # a missing feature. Reject this combination here, loudly and at
+            # construction time, rather than silently leaving memory_report_ at
+            # None and letting a caller downstream (e.g. the client) misdiagnose
+            # it as an out-of-date runtime.
+            raise ValueError(
+                "inference_with_DDP does not support memory_policy: the DDP "
+                "path never resolves a memory policy, so memory_report_ would "
+                "stay None regardless of what was requested. Pass "
+                "memory_policy=None with inference_with_DDP=True, or drop "
+                "inference_with_DDP to use the memory-policy-aware path."
+            )
         # Optional inference-time augmentations. Currently supports:
         #   'yj': Yeo-Johnson target transform ensemble — fit PowerTransformer
         #         on y_train, predict in transformed space, inverse-transform,
@@ -575,6 +617,14 @@ class NoriPredictor:
         # config); these make them once per user-visible predict instead.
         self._warned_this_call = set()
         self._logged_this_call = set()
+        self._exact_cudagraph_step_marked = False
+        self.memory_report_ = None
+        self._memory_attempt_history = []
+        self._memory_outcome_policy = None
+        if not self._exact_cached_cudagraphs_requested():
+            bare_model = self._bare_model()
+            if getattr(bare_model, "_exact_cudagraphs_enabled", False):
+                self._disable_exact_cached_cudagraphs(bare_model)
         with self._execution_overrides():
             if return_distribution:
                 return self._predict_reg(x_train, y_train, x_test, return_distribution=True)
@@ -1156,6 +1206,146 @@ class NoriPredictor:
     #: is indistinguishable from a fast one except by its numbers.
     memory_report_: dict | None = None
 
+    # Derived from RUNGS (not hand-duplicated) so a rung added there cannot silently
+    # fall back to severity -1 here and be treated as never-worse-than-anything.
+    _MEMORY_RUNG_SEVERITY = {rung: index for index, rung in enumerate(RUNGS)}
+
+    @staticmethod
+    def _fit_row_chunk_attempts(pinned: int | None) -> list[int]:
+        """Return the smaller-than-`pinned` retry ladder (the pinned/None value
+        itself is never a new attempt: it is already the first cache_attempts entry
+        built from the placement ladder)."""
+        return [chunk for chunk in FIT_ROW_CHUNK_RETRY_LADDER if pinned is None or chunk < pinned]
+
+    def _evict_pipe_cache(self, id_pipe) -> None:
+        """Drop only this pipe's own retained context-cache entry.
+
+        Used by the per-pipe cached-retry loop's OOM/unsupported handlers: a bad
+        attempt for ONE pipe must not evict every OTHER pipe's already-built,
+        reusable K/V cache.
+        """
+        cache = getattr(self, "_context_cache", None)
+        if isinstance(cache, dict):
+            cache.pop(id_pipe, None)
+
+    def _memory_rung_sort_key(self, policy: MemoryPolicy) -> tuple[int, int, float, float]:
+        """Comparable "how bad/complete is this outcome" key: rank, then dropped
+        context rows, then context_row_chunk degradation, then query_chunk
+        degradation.
+
+        dropped_context_rows ranks directly under the rung because losing context
+        rows is the most severe thing that can happen within one: a subsampled
+        answer used less data than the caller supplied. It is computed once per
+        predict() call, so it never oscillates — it only separates the opening
+        ``resolve()`` policy, published before subsampling is known and therefore
+        carrying 0, from the later outcome policy that carries the real count.
+        Without it those two tie and the strict ``>`` below keeps the opening one,
+        which reports dropped_context_rows=0 for a call that did drop rows.
+
+        A smaller ``context_row_chunk`` is a more degraded outcome within that one
+        rung (a harder-won escalation), so it sorts worse than a larger one. Every
+        other rung always has ``context_row_chunk is None``, which ties there and
+        falls through to the query_chunk component.
+
+        query_chunk breaks what would otherwise be a remaining tie, and does so by
+        VALUE, not just presence: the opening ``resolve()`` publishes a policy
+        before any attempt has run, so it has no query_chunk yet, and a later
+        attempt at the same rank that DID run must win that tie. But adaptive
+        decode can also halve its chunk mid-attempt after an internal OOM, so
+        among attempts that ran, the smaller (more degraded) query_chunk must win
+        too, or the published report understates how hard-won the recovery was.
+        """
+        rank = self._MEMORY_RUNG_SEVERITY.get(policy.rung or "no_cache", -1)
+        dropped_component = int(policy.dropped_context_rows or 0)
+        chunk = policy.context_row_chunk
+        chunk_component = -chunk if chunk is not None else float("-inf")
+        query_chunk = policy.query_chunk
+        query_component = -query_chunk if query_chunk is not None else float("-inf")
+        return rank, dropped_component, chunk_component, query_component
+
+    def _publish_memory_policy(self, policy: MemoryPolicy) -> None:
+        """Publish the worst successful/selected rung seen in this predict call."""
+        current = getattr(self, "_memory_outcome_policy", None)
+        if current is None or self._memory_rung_sort_key(policy) > self._memory_rung_sort_key(current):
+            self._memory_outcome_policy = policy
+            current = policy
+        report = current.model_dump()
+        # Reference, not copy: ``_memory_attempt_history`` is reassigned to a fresh
+        # list at the start of every predict() call (never appended-to across
+        # calls), so sharing this call's list is safe and avoids an O(attempts^2)
+        # copy across a multi-attempt OOM-retry sequence.
+        report["attempt_history"] = getattr(self, "_memory_attempt_history", [])
+        self.memory_report_ = report
+
+    def _record_memory_attempt(
+        self,
+        policy: MemoryPolicy,
+        *,
+        pipeline_ids: list[int],
+        path: str,
+        rung: str,
+        context_row_chunk: int | None,
+        outcome: str,
+        reason: str,
+        dropped_context_rows: int,
+        query_chunk: int | None = None,
+    ) -> None:
+        """Append one validated attempt and refresh the public report."""
+        attempt = MemoryAttempt(
+            pipeline_ids=pipeline_ids,
+            path=path,
+            rung=rung,
+            cache_dtype=policy.cache_dtype,
+            offload_to_host=policy.offload_to_host,
+            context_row_chunk=context_row_chunk,
+            query_chunk=query_chunk,
+            outcome=outcome,
+            reason=reason,
+            dropped_context_rows=dropped_context_rows,
+        ).model_dump()
+        history = getattr(self, "_memory_attempt_history", None)
+        if history is None:
+            history = self._memory_attempt_history = []
+        history.append(attempt)
+        current = getattr(self, "_memory_outcome_policy", None)
+        if current is not None:
+            self._publish_memory_policy(current)
+
+    def _record_cached_query_trace(
+        self,
+        policy: MemoryPolicy,
+        events: list[tuple[int, Literal["success", "oom"]]],
+        *,
+        pipeline_ids: list[int],
+        path: Literal["pipeline_batch", "cached"],
+        context_row_chunk: int | None,
+        reason: str,
+        dropped_context_rows: int,
+    ) -> MemoryPolicy:
+        """Append one row per adaptive decode event and return its final policy."""
+        if not events:
+            raise ValueError("cached query trace must contain at least one event")
+        final_policy = policy
+        for index, (query_chunk, outcome) in enumerate(events):
+            final_policy = policy.escalated(
+                policy.rung,
+                dropped_context_rows=dropped_context_rows,
+                query_chunk=query_chunk,
+            )
+            self._record_memory_attempt(
+                final_policy,
+                pipeline_ids=pipeline_ids,
+                path=path,
+                rung=final_policy.rung,
+                context_row_chunk=context_row_chunk,
+                query_chunk=query_chunk,
+                outcome=outcome,
+                reason=(reason if index == 0 else "oom_retry"),
+                dropped_context_rows=dropped_context_rows,
+            )
+            self._publish_memory_policy(final_policy)
+        return final_policy
+
     def _coerced_memory_policy(self) -> MemoryPolicy:
         """This predictor's :class:`MemoryPolicy`.
 
@@ -1170,11 +1360,11 @@ class NoriPredictor:
             The still-unresolved policy for this predictor.
 
         Raises:
-            RuntimeError: if ``SYNTHEFY_CACHE_MAX_GB`` is set. That variable shipped
-                on main with a *different* meaning (skip the cache above this size,
-                measured against the full-precision footprint) and no longer has an
-                equivalent. Silently ignoring a memory-safety knob could turn a
-                working job into an OOM, so this fails loudly instead.
+            RuntimeError: if an explicit streamed-context request conflicts with
+                a cache kill switch, or if ``SYNTHEFY_CACHE_MAX_GB`` is set. The
+                latter shipped with a different meaning (skip the cache above a
+                full-precision footprint), so silently translating it could turn a
+                working job into an OOM.
         """
         if os.environ.get("SYNTHEFY_CACHE_MAX_GB") is not None:
             raise RuntimeError(
@@ -1191,6 +1381,14 @@ class NoriPredictor:
             os.environ.get("SYNTHEFY_DISABLE_CACHED_INFERENCE", "0") == "1"
             or os.environ.get("SYNTHEFY_ENABLE_CACHED_INFERENCE", "1") != "1"
         )
+        if disabled and policy.stream_context:
+            raise RuntimeError(
+                "stream_context=True cannot run while cached inference is disabled "
+                "by SYNTHEFY_DISABLE_CACHED_INFERENCE=1 or "
+                "SYNTHEFY_ENABLE_CACHED_INFERENCE!=1. Remove the kill switch or "
+                "disable stream_context explicitly; Nori will not silently use "
+                "no_cache/plain_loop or subsample rows."
+            )
         if disabled and policy.cache:
             logger.info("Nori KV cache disabled by environment kill switch")
             # Rebuild rather than model_copy(cache=False): flipping cache off while the
@@ -1743,6 +1941,8 @@ class NoriPredictor:
         fit_row_chunk,
         reuse_context_cache,
         cache_entries=1,
+        stream_context=False,
+        _hybrid_resident_int8_prefill=False,
     ):
         """Build the per-pipe context (train) K/V cache, reusing it across predict()
         calls whose context and cache params are unchanged.
@@ -1778,13 +1978,18 @@ class NoriPredictor:
         """
 
         def _build():
-            return bare_model.build_context_cache(
-                x_train_t,
-                y_train_t,
-                cache_dtype=cache_dtype,
-                offload_kv_cache=offload_kv_cache,
-                fit_row_chunk=fit_row_chunk,
-            )
+            build_kwargs = {
+                "cache_dtype": cache_dtype,
+                "offload_kv_cache": offload_kv_cache,
+                "fit_row_chunk": fit_row_chunk,
+            }
+            # Preserve compatibility with older/custom cache builders that do not
+            # accept the new keyword unless streaming was explicitly requested.
+            if stream_context:
+                build_kwargs["stream_context"] = True
+            if _hybrid_resident_int8_prefill:
+                build_kwargs["_hybrid_resident_int8_prefill"] = True
+            return bare_model.build_context_cache(x_train_t, y_train_t, **build_kwargs)
 
         if not reuse_context_cache:
             # A policy can change between calls (the shared engine re-declares one
@@ -1795,7 +2000,13 @@ class NoriPredictor:
             if cache is not None:
                 cache.clear()
             return _build()
-        key = self._context_cache_key(cache_dtype, offload_kv_cache, fit_row_chunk)
+        key = self._context_cache_key(
+            cache_dtype,
+            offload_kv_cache,
+            fit_row_chunk,
+            stream_context,
+            _hybrid_resident_int8_prefill,
+        )
         cache = getattr(self, "_context_cache", None)
         if cache is None:
             cache = self._context_cache = {}
@@ -1976,7 +2187,9 @@ class NoriPredictor:
                 break
         return True
 
-    def _context_cache_key(self, cache_dtype, offload_kv_cache, fit_row_chunk) -> tuple:
+    def _context_cache_key(
+        self, cache_dtype, offload_kv_cache, fit_row_chunk, stream_context=False, _hybrid_resident_int8_prefill=False
+    ) -> tuple:
         """The non-tensor half of the cache key: everything OUTSIDE the context table
         that changes what ``build_context_cache`` produces.
 
@@ -1987,7 +2200,14 @@ class NoriPredictor:
         drawing the SAME random feature positional embedding, which only holds while
         the seed the predictor reseeds with is unchanged.
         """
-        return (str(cache_dtype), bool(offload_kv_cache), fit_row_chunk, self.seed)
+        return (
+            str(cache_dtype),
+            bool(offload_kv_cache),
+            fit_row_chunk,
+            bool(stream_context),
+            bool(_hybrid_resident_int8_prefill),
+            self.seed,
+        )
 
     @staticmethod
     def _same_context(cached: torch.Tensor, candidate: torch.Tensor) -> bool:
@@ -2027,6 +2247,500 @@ class NoriPredictor:
                 candidate.detach().contiguous().view(torch.uint8),
             )
         )
+
+    @staticmethod
+    def _group_ordinary_pipes(prepared: list[tuple]) -> list[list[tuple]]:
+        """Stable groups whose context/query tensors have identical shapes.
+
+        The group containing the final pipeline executes last. Each model call
+        reseeds first, so this preserves the legacy loop's post-call RNG state
+        when different transformed widths consume different amounts of RNG.
+        """
+        grouped = {}
+        for item in prepared:
+            _, x_train, y_train, x_test = item
+            key = (
+                x_train.shape,
+                y_train.shape,
+                x_test.shape,
+                x_train.dtype,
+                y_train.dtype,
+                x_test.dtype,
+                x_train.device,
+                y_train.device,
+                x_test.device,
+            )
+            grouped.setdefault(key, []).append(item)
+        result = []
+        for group in grouped.values():
+            width = group[0][1].shape[-1]
+            batch_size = PIPELINE_BATCH_MAX if width <= PIPELINE_BATCH_MAX_FEATURES else 1
+            result.extend(group[start : start + batch_size] for start in range(0, len(group), batch_size))
+        if result:
+            final_pipe_id = max(item[0] for item in prepared)
+            final_group_index = next(
+                index for index, group in enumerate(result) if any(item[0] == final_pipe_id for item in group)
+            )
+            result.append(result.pop(final_group_index))
+        return result
+
+    def _clear_pipeline_batch_contexts(self, keep: set[tuple] | None = None) -> None:
+        """Release grouped caches that cannot serve the current execution mode."""
+        cache = getattr(self, "_context_cache", None)
+        if not isinstance(cache, dict):
+            return
+        keep = keep or set()
+        for slot in list(cache):
+            if isinstance(slot, tuple) and len(slot) == 2 and slot[0] == "pipeline_batch" and slot not in keep:
+                cache.pop(slot, None)
+
+    def _clear_pipeline_member_contexts(self, batch_slots: set[tuple]) -> None:
+        """Release B=1 caches superseded by retained grouped cache slots."""
+        cache = getattr(self, "_context_cache", None)
+        if not isinstance(cache, dict):
+            return
+        grouped_ids = {id_pipe for _, ids in batch_slots for id_pipe in ids}
+        for id_pipe in grouped_ids:
+            cache.pop(id_pipe, None)
+
+    @staticmethod
+    def _model_supports_pipeline_batching(bare_model) -> bool:
+        """Whether one RNG seed is equivalent to reseeding every B=1 member."""
+        if bool(getattr(bare_model, "training", False)):
+            return False
+        modules = bare_model.modules() if hasattr(bare_model, "modules") else (bare_model,)
+        for module in modules:
+            dropout = getattr(module, "dropout", 0.0)
+            if isinstance(dropout, (int, float)) and float(dropout) != 0.0:
+                # MultiheadAttention passes its numeric dropout directly to SDPA,
+                # which applies it even when the enclosing module is in eval mode.
+                return False
+        return True
+
+    @staticmethod
+    def _exact_cached_cudagraphs_requested() -> bool:
+        return os.environ.get(EXACT_CACHED_CUDAGRAPHS_ENV, "0") == "1"
+
+    def _maybe_enable_exact_cached_cudagraphs(self, bare_model) -> bool:
+        """Compile cached B=1 encoder layers with the eager CUDA-graph backend.
+
+        Unlike Inductor, the ``cudagraphs`` backend replays the original eager
+        kernels and therefore preserves B=1 output bits. The compiled unbound
+        method is shared by every encoder layer, mirroring training's regional
+        compilation pattern without compiling one graph per layer instance.
+        """
+        if not self._exact_cached_cudagraphs_requested():
+            return False
+        attempted = getattr(bare_model, "_exact_cudagraphs_attempted", False)
+        if attempted:
+            return bool(getattr(bare_model, "_exact_cudagraphs_enabled", False))
+        bare_model._exact_cudagraphs_attempted = True
+
+        try:
+            device = self.device if isinstance(self.device, torch.device) else torch.device(self.device)
+        except (TypeError, RuntimeError):
+            return False
+        layers = getattr(getattr(bare_model, "transformer_encoder", None), "layers", None)
+        if device.type != "cuda" or not layers or not hasattr(torch, "compile"):
+            return False
+        # Torch's backend discovery imports setuptools through its CPU ISA probe.
+        # Serving-minimal environments may intentionally omit it; exact mode must
+        # then remain a safe eager B=1 fallback instead of failing a request.
+        if importlib.util.find_spec("setuptools") is None:
+            self._log_once_per_call(
+                "exact_cudagraphs_unavailable",
+                logging.WARNING,
+                f"{EXACT_CACHED_CUDAGRAPHS_ENV}=1 requested, but setuptools is "
+                "unavailable; using exact eager B=1 inference.",
+            )
+            return False
+        try:
+            original = type(layers[0]).forward_test_with_cache
+            compiled = torch.compile(
+                original,
+                backend="cudagraphs",
+                dynamic=False,
+                fullgraph=False,
+            )
+        except Exception as exc:  # pragma: no cover - backend availability varies
+            self._log_once_per_call(
+                "exact_cudagraphs_unavailable",
+                logging.WARNING,
+                f"Could not initialize exact cached CUDA graphs "
+                f"({type(exc).__name__}: {exc}); using eager B=1 inference.",
+            )
+            return False
+        for layer in layers:
+            layer.forward_test_with_cache = types.MethodType(compiled, layer)
+        bare_model._exact_cudagraphs_original = original
+        bare_model._exact_cudagraphs_enabled = True
+        return True
+
+    @staticmethod
+    def _is_torch_compiler_failure(exc: Exception) -> bool:
+        module = type(exc).__module__
+        return module.startswith(("torch._dynamo", "torch._inductor"))
+
+    def _disable_exact_cached_cudagraphs(self, bare_model) -> None:
+        original = getattr(bare_model, "_exact_cudagraphs_original", None)
+        layers = getattr(getattr(bare_model, "transformer_encoder", None), "layers", ())
+        if original is not None:
+            for layer in layers:
+                layer.forward_test_with_cache = types.MethodType(original, layer)
+        bare_model._exact_cudagraphs_enabled = False
+
+    def _apply_context_cache_exact_safe(self, bare_model, x_test, context, **kwargs):
+        enabled = self._maybe_enable_exact_cached_cudagraphs(bare_model)
+        if enabled and not getattr(self, "_exact_cudagraph_step_marked", False):
+            torch.compiler.cudagraph_mark_step_begin()
+            self._exact_cudagraph_step_marked = True
+        try:
+            return bare_model.apply_context_cache(x_test, context, **kwargs)
+        except Exception as exc:
+            if not enabled or not self._is_torch_compiler_failure(exc):
+                raise
+            self._disable_exact_cached_cudagraphs(bare_model)
+            self._log_once_per_call(
+                "exact_cudagraphs_runtime_fallback",
+                logging.WARNING,
+                f"Exact cached CUDA-graph compilation failed at runtime "
+                f"({type(exc).__name__}: {exc}); retrying with eager B=1 inference.",
+            )
+            return bare_model.apply_context_cache(x_test, context, **kwargs)
+
+    def _try_batched_ordinary_regression(
+        self,
+        bare_model,
+        *,
+        x_train_base,
+        x_test_base,
+        y_train,
+        categorical_idx,
+        n_samples_train,
+        n_samples_test,
+        budget_n_features,
+        max_elements_budget,
+        dropped_context_rows,
+    ) -> list[torch.Tensor] | None:
+        """Execute prepared ordinary members in bounded same-shape groups.
+
+        This deliberately covers only the two full-precision, on-device execution
+        modes: an ordinary model forward (``no_cache``) and a resident bf16 context
+        cache.
+        Retrieval, DDP, imputation, int8, host offload, pinned prefill chunking, and
+        every OOM/unsupported case use the established loop below. The environment
+        kill switch gives operators a no-code rollback while this optimization gains
+        production mileage. Batching preserves the model math, although mixed-
+        precision GEMMs may reassociate at the last few bits versus B=1 execution.
+        """
+        requested = self._coerced_memory_policy()
+        if requested.stream_context:
+            # Each preprocessing pipeline owns a separate CPU-resident context and
+            # bounded K/V stream. Stacking them would multiply the host retention
+            # and defeat the deliberately one-pipeline-at-a-time schedule.
+            self._clear_pipeline_batch_contexts()
+            return None
+        try:
+            device = self.device if isinstance(self.device, torch.device) else torch.device(self.device)
+        except (TypeError, RuntimeError):
+            self._clear_pipeline_batch_contexts()
+            return None
+        if (
+            device.type != "cuda"
+            or os.environ.get("SYNTHEFY_DISABLE_PIPELINE_BATCHING", "0") == "1"
+            or self._exact_cached_cudagraphs_requested()
+            or len(self.preprocess_pipelines) < 2
+            or self.inference_with_DDP
+            or self.mask_prediction
+            or bool(getattr(bare_model, "mask_prediction", False))
+            or not self._model_supports_pipeline_batching(bare_model)
+            # Internal also excludes retrieval-enabled configs here, for the same
+            # reason it excludes retrieval preprocessing steps below: they reshape
+            # the context per pipeline and break the identical-shape grouping.
+            # This tier has no retrieval, so its inference configs carry no
+            # "retrieval_config" key at all and reading one raises KeyError.
+        ):
+            self._clear_pipeline_batch_contexts()
+            return None
+
+        chunk_size = self._chunk_size(max_elements_budget, budget_n_features, n_samples_train)
+        cache_eligible = (
+            hasattr(bare_model, "forward_cached_regression") and n_samples_test > chunk_size and requested.cache
+        )
+        if cache_eligible:
+            fpg = max(int(getattr(bare_model, "features_per_group", 2)), 1)
+            embed_dim = int(getattr(bare_model, "embed_dim", 128))
+            nlayers = int(getattr(bare_model, "nlayers", 16))
+            nhead = max(int(getattr(bare_model, "nhead", 2)), 1)
+            bytes_per = 2 if self.mix_precision else 4
+            policy = requested.resolve(
+                est_cache_gb=estimate_cache_gb(
+                    n_context_rows=n_samples_train,
+                    n_groups=(budget_n_features + fpg - 1) // fpg,
+                    nlayers=nlayers,
+                    embed_dim=embed_dim,
+                    bytes_per_element=bytes_per,
+                ),
+                bytes_per_element=bytes_per,
+                head_dim=max(embed_dim // nhead, 1),
+                total_vram_gb=self._total_vram_gb(),
+                total_ram_gb=total_host_ram_gb(),
+            )
+        else:
+            policy = requested.resolve(
+                est_cache_gb=0.0,
+                bytes_per_element=1,
+                head_dim=1,
+                cache_eligible=False,
+            )
+        if (
+            policy.rung not in ("no_cache", "resident_bf16")
+            or policy.cache_dtype != "bf16"
+            or policy.offload_to_host
+            or policy.context_row_chunk is not None
+        ):
+            self._clear_pipeline_batch_contexts()
+            return None
+
+        prepared = []
+        retained_host_bytes = 0
+        for id_pipe, pipe in enumerate(self.preprocess_pipelines):
+            x_train_ = x_train_base.copy()
+            x_test_ = x_test_base.copy()
+            y_ = y_train.copy()
+            categorical_idx_ = categorical_idx.copy()
+            # Internal bails out here on retrieval steps (InferenceAttentionMap,
+            # SubSampleData), which reshape the context between pipelines and so
+            # break the identical-shape grouping this path depends on. Neither
+            # class exists in this tier's inference_method, so no pipeline can
+            # contain one and the check would be dead code.
+            for id_step, step in enumerate(pipe):
+                x_train_, x_test_, categorical_idx_ = self._fit_transform_step_inductive(
+                    step,
+                    x_train_,
+                    x_test_,
+                    categorical_idx_,
+                    self.seeds[id_pipe * self.preprocess_num + self._seed_step_index(pipe, id_step)],
+                    y_train=y_,
+                )
+            prospective_host_bytes = (x_train_.size + x_test_.size + y_.size) * np.dtype(np.float32).itemsize
+            if retained_host_bytes + prospective_host_bytes > PIPELINE_BATCH_HOST_BUDGET_BYTES:
+                self._clear_pipeline_batch_contexts()
+                return None
+            x_all = torch.from_numpy(np.concatenate([x_train_, x_test_], axis=0)).float()
+            y_tensor = torch.from_numpy(y_).float()
+            prepared.append(
+                (
+                    id_pipe,
+                    x_all[: len(y_)],
+                    y_tensor,
+                    x_all[len(y_) :],
+                )
+            )
+            retained_host_bytes += x_all.numel() * x_all.element_size() + y_tensor.numel() * y_tensor.element_size()
+
+        groups = self._group_ordinary_pipes(prepared)
+        if policy.rung == "resident_bf16":
+            # Resolve again from the actual post-transform widths and the total
+            # retained ensemble cache. The earlier lower-bound resolution uses the
+            # raw/effective input width only to avoid preprocessing modes that could
+            # never stay resident; it must not under-report a wider prepared group.
+            group_cache_sizes = [
+                estimate_cache_gb(
+                    n_context_rows=n_samples_train,
+                    n_groups=(group[0][1].shape[-1] + fpg - 1) // fpg,
+                    nlayers=nlayers,
+                    embed_dim=embed_dim,
+                    bytes_per_element=bytes_per,
+                )
+                * len(group)
+                for group in groups
+            ]
+            batched_cache_gb = sum(group_cache_sizes) if requested.reuse_context_cache else max(group_cache_sizes)
+            policy = requested.resolve(
+                est_cache_gb=batched_cache_gb,
+                bytes_per_element=bytes_per,
+                head_dim=max(embed_dim // nhead, 1),
+                total_vram_gb=self._total_vram_gb(),
+                total_ram_gb=total_host_ram_gb(),
+            )
+            if policy.rung != "resident_bf16":
+                self._clear_pipeline_batch_contexts()
+                return None
+
+        active_batch_slots = (
+            {("pipeline_batch", tuple(item[0] for item in group)) for group in groups if len(group) > 1}
+            if policy.rung == "resident_bf16" and policy.reuse_context_cache
+            else set()
+        )
+        self._clear_pipeline_batch_contexts(keep=active_batch_slots)
+        self._clear_pipeline_member_contexts(active_batch_slots)
+
+        self._publish_memory_policy(policy)
+        outputs: list[torch.Tensor | None] = [None] * len(prepared)
+        ids: tuple[int, ...] = ()
+        query_events: list[tuple[int, Literal["success", "oom"]]] | None = None
+        try:
+            for group in groups:
+                ids = tuple(item[0] for item in group)
+                query_events = [] if policy.rung == "resident_bf16" else None
+
+                def observe_query_attempt(query_chunk: int, outcome: Literal["success", "oom"]) -> None:
+                    assert query_events is not None
+                    query_events.append((query_chunk, outcome))
+
+                x_train_t = torch.stack([item[1] for item in group]).to(self.device)
+                y_train_t = torch.stack([item[2] for item in group]).to(self.device)
+                x_test_t = torch.stack([item[3] for item in group]).to(self.device)
+                torch.manual_seed(self.seed)
+                torch.cuda.manual_seed_all(self.seed)
+                self.model.to(self.device)
+                with torch.autocast(device_type=device.type, enabled=self.mix_precision), torch.inference_mode():
+                    if policy.rung == "resident_bf16":
+                        slot = ids[0] if len(ids) == 1 else ("pipeline_batch", ids)
+                        context = self._get_or_build_context(
+                            bare_model,
+                            slot,
+                            x_train_t=x_train_t,
+                            y_train_t=y_train_t,
+                            cache_dtype="bf16",
+                            offload_kv_cache=False,
+                            fit_row_chunk=None,
+                            reuse_context_cache=policy.reuse_context_cache,
+                        )
+                        try:
+                            group_output = self._unwrap_model_output(
+                                bare_model.apply_context_cache(
+                                    x_test_t,
+                                    context,
+                                    row_chunk_size=chunk_size,
+                                    adaptive_query_chunk=policy.adaptive_query_chunk,
+                                    query_chunk_attempt_callback=observe_query_attempt,
+                                ),
+                                task_type="reg",
+                            )
+                        finally:
+                            if not policy.reuse_context_cache:
+                                # Without reuse only one group's full K/V bundle is
+                                # budgeted. Drop it before the next group is built.
+                                del context
+                    else:
+                        chunks = []
+                        for start in range(0, n_samples_test, chunk_size):
+                            end = min(start + chunk_size, n_samples_test)
+                            x_in = torch.cat([x_train_t, x_test_t[:, start:end]], dim=1)
+                            y_in = torch.cat(
+                                [
+                                    y_train_t,
+                                    y_train_t.new_zeros(len(group), end - start),
+                                ],
+                                dim=1,
+                            )
+                            chunks.append(
+                                self._unwrap_model_output(
+                                    self.model(x=x_in, y=y_in, eval_pos=n_samples_train, task_type="reg"),
+                                    task_type="reg",
+                                )
+                            )
+                        group_output = torch.cat(chunks, dim=1)
+                if (
+                    not isinstance(group_output, torch.Tensor)
+                    or group_output.ndim < 2
+                    or group_output.shape[0] != len(group)
+                    or group_output.shape[1] != n_samples_test
+                ):
+                    raise NotImplementedError("pipeline-batched model output must be [B, n_test, ...]")
+                group_output = self._reject_nonfinite_output(
+                    group_output,
+                    path=f"pipeline-batched ({policy.rung})",
+                    n_train=n_samples_train,
+                    n_test=n_samples_test,
+                )
+                for (id_pipe, *_), member_output in zip(group, group_output.unbind(0)):
+                    outputs[id_pipe] = member_output
+                if query_events is not None:
+                    if not query_events:
+                        query_events.append((chunk_size, "success"))
+                    self._record_cached_query_trace(
+                        policy,
+                        query_events,
+                        pipeline_ids=list(ids),
+                        path="pipeline_batch",
+                        context_row_chunk=None,
+                        reason="resolved",
+                        dropped_context_rows=dropped_context_rows,
+                    )
+                else:
+                    self._record_memory_attempt(
+                        policy,
+                        pipeline_ids=list(ids),
+                        path="pipeline_batch",
+                        rung=policy.rung,
+                        context_row_chunk=None,
+                        outcome="success",
+                        reason="resolved",
+                        dropped_context_rows=dropped_context_rows,
+                    )
+        except (NotImplementedError, torch.cuda.OutOfMemoryError) as exc:
+            is_oom = isinstance(exc, torch.cuda.OutOfMemoryError)
+            if is_oom and query_events:
+                failed_events = list(query_events)
+                if failed_events[-1][1] == "success":
+                    failed_events[-1] = (failed_events[-1][0], "oom")
+                self._record_cached_query_trace(
+                    policy,
+                    failed_events,
+                    pipeline_ids=list(ids),
+                    path="pipeline_batch",
+                    context_row_chunk=None,
+                    reason="resolved",
+                    dropped_context_rows=dropped_context_rows,
+                )
+            else:
+                if query_events:
+                    oom_events = [event for event in query_events if event[1] == "oom"]
+                    if oom_events:
+                        self._record_cached_query_trace(
+                            policy,
+                            oom_events,
+                            pipeline_ids=list(ids),
+                            path="pipeline_batch",
+                            context_row_chunk=None,
+                            reason="resolved",
+                            dropped_context_rows=dropped_context_rows,
+                        )
+                self._record_memory_attempt(
+                    policy,
+                    pipeline_ids=list(ids),
+                    path="pipeline_batch",
+                    rung=policy.rung,
+                    context_row_chunk=None,
+                    outcome=("oom" if is_oom else "unsupported"),
+                    reason="resolved",
+                    dropped_context_rows=dropped_context_rows,
+                )
+            cache = getattr(self, "_context_cache", None)
+            if isinstance(cache, dict):
+                # The failed attempt may already have built singleton groups.
+                # Legacy retry must start without any partial grouped-run state.
+                cache.clear()
+            torch.cuda.empty_cache()
+            return None
+
+        used = policy.escalated(
+            policy.rung,
+            dropped_context_rows=dropped_context_rows,
+            **({"query_chunk": chunk_size} if policy.rung == "resident_bf16" else {}),
+        )
+        self._publish_memory_policy(used)
+        self._log_once_per_call(
+            "rung",
+            logging.INFO,
+            f"Nori serving-memory rung: {used.describe()}",
+        )
+        if any(output is None for output in outputs):
+            raise AssertionError("pipeline batching lost an ensemble member")
+        return [output for output in outputs if output is not None]
 
     def _predict_reg_single(
         self,
@@ -2068,6 +2782,12 @@ class NoriPredictor:
         n_features = x_train.shape[1] if x_train.ndim > 1 else 1
         n_samples_train = x_train.shape[0]
         n_samples_test = x_test.shape[0]
+        requested_policy = self._coerced_memory_policy()
+        if requested_policy.stream_context and self.inference_with_DDP:
+            raise NotImplementedError(
+                "stream_context is not supported by distributed_inference; run one "
+                "streamed context per model replica instead"
+            )
 
         # If the number of elements is too large, we must chunk the test set to avoid OOM.
         # The default is VRAM-aware: anchored at 2M elements for a ~24GB GPU (the
@@ -2083,12 +2803,12 @@ class NoriPredictor:
         budget_n_features = self._effective_budget_n_features(n_features, x_train)
         base_elements = (n_samples_train + 1) * budget_n_features
         dropped_context_rows = 0
-        if base_elements > MAX_ELEMENTS_BUDGET:
+        if base_elements > MAX_ELEMENTS_BUDGET and not requested_policy.stream_context:
             # Guard: SYNTHEFY_FORBID_SUBSAMPLE=1 makes context subsampling FAIL LOUDLY
             # instead of silently shrinking the training set. Use for full-context
             # evaluation where any subsampling must be visible, never silent.
             _forbid_env = os.environ.get("SYNTHEFY_FORBID_SUBSAMPLE") == "1"
-            if not self._coerced_memory_policy().allow_subsample or _forbid_env:
+            if not requested_policy.allow_subsample or _forbid_env:
                 # Name whichever setting actually forbade it. Reporting the env var to
                 # someone who set memory_policy={"allow_subsample": False} sends them hunting
                 # a variable they never set.
@@ -2149,6 +2869,30 @@ class NoriPredictor:
             x_test,
         )
 
+        # The batched path calls the bare model directly, so it cannot honour a
+        # DistributedInference session. Internal has no DDP inference and so no
+        # equivalent guard; skip the fast path rather than silently dropping the
+        # caller's distributed context.
+        if distributed_inference is None:
+            bare_model = self._bare_model()
+            batched_outputs = self._try_batched_ordinary_regression(
+                bare_model,
+                x_train_base=x_train_base,
+                x_test_base=x_test_base,
+                y_train=y_train,
+                categorical_idx=categorical_idx,
+                n_samples_train=n_samples_train,
+                n_samples_test=n_samples_test,
+                budget_n_features=budget_n_features,
+                max_elements_budget=MAX_ELEMENTS_BUDGET,
+                dropped_context_rows=dropped_context_rows,
+            )
+            if batched_outputs is not None:
+                output = torch.stack(batched_outputs).mean(dim=0)
+                if return_distribution:
+                    return output
+                return self._collapse_regression_output(output)
+
         outputs = []
         mask_predictions = []
         for id_pipe, pipe in enumerate(self.preprocess_pipelines):
@@ -2167,17 +2911,49 @@ class NoriPredictor:
                     y_train=y_,
                 )
 
-            x_ = np.concatenate([x_train_, x_test_], axis=0)
-            x_ = torch.from_numpy(x_[:, :]).float().to(self.device)
-            y_ = torch.from_numpy(y_).float().to(self.device)
+            bounded_cpu_prefill = not self.inference_with_DDP and (
+                requested_policy.stream_context or requested_policy.context_row_chunk is not None
+            )
+            if bounded_cpu_prefill:
+                # Both explicit streaming and the private resident-INT8 hybrid
+                # start from host tensors. The latter is selected only after policy
+                # resolution below; retain these originals across fallback attempts.
+                x_ = None
+                x_train_t = torch.from_numpy(x_train_).float()
+                x_test_t = torch.from_numpy(x_test_).float()
+                y_ = torch.from_numpy(y_).float()
+            else:
+                x_ = torch.from_numpy(np.concatenate([x_train_, x_test_], axis=0)).float().to(self.device)
+                x_train_t = x_[: len(y_train)]
+                x_test_t = x_[len(y_train) :]
+                y_ = torch.from_numpy(y_).float().to(self.device)
+
+            device_pipeline_inputs = None
+
+            def _device_pipeline_inputs():
+                nonlocal device_pipeline_inputs
+                if device_pipeline_inputs is None:
+                    if x_ is not None:
+                        device_pipeline_inputs = (x_, x_train_t, x_test_t, y_)
+                    else:
+                        x_device = torch.cat([x_train_t, x_test_t], dim=0).to(self.device)
+                        y_device = y_.to(self.device)
+                        device_pipeline_inputs = (
+                            x_device,
+                            x_device[: len(y_train)],
+                            x_device[len(y_train) :],
+                            y_device,
+                        )
+                return device_pipeline_inputs
+
             torch.manual_seed(self.seed)
             torch.cuda.manual_seed_all(self.seed)
             if self.inference_with_DDP:
                 assert distributed_inference is not None
                 output = distributed_inference.inference(
-                    x_[: len(y_train)],
+                    x_train_t,
                     y_,
-                    x_[len(y_train) :],
+                    x_test_t,
                 )
                 outputs.append(output)
             if not self.inference_with_DDP:
@@ -2222,20 +2998,31 @@ class NoriPredictor:
                 # defaults, or pass a preset name ("exact", "max_context", "off"), a
                 # dict, or a MemoryPolicy. No env var configures this; only the
                 # SYNTHEFY_DISABLE_CACHED_INFERENCE kill switch is honoured.
-                policy = self._coerced_memory_policy()
+                policy = requested_policy
+                if policy.stream_context and (
+                    model_mask_pred
+                    or not hasattr(bare_model, "build_context_cache")
+                    or not hasattr(bare_model, "apply_context_cache")
+                ):
+                    raise NotImplementedError(
+                        "stream_context requires a regression checkpoint with the "
+                        "split context-cache interface and mask_prediction=False"
+                    )
                 use_cached = (
                     hasattr(bare_model, "forward_cached_regression")
-                    and not self.mask_prediction
-                    and n_samples_test > chunk_size
+                    and not model_mask_pred
+                    and (policy.stream_context or n_samples_test > chunk_size)
                     and policy.cache
                 )
                 if use_cached:
                     fpg = max(int(getattr(bare_model, "features_per_group", 2)), 1)
-                    n_groups = (budget_n_features + fpg - 1) // fpg
+                    transformed_features = int(x_train_t.shape[-1])
+                    n_groups = (transformed_features + fpg - 1) // fpg
                     embed_dim = int(getattr(bare_model, "embed_dim", 128))
                     nlayers = int(getattr(bare_model, "nlayers", 16))
                     nhead = max(int(getattr(bare_model, "nhead", 2)), 1)
                     bytes_per = 2 if self.mix_precision else 4
+                    head_dim = max(embed_dim // nhead, 1)
                     policy = policy.resolve(
                         est_cache_gb=estimate_cache_gb(
                             n_context_rows=n_samples_train,
@@ -2245,11 +3032,15 @@ class NoriPredictor:
                             bytes_per_element=bytes_per,
                         ),
                         bytes_per_element=bytes_per,
-                        head_dim=max(embed_dim // nhead, 1),
+                        head_dim=head_dim,
                         total_vram_gb=self._total_vram_gb(),
                         total_ram_gb=total_host_ram_gb(),
                     )
                     use_cached = policy.cache
+                    if policy.stream_context:
+                        if policy.context_row_chunk is None:
+                            raise AssertionError("stream_context resolver did not concretize context_row_chunk")
+                        chunk_size = min(n_samples_test, policy.context_row_chunk)
                 else:
                     policy = policy.resolve(
                         est_cache_gb=0.0,
@@ -2257,6 +3048,7 @@ class NoriPredictor:
                         head_dim=1,
                         cache_eligible=False,
                     )
+                self._publish_memory_policy(policy)
                 # Announce the opening rung. WARNING when it is already a fallback
                 # (offload / plain loop), because that is a real slowdown the caller
                 # should see by default; INFO on the fast rungs so a normal run stays
@@ -2268,21 +3060,75 @@ class NoriPredictor:
                 )
 
                 cached_done = False
+                fallback_reason = "resolved"
                 if use_cached:
                     self.model.to(self.device)
-                    # Sequential fallback. Attempt 1 uses the resolved rung; on an
-                    # OOM, escalate to fit-time row chunking (bit-exact — it bounds
-                    # the O(N*groups) build working set, which offload alone cannot)
-                    # before dropping to the plain loop.
+                    # Walk every allowed, budget-feasible precision/placement rung,
+                    # then bound the final rung with the shared prefill retry ladder.
+                    # Streaming starts with the concrete cap chosen by resolve(); an
+                    # explicit cap remains the maximum and retries only get smaller.
                     #
-                    # A policy that PINS context_row_chunk uses it from attempt 1, which
-                    # also means there is nothing left to escalate to. That is the
-                    # documented cost of pinning it.
-                    pinned = policy.context_row_chunk
-                    fit_chunk_attempts = [pinned]
-                    if pinned is None:
-                        fit_chunk_attempts.append(FIT_ROW_CHUNK_ON_OOM)
-                    for attempt_fit_chunk in fit_chunk_attempts:
+                    # Chunking is tried LAST, combined only with the worst placement,
+                    # not first against the bit-exact rung: it only bounds the
+                    # transient BUILD peak, not the finished cache's resident size,
+                    # so it cannot rescue an OOM caused by the cache itself being too
+                    # big to fit -- only the placement ladder above can. It also is
+                    # not supported on every checkpoint (serial sequence attention
+                    # raises NotImplementedError). RUNGS already ranks
+                    # context_row_chunk below offload_int8, so this matches that.
+                    pinned = requested_policy.context_row_chunk
+                    initial_fit_chunk = policy.context_row_chunk if policy.stream_context else pinned
+                    placement_policies = requested_policy.runtime_fallbacks(
+                        policy,
+                        bytes_per_element=bytes_per,
+                        head_dim=head_dim,
+                    )
+                    cache_attempts = [(candidate, initial_fit_chunk) for candidate in placement_policies]
+                    final_policy = placement_policies[-1]
+                    for retry_chunk in self._fit_row_chunk_attempts(initial_fit_chunk):
+                        cache_attempts.append((final_policy, retry_chunk))
+                    fallback_reason = "fallback_after_oom"
+                    for attempt_index, (attempt_policy, attempt_fit_chunk) in enumerate(cache_attempts):
+                        policy = attempt_policy
+                        attempt_reason = "resolved" if attempt_index == 0 else "oom_retry"
+                        ctx_bundle = None
+                        output = None
+                        execution_policy = attempt_policy
+                        if attempt_fit_chunk is not None and attempt_fit_chunk != initial_fit_chunk:
+                            recovered_rung = (
+                                attempt_policy.rung if attempt_policy.stream_context else "context_row_chunk"
+                            )
+                            execution_policy = attempt_policy.escalated(
+                                recovered_rung,
+                                context_row_chunk=attempt_fit_chunk,
+                            )
+                        query_events: list[tuple[int, Literal["success", "oom"]]] = []
+
+                        def observe_query_attempt(
+                            query_chunk: int,
+                            outcome: Literal["success", "oom"],
+                        ) -> None:
+                            query_events.append((query_chunk, outcome))
+
+                        hybrid_resident_int8_prefill = (
+                            attempt_policy.rung == "resident_int8"
+                            and attempt_policy.cache_dtype == "int8"
+                            and not attempt_policy.offload_to_host
+                            and not attempt_policy.stream_context
+                            and attempt_fit_chunk is not None
+                        )
+                        if policy.stream_context or hybrid_resident_int8_prefill:
+                            attempt_x_train = x_train_t
+                            attempt_x_test = x_test_t
+                            attempt_y_train = y_
+                        else:
+                            (
+                                _attempt_x_all,
+                                attempt_x_train,
+                                attempt_x_test,
+                                attempt_y_train,
+                            ) = _device_pipeline_inputs()
+
                         try:
                             with (
                                 torch.autocast(
@@ -2299,46 +3145,124 @@ class NoriPredictor:
                                 # the fit-once / serve-many pattern -- instead of
                                 # rebuilding it per query batch. This splits the former
                                 # forward_cached_regression(full) into its build+apply
-                                # halves (bit-identical: that method is now exactly this
-                                # pair) and memoizes the build. See _get_or_build_context.
-                                n_ctx = len(y_train)
+                                # build/apply halves and memoizes the build. Streamed BF16
+                                # keeps every row but may differ at the last bits from
+                                # chunked GEMM and online-softmax reassociation. See
+                                # _get_or_build_context.
                                 ctx_bundle = self._get_or_build_context(
                                     bare_model,
                                     id_pipe,
-                                    x_train_t=x_[:n_ctx].unsqueeze(0),
-                                    y_train_t=y_[:n_ctx].unsqueeze(0),
+                                    x_train_t=attempt_x_train.unsqueeze(0),
+                                    y_train_t=attempt_y_train.unsqueeze(0),
                                     cache_dtype=policy.cache_dtype,
                                     offload_kv_cache=policy.offload_to_host,
                                     fit_row_chunk=attempt_fit_chunk,
-                                    reuse_context_cache=policy.reuse_context_cache,
+                                    reuse_context_cache=(policy.reuse_context_cache and not policy.stream_context),
                                     cache_entries=self.context_cache_entries,
+                                    stream_context=policy.stream_context,
+                                    _hybrid_resident_int8_prefill=(hybrid_resident_int8_prefill),
                                 )
-                                output = bare_model.apply_context_cache(
-                                    x_[n_ctx:].unsqueeze(0),
-                                    ctx_bundle,
-                                    row_chunk_size=chunk_size,
-                                    adaptive_query_chunk=policy.adaptive_query_chunk,
-                                )
-                            output = self._unwrap_model_output(output, task_type="reg").squeeze(0)
+                                apply_kwargs = {
+                                    "row_chunk_size": chunk_size,
+                                    "adaptive_query_chunk": policy.adaptive_query_chunk,
+                                    "query_chunk_attempt_callback": observe_query_attempt,
+                                }
+                                if (
+                                    policy.rung == "resident_bf16"
+                                    and policy.cache_dtype == "bf16"
+                                    and not policy.offload_to_host
+                                    and attempt_fit_chunk is None
+                                ):
+                                    output = self._apply_context_cache_exact_safe(
+                                        bare_model,
+                                        attempt_x_test.unsqueeze(0),
+                                        ctx_bundle,
+                                        **apply_kwargs,
+                                    )
+                                else:
+                                    if getattr(bare_model, "_exact_cudagraphs_enabled", False):
+                                        self._disable_exact_cached_cudagraphs(bare_model)
+                                    output = bare_model.apply_context_cache(
+                                        attempt_x_test.unsqueeze(0),
+                                        ctx_bundle,
+                                        **apply_kwargs,
+                                    )
+                            output = self._unwrap_model_output(
+                                output,
+                                task_type="reg",
+                            ).squeeze(0)
                             output = self._reject_nonfinite_output(
                                 output, path=f"cached ({policy.rung})", n_train=n_samples_train, n_test=n_samples_test
                             )
                             outputs.append(output)
                             cached_done = True
-                            if attempt_fit_chunk is not None and pinned is None:
-                                policy = policy.escalated("context_row_chunk", context_row_chunk=attempt_fit_chunk)
-                                logger.warning("Nori recovered on rung %s", policy.describe())
-                            policy = policy.escalated(
-                                policy.rung, dropped_context_rows=dropped_context_rows, query_chunk=chunk_size
+                            if not query_events:
+                                query_events.append((chunk_size, "success"))
+                            policy = self._record_cached_query_trace(
+                                execution_policy,
+                                query_events,
+                                pipeline_ids=[id_pipe],
+                                path="cached",
+                                context_row_chunk=attempt_fit_chunk,
+                                reason=attempt_reason,
+                                dropped_context_rows=dropped_context_rows,
                             )
-                            self.memory_report_ = policy.model_dump()
+                            if attempt_policy.cache_dtype == "int8":
+                                # Unlike offload (moves bytes unchanged) or chunking
+                                # (bit-exact by design), quantizing the cache is a
+                                # real fidelity loss -- the DegradedPipelineWarning
+                                # family exists so a scored caller (strict_pipeline())
+                                # can catch exactly this, not just see it in the logs.
+                                self._warn_once_per_call(
+                                    "cache_quantized",
+                                    "Nori quantized the context cache to int8: "
+                                    f"{attempt_policy.describe()}. Predictions carry "
+                                    "a small numerical difference from bf16 (|dR2| ~ "
+                                    "6e-6 measured). Raise memory_policy={'gpu_budget_frac': "
+                                    "...} / 'host_budget_frac' / 'elements_budget' for more "
+                                    "headroom, or set memory_policy={'allow_quantization': "
+                                    "False} to keep every rung bit-exact (offloads sooner "
+                                    "instead).",
+                                    CacheQuantizedWarning,
+                                )
+                            # `policy` already carries recovered_rung/context_row_chunk
+                            # (via execution_policy) and the true achieved query_chunk
+                            # (via _record_cached_query_trace's last event) -- both were
+                            # already offered to _publish_memory_policy internally, so
+                            # there is nothing left to re-escalate or re-publish here.
+                            if attempt_index > 0:
+                                # Recovered after at least one earlier attempt failed --
+                                # whether via a smaller chunk (above) or precision/
+                                # placement alone. Log it either way, or a lossy/slow
+                                # recovery that never touched context_row_chunk is
+                                # invisible in the logs.
+                                logger.warning("Nori recovered on rung %s", policy.describe())
+                            effective_query_chunk = query_events[-1][0]
+                            if effective_query_chunk != chunk_size:
+                                logger.warning(
+                                    "Nori recovered with query_chunk=%s after decode OOM",
+                                    effective_query_chunk,
+                                )
                             break
                         except NotImplementedError as exc:
+                            self._record_memory_attempt(
+                                attempt_policy,
+                                pipeline_ids=[id_pipe],
+                                path="cached",
+                                rung=attempt_policy.rung,
+                                context_row_chunk=attempt_fit_chunk,
+                                outcome="unsupported",
+                                reason=attempt_reason,
+                                dropped_context_rows=dropped_context_rows,
+                            )
+                            fallback_reason = "fallback_after_unsupported"
                             # This checkpoint cannot do context-row chunking (serial
                             # sequence attention). If the CALLER pinned it, that is
                             # their error and it propagates. If we chose it ourselves
                             # as an OOM escalation, degrade quietly to the next rung.
-                            if pinned is not None:
+                            self._evict_pipe_cache(id_pipe)
+                            del ctx_bundle, output
+                            if policy.stream_context or pinned is not None:
                                 raise
                             logger.warning(
                                 "Nori cannot escalate to context_row_chunk on this "
@@ -2348,21 +3272,63 @@ class NoriPredictor:
                             cached_done = False
                             break
                         except torch.cuda.OutOfMemoryError:
+                            if query_events or ctx_bundle is not None:
+                                failed_events = list(query_events)
+                                if not failed_events:
+                                    failed_events.append((chunk_size, "oom"))
+                                elif failed_events[-1][1] == "success":
+                                    # Decode itself returned, but validation or
+                                    # post-processing OOMed before the attempt
+                                    # could be considered successful.
+                                    failed_events[-1] = (failed_events[-1][0], "oom")
+                                self._record_cached_query_trace(
+                                    execution_policy,
+                                    failed_events,
+                                    pipeline_ids=[id_pipe],
+                                    path="cached",
+                                    context_row_chunk=attempt_fit_chunk,
+                                    reason=attempt_reason,
+                                    dropped_context_rows=dropped_context_rows,
+                                )
+                            else:
+                                self._record_memory_attempt(
+                                    attempt_policy,
+                                    pipeline_ids=[id_pipe],
+                                    path="cached",
+                                    rung=attempt_policy.rung,
+                                    context_row_chunk=attempt_fit_chunk,
+                                    outcome="oom",
+                                    reason=attempt_reason,
+                                    dropped_context_rows=dropped_context_rows,
+                                )
+                            self._evict_pipe_cache(id_pipe)
+                            del ctx_bundle, output
                             torch.cuda.empty_cache()
                             cached_done = False
                             # Name the OOM and what happens next, or the escalation is
                             # invisible in the logs and a slow run looks inexplicable.
-                            next_step = (
-                                f"retrying with fit_row_chunk={FIT_ROW_CHUNK_ON_OOM}"
-                                if attempt_fit_chunk is None and pinned is None
-                                else "falling back to the plain chunked loop"
-                            )
+                            if attempt_index + 1 < len(cache_attempts):
+                                next_policy, next_chunk = cache_attempts[attempt_index + 1]
+                                next_step = f"retrying rung {next_policy.rung} with context_row_chunk={next_chunk}"
+                            elif policy.stream_context:
+                                logger.error(
+                                    "Nori streamed context exhausted bounded cache attempts; refusing plain_loop"
+                                )
+                                raise
+                            else:
+                                next_step = "falling back to the plain chunked loop"
                             logger.warning(
-                                "Nori OOM on rung %s (fit_row_chunk=%s); %s",
+                                "Nori OOM on rung %s (context_row_chunk=%s); %s",
                                 policy.rung,
                                 attempt_fit_chunk,
                                 next_step,
                             )
+                if not cached_done and policy.stream_context:
+                    raise RuntimeError(
+                        "stream_context did not complete its cached path; refusing "
+                        "the plain_loop fallback because it would violate full-context "
+                        "streaming"
+                    )
                 if not cached_done:
                     # Every cached rung failed, or the policy never chose one. This
                     # is the plain chunked loop: much slower, and the only rung that
@@ -2388,75 +3354,103 @@ class NoriPredictor:
                         self._warn_once_per_call("plain_loop", msg, RuntimeWarning)
                     else:
                         policy = policy.escalated(policy.rung, dropped_context_rows=dropped_context_rows)
-                    self.memory_report_ = policy.model_dump()
+                    self._publish_memory_policy(policy)
 
                 # Chunk the test data (skipped entirely if the cached path ran)
-                all_outputs = []
-                for i in [] if cached_done else range(0, n_samples_test, chunk_size):
-                    end_idx = min(i + chunk_size, n_samples_test)
-                    x_chunk_test = x_[len(y_train) + i : len(y_train) + end_idx]
+                try:
+                    all_outputs = []
+                    if not cached_done:
+                        plain_x, _plain_train, _plain_test, plain_y = _device_pipeline_inputs()
+                    for i in [] if cached_done else range(0, n_samples_test, chunk_size):
+                        end_idx = min(i + chunk_size, n_samples_test)
+                        x_chunk_test = plain_x[len(y_train) + i : len(y_train) + end_idx]
 
-                    # Recombine train + test chunk
-                    x_chunk_combined = torch.cat([x_[: len(y_train)], x_chunk_test], dim=0)
+                        # Recombine train + test chunk
+                        x_chunk_combined = torch.cat([plain_x[: len(y_train)], x_chunk_test], dim=0)
 
-                    # Create dummy y for test chunk
-                    y_chunk_test = torch.zeros(end_idx - i, dtype=y_.dtype, device=y_.device)
-                    y_chunk_combined = torch.cat([y_[: len(y_train)], y_chunk_test], dim=0)
+                        # Create dummy y for test chunk
+                        y_chunk_test = torch.zeros(end_idx - i, dtype=plain_y.dtype, device=plain_y.device)
+                        y_chunk_combined = torch.cat([plain_y[: len(y_train)], y_chunk_test], dim=0)
 
-                    self.model.to(self.device)
-                    with (
-                        torch.autocast(
-                            device_type=self.device.type if isinstance(self.device, torch.device) else self.device,
-                            enabled=self.mix_precision,
-                        ),
-                        torch.inference_mode(),
-                    ):
-                        x_in = x_chunk_combined.unsqueeze(0)
-                        y_in = y_chunk_combined.unsqueeze(0)
+                        self.model.to(self.device)
+                        with (
+                            torch.autocast(
+                                device_type=self.device.type if isinstance(self.device, torch.device) else self.device,
+                                enabled=self.mix_precision,
+                            ),
+                            torch.inference_mode(),
+                        ):
+                            x_in = x_chunk_combined.unsqueeze(0)
+                            y_in = y_chunk_combined.unsqueeze(0)
 
-                        chunk_output = self.model(x=x_in, y=y_in, eval_pos=len(y_train), task_type="reg")
+                            chunk_output = self.model(x=x_in, y=y_in, eval_pos=len(y_train), task_type="reg")
 
-                    if self.mask_prediction:
-                        process_config = chunk_output["process_config"]
-                        chunk_output_feature_pred = self.PostProcessInModel(
-                            chunk_output["feature_pred"], process_config
+                        if self.mask_prediction:
+                            process_config = chunk_output["process_config"]
+                            chunk_output_feature_pred = self.PostProcessInModel(
+                                chunk_output["feature_pred"], process_config
+                            )
+                            source_row_indices = np.concatenate(
+                                (
+                                    np.arange(len(y_train), dtype=np.int64),
+                                    np.arange(
+                                        len(y_train) + i,
+                                        len(y_train) + end_idx,
+                                        dtype=np.int64,
+                                    ),
+                                )
+                            )
+                            chunk_output_feature_pred = self.PostProcess(
+                                chunk_output_feature_pred,
+                                pipe,
+                                process_config,
+                                source_row_indices=source_row_indices,
+                            )
+                            pipeline_mask_chunks.append(chunk_output_feature_pred)
+                            chunk_output = chunk_output["reg_output"]
+
+                        chunk_output = self._unwrap_model_output(chunk_output, task_type="reg").squeeze(0)
+                        chunk_output = self._reject_nonfinite_output(
+                            chunk_output, path="plain chunked loop", n_train=n_samples_train, n_test=end_idx - i
                         )
-                        source_row_indices = np.concatenate(
-                            (
-                                np.arange(len(y_train), dtype=np.int64),
-                                np.arange(
-                                    len(y_train) + i,
-                                    len(y_train) + end_idx,
-                                    dtype=np.int64,
-                                ),
+                        all_outputs.append(chunk_output)
+
+                    # Concatenate all test chunks (cached path already appended above)
+                    if not cached_done:
+                        output = torch.cat(all_outputs, dim=0)
+                        outputs.append(output)
+                    if pipeline_mask_chunks:
+                        mask_predictions.append(
+                            self._aggregate_feature_reconstruction_chunks(
+                                pipeline_mask_chunks,
+                                len(y_train),
                             )
                         )
-                        chunk_output_feature_pred = self.PostProcess(
-                            chunk_output_feature_pred,
-                            pipe,
-                            process_config,
-                            source_row_indices=source_row_indices,
+                    if not cached_done:
+                        self._record_memory_attempt(
+                            policy,
+                            pipeline_ids=[id_pipe],
+                            path="plain_loop",
+                            rung=policy.rung,
+                            context_row_chunk=None,
+                            outcome="success",
+                            reason=fallback_reason,
+                            dropped_context_rows=dropped_context_rows,
                         )
-                        pipeline_mask_chunks.append(chunk_output_feature_pred)
-                        chunk_output = chunk_output["reg_output"]
-
-                    chunk_output = self._unwrap_model_output(chunk_output, task_type="reg").squeeze(0)
-                    chunk_output = self._reject_nonfinite_output(
-                        chunk_output, path="plain chunked loop", n_train=n_samples_train, n_test=end_idx - i
+                except torch.cuda.OutOfMemoryError:
+                    self._record_memory_attempt(
+                        policy,
+                        pipeline_ids=[id_pipe],
+                        path="plain_loop",
+                        rung=policy.rung,
+                        context_row_chunk=None,
+                        outcome="oom",
+                        reason=fallback_reason,
+                        dropped_context_rows=dropped_context_rows,
                     )
-                    all_outputs.append(chunk_output)
-
-                # Concatenate all test chunks (cached path already appended above)
-                if not cached_done:
-                    output = torch.cat(all_outputs, dim=0)
-                    outputs.append(output)
-                if pipeline_mask_chunks:
-                    mask_predictions.append(
-                        self._aggregate_feature_reconstruction_chunks(
-                            pipeline_mask_chunks,
-                            len(y_train),
-                        )
-                    )
+                    self._evict_pipe_cache(id_pipe)
+                    torch.cuda.empty_cache()
+                    raise
 
         output = torch.stack(outputs).mean(dim=0)
         if return_distribution:

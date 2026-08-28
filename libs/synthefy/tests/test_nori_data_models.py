@@ -19,7 +19,13 @@ import importlib.util
 
 import pytest
 
-from synthefy.nori_data_models import MEMORY_PRESETS, MEMORY_RUNGS, MemoryPolicy, MemoryReport
+from synthefy.nori_data_models import (
+    MEMORY_PRESETS,
+    MEMORY_RUNGS,
+    MemoryAttempt,
+    MemoryPolicy,
+    MemoryReport,
+)
 
 
 def _library_available() -> bool:
@@ -47,7 +53,14 @@ requires_library = pytest.mark.skipif(
 
 #: Fields the server DECIDES; they belong to the report, not the policy. Mirrors the split in
 #: the library's openapi generator, which is the one place that split is written down.
-DECIDED_FIELDS = {"rung", "est_cache_gb", "resident_gb", "query_chunk", "dropped_context_rows"}
+DECIDED_FIELDS = {
+    "rung",
+    "est_cache_gb",
+    "resident_gb",
+    "query_chunk",
+    "dropped_context_rows",
+    "attempt_history",
+}
 
 
 # ------------------------------------------------- the mirror stands on its own
@@ -81,13 +94,56 @@ def test_the_report_keeps_fields_this_version_does_not_know():
     assert report.model_dump()["something_new"] == 17
 
 
+def test_streaming_report_keeps_the_resolved_policy_details():
+    report = MemoryReport(
+        rung="stream_bf16",
+        stream_context=True,
+        context_row_chunk=2048,
+        reuse_context_cache=False,
+    )
+    dumped = report.model_dump()
+    assert dumped["rung"] == "stream_bf16"
+    assert dumped["stream_context"] is True
+    assert dumped["context_row_chunk"] == 2048
+    assert dumped["reuse_context_cache"] is False
+
+
+def test_attempt_history_keeps_newer_server_fields():
+    report = MemoryReport(
+        attempt_history=[
+            {
+                "pipeline_ids": [0],
+                "path": "cached",
+                "rung": "resident_bf16",
+                "cache_dtype": "bf16",
+                "offload_to_host": False,
+                "context_row_chunk": None,
+                "query_chunk": 128,
+                "outcome": "success",
+                "reason": "resolved",
+                "dropped_context_rows": 0,
+                "new_attempt_detail": "kept",
+            }
+        ]
+    )
+    assert report.model_dump()["attempt_history"][0]["new_attempt_detail"] == "kept"
+    assert report.model_dump()["attempt_history"][0]["query_chunk"] == 128
+
+
 def test_defaults_match_the_documented_behaviour():
     policy = MemoryPolicy()
     assert policy.cache is True and policy.reuse_context_cache is True
     assert policy.cache_dtype == "bf16"
     assert policy.allow_quantization is True and policy.offload_to_host is True
     assert policy.gpu_budget_frac == 0.4 and policy.host_budget_frac == 0.25
+    assert policy.stream_context is False
     assert policy.allow_subsample is True
+
+
+def test_stream_context_remains_a_partial_wire_policy():
+    policy = MemoryPolicy(stream_context=True)
+    assert policy.model_dump(exclude_unset=True) == {"stream_context": True}
+    assert {"stream_bf16", "stream_int8"} <= set(MEMORY_RUNGS)
 
 
 # ------------------------------------------------- and matches the authority
@@ -124,6 +180,50 @@ def test_each_field_matches_the_library_on_type_bounds_and_default(field):
     for key in ("type", "enum", "default", "exclusiveMinimum", "minimum", "maximum", "anyOf"):
         assert mine.get(key) == theirs.get(key), (
             f"{field}.{key}: client has {mine.get(key)!r}, library has {theirs.get(key)!r}"
+        )
+
+
+#: `rung` is deliberately looser on the client (bare `str`) than the library's Literal, so a
+#: server that adds a new rung still parses -- same forward-compat reasoning as
+#: `test_attempt_history_keeps_newer_server_fields`. Excluded from the per-field type/bounds
+#: comparison below; still covered by the field-NAME comparison, since the field itself must
+#: still exist under the same name.
+_MEMORY_ATTEMPT_LOOSENED_FIELDS = {"rung"}
+
+
+@requires_library
+def test_the_memory_attempt_fields_match_the_library_exactly():
+    """Field-name parity for the nested type the other mirror tests never touch.
+
+    `MemoryPolicy`/`MemoryReport` parity checks only ever key off `MemoryPolicy.model_fields`,
+    so a drift in the nested `MemoryAttempt` type (a rename, a new required field) would pass
+    every one of them silently -- `extra="allow"` on the client's `MemoryAttempt` means an
+    unrecognised field is carried through rather than rejected, not caught.
+    """
+    from synthefy_nori.inference.memory_policy import MemoryAttempt as Authoritative
+
+    ours = set(MemoryAttempt.model_fields)
+    theirs = set(Authoritative.model_fields)
+    assert ours == theirs, (
+        f"the client's MemoryAttempt drifted: missing={sorted(theirs - ours)}, "
+        f"stale={sorted(ours - theirs)}. Update src/synthefy/nori_data_models.py."
+    )
+
+
+@requires_library
+@pytest.mark.parametrize(
+    "field",
+    sorted(set(MemoryAttempt.model_fields) - _MEMORY_ATTEMPT_LOOSENED_FIELDS),
+)
+def test_each_memory_attempt_field_matches_the_library_on_type_bounds_and_default(field):
+    """Per-field, mirroring test_each_field_matches_the_library_on_type_bounds_and_default."""
+    from synthefy_nori.inference.memory_policy import MemoryAttempt as Authoritative
+
+    mine = MemoryAttempt.model_json_schema()["properties"][field]
+    theirs = Authoritative.model_json_schema()["properties"][field]
+    for key in ("type", "enum", "default", "exclusiveMinimum", "minimum", "maximum", "anyOf"):
+        assert mine.get(key) == theirs.get(key), (
+            f"MemoryAttempt.{field}.{key}: client has {mine.get(key)!r}, library has {theirs.get(key)!r}"
         )
 
 

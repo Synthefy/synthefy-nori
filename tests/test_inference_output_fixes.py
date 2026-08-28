@@ -161,6 +161,23 @@ def test_distributed_imputation_fails_explicitly():
         )
 
 
+def test_distributed_memory_policy_fails_explicitly():
+    """DDP inference never resolves a MemoryPolicy or populates memory_report_,
+    so requesting one must fail at construction, not surface later as an empty
+    report a caller could mistake for a stale runtime."""
+    with pytest.raises(
+        ValueError,
+        match="inference_with_DDP does not support memory_policy",
+    ):
+        NoriPredictor(
+            device=torch.device("cpu"),
+            model=object(),
+            inference_config=[{}],
+            inference_with_DDP=True,
+            memory_policy={"cache_dtype": "int8"},
+        )
+
+
 @pytest.mark.parametrize("owns_process_group", [False, True])
 def test_distributed_runner_only_closes_owned_process_group(
     monkeypatch,
