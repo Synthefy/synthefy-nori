@@ -5,7 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [7.1.0] - Unreleased
+## [7.1.1] - 2026-08-29
+
+### Fixed
+
+- Preserved the one-row local `NoriRegressor.predict_point(...)` shape contract when the installed `synthefy-nori` package returns a single prediction. Local clients now receive a one-element prediction vector instead of a scalar for batch size 1, matching multi-row calls.
+
+## [7.1.0] - 2026-08-27
 
 ### Added
 
