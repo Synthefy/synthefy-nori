@@ -158,6 +158,32 @@ def test_predict_rejects_unsupported_output_types():
         model.predict([[0.0, 1.0]], output_type="mean", quantiles=[0.5])
 
 
+def test_single_query_point_prediction_returns_one_value_per_row(monkeypatch):
+    class PredictorStub:
+        quantile_collapse = "mean"
+        bar_point_estimator = "mean"
+
+        def predict(self, X_train, y_train, X_test):
+            assert len(X_test) == 1
+            return np.array([0.25])
+
+    model = NoriRegressor(model_path="local.pt")
+    model.X_train_ = np.array([[0.0], [1.0]], dtype=np.float32)
+    model.y_train_ = np.array([1.0, 3.0], dtype=np.float64)
+    model.y_mean_ = 2.0
+    model.y_std_ = 2.0
+    model.large_context_policy = None
+    model.large_context_threshold = 50_000
+    monkeypatch.setattr(model, "_get_predictor", lambda: PredictorStub())
+    monkeypatch.setattr(model, "_prepare_query_features", lambda X: np.asarray(X, dtype=np.float32))
+
+    out = model.predict([[0.5]])
+
+    assert isinstance(out, np.ndarray)
+    assert out.shape == (1,)
+    np.testing.assert_allclose(out, [2.5])
+
+
 def test_distribution_outputs_require_fit_and_valid_levels():
     # 'quantiles'/'full' are supported but need fit() first; the fit guard and
     # the quantile-level validation both fire before any weights are loaded.

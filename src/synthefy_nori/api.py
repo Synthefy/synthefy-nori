@@ -1083,7 +1083,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
             predictor.quantile_collapse, predictor.bar_point_estimator = saved
         if isinstance(pred, torch.Tensor):
             pred = pred.detach().cpu().numpy()
-        pred = np.asarray(pred, dtype=np.float64).squeeze()
+        pred = np.asarray(pred, dtype=np.float64).reshape(-1)
         return pred * self.y_std_ + self.y_mean_
 
     def _large_context_predict(self, predictor, X_test: np.ndarray, y_norm: np.ndarray, *, decoder: tuple):
