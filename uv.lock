@@ -6457,7 +6457,7 @@ wheels = [
 
 [[package]]
 name = "synthefy"
-version = "7.1.0"
+version = "7.1.1"
 source = { editable = "libs/synthefy" }
 dependencies = [
     { name = "httpx" },
@@ -6540,7 +6540,7 @@ package = [
 
 [[package]]
 name = "synthefy-nori"
-version = "0.20.0"
+version = "0.20.1"
 source = { editable = "." }
 dependencies = [
     { name = "einops" },
