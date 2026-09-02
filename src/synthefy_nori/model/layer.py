@@ -687,6 +687,15 @@ class MultiheadAttention(torch.nn.Module):
         batch_groups, n_query, n_heads, head_dim = q.shape
         scale = (1.0 / math.sqrt(float(head_dim))) if sdpa_scale is None else sdpa_scale
         q_flex = q.to(FLASH_ATTN_DTYPE).permute(0, 2, 1, 3).contiguous()
+        # FlexAttention's Triton kernel reshapes the value head width with a
+        # power-of-two block. Released models use widths such as 44 and 56, so
+        # pad Q/K/V with zeros for the kernel and slice the output back. Zero
+        # padding preserves both QK logits and V aggregation; keep ``scale``
+        # based on the original width so the attention math stays unchanged.
+        flex_head_dim = 1 << (head_dim - 1).bit_length()
+        head_dim_padding = flex_head_dim - head_dim
+        if head_dim_padding:
+            q_flex = nn.functional.pad(q_flex, (0, head_dim_padding))
         running_lse = torch.full(
             (batch_groups, n_heads, n_query),
             float("-inf"),
@@ -702,9 +711,16 @@ class MultiheadAttention(torch.nn.Module):
         for kv_block in kv_cache.iter_kv_blocks():
             if kv_block.ndim != 5 or kv_block.shape[0] != batch_groups:
                 raise ValueError(f"streamed K/V block must be [BG, K, 2, Hkv, D], got {tuple(kv_block.shape)}")
+            if kv_block.shape[-1] != head_dim:
+                raise ValueError(
+                    f"streamed K/V head width must match query head width {head_dim}, got {kv_block.shape[-1]}"
+                )
             k, v = kv_block.unbind(dim=2)
             k_flex = k.to(FLASH_ATTN_DTYPE).permute(0, 2, 1, 3).contiguous()
             v_flex = v.to(FLASH_ATTN_DTYPE).permute(0, 2, 1, 3).contiguous()
+            if head_dim_padding:
+                k_flex = nn.functional.pad(k_flex, (0, head_dim_padding))
+                v_flex = nn.functional.pad(v_flex, (0, head_dim_padding))
             block_output, block_lse = _flex_attention_with_lse(
                 q_flex,
                 k_flex,
@@ -723,7 +739,7 @@ class MultiheadAttention(torch.nn.Module):
             old_weight = torch.exp(running_lse - new_lse).unsqueeze(-1)
             block_weight = torch.exp(block_lse - new_lse).unsqueeze(-1)
             running_output.mul_(old_weight)
-            running_output.add_(block_output.to(torch.float32) * block_weight)
+            running_output.add_(block_output[..., :head_dim].to(torch.float32) * block_weight)
             running_lse = new_lse
             del (
                 kv_block,
