@@ -1388,6 +1388,7 @@ def test_request_model_roundtrip():
         "large_context_policy": None,
         "large_context_threshold": None,
         "large_context_seed": None,
+        "large_context_holdout": None,
         "multi_target_prediction_strategy": None,
         "multi_target_prediction_policy": None,
     }
@@ -2901,22 +2902,34 @@ def test_remote_client_rejects_callable_large_context_policy_before_network():
     assert calls["count"] == 0
 
 
-def test_remote_client_rejects_non_string_policy_before_network():
-    calls = {"count": 0}
+def test_remote_client_forwards_a_tail_gated_policy_list_and_verifies_report():
+    capture: Dict = {}
+    policies = ["target_rank[cap=32768]", "target_rank[cap=65536]"]
+    report = {
+        **_LARGE_CONTEXT_REPORT,
+        "policy": "gate[target_rank[cap=32768],target_rank[cap=65536]]",
+        "threshold": 50_000,
+        "seed": 0,
+        "holdout_strategy": "tail",
+    }
+    client = _client_with(_large_context_handler(capture, report))
+    client.predict(
+        _X_TRAIN,
+        _Y_TRAIN,
+        _X_TEST,
+        large_context_policy=policies,
+        large_context_holdout="tail",
+    )
+    assert capture["body"]["large_context_policy"] == policies
+    assert capture["body"]["large_context_holdout"] == "tail"
+    assert client.last_large_context_report == report
 
-    def handler(_request):
-        calls["count"] += 1
-        return httpx.Response(500)
 
-    client = _client_with(handler)
-    with pytest.raises(ValueError, match="policy name string"):
-        client.predict(
-            _X_TRAIN,
-            _Y_TRAIN,
-            _X_TEST,
-            large_context_policy=["random", "cluster_route"],
-        )
-    assert calls["count"] == 0
+@pytest.mark.parametrize("policy", [[], [""], ["random", 1], ["random"] * 9])
+def test_remote_client_rejects_invalid_policy_lists_before_network(policy):
+    client = _client_with(lambda _request: pytest.fail("network called"))
+    with pytest.raises(ValueError, match="large_context_policy"):
+        client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST, large_context_policy=policy)
 
 
 @pytest.mark.parametrize("output_type", ["quantiles", "full"])
@@ -2988,6 +3001,15 @@ def test_large_context_request_model_is_bounded_and_omits_unset_fields():
         NoriPredictRequest(**base, large_context_threshold=123)
     for policy in ("boost", "safeboost", "cluster_route[groups=16]"):
         assert NoriPredictRequest(**base, large_context_policy=policy).to_wire()["large_context_policy"] == policy
+    gated = NoriPredictRequest(
+        **base,
+        large_context_policy=["random", "target_rank[cap=32768]"],
+        large_context_holdout="tail",
+    )
+    assert gated.to_wire()["large_context_policy"] == ["random", "target_rank[cap=32768]"]
+    assert gated.to_wire()["large_context_holdout"] == "tail"
+    with pytest.raises(ValueError, match="valid only with.*list"):
+        NoriPredictRequest(**base, large_context_policy="random", large_context_holdout="tail")
     with pytest.raises(ValueError):
         NoriPredictRequest(
             **base,

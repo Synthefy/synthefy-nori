@@ -196,6 +196,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         large_context_policy=None,
         large_context_threshold: int = DEFAULT_LARGE_CONTEXT_THRESHOLD,
         large_context_seed: int = 0,
+        large_context_holdout: str = "random",
         large_context_cache_entries: int = 1,
         svd_dim: int | None = 128,
         embedder="minilm",
@@ -279,7 +280,8 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 ``large_context_threshold`` rows. ``None`` (default) keeps the existing
                 behavior — full context, trimmed by ``memory_policy`` if it does not
                 fit. Otherwise a policy name (``"cluster_route"``,
-                ``"cluster_route_g4"``, ``"safeboost"``, ``"boost"``, ``"random"``),
+                ``"cluster_route_g4"``, ``"safeboost"``, ``"boost"``, ``"random"``,
+                ``"target_rank"``),
                 ``True`` for the default (``"cluster_route"``), a
                 ``"pkg.mod:fn"``/``"file.py:fn"`` path, a callable, or a LIST of any of
                 those (scored on a train holdout, per-table winner deployed). Append
@@ -291,6 +293,11 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
 
                 * ``"random"`` — **1** Nori call. One shared context window, chosen at
                   random. The cheapest fallback; no routing, no accuracy upside.
+                * ``"target_rank"`` — **1** Nori call. Equal-frequency target-rank
+                  midpoints form one shared context. Use ``[cap=32768]`` or
+                  ``[cap=65536]`` to compare sizes inside a list/holdout gate. The 64k
+                  global screen lost on temporal tables, so it is opt-in and should be
+                  gated rather than selected globally.
                 * ``"cluster_route"`` — up to ``groups`` (default 8) Nori calls. Clusters
                   the query rows into groups, each scored against its own local context
                   pool. **The recommended default when a policy is used**: the only one
@@ -304,6 +311,10 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 Default 50,000. Inert when ``large_context_policy`` is ``None``.
             large_context_seed: seeds the policies' row draws, so two identical predicts
                 agree. Default 0.
+            large_context_holdout: validation split used when ``large_context_policy`` is
+                a list. ``"random"`` (default) is appropriate for IID tables;
+                ``"tail"`` holds out the final rows and should be used when input order
+                is chronological. Non-default values are invalid for a single policy.
             large_context_cache_entries: how many distinct encoded contexts to retain across
                 ``predict`` calls. Default 1 (the historical behavior). A policy that
                 rotates between pools — ``cluster_route`` builds ``groups`` of them —
@@ -372,6 +383,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         self.large_context_policy = large_context_policy
         self.large_context_threshold = int(large_context_threshold)
         self.large_context_seed = int(large_context_seed)
+        self.large_context_holdout = str(large_context_holdout)
         self.large_context_cache_entries = int(large_context_cache_entries)
         if large_context_max_calls is not None and (
             isinstance(large_context_max_calls, bool)
@@ -444,7 +456,16 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # Same reason, for large_context_policy=: an unknown policy name or a bad parameter
         # should fail at fit(), not minutes into a job on a million-row table.
         if self.large_context_policy is not None:
-            resolve_large_context_policy(self.large_context_policy)
+            if self.large_context_holdout not in ("random", "tail"):
+                raise ValueError(
+                    f"large_context_holdout must be 'random' or 'tail'; got {self.large_context_holdout!r}"
+                )
+            if self.large_context_holdout != "random" and not isinstance(self.large_context_policy, (list, tuple)):
+                raise ValueError("large_context_holdout is valid only with a large_context_policy list")
+            resolve_large_context_policy(
+                self.large_context_policy,
+                holdout_strategy=self.large_context_holdout,
+            )
             # large_context_applies() only ever compares n_train > threshold, so a
             # non-positive threshold silently makes the policy apply to EVERY table
             # regardless of size -- almost certainly a typo (a stray minus sign, or a
@@ -1149,6 +1170,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
             policy_spec=self.large_context_policy,
             seed=self.large_context_seed,
             cache_scope=("decoder", decoder, "memory_policy", memory_scope),
+            holdout_strategy=getattr(self, "large_context_holdout", "random"),
         )
         return pred
 

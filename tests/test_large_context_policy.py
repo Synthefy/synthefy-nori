@@ -24,6 +24,7 @@ import numpy as np
 import pytest
 import torch
 
+from synthefy_nori.api import NoriRegressor
 from synthefy_nori.inference import large_context
 from synthefy_nori.inference import policies as pol
 from synthefy_nori.inference.memory_policy import MemoryPolicy
@@ -115,6 +116,76 @@ def test_parameters_bind_through_the_spec():
     assert report["nori_calls"] == 3
 
 
+def test_target_rank_selects_stable_midpoint_rows_without_reordering_context():
+    seen = []
+
+    def recording_predict(X_ctx, y_ctx, X_query):
+        seen.append((X_ctx.copy(), np.asarray(y_ctx).copy()))
+        return np.zeros(len(X_query))
+
+    X_train = np.arange(8, dtype=np.float32)[:, None]
+    y_train = np.arange(8, 0, -1, dtype=np.float64)
+    base = large_context.build_problem(recording_predict, X_train, y_train, window=4)
+    X_test = np.zeros((3, 1), dtype=np.float32)
+
+    _, report = large_context.run_policy(base, X_test, policy_spec="target_rank")
+
+    assert report["nori_calls"] == 1
+    assert seen[0][0][:, 0].tolist() == [0.0, 2.0, 4.0, 6.0]
+    assert seen[0][1].tolist() == [8.0, 6.0, 4.0, 2.0]
+
+
+def test_target_rank_cap_can_compare_smaller_contexts_inside_one_window():
+    seen = []
+
+    def recording_predict(X_ctx, y_ctx, X_query):
+        seen.append(len(X_ctx))
+        return np.zeros(len(X_query))
+
+    X_train, y_train, X_test = make_table(n_train=400, n_test=10)
+    base = large_context.build_problem(recording_predict, X_train, y_train, window=64)
+    _, report = large_context.run_policy(base, X_test, policy_spec="target_rank[cap=32]")
+    assert seen == [32]
+    assert report["policy"] == "target_rank[cap=32]"
+
+
+def test_target_rank_cap_is_honored_even_when_the_whole_table_fits_the_window():
+    seen = []
+
+    def recording_predict(X_ctx, y_ctx, X_query):
+        seen.append(len(X_ctx))
+        return np.zeros(len(X_query))
+
+    X_train, y_train, X_test = make_table(n_train=50, n_test=10)
+    base = large_context.build_problem(recording_predict, X_train, y_train, window=64)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _, report = large_context.run_policy(base, X_test, policy_spec="target_rank[cap=32]")
+    assert seen == [32]
+    assert report["full_context"] is False
+
+
+def test_target_rank_rejects_a_cap_above_the_hardware_safe_window():
+    base = make_base(window=40, n_train=400)
+    _, _, X_test = make_table(n_test=10)
+    with pytest.raises(ValueError, match="exceeds the hardware-safe window=40"):
+        large_context.run_policy(base, X_test, policy_spec="target_rank[cap=64]")
+
+
+def test_gate_can_compare_two_target_rank_caps_below_the_hardware_window():
+    X_train, y_train, X_test = make_table(n_train=50, n_test=10)
+    base = large_context.build_problem(ridge_predict, X_train, y_train, window=64)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", pol.LargeContextPolicyWarning)
+        preds, report = large_context.run_policy(
+            base,
+            X_test,
+            policy_spec=["target_rank[cap=16]", "target_rank[cap=32]"],
+        )
+    assert preds.shape == (10,)
+    assert report["gate_winner"] in ("target_rank[cap=16]", "target_rank[cap=32]")
+
+
 # -------------------------------------------------------------------- run_policy
 def test_run_policy_returns_one_prediction_per_query_row():
     base = make_base()
@@ -189,7 +260,7 @@ def test_y_test_raises_on_an_inference_problem_instead_of_returning_zeros():
 def test_the_shipped_policies_never_read_y_test():
     base = make_base(window=40, n_train=400)
     _, _, X_test = make_table(n_test=60)
-    for name in ("random", "cluster_route", "cluster_route_g4", "safeboost", "boost"):
+    for name in ("random", "target_rank", "cluster_route", "cluster_route_g4", "safeboost", "boost"):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", pol.LargeContextPolicyWarning)
             preds, _ = large_context.run_policy(base, X_test, policy_spec=name)
@@ -931,15 +1002,50 @@ def test_a_squeezed_holdout_says_so():
         large_context.run_policy(base, X_test, policy_spec=["random", "cluster_route"])
 
 
-def test_the_gate_refuses_a_table_it_cannot_carve_a_holdout_from():
-    """Unreachable through `run_policy`, which serves full context below the window --
-    but `holdout_gate` is public, and silently scoring on nothing is the failure this
-    replaces."""
-    X_train, y_train, X_test = make_table(n_train=40, n_test=10)
-    base = large_context.build_problem(ridge_predict, X_train, y_train, window=50, seed=1)
-    gate = pol.holdout_gate(["random"])
-    with pytest.raises(ValueError, match="needs more than window=50 train rows"):
-        gate(base.with_queries(X_test), np.random.default_rng(0))
+def test_the_gate_shortens_a_capped_candidate_instead_of_crashing_near_its_cap():
+    """Production analogue: default threshold 50k, candidates capped 32k/64k."""
+    X_train, y_train, X_test = make_table(n_train=55, n_test=10)
+    base = large_context.build_problem(ridge_predict, X_train, y_train, window=64, seed=1)
+    with pytest.warns(pol.LargeContextPolicyWarning, match="leaves only 52 context rows"):
+        preds, report = large_context.run_policy(
+            base,
+            X_test,
+            policy_spec=["target_rank[cap=32]", "target_rank[cap=64]"],
+        )
+    assert preds.shape == (10,)
+    assert report["gate_winner"] in ("target_rank[cap=32]", "target_rank[cap=64]")
+
+
+def test_tail_holdout_keeps_future_rows_out_of_candidate_context():
+    seen = []
+
+    def observe(problem, rng):
+        del rng
+        seen.append((problem.X_train[:, 0].tolist(), problem.X_test[:, 0].tolist()))
+        return np.zeros(problem.n_test)
+
+    X_train = np.arange(10, dtype=np.float32)[:, None]
+    y_train = np.arange(10, dtype=np.float64)
+    X_test = np.zeros((2, 1), dtype=np.float32)
+    base = large_context.build_problem(ridge_predict, X_train, y_train, window=4)
+    gate = pol.holdout_gate([observe], holdout=2, strategy="tail")
+    gate(base.with_queries(X_test), np.random.default_rng(0))
+    assert seen[0] == (list(range(8)), [8.0, 9.0])
+
+
+def test_unknown_holdout_strategy_is_rejected():
+    with pytest.raises(ValueError, match="random.*tail"):
+        pol.holdout_gate(["random"], strategy="future")
+
+
+def test_the_estimator_rejects_tail_holdout_for_a_single_policy():
+    regressor = NoriRegressor(
+        large_context_policy="target_rank[cap=32]",
+        large_context_holdout="tail",
+    )
+
+    with pytest.raises(ValueError, match="valid only with a large_context_policy list"):
+        regressor.fit(np.zeros((8, 2)), np.arange(8, dtype=float))
 
 
 # ------------------------------------------- review: what `reused_train_state` records

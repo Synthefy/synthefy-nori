@@ -13,12 +13,18 @@ Keeping one implementation for both roles prevents benchmark and production beha
 from drifting apart: a policy measured in the harness is the exact policy that
 deploys.
 
-Five policies are registered. `cluster_route` is the only one with full benchmark
+Six policies are registered. `cluster_route` is the only one with full benchmark
 coverage and is the default when the feature is enabled; the rest are opt-in. The
 numbers below are from the recorded within-checkpoint policy benchmark:
 
   random             one random window. The baseline, and the cheapest thing that works:
                      a shared 8k window is within 0.013 R² of full context (median 0.004).
+  target_rank        one target-stratified window, selected at equal-frequency rank
+                     midpoints. ``cap=`` may make it smaller than the hardware window,
+                     so a holdout gate can compare 32k with 64k on the same fitted table.
+                     At 64k versus 32k it lost -0.0035 mean R² over nine extreme tables,
+                     including -0.0129 on all four LaDe tables, at 3.02x latency. It is
+                     a gateable specialist, not a default.
   cluster_route      cluster the QUERIES into `groups` groups, build one shared local pool
                      per group, route each query to its group's cache. Best policy of the
                      nine benchmarked (+0.017 mean Δ vs `random`, best on 7 of 15 tables,
@@ -39,9 +45,12 @@ Both boosting arms shard the table into `n_train // window` disjoint shards. The
 observed failures were at 4–6 shards, so they warn below `MIN_BOOST_SHARDS` (8) and
 fall back to `random` below two.
 
-Other evaluated approaches (coreset, stratified-y, per-cluster boosting) either lost
-or had severe regressions and are deliberately not shipped. Use this module's
-extension point to evaluate a new approach without expanding the built-in menu.
+Other evaluated approaches (feature-diversity coresets and per-cluster boosting)
+either lost or had severe regressions and are deliberately not shipped. Target-rank
+selection is the exception: it is shipped opt-in so its exact 32k/64k variants can be
+compared inside the existing train-holdout gate, not because its global 64k result won.
+Use this module's extension point to evaluate other approaches without expanding the
+built-in menu.
 
 ## Writing your own policy
 
@@ -83,7 +92,7 @@ import sys
 import warnings
 from functools import partial
 from pathlib import Path
-from typing import Callable, Optional, Sequence
+from typing import Callable, Literal, Optional, Sequence
 
 import numpy as np
 from sklearn.cluster import MiniBatchKMeans
@@ -637,6 +646,47 @@ def random_window(problem: Problem, rng: np.random.Generator) -> np.ndarray:
     return problem.predict(pool)
 
 
+@register_policy("target_rank")
+def target_rank(problem: Problem, rng: np.random.Generator, cap: Optional[int] = None) -> np.ndarray:
+    """One shared target-stratified context, selected at rank midpoints.
+
+    ``cap=None`` fills the hardware-derived ``problem.window``. A smaller explicit cap
+    lets a holdout gate compare context sizes without changing the fitted estimator::
+
+        large_context_policy=["target_rank[cap=32768]", "target_rank[cap=65536]"]
+
+    An explicit cap may not exceed ``problem.window``: doing so would make the
+    predictor silently subsample the selected rows and invalidate both the method name
+    and its holdout score. Ties are stable by original row order, and the chosen row
+    indices are sorted before prediction so selection does not reorder the context.
+
+    This is opt-in. On nine frozen extreme tables, 64k versus 32k changed mean R² by
+    -0.0035, lost on every LaDe table, and cost 3.02x inference latency. Its purpose is
+    to be a cheap one-call specialist that the existing holdout gate may accept on a
+    fitted IID table and reject elsewhere, not to replace ``cluster_route``.
+    """
+    del rng  # deterministic by construction; the protocol seed cannot change the pool
+    cap = problem.window if cap is None else int(cap)
+    if cap < 1:
+        raise ValueError(f"target_rank cap must be >= 1, got {cap}")
+    if cap > problem.window:
+        raise ValueError(
+            f"target_rank cap={cap} exceeds the hardware-safe window={problem.window}; "
+            "raise memory_policy.elements_budget or choose a smaller cap"
+        )
+    if not np.isfinite(problem.y_train).all():
+        raise ValueError("target_rank requires finite context targets")
+    if problem.n_train <= cap:
+        return problem.predict(np.arange(problem.n_train, dtype=np.int64))
+
+    order = np.argsort(problem.y_train, kind="stable")
+    ranks = np.floor((np.arange(cap, dtype=np.float64) + 0.5) * problem.n_train / cap).astype(np.int64)
+    pool = np.sort(order[ranks])
+    if len(pool) != cap or len(np.unique(pool)) != cap:
+        raise AssertionError("target_rank selection produced duplicate context rows")
+    return problem.predict(pool)
+
+
 @register_policy("cluster_route")
 def cluster_route(problem: Problem, rng: np.random.Generator, groups: int = 8) -> np.ndarray:
     """Clustered shared pools: `groups` query clusters, one shared local pool each.
@@ -899,12 +949,20 @@ def boost(
 
 
 # ----------------------------------------------------------------------- combinator
-def holdout_gate(candidates: Sequence[str | Policy], holdout: int = 2000) -> Policy:
+HoldoutStrategy = Literal["random", "tail"]
+
+
+def holdout_gate(
+    candidates: Sequence[str | Policy],
+    holdout: int = 2000,
+    strategy: HoldoutStrategy = "random",
+) -> Policy:
     """Build a meta-policy that picks the per-table winner on a train holdout.
 
-    Carves up to `holdout` rows out of train — capped so at least one full `window`
-    remains behind for the candidates to build a context from — scores every candidate
-    on them, then re-runs the winner on the real test set. This is how a custom policy
+    Carves up to `holdout` rows out of train, scores every candidate on them, then
+    re-runs the winner on the real test set. ``strategy="random"`` is the ordinary
+    IID split. ``strategy="tail"`` holds out the final rows and is the leak-safe choice
+    when input order is chronological. This is how a custom policy
     earns its way into production without a global claim: on the 15-table run the gate scored +0.0166,
     matching the best single policy, because it deployed the strong arm where it won
     and fell back where it would have blown up (diamonds: 0.947 not 0.717).
@@ -922,6 +980,8 @@ def holdout_gate(candidates: Sequence[str | Policy], holdout: int = 2000) -> Pol
 
     The winner is recorded on the returned function as `.last_winner`.
     """
+    if strategy not in ("random", "tail"):
+        raise ValueError(f"holdout strategy must be 'random' or 'tail', got {strategy!r}")
     resolved = [resolve_policy(c) for c in candidates]
 
     def gate(problem: Problem, rng: np.random.Generator) -> np.ndarray:
@@ -929,35 +989,58 @@ def holdout_gate(candidates: Sequence[str | Policy], holdout: int = 2000) -> Pol
         # the fitted table alone -- exactly like a boosting chain, and cached the same
         # way. Without this the sweep re-runs on every predict and the gate costs its
         # whole menu forever instead of once (measured: 33.8s cold, 32.4s warm).
-        key = ("gate", tuple(name for name, _ in resolved), holdout, problem.run_seed)
+        key = ("gate", tuple(name for name, _ in resolved), holdout, strategy, problem.run_seed)
         by_name = dict(resolved)
         cached = problem.train_cache.get(key)
         if cached is not None:
             gate.last_winner = cached
             return by_name[cached](problem, rng)
 
-        # Never hold out so much that the candidates are left without a full window to
-        # fill their context from. At n_train <= holdout the uncapped draw takes every
-        # row, and each candidate is then scored on an EMPTY context -- a real predictor
-        # raises there, and one that tolerates it picks a winner off noise.
-        n_held = min(holdout, problem.n_train - problem.window)
-        if n_held < 1:
+        # Never hold out so much that a candidate is left without the context it
+        # requested. Ordinary candidates need the full hardware window; explicitly
+        # capped target_rank candidates need only their cap. This distinction lets a
+        # gate compare 32k and 64k even when the hardware window is larger than both.
+        desired_context = max(problem.window if cap is None else min(int(cap), problem.window) for cap in caps)
+        if problem.n_train < 3:
             raise ValueError(
-                f"holdout_gate needs more than window={problem.window} train rows to "
-                f"carve a holdout from, but this table has {problem.n_train}. At that "
-                "size the whole table fits one call and no policy is needed."
+                "holdout_gate needs at least three train rows: one context row and "
+                f"two rows for an R² holdout, but this table has {problem.n_train}"
+            )
+        # When the table is only just above the activation threshold, an explicit cap
+        # can exceed the rows available after carving a holdout (50,001 rows versus a
+        # 65,536 cap is the production case). A cap is a maximum, not a minimum: score
+        # that candidate on the largest context the fold affords instead of crashing.
+        if problem.n_train <= desired_context:
+            n_held = min(holdout, max(2, int(np.ceil(problem.n_train * 0.05))))
+        else:
+            n_held = min(holdout, problem.n_train - desired_context)
+        n_held = max(2, min(n_held, problem.n_train - 1))
+        available_context = problem.n_train - n_held
+        requirement = f"desired_context={desired_context}" if finite_caps else f"window={problem.window}"
+        if available_context < desired_context:
+            warnings.warn(
+                f"holdout_gate: {requirement}, but this table leaves only "
+                f"{available_context} context rows after its {n_held}-row holdout; "
+                "capped candidates are scored on that available context and deployed "
+                "with up to their requested cap.",
+                LargeContextPolicyWarning,
+                stacklevel=2,
             )
         if n_held < holdout:
             warnings.warn(
-                f"holdout_gate: {problem.n_train} train rows at window="
-                f"{problem.window} leaves only {n_held} for the holdout, not "
+                f"holdout_gate: {problem.n_train} train rows with {requirement} "
+                f"leaves only {n_held} for the holdout, not "
                 f"{holdout}; the winner is chosen on that much evidence. Lower "
                 "`window`, or select a policy directly instead of gating.",
                 LargeContextPolicyWarning,
                 stacklevel=2,
             )
-        held = problem.rng(7).permutation(problem.n_train)[:n_held]
-        keep = np.setdiff1d(np.arange(problem.n_train), held, assume_unique=False)
+        if strategy == "tail":
+            held = np.arange(problem.n_train - n_held, problem.n_train)
+            keep = np.arange(problem.n_train - n_held)
+        else:
+            held = problem.rng(7).permutation(problem.n_train)[:n_held]
+            keep = np.setdiff1d(np.arange(problem.n_train), held, assume_unique=False)
         sub = problem.subproblem(keep, held)
         best_name, best_fn, best_score = None, None, -np.inf
         for name, fn in resolved:
@@ -978,6 +1061,10 @@ def holdout_gate(candidates: Sequence[str | Policy], holdout: int = 2000) -> Pol
         return best_fn(problem, rng)
 
     gate.last_winner = None
+    caps = [getattr(fn, "context_cap", None) for _, fn in resolved]
+    finite_caps = [int(cap) for cap in caps if cap is not None]
+    gate.context_cap = min(finite_caps) if finite_caps else None
+    gate.holdout_strategy = strategy
     return gate
 
 
@@ -1064,10 +1151,13 @@ def resolve_policy(spec: str | Policy) -> tuple[str, Policy]:
         )
 
     if params:
+        raw_fn = fn
         signature = inspect.signature(fn)
         takes_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values())
         unknown = set() if takes_kwargs else set(params) - set(signature.parameters)
         if unknown:
             raise ValueError(f"policy {text!r} has no parameter(s) {sorted(unknown)}")
         fn = partial(fn, **params)
+        if raw_fn is target_rank and "cap" in params:
+            fn.context_cap = int(params["cap"])
     return (f"{label}[{raw}]" if params else label), fn

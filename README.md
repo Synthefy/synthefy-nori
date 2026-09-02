@@ -747,6 +747,7 @@ NoriRegressor(model="nori-6m", large_context_policy="cluster_route")   # thresho
 | `safeboost` | one per shard | +0.015 mean, worst **0.000** — on 8 tables | the table is heterogeneous and you can afford the calls |
 | `boost` | one per shard | −0.019 mean, worst **−0.229** | never as a default; only gated or after measuring your own table |
 | `random` | 1 | the baseline | you want today's behavior, made explicit |
+| `target_rank[cap=N]` | 1 | 64k−32k: −0.0035 overall; +0.0040 IID, −0.0129 LaDe | compare context caps behind a holdout gate |
 
 Pass a **list** to gate: candidates are scored on a train holdout and the per-table
 winner is deployed. This is the only safe way to use `boost` — the gate declined it on
@@ -755,6 +756,29 @@ exactly the tables where it detonated:
 ```python
 NoriRegressor(large_context_policy=["random", "cluster_route", "safeboost"])
 ```
+
+For chronologically ordered rows, use a tail holdout so future rows never enter
+the candidate contexts. The measured 64k regression was concentrated in temporal
+LaDe tables, so do not use the default random holdout for this comparison:
+
+```python
+NoriRegressor(
+    large_context_policy=[
+        "target_rank[cap=32768]",
+        "target_rank[cap=65536]",
+    ],
+    large_context_holdout="tail",
+)
+```
+
+For IID rows, leave `large_context_holdout="random"`. A cap is a maximum: when
+the table is only slightly larger than the 50k activation threshold, the gate
+scores a candidate on the largest context left after its holdout rather than
+failing because 64k rows are unavailable.
+
+The direct 32k and 64k arms are measured. Tail-gate selection itself is a new
+safety mechanism and still needs a frozen temporal replay before it should
+become a default policy.
 
 Also accepted: `True` (the default policy), `"cluster_route[groups=16]"` to pass
 parameters, and `"pkg.mod:fn"` / `"path/to/file.py:fn"` / any callable for your own —

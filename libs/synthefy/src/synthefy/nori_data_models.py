@@ -61,6 +61,8 @@ MEMORY_RUNGS = (
 #: without importing the heavyweight synthefy-nori package.
 DEFAULT_LARGE_CONTEXT_THRESHOLD = 50_000
 DEFAULT_LARGE_CONTEXT_SEED = 0
+DEFAULT_LARGE_CONTEXT_HOLDOUT = "random"
+MAX_LARGE_CONTEXT_CANDIDATES = 8
 
 #: Hosted serving owns its work bounds; these cap the two integer controls before
 #: a request is sent.
@@ -68,9 +70,10 @@ MAX_LARGE_CONTEXT_THRESHOLD = 10_000_000
 MAX_LARGE_CONTEXT_SEED = 2**32 - 1
 
 MemoryPreset = Literal["exact", "max_context", "off"]
-#: Local mode also accepts callables; hosted modes require a policy-name string and
-#: let the server's installed synthefy-nori resolver decide whether it is valid.
-LargeContextPolicy = Union[str, Callable[..., Any]]
+#: Local mode also accepts a callable; hosted modes accept one built-in name or a
+#: bounded list of names for the per-table holdout gate.
+LargeContextPolicy = Union[str, List[str], Callable[..., Any]]
+LargeContextHoldout = Literal["random", "tail"]
 MultiTargetPredictionStrategy = Literal["independent", "copula", "autoregressive"]
 DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY: MultiTargetPredictionStrategy = "copula"
 MAX_MULTI_TARGET_RANDOM_STATE = 2**32 - 1
@@ -475,6 +478,13 @@ class LargeContextReport(BaseModel):
         ge=0,
         le=MAX_LARGE_CONTEXT_SEED,
         description="Deterministic policy seed honored for this request.",
+    )
+    holdout_strategy: Optional[LargeContextHoldout] = Field(
+        None,
+        description=(
+            "Validation split used by a policy-list gate: random for IID rows or "
+            "tail for chronologically ordered rows. Null for a single policy."
+        ),
     )
     reason: Optional[str] = Field(
         None,

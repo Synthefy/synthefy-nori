@@ -469,15 +469,39 @@ Here are some commonly used built-in policies:
 | `"cluster_route_g4"` | supported |
 | `"safeboost"` | supported |
 | `"boost"` | supported; prefer `safeboost` |
+| `"target_rank[cap=N]"` | supported; compare caps through a policy-list gate |
 
 Hosted and SageMaker support built-ins from the installed Nori version. See
 [`policies.py`](../../src/synthefy_nori/inference/policies.py) for the complete
-current list and configuration options. Hosted modes forward policy-name strings
-unchanged, including parameter strings such as `"safeboost[nu=0.25]"`. Custom
+current list and configuration options. Hosted modes forward one policy-name string
+or a list of up to eight names unchanged, including parameter strings such as
+`"safeboost[nu=0.25]"`. Custom
 callables and module/file policies remain local-only.
 `large_context_cache_entries` is also intentionally absent from the client:
 each client call is one-shot, fits the supplied `X_train` again, and hosted
 serving retains no customer context across requests.
+
+For the 32k/64k target-rank comparison, send a list and choose the split that
+matches row semantics:
+
+```python
+preds = client.predict(
+    X_train,
+    y_train,
+    X_test,
+    large_context_policy=[
+        "target_rank[cap=32768]",
+        "target_rank[cap=65536]",
+    ],
+    large_context_holdout="tail",  # chronological; use "random" for IID
+)
+```
+
+The response echoes `holdout_strategy`; the client rejects a response that did
+not honor it. The global 64k screen was 3.02x slower than 32k and lost 0.0129
+mean R² on four LaDe temporal tables, so 64k is not a default.
+The direct arms are measured; selecting between them with a tail gate still
+needs a frozen temporal replay before that gate should become a default.
 
 `last_large_context_report` is cleared before every call and works in all
 three modes. It records whether the policy engaged, the honored policy,
