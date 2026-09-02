@@ -313,6 +313,56 @@ def test_flex_block_lse_merge_matches_one_full_softmax(monkeypatch, kv_heads):
     assert cache.max_staged_rows == 6
 
 
+@pytest.mark.parametrize(("head_dim", "flex_head_dim"), [(8, 8), (44, 64), (56, 64)])
+def test_flex_blockwise_pads_non_power_of_two_head_widths(monkeypatch, head_dim, flex_head_dim):
+    torch.manual_seed(7)
+    n_heads = 4
+    q = torch.randn(1, 5, n_heads, head_dim)
+    kv = torch.randn(1, 9, 2, n_heads, head_dim)
+    cache = BlockwiseSeqKV.from_row_slices(
+        _row_slices(kv, (4, 5)),
+        1,
+        2,
+        quantize=False,
+        device=torch.device("cpu"),
+        dtype=kv.dtype,
+    )
+    calls = []
+
+    def fake_flex(q_block, k_block, v_block, *, scale, enable_gqa):
+        calls.append((q_block.shape[-1], k_block.shape[-1], v_block.shape[-1], scale, enable_gqa))
+        logits = torch.einsum("bhqd,bhkd->bhqk", q_block.float(), k_block.float()) * scale
+        lse = torch.logsumexp(logits, dim=-1)
+        output = torch.einsum("bhqk,bhkd->bhqd", torch.softmax(logits, dim=-1), v_block.float())
+        return output, lse
+
+    monkeypatch.setattr(layer_module, "_flex_attention_with_lse", fake_flex)
+    attn = MultiheadAttention(
+        embed_dim=n_heads * head_dim,
+        num_heads=n_heads,
+        qkv_combined=False,
+        dropout=0.0,
+    ).eval()
+    with torch.inference_mode():
+        got = attn._compute_attention_blockwise_flex(q, cache)
+
+    q_full = q.to(torch.bfloat16).permute(0, 2, 1, 3)
+    k_full, v_full = kv.to(torch.bfloat16).unbind(dim=2)
+    logits = torch.einsum("bhqd,bhkd->bhqk", q_full.float(), k_full.permute(0, 2, 1, 3).float()) * head_dim**-0.5
+    expected = torch.einsum(
+        "bhqk,bhkd->bhqd",
+        torch.softmax(logits, dim=-1),
+        v_full.permute(0, 2, 1, 3).float(),
+    ).permute(0, 2, 1, 3)
+
+    torch.testing.assert_close(got, expected, rtol=2e-5, atol=2e-5)
+    assert [(q_dim, k_dim, v_dim, enable_gqa) for q_dim, k_dim, v_dim, _, enable_gqa in calls] == [
+        (flex_head_dim, flex_head_dim, flex_head_dim, False),
+        (flex_head_dim, flex_head_dim, flex_head_dim, False),
+    ]
+    assert [scale for _, _, _, scale, _ in calls] == pytest.approx([head_dim**-0.5] * 2)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("kv_heads", [1, 4])
 def test_cuda_flex_blockwise_matches_full_sdpa(kv_heads):
