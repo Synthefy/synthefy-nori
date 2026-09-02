@@ -42,13 +42,16 @@ from synthefy.featurize import (
 )
 from synthefy.data_models import NoriPredictRequest, NoriPredictResponse
 from synthefy.nori_data_models import (
+    DEFAULT_LARGE_CONTEXT_HOLDOUT,
     DEFAULT_LARGE_CONTEXT_SEED,
     DEFAULT_LARGE_CONTEXT_THRESHOLD,
     DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY,
     LargeContextPolicy,
+    LargeContextHoldout,
     LargeContextReport,
     MAX_LARGE_CONTEXT_SEED,
     MAX_LARGE_CONTEXT_THRESHOLD,
+    MAX_LARGE_CONTEXT_CANDIDATES,
     MAX_MULTI_TARGET_AUTOREGRESSIVE_ORDERS,
     MAX_MULTI_TARGET_COPULA_CV,
     MAX_MULTI_TARGET_COPULA_PIT_JITTER,
@@ -354,6 +357,7 @@ def _build_nori_request(
     large_context_policy: Optional[LargeContextPolicy] = None,
     large_context_threshold: Optional[int] = None,
     large_context_seed: Optional[int] = None,
+    large_context_holdout: Optional[LargeContextHoldout] = None,
     multi_target_prediction_strategy: Optional[MultiTargetPredictionStrategy] = None,
     multi_target_prediction_policy: Optional[MultiTargetPredictionPolicy] = None,
 ) -> NoriPredictRequest:
@@ -424,6 +428,7 @@ def _build_nori_request(
         large_context_policy=large_context_policy,
         large_context_threshold=large_context_threshold,
         large_context_seed=large_context_seed,
+        large_context_holdout=large_context_holdout,
         multi_target_prediction_strategy=multi_target_prediction_strategy,
         multi_target_prediction_policy=multi_target_prediction_policy,
     )
@@ -686,6 +691,7 @@ def _validate_large_context_controls(
     policy: Optional[LargeContextPolicy],
     threshold: Optional[int],
     seed: Optional[int],
+    holdout: Optional[LargeContextHoldout],
     output_type: str,
     model: Optional[str],
     mode: str,
@@ -698,23 +704,38 @@ def _validate_large_context_controls(
     distinguishable from "omitted" here, unlike comparing against the default value.
     """
     if policy is None:
-        if threshold is not None or seed is not None:
+        if threshold is not None or seed is not None or holdout is not None:
             # Both are otherwise silently dropped from the wire request: the caller
             # almost certainly meant to also pass large_context_policy=. Same rule,
             # same wording, as NoriPredictRequest's own model_validator and the
             # server's _parse_large_context, so the client fails exactly where the
             # request would have anyway -- before a paid hosted round-trip.
             raise ValueError(
-                "large_context_threshold/large_context_seed require "
-                f"large_context_policy; got threshold={threshold!r}, seed={seed!r} "
+                "large_context_threshold/large_context_seed/large_context_holdout require "
+                f"large_context_policy; got threshold={threshold!r}, seed={seed!r}, "
+                f"holdout={holdout!r} "
                 "with no policy selected. Pass large_context_policy=..., or omit "
-                "both large_context_threshold and large_context_seed."
+                "the large-context controls."
             )
         return
-    if not isinstance(policy, str) and (mode != "local" or not callable(policy)):
+    if isinstance(policy, list):
+        if not policy or len(policy) > MAX_LARGE_CONTEXT_CANDIDATES:
+            raise ValueError(
+                "large_context_policy list must contain between 1 and "
+                f"{MAX_LARGE_CONTEXT_CANDIDATES} built-in policy names"
+            )
+        if any(not isinstance(item, str) or not item.strip() for item in policy):
+            raise ValueError("every large_context_policy list item must be a non-empty string")
+    elif not isinstance(policy, str) and (mode != "local" or not callable(policy)):
         raise ValueError(
-            "large_context_policy must be a policy name string; custom callables are supported only in local mode."
+            "large_context_policy must be a policy name string or list of names; "
+            "custom callables are supported only in local mode."
         )
+    if holdout is not None:
+        if not isinstance(policy, list):
+            raise ValueError("large_context_holdout is valid only with a large_context_policy list")
+        if holdout not in ("random", "tail"):
+            raise ValueError("large_context_holdout must be 'random' or 'tail'")
     if threshold is not None and (
         isinstance(threshold, bool)
         or not isinstance(threshold, Integral)
@@ -758,11 +779,12 @@ def _normalized_large_context_report(request: NoriPredictRequest, report: Option
     )
     seed = request.large_context_seed if request.large_context_seed is not None else DEFAULT_LARGE_CONTEXT_SEED
     if report is None:
-        return LargeContextReport(
+        resolved = LargeContextReport(
             applied=False,
-            policy=(policy if isinstance(policy, str) else getattr(policy, "__name__", repr(policy))),
+            policy=_large_context_policy_label(policy),
             threshold=threshold,
             seed=seed,
+            holdout_strategy=request.large_context_holdout,
             reason="below_threshold",
             window=None,
             n_train=len(request.X_train),
@@ -771,16 +793,28 @@ def _normalized_large_context_report(request: NoriPredictRequest, report: Option
             nori_calls=0,
             full_context=None,
             reused_train_state=False,
-        ).model_dump()
-    return LargeContextReport.model_validate(
-        {
-            **report,
-            "applied": True,
-            "threshold": threshold,
-            "seed": seed,
-            "reason": None,
-        }
-    ).model_dump()
+        )
+    else:
+        resolved = LargeContextReport.model_validate(
+            {
+                **report,
+                "applied": True,
+                "threshold": threshold,
+                "seed": seed,
+                "reason": None,
+            }
+        )
+    exclude = {"holdout_strategy"} if resolved.holdout_strategy is None else set()
+    return resolved.model_dump(exclude=exclude)
+
+
+def _large_context_policy_label(policy: LargeContextPolicy) -> str:
+    """Canonical display label shared by local and hosted capability checks."""
+    if isinstance(policy, list):
+        return f"gate[{','.join(item.strip() for item in policy)}]"
+    if isinstance(policy, str):
+        return policy.strip()
+    return getattr(policy, "__name__", repr(policy))
 
 
 # The one discretization strategy computable from the hosted endpoint's
@@ -1321,6 +1355,7 @@ class SynthefyNoriClient:
         large_context_policy: Optional[LargeContextPolicy] = None,
         large_context_threshold: Optional[int] = None,
         large_context_seed: Optional[int] = None,
+        large_context_holdout: Optional[LargeContextHoldout] = None,
         multi_target_prediction_strategy: Optional[MultiTargetPredictionStrategy] = None,
         multi_target_prediction_policy: Optional[MultiTargetPredictionPolicy] = None,
         timeout: Optional[float] = None,
@@ -1490,10 +1525,12 @@ class SynthefyNoriClient:
             settings needs far more query rows than the hosted request-body limit allows
             (~64 MiB) -- so lowering ``elements_budget`` is what lets a hosted caller reach
             the cached path at all.
-        large_context_policy : str, callable, or None
+        large_context_policy : str, list of str, callable, or None
             Select context rows explicitly when `len(X_train)` exceeds
             `large_context_threshold`. Off by default. Remote and SageMaker
-            modes forward a policy-name string unchanged; the server accepts
+            modes forward one policy-name string or a list of up to eight names;
+            a list is scored on a train holdout and deploys its per-table winner.
+            The server accepts
             every built-in in its installed Nori registry, including `random`,
             `cluster_route`, `cluster_route_g4`, `safeboost`, and `boost`.
             Parameter strings such as `safeboost[nu=0.25]` are supported.
@@ -1513,6 +1550,10 @@ class SynthefyNoriClient:
             Deterministic policy seed in the range 0 through 2**32 - 1. `None` (the
             default) resolves to 0 once `large_context_policy` is set; passing it
             without a policy raises, rather than being silently dropped.
+        large_context_holdout : {"random", "tail"} or None, optional
+            Validation split for a policy list. `random` is the default for IID
+            rows. `tail` holds out the final rows and keeps future chronological
+            rows out of every candidate context. Invalid with a single policy.
 
             Client calls are one-shot: every call supplies and fits `X_train`
             again. No hidden local or hosted cross-request context cache is
@@ -1641,6 +1682,7 @@ class SynthefyNoriClient:
             policy=large_context_policy,
             threshold=large_context_threshold,
             seed=large_context_seed,
+            holdout=large_context_holdout,
             output_type=output_type,
             model=self.model,
             mode=self.mode,
@@ -1680,9 +1722,15 @@ class SynthefyNoriClient:
             resolved_large_context_seed = (
                 DEFAULT_LARGE_CONTEXT_SEED if large_context_seed is None else int(large_context_seed)
             )
+            resolved_large_context_holdout = (
+                (large_context_holdout or DEFAULT_LARGE_CONTEXT_HOLDOUT)
+                if isinstance(large_context_policy, list)
+                else None
+            )
         else:
             resolved_large_context_threshold = None
             resolved_large_context_seed = None
+            resolved_large_context_holdout = None
         request = _build_nori_request(
             X_train,
             y_train,
@@ -1697,6 +1745,7 @@ class SynthefyNoriClient:
             large_context_policy=large_context_policy,
             large_context_threshold=resolved_large_context_threshold,
             large_context_seed=resolved_large_context_seed,
+            large_context_holdout=resolved_large_context_holdout,
             multi_target_prediction_strategy=multi_target_prediction_strategy,
             multi_target_prediction_policy=multi_target_prediction_policy,
         )
@@ -1893,6 +1942,11 @@ class SynthefyNoriClient:
                         if request.large_context_seed is not None
                         else DEFAULT_LARGE_CONTEXT_SEED
                     ),
+                    **(
+                        {"large_context_holdout": request.large_context_holdout or DEFAULT_LARGE_CONTEXT_HOLDOUT}
+                        if isinstance(request.large_context_policy, list)
+                        else {}
+                    ),
                     # The client API is one-shot: every call fits again. A
                     # caller that needs fit-once/predict-many cache control
                     # should use NoriRegressor directly.
@@ -1934,6 +1988,10 @@ class SynthefyNoriClient:
                         if request.large_context_seed is not None
                         else DEFAULT_LARGE_CONTEXT_SEED
                     )
+                    if isinstance(request.large_context_policy, list):
+                        regressor.large_context_holdout = request.large_context_holdout or DEFAULT_LARGE_CONTEXT_HOLDOUT
+                    elif hasattr(regressor, "large_context_holdout"):
+                        regressor.large_context_holdout = DEFAULT_LARGE_CONTEXT_HOLDOUT
                     regressor.large_context_cache_entries = 1
                 except AttributeError as exc:
                     raise ImportError(
@@ -2154,7 +2212,7 @@ class SynthefyNoriClient:
                 request.large_context_seed if request.large_context_seed is not None else DEFAULT_LARGE_CONTEXT_SEED
             )
             mismatches = []
-            expected_policy = request.large_context_policy.strip()
+            expected_policy = _large_context_policy_label(request.large_context_policy)
             if report.policy != expected_policy:
                 mismatches.append(f"policy={report.policy!r}, expected {expected_policy!r}")
 
@@ -2162,13 +2220,21 @@ class SynthefyNoriClient:
                 mismatches.append(f"threshold={report.threshold}, expected {expected_threshold}")
             if report.seed != expected_seed:
                 mismatches.append(f"seed={report.seed}, expected {expected_seed}")
+            expected_holdout = (
+                request.large_context_holdout or DEFAULT_LARGE_CONTEXT_HOLDOUT
+                if isinstance(request.large_context_policy, list)
+                else None
+            )
+            if report.holdout_strategy != expected_holdout:
+                mismatches.append(f"holdout_strategy={report.holdout_strategy!r}, expected {expected_holdout!r}")
             if mismatches:
                 raise ValueError(
                     "The deployment returned a mismatched "
                     "large_context_report (" + "; ".join(mismatches) + "). "
                     "The client cannot prove the requested policy was honored."
                 )
-            self.last_large_context_report = report.model_dump()
+            exclude = {"holdout_strategy"} if report.holdout_strategy is None else set()
+            self.last_large_context_report = report.model_dump(exclude=exclude)
         if is_multi_target:
             expected_strategy = request.multi_target_prediction_strategy or DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY
             if parsed.multi_target_prediction_strategy != expected_strategy:

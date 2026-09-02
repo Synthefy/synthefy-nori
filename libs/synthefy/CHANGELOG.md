@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Large-context policy lists now work in local, Baseten, and SageMaker modes.
+  `large_context_holdout="random"` scores IID rows, while `"tail"` keeps future
+  chronological rows out of validation contexts. The capability report echoes
+  the honored strategy. Lists are bounded to eight installed built-ins.
 - Added one-call multi-target regression to `SynthefyNoriClient.predict` in
   local, Baseten remote, and SageMaker modes. A matrix-valued `y_train` returns
   joint means or bounded joint samples, defaults to the copula strategy, and

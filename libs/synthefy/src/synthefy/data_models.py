@@ -4,9 +4,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from synthefy.nori_data_models import (
     LargeContextPolicy,
+    LargeContextHoldout,
     LargeContextReport,
     MAX_LARGE_CONTEXT_SEED,
     MAX_LARGE_CONTEXT_THRESHOLD,
+    MAX_LARGE_CONTEXT_CANDIDATES,
     MemoryPolicyInput,
     MemoryReport,
     MultiTargetMemoryReport,
@@ -57,6 +59,8 @@ class NoriPredictRequest(BaseModel):
         with ``large_context_policy``.
     large_context_seed : int or None, optional
         Deterministic selection/routing seed. Valid only with a policy.
+    large_context_holdout : {"random", "tail"} or None, optional
+        Validation split for a policy list. Tail is leak-safe for chronological rows.
     """
 
     # Coerce assignments just as construction does, so assigning a policy dict
@@ -73,15 +77,29 @@ class NoriPredictRequest(BaseModel):
     large_context_policy: Optional[LargeContextPolicy] = None
     large_context_threshold: Optional[int] = Field(default=None, strict=True, ge=1, le=MAX_LARGE_CONTEXT_THRESHOLD)
     large_context_seed: Optional[int] = Field(default=None, strict=True, ge=0, le=MAX_LARGE_CONTEXT_SEED)
+    large_context_holdout: Optional[LargeContextHoldout] = None
     multi_target_prediction_strategy: Optional[MultiTargetPredictionStrategy] = None
     multi_target_prediction_policy: Optional[MultiTargetPredictionPolicy] = None
 
     @model_validator(mode="after")
     def _large_context_parameters_need_a_policy(self):
         if self.large_context_policy is None and (
-            self.large_context_threshold is not None or self.large_context_seed is not None
+            self.large_context_threshold is not None
+            or self.large_context_seed is not None
+            or self.large_context_holdout is not None
         ):
-            raise ValueError("large_context_threshold/large_context_seed require large_context_policy")
+            raise ValueError(
+                "large_context_threshold/large_context_seed/large_context_holdout require large_context_policy"
+            )
+        if self.large_context_holdout is not None and not isinstance(self.large_context_policy, list):
+            raise ValueError("large_context_holdout is valid only with a large_context_policy list")
+        if isinstance(self.large_context_policy, list):
+            if not 1 <= len(self.large_context_policy) <= MAX_LARGE_CONTEXT_CANDIDATES:
+                raise ValueError(
+                    f"large_context_policy list must contain between 1 and {MAX_LARGE_CONTEXT_CANDIDATES} names"
+                )
+            if any(not item.strip() for item in self.large_context_policy):
+                raise ValueError("every large_context_policy list item must be non-empty")
         return self
 
     def to_wire(self) -> Dict[str, Any]:

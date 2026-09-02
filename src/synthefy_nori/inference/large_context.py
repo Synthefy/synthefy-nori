@@ -15,7 +15,7 @@ already within the window.
 
 ``cluster_route`` is the default because it is the only arm measured across all 15
 benchmark tables without a regression. ``safeboost``, ``boost``, ``random``,
-``cluster_route_g4``, a ``holdout_gate`` over any of them, and custom callables
+``target_rank``, ``cluster_route_g4``, a ``holdout_gate`` over any of them, and custom callables
 are all selectable. **The menu, each arm's measured cost and its tail risk live in**
 ``policies.py`` — one home per number, so they cannot drift apart. ``boost``'s tail is
 severe; read it there before selecting it.
@@ -70,7 +70,7 @@ DEFAULT_LARGE_CONTEXT_POLICY = "cluster_route"
 """The policy used when one is requested without naming which."""
 
 
-def resolve_large_context_policy(spec) -> tuple[str, Policy]:
+def resolve_large_context_policy(spec, *, holdout_strategy: str = "random") -> tuple[str, Policy]:
     """Turn ``large_context_policy=`` into ``(name, callable)``.
 
     Accepts everything :func:`~synthefy_nori.inference.policies.resolve_policy` does --
@@ -94,7 +94,7 @@ def resolve_large_context_policy(spec) -> tuple[str, Policy]:
                 "leave large-table handling to the memory policy as before."
             )
         names = [resolve_policy(c)[0] for c in candidates]
-        return f"gate[{','.join(names)}]", holdout_gate(candidates)
+        return f"gate[{','.join(names)}]", holdout_gate(candidates, strategy=holdout_strategy)
     return resolve_policy(spec)
 
 
@@ -162,6 +162,7 @@ def run_policy(
     policy_spec,
     seed: int = 0,
     cache_scope: tuple = (),
+    holdout_strategy: str = "random",
 ) -> tuple[np.ndarray, dict]:
     """Run one large-context policy over ``X_test`` and return ``(predictions, report)``.
 
@@ -182,7 +183,7 @@ def run_policy(
         the policy to a single ``predict`` is paying. A second call on the same
         estimator reports fewer, because the chain it replays was already built.
     """
-    name, policy = resolve_large_context_policy(policy_spec)
+    name, policy = resolve_large_context_policy(policy_spec, holdout_strategy=holdout_strategy)
     # run_seed travels with the query view because the rng below is drawn from it and a
     # boosting chain's shards come from that rng -- so it keys the train cache.
     problem = base.with_queries(X_test, run_seed=seed, cache_scope=cache_scope)
@@ -193,13 +194,15 @@ def run_policy(
             name, problem, problem.window, full_context=False, reused_train_state=False
         )
     window = problem.window
-    if problem.n_train <= window:
+    policy_cap = getattr(policy, "context_cap", None)
+    if problem.n_train <= window and (policy_cap is None or problem.n_train <= policy_cap):
         # Nothing to select: the whole table already fits one call. Every policy would
         # degenerate to it, and cluster_route would waste `groups` calls re-predicting
         # partitions of a context it could take whole.
         warnings.warn(
             f"large_context_policy={name!r} was requested for a table of {problem.n_train} "
-            f"rows, but all of them fit the {window}-row window, so no policy is needed; "
+            f"rows, but all of them fit the {window}-row window and the policy does not "
+            f"request a smaller cap, so no policy is needed; "
             f"predicting from full context in one call. Raise large_context_threshold above "
             f"{problem.n_train} to silence this.",
             LargeContextPolicyWarning,
@@ -226,6 +229,7 @@ def run_policy(
     winner = getattr(policy, "last_winner", None)
     if winner is not None:
         report["gate_winner"] = winner
+        report["holdout_strategy"] = getattr(policy, "holdout_strategy", holdout_strategy)
     return preds, report
 
 
