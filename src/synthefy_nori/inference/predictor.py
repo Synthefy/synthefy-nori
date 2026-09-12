@@ -517,7 +517,16 @@ class NoriPredictor:
         # `y_train` is forwarded to selectors that require it (e.g.
         # HighDimFeatureSelector with corr / mi / extratrees). Steps that don't
         # accept a y= kwarg simply ignore it via **kwargs.
-        categorical_idx = step.fit(x_train, categorical_idx, seed, y=y_train)
+        if (
+            isinstance(step, HighDimFeatureSelector)
+            and getattr(step, "fit_on_test", False)
+            and x_test is not None
+            and len(x_test)
+        ):
+            # Experimental transductive fit: the projection sees the test rows' feature distribution (no labels).
+            categorical_idx = step.fit(np.vstack([x_train, x_test]), categorical_idx, seed, y=None)
+        else:
+            categorical_idx = step.fit(x_train, categorical_idx, seed, y=y_train)
         if isinstance(step, FingerprintFeatureEncoder):
             x_train_out, categorical_idx = step.transform(x_train, is_test=False)
             x_test_out, categorical_idx = step.transform(x_test, is_test=True)

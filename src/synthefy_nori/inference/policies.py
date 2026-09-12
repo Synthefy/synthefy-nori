@@ -809,7 +809,11 @@ def replay_chain(problem: Problem, stages) -> np.ndarray:
     Equivalent to the fused build, not an approximation: preprocessing is inductive
     (fitted on the context, never on the query block — `_fit_transform_step_inductive`),
     so a query row scores the same whether it shared its call with the later train rows
-    or not, exactly as the existing `query_chunk` splitting already relies on.
+    or not, exactly as the existing `query_chunk` splitting already relies on. The one
+    exception is the wide-table projection when ``HighDimFeatureSelector.fit_on_test`` is
+    on (the default): above 256 features its basis also sees the query block's features,
+    so replay is equivalent up to that basis' dependence on the block — negligible when the
+    context dominates the block, which the `query_chunk` sizing guarantees.
     """
     preds = np.zeros(problem.n_test, dtype=np.float64)
     for shard, labels, weight in stages:
