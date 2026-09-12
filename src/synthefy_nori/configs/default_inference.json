@@ -26,7 +26,7 @@
       "svd_components": 512,
       "n_features_threshold": 256,
       "binary_threshold": 1.01,
-      "svd_rows_per_component": 3
+      "svd_rows_per_component": 3, "fit_on_test": true
     }
   },
   {
@@ -56,7 +56,7 @@
       "svd_components": 512,
       "n_features_threshold": 256,
       "binary_threshold": 1.01,
-      "svd_rows_per_component": 3
+      "svd_rows_per_component": 3, "fit_on_test": true
     }
   },
   {
@@ -86,7 +86,7 @@
       "svd_components": 512,
       "n_features_threshold": 256,
       "binary_threshold": 1.01,
-      "svd_rows_per_component": 3
+      "svd_rows_per_component": 3, "fit_on_test": true
     }
   },
   {
@@ -116,7 +116,7 @@
       "svd_components": 512,
       "n_features_threshold": 256,
       "binary_threshold": 1.01,
-      "svd_rows_per_component": 3
+      "svd_rows_per_component": 3, "fit_on_test": true
     }
   },
   {
@@ -146,7 +146,7 @@
       "svd_components": 512,
       "n_features_threshold": 256,
       "binary_threshold": 1.01,
-      "svd_rows_per_component": 3
+      "svd_rows_per_component": 3, "fit_on_test": true
     }
   },
   {
@@ -176,7 +176,7 @@
       "svd_components": 512,
       "n_features_threshold": 256,
       "binary_threshold": 1.01,
-      "svd_rows_per_component": 3
+      "svd_rows_per_component": 3, "fit_on_test": true
     }
   },
   {
@@ -206,7 +206,7 @@
       "svd_components": 512,
       "n_features_threshold": 256,
       "binary_threshold": 1.01,
-      "svd_rows_per_component": 3
+      "svd_rows_per_component": 3, "fit_on_test": true
     }
   },
   {
@@ -236,7 +236,7 @@
       "svd_components": 512,
       "n_features_threshold": 256,
       "binary_threshold": 1.01,
-      "svd_rows_per_component": 3
+      "svd_rows_per_component": 3, "fit_on_test": true
     }
   }
 ]

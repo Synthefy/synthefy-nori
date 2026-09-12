@@ -1390,9 +1390,11 @@ class HighDimFeatureSelector(BasePreprocess):
         svd_rows_per_component: int = 1,
         extratrees_n_estimators: int = 100,
         subsample_rows: int = 5000,
+        fit_on_test: bool = False,
     ):
         super().__init__()
         self.strategy = strategy
+        self.fit_on_test = bool(fit_on_test)  # experimental: fit the projection on context + test features
         self.top_k = int(top_k)
         self.n_features_threshold = int(n_features_threshold)
         self.binary_threshold = float(binary_threshold)
