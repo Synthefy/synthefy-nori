@@ -570,6 +570,8 @@ ensemble math but can reassociate mixed-precision GEMMs at the last few bits.
 | Env var | Default | What it does |
 |---|---|---|
 | `SYNTHEFY_GPU_SVD` | `1` (on) | Run the high-dimensional feature SVD on the GPU (exact, not randomized). Acts when features ≥256; set `0` for the CPU/randomized path. |
+
+On tables with more than 256 features the SVD projection is fitted on the context **and** the query rows' features (labels are never used) since 0.21.0 — `"fit_on_test": true` in the bundled inference config. This keeps query rows whose features drift outside the context's range (a later time period, another instrument batch) inside the fitted subspace; on random splits the two fits coincide. Set it to `false` in a custom `inference_config` to recover the context-only fit.
 | `SYNTHEFY_CAP_QUANTILES` | `1` (on) | Cap quantile-transform resolution + subsample its fit. Acts on large context (>2000 rows); set `0` to disable. |
 | `SYNTHEFY_QUANTILE_MAX` / `SYNTHEFY_QUANTILE_SUBSAMPLE` | — | Tune the cap above (max quantiles / fit-subsample size). |
 | `SYNTHEFY_ADAPTIVE_FIT_SUBSAMPLE` | `2000` | Fit preprocessing on at most this many rows, apply to all rows. Acts on large context; set `0` to fit on all rows. |

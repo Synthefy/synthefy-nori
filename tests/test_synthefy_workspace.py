@@ -99,7 +99,7 @@ def test_project_identities_versions_and_build_backends_are_disjoint():
     client = _toml(_CLIENT / "pyproject.toml")
 
     assert root["project"]["name"] == "synthefy-nori"
-    assert root["project"]["version"] == "0.20.2"
+    assert root["project"]["version"] == "0.21.0"
     assert root["build-system"]["build-backend"] == "setuptools.build_meta"
     assert client["project"]["name"] == "synthefy"
     assert client["project"]["version"] == "7.1.2"
