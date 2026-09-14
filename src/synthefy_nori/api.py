@@ -26,6 +26,7 @@ from synthefy_nori.inference.large_context import (
     resolve_large_context_policy,
     run_policy,
 )
+from synthefy_nori.entity_ids import EntityIDPreprocessor
 from synthefy_nori.inference.memory_policy import MemoryPolicy
 from synthefy_nori.model.quantile_dist import quantile_dist_mean_numpy
 from synthefy_nori.multi_target import (
@@ -192,6 +193,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         categorical_encoding: str = DEFAULT_CATEGORICAL_ENCODING,
         max_categorical_cardinality: int = DEFAULT_MAX_CARDINALITY,
         text_columns=None,
+        encode_id_cols: list[str] | None = None,
         memory_policy: "MemoryPolicy | dict | str | None" = None,
         large_context_policy=None,
         large_context_threshold: int = DEFAULT_LARGE_CONTEXT_THRESHOLD,
@@ -250,6 +252,10 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 declares a categorical target with the default strategy
                 (``DEFAULT_DISCRETIZE_METHOD``); ``None`` (default) uses the
                 distinct values of the fitted ``y`` when a strategy is set.
+            encode_id_cols: Optional list of DataFrame ID columns to encode in place,
+                independently using context-fitted codes. Integer or string IDs are
+                supported; missing/unseen query IDs become -1. None or [] disables
+                ID encoding. Columns cannot overlap explicit categorical/text columns.
             categorical_columns: DataFrame feature-column policy. ``"auto"``
                 (default) encodes remaining non-numeric columns; a sequence
                 encodes exactly those columns and rejects undeclared strings;
@@ -356,6 +362,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         # GridSearchCV/cross_val_score); predict() kwargs override per call.
         self.discretize = discretize
         self.categorical_levels = categorical_levels
+        self.encode_id_cols = encode_id_cols
         self.categorical_columns = categorical_columns
         self.categorical_encoding = categorical_encoding
         self.max_categorical_cardinality = max_categorical_cardinality
@@ -518,6 +525,16 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         )
         feature_parameters._validate_parameters()
 
+        self._entity_id_preprocessor = None
+        if self.encode_id_cols is not None:
+            encoder = EntityIDPreprocessor(self.encode_id_cols)
+            if encoder.encode_id_cols:
+                for columns in (self.categorical_columns, self.text_columns):
+                    if _has_explicit_columns(columns) and any(c in columns for c in encoder.encode_id_cols):
+                        raise ValueError("ID columns overlap explicit categorical_columns or text_columns")
+                self._entity_id_preprocessor = encoder.fit(X)
+                X = encoder.transform(X)
+
         if isinstance(X, pd.DataFrame):
             self._feature_preprocessor = DataFramePreprocessor(
                 categorical_columns=self.categorical_columns,
@@ -603,6 +620,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         marginal._multi_target_active_ = False
         marginal._multi_target_memory_reports = None
         marginal.nori_calls_ = 0
+        marginal._entity_id_preprocessor = None
         marginal._feature_preprocessor = None
         marginal._text_preprocessor = None
         marginal._large_context_problem = None
@@ -768,6 +786,8 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         Applies the fitted DataFrame schema when configured; otherwise validates
         a positional numeric matrix.
         """
+        if getattr(self, "_entity_id_preprocessor", None) is not None:
+            X = self._entity_id_preprocessor.transform(X)
         if getattr(self, "_feature_preprocessor", None) is not None:
             return self._feature_preprocessor.transform(X).to_numpy(dtype=np.float32)
         # Pickles fitted before the unified DataFrame preprocessor stored the old
