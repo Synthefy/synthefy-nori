@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.1.3] - 2026-09-14
+
+### Fixed
+
+- Clarified that the `exact` memory preset disables cache quantization rather
+  than guaranteeing identical predictions across chunk sizes or execution paths.
+  Prediction behavior and policy defaults are unchanged.
+
 ## [7.1.2] - 2026-09-02
 
 ### Added

@@ -2996,12 +2996,11 @@ class NoriPredictor:
                 # ORDER live in ``synthefy_nori.inference.memory_policy``; here we
                 # only supply the measurements it needs and record what it picked.
                 #
-                # By default the cache stays bit-exact while it fits VRAM,
+                # By default the cache stays unquantized while it fits VRAM,
                 # quantizes to int8 only to keep it resident, and offloads to host
-                # only when it cannot be resident at any precision. So a table that
-                # serves correctly today keeps bit-exact predictions: accuracy is
-                # spent only to avoid a fallback that would otherwise be slower or
-                # fatal.
+                # only when it cannot be resident at any precision. Lossless storage
+                # does not promise identical predictions across chunk sizes or
+                # cached/uncached execution.
                 #
                 # Configure via NoriPredictor(memory_policy=...) — omit it for the
                 # defaults, or pass a preset name ("exact", "max_context", "off"), a
@@ -3217,8 +3216,9 @@ class NoriPredictor:
                                 dropped_context_rows=dropped_context_rows,
                             )
                             if attempt_policy.cache_dtype == "int8":
-                                # Unlike offload (moves bytes unchanged) or chunking
-                                # (bit-exact by design), quantizing the cache is a
+                                # Unlike offload (moves bytes unchanged), quantizing adds
+                                # an approximation to stored K/V. Chunking can
+                                # separately change floating-point rounding. This is a
                                 # real fidelity loss -- the DegradedPipelineWarning
                                 # family exists so a scored caller (strict_pipeline())
                                 # can catch exactly this, not just see it in the logs.
@@ -3230,8 +3230,9 @@ class NoriPredictor:
                                     "6e-6 measured). Raise memory_policy={'gpu_budget_frac': "
                                     "...} / 'host_budget_frac' / 'elements_budget' for more "
                                     "headroom, or set memory_policy={'allow_quantization': "
-                                    "False} to keep every rung bit-exact (offloads sooner "
-                                    "instead).",
+                                    "False} to prevent cache quantization (offloads sooner "
+                                    "instead; chunking and uncached fallback can still "
+                                    "change predictions).",
                                     CacheQuantizedWarning,
                                 )
                             # `policy` already carries recovered_rung/context_row_chunk

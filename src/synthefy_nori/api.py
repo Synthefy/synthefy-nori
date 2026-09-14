@@ -427,8 +427,10 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         and placement chosen, the budgets used, and how many context rows (if any)
         had to be dropped to fit. Reconstruct the object with
         ``MemoryPolicy(**estimator.memory_report_)`` for derived facts such as
-        ``is_bit_exact``. Multi-target prediction returns a list with one entry
-        per internal marginal call, annotated with strategy and target metadata.
+        ``is_bit_exact`` (a cache-fidelity flag, not a guarantee of identical
+        predictions across execution paths). Multi-target prediction returns a list
+        with one entry per internal marginal call, annotated with strategy and
+        target metadata.
 
         Forwards to the underlying predictor so callers never have to reach through
         ``._predictor``, which is private.

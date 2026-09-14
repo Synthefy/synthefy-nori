@@ -1243,8 +1243,10 @@ class EncoderBaseLayer(nn.Module):
     ):
         """Build attn_mod's K/V cache over the row axis in chunks.
 
-        Mirrors ``project_kv_cache(full)`` bit-for-bit (K/V are per-row
-        independent), but never materialises the full-N projection transient
+        Mathematically equivalent to ``project_kv_cache(full)``, but not
+        guaranteed bit-identical: changing the projection shape can change
+        floating-point accumulation order. A single chunk uses the full
+        projection shape. Never materialises the full-N projection transient
         (the fp32 einsum spike that OOMs at large N*groups) -- it projects
         ``row_chunk`` rows at a time.
 
