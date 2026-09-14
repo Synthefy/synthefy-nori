@@ -24,13 +24,16 @@ rung               meaning
 =================  ========================================================
 no_cache           the cached path does not apply (e.g. the query set is small
                    enough that inference never chunks). Not a degradation.
-resident_bf16      the full-precision cache fits the GPU budget. BIT-EXACT.
+resident_bf16      the full-precision cache fits the GPU budget. The unchunked
+                   cached execution is the reference for exactness below.
 resident_int8      bf16 would not fit but int8 does, so the cache stays on the
                    fast on-GPU path instead of paying PCIe streaming. Costs
                    |dR2| ~ 6e-6 (per-(row, head) absmax quantization).
                    Requires ``allow_quantization``.
 offload_bf16       cannot stay resident (or resident attempts OOM) -> the
-                   full-precision cache lives in host RAM. Bit-exact, slower;
+                   full-precision cache lives in host RAM. Bit-identical to the
+                   same resident cached execution with unchanged computation;
+                   slower;
                    may follow resident_int8 to recover precision while moving host-side.
 offload_int8       cannot stay resident at any precision -> quantized cache in
                    host RAM, each layer's slice streamed back on demand.
@@ -56,9 +59,10 @@ are also not bit-exact, including ``stream_bf16``, because bounded online attent
 reassociates floating-point reductions. The measured CUDA difference for BF16 streaming
 is small rather than zero (max prediction delta 2.93e-3, mean 7.44e-4). Outside
 streaming, ``resident_int8`` is reached only when the full-precision cache does not fit.
-That ordering is the point: a table that serves correctly today keeps bit-exact
-predictions, and accuracy is spent only to avoid a fallback that would otherwise be
-slower or fatal.
+Lossless cache storage does not guarantee bit-identical predictions across
+execution paths. Row chunking, query chunk changes, ensemble batching, streaming
+and uncached execution can change floating-point rounding. The ``exact`` preset disables
+quantization; it does not freeze those execution choices or prevent subsampling.
 
 Outside explicit ``stream_context=True``, ``context_row_chunk`` and ``plain_loop`` are
 *reactions* to an OutOfMemoryError, so the caller escalates into them via
@@ -561,8 +565,8 @@ class MemoryPolicy(BaseModel):
     )
     cache_dtype: CacheDtype = Field(
         "bf16",
-        description="Precision the K/V cache STARTS at. bf16 is bit-exact and is the "
-        "default; set 'int8' to quantize from the outset (~1.9x smaller, "
+        description="Precision the K/V cache STARTS at. bf16 stores projected K/V without "
+        "additional quantization and is the default; set 'int8' to quantize from the outset (~1.9x smaller, "
         "|dR2| ~ 6e-6) when you would rather trade that for context. "
         "Whether bf16 may be downgraded under memory pressure is a "
         "separate question — see allow_quantization.",
@@ -572,8 +576,10 @@ class MemoryPolicy(BaseModel):
         description="May the cache be quantized to int8 when full precision would "
         "NOT stay resident? This is the only way int8 gets used by "
         "default, and it is strictly better than offloading (which costs "
-        "40-175% latency). False keeps every rung bit-exact — the "
-        "'exact' preset — at the cost of offloading sooner.",
+        "40-175% latency). False forbids cache quantization — the "
+        "'exact' preset — at the cost of offloading sooner. It does not guarantee "
+        "identical predictions across chunk sizes or cached/uncached paths, "
+        "or prevent context subsampling.",
     )
     gpu_budget_frac: float = Field(
         DEFAULT_GPU_BUDGET_FRAC,
@@ -886,7 +892,7 @@ class MemoryPolicy(BaseModel):
                 "allow_quantization=False with cache_dtype='int8' is contradictory: "
                 "the first forbids quantizing, the second asks for a quantized cache "
                 "outright. Use cache_dtype='bf16' with allow_quantization=False to "
-                "stay bit-exact, or cache_dtype='int8' alone to start quantized."
+                "forbid cache quantization, or cache_dtype='int8' alone to start quantized."
             )
         return self
 
@@ -1137,10 +1143,14 @@ class MemoryPolicy(BaseModel):
 
     @property
     def is_bit_exact(self) -> bool:
-        """Whether the cache is stored losslessly.
+        """Legacy cache-fidelity flag, not an end-to-end prediction guarantee.
 
-        Ordinary offload moves bytes without changing them. Streaming also changes
-        floating-point reduction order, so both streaming rungs are non-bit-exact.
+        True means no int8 cache quantization and no explicit streaming. Ordinary
+        offload moves bytes unchanged. This flag does not compare predictions:
+        row/query chunking, cached versus uncached execution, and subsampling
+        can change them even when it is True. Exact offload comparisons require
+        the same projected cache and computation, including chunk sizes and
+        ensemble batching.
         """
         return self.cache_dtype != "int8" and not self.stream_context
 

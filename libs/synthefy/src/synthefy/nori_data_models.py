@@ -197,7 +197,8 @@ class MemoryPolicy(BaseModel):
     cache_dtype: Literal["bf16", "int8"] = Field(
         "bf16",
         description=(
-            "Precision the K/V cache STARTS at. bf16 is bit-exact and is the default; set "
+            "Precision the K/V cache STARTS at. bf16 stores projected K/V without "
+            "additional quantization and is the default; set "
             "'int8' to quantize from the outset (~1.9x smaller, |dR2| ~ 6e-6) when you "
             "would rather trade that for context. Whether bf16 may be downgraded under "
             "memory pressure is a separate question — see allow_quantization. "
@@ -209,8 +210,10 @@ class MemoryPolicy(BaseModel):
         description=(
             "May the cache be quantized to int8 when full precision would NOT stay "
             "resident? This is the only way int8 gets used by default, and it is strictly "
-            "better than offloading (which costs 40-175% latency). False keeps every rung "
-            "bit-exact — the 'exact' preset — at the cost of offloading sooner. "
+            "better than offloading (which costs 40-175% latency). False forbids cache quantization — the "
+            "'exact' preset — at the cost of offloading sooner. It does not guarantee "
+            "identical predictions across chunk sizes or cached/uncached paths, "
+            "or prevent context subsampling. "
         ),
     )
 
