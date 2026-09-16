@@ -26,6 +26,7 @@ import subprocess
 import sys
 
 import pytest
+import torch
 
 
 pytestmark = pytest.mark.slow
@@ -89,3 +90,7 @@ def test_single_training_step_writes_checkpoint(tmp_path):
 
     checkpoints = list(checkpoint_dir.glob("checkpoint_step_*.pt"))
     assert checkpoints, f"no checkpoint written to {checkpoint_dir}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    saved_config = torch.load(checkpoints[0], map_location="cpu", weights_only=False)["config"]
+    assert saved_config.model_v2 is False
+    assert saved_config.model_config_source == ""
+    assert "checkpoint_path" not in vars(saved_config)
