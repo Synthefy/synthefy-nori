@@ -290,9 +290,9 @@ class FeaturesTransformer(nn.Module):
         self.transformer_encoder = LayerStack([layer_creator() for _ in range(self.nlayers)])
         if pre_norm:
             if norm_type == "rmsnorm":
-                self.encoder_out_norm = RMSNorm(self.embed_dim, eps=1e-5, elementwise_affine=False)
+                self.encoder_out_norm = RMSNorm(self.embed_dim, eps=self.layer_norm_eps, elementwise_affine=False)
             else:
-                self.encoder_out_norm = nn.LayerNorm(self.embed_dim, eps=1e-5, elementwise_affine=False)
+                self.encoder_out_norm = nn.LayerNorm(self.embed_dim, eps=self.layer_norm_eps, elementwise_affine=False)
         else:
             self.encoder_out_norm = nn.Identity()
 
@@ -521,8 +521,16 @@ class FeaturesTransformer(nn.Module):
         total_rows: int,
     ) -> dict[str, torch.Tensor | int]:
         sliced: dict[str, torch.Tensor | int] = {}
+        row_keys = {
+            "data",
+            "mask",
+            "nan_encoding",
+            "_conditional_landmark_coordinates",
+            "_conditional_landmark_embedding",
+            "_frozen_column_deepset_rbf",
+        }
         for k, v in preprocessed_x.items():
-            if torch.is_tensor(v) and v.dim() >= 2 and v.shape[1] == total_rows:
+            if k in row_keys and torch.is_tensor(v) and v.dim() >= 2 and v.shape[1] == total_rows:
                 sliced[k] = v[:, row_slice].contiguous()
             else:
                 sliced[k] = v

@@ -27,6 +27,9 @@ def _tiny_model(
     use_nan_indicator: bool = False,
     normalize_on_train_only: bool = True,
     legacy_random_rbf_flag: bool | None = None,
+    pre_norm: bool = False,
+    norm_type: str = "layernorm",
+    layer_norm_eps: float = 1e-5,
 ):
     with open(package_config_path("model_base.json"), encoding="utf-8") as handle:
         config = json.load(handle)
@@ -39,6 +42,9 @@ def _tiny_model(
         mask_prediction=mask_prediction,
         feature_positional_embedding_type="none",
         device=None,
+        pre_norm=pre_norm,
+        norm_type=norm_type,
+        layer_norm_eps=layer_norm_eps,
     )
     config["preprocess_config_x"].update(
         num_features=features_per_group,
@@ -63,6 +69,40 @@ def _tiny_model(
         nan_handling_y_encoder=nan_handling_y_encoder,
     )
     return build_model(config).eval()
+
+
+@pytest.mark.parametrize("norm_type", ["layernorm", "rmsnorm"])
+@pytest.mark.parametrize("eps", [1e-5, 0.1])
+def test_pre_norm_output_uses_configured_epsilon(norm_type, eps):
+    model = _tiny_model(pre_norm=True, norm_type=norm_type, layer_norm_eps=eps)
+    assert model.encoder_out_norm.eps == eps
+    x = torch.arange(12, dtype=torch.float32).reshape(1, 1, 12) / 100
+    centered = x - x.mean(-1, keepdim=True) if norm_type == "layernorm" else x
+    expected = centered / torch.sqrt(centered.square().mean(-1, keepdim=True) + eps)
+    torch.testing.assert_close(model.encoder_out_norm(x), expected)
+
+
+def test_row_slicing_preserves_context_statistics_when_groups_equal_rows():
+    model = _tiny_model()
+    rows = groups = 4
+    data = {
+        key: torch.randn(2, rows, groups, 3)
+        for key in ("data", "mask", "nan_encoding", "_conditional_landmark_embedding")
+    }
+    data["_conditional_landmark_coordinates"] = torch.randn(2, rows, groups, 3, 8)
+    data["_frozen_column_deepset_rbf"] = torch.randn(2, rows, groups, 3, 8)
+    statistics = {
+        key: torch.randn(2, groups, 3) for key in ("_nan_mean", "_norm_mean", "_norm_std", "_valid_feature_num")
+    }
+    statistics["_norm_stats"] = {"mean": statistics["_norm_mean"], "std": statistics["_norm_std"]}
+    statistics["eval_pos"] = rows
+    sliced = model._slice_preprocessed_x({**data, **statistics}, slice(1, 3), rows)
+
+    for key, value in data.items():
+        torch.testing.assert_close(sliced[key], value[:, 1:3])
+        assert sliced[key].is_contiguous()
+    for key, value in statistics.items():
+        assert sliced[key] is value
 
 
 def test_valid_feature_count_uses_context_and_can_be_frozen():
