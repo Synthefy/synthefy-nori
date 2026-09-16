@@ -107,7 +107,7 @@ class TrainingConfig:
     world_size: int = 1
 
     # Model
-    checkpoint_path: str = ""
+    model_config_source: str = ""  # Architecture source only; weights are restored by --resume.
     features_per_group: int = 2
     target_aware_init_scale: float = 1.0
     target_aware_warmup_steps: int = 0

@@ -878,7 +878,7 @@ def main():
     parser.add_argument(
         "--feature-positional-embedding-num-slots",
         type=int,
-        default=1000,
+        default=None,
         help="Number of learned positional slots when type=learned (default: 1000)",
     )
     parser.add_argument(
@@ -1103,6 +1103,17 @@ def main():
         model_config = load_model_config(model_config_source)
         resume_training_config = None
 
+    positional_type = args.feature_positional_embedding_type
+    if positional_type is None:
+        positional_type = model_config.get("feature_positional_embedding_type", "subortho")
+    if args.feature_positional_embedding_num_slots is not None:
+        if positional_type != "learned":
+            parser.error(
+                "--feature-positional-embedding-num-slots requires --feature-positional-embedding-type learned"
+            )
+        if args.feature_positional_embedding_num_slots <= 0:
+            parser.error("--feature-positional-embedding-num-slots must be positive")
+
     try:
         feature_loss_stays_zero = configure_feature_loss_schedule(
             model_config,
@@ -1185,15 +1196,16 @@ def main():
                 print(f"Model override: {key} {old_val} -> {arg_val}")
 
     # Feature positional embedding type / slots
-    if args.feature_positional_embedding_type is not None:
+    if args.feature_positional_embedding_type is not None or args.feature_positional_embedding_num_slots is not None:
         old_val = model_config.get("feature_positional_embedding_type", "subortho")
-        model_config["feature_positional_embedding_type"] = args.feature_positional_embedding_type
-        model_config["feature_positional_embedding_num_slots"] = args.feature_positional_embedding_num_slots
+        model_config["feature_positional_embedding_type"] = positional_type
+        slots = args.feature_positional_embedding_num_slots
+        if slots is None:
+            slots = model_config.get("feature_positional_embedding_num_slots", 1000)
+        model_config["feature_positional_embedding_num_slots"] = slots
         if local_rank == 0:
             print(
-                f"Model override: feature_positional_embedding_type {old_val} -> "
-                f"{args.feature_positional_embedding_type} "
-                f"(num_slots={args.feature_positional_embedding_num_slots})"
+                f"Model override: feature_positional_embedding_type {old_val} -> {positional_type} (num_slots={slots})"
             )
 
     # Propagate embed_dim into encoder sub-configs so that encoder output
@@ -1444,7 +1456,13 @@ def main():
         feature_loss_decay_start_step=args.feature_loss_decay_start_step,
         feature_loss_decay_end_step=args.feature_loss_decay_end_step,
         mixed_precision=not args.no_mixed_precision,
-        checkpoint_path=args.checkpoint or "",
+        model_config_source=model_config_source or "",
+        model_v2=(
+            model_config.get("activation") == "swiglu"
+            and model_config.get("norm_type") == "rmsnorm"
+            and bool(model_config.get("pre_norm"))
+            and model_config.get("encoder_config_x", {}).get("numeric_embed_type") == "PBLD"
+        ),
         features_per_group=model_config.get("features_per_group", 2),
         target_aware_init_scale=args.target_aware_init_scale,
         target_aware_warmup_steps=args.target_aware_warmup_steps,
