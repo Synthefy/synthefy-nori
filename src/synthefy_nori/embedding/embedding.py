@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.model_selection import KFold
 from sklearn.utils.validation import check_is_fitted
@@ -31,6 +32,12 @@ class NoriEmbedding(TransformerMixin, BaseEstimator):
     output. Pick an ensemble member (``embeds[0]``) or aggregate across
     ``axis=0`` before passing to a downstream 2D estimator.
 
+    DataFrame feature configuration belongs on the nested ``NoriRegressor``.
+    ``NoriEmbedding`` preserves DataFrames (including column names and dtypes)
+    through every fold so automatic, categorical, and text feature declarations
+    are applied by each fitted regressor. Positional arrays/lists remain
+    numeric-only.
+
     Parameters
     ----------
     n_fold : int, default=0
@@ -40,7 +47,10 @@ class NoriEmbedding(TransformerMixin, BaseEstimator):
     model : NoriRegressor
         Pre-configured estimator to embed with. **Required** — pass a ``NoriRegressor``
         with an explicit size (e.g. ``NoriRegressor(model="nori-30m")``); there is no
-        default, and ``None`` raises at ``fit``.
+        default, and ``None`` raises at ``fit``. Configure named DataFrame features
+        here too, for example ``NoriRegressor(model="nori-30m",
+        categorical_columns=["plan"])``. The regressor's default
+        ``categorical_columns="auto"`` mode is also supported.
     shuffle : bool, default=False
         Whether to shuffle the K-fold split. Independent of ``random_state``.
     random_state : int, optional
@@ -89,9 +99,17 @@ class NoriEmbedding(TransformerMixin, BaseEstimator):
             )
         return clone(self.model)
 
-    def _compute_oof(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
+    @staticmethod
+    def _index_rows(X, indices: np.ndarray):
+        """Select positional rows without discarding a DataFrame's schema."""
+        if isinstance(X, pd.DataFrame):
+            return X.iloc[indices]
+        return np.asarray(X)[indices]
+
+    def _compute_oof(self, X: np.ndarray | pd.DataFrame, y: np.ndarray) -> np.ndarray:
         """Run K-fold and return OOF embeddings aligned to original order."""
-        X = np.asarray(X)
+        if not isinstance(X, pd.DataFrame):
+            X = np.asarray(X)
         y = np.asarray(y)
 
         rs = self.random_state if self.shuffle else None
@@ -108,15 +126,17 @@ class NoriEmbedding(TransformerMixin, BaseEstimator):
             # serves every fold. clone() resets _predictor (it is set in the
             # __init__ body, not a get_params() param), which would pay the cold
             # torch.compile (~minutes on CUDA) again on every fold.
-            self.model_.fit(X[train_idx], y[train_idx])
-            chunks.append(self.model_.get_embeddings(X[val_idx], data_source="test"))
+            X_train = self._index_rows(X, train_idx)
+            X_val = self._index_rows(X, val_idx)
+            self.model_.fit(X_train, y[train_idx])
+            chunks.append(self.model_.get_embeddings(X_val, data_source="test"))
             val_indices.append(val_idx)
 
         oof = np.concatenate(chunks, axis=1)
         order = np.argsort(np.concatenate(val_indices))
         return oof[:, order, ...]
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> NoriEmbedding:
+    def fit(self, X: np.ndarray | pd.DataFrame, y: np.ndarray) -> NoriEmbedding:
         if self.n_fold < 0 or self.n_fold == 1:
             raise ValueError("n_fold must be 0 (vanilla) or >= 2.")
 
@@ -131,7 +151,7 @@ class NoriEmbedding(TransformerMixin, BaseEstimator):
         self.model_.fit(X, y)
         return self
 
-    def transform(self, X: np.ndarray) -> np.ndarray:
+    def transform(self, X: np.ndarray | pd.DataFrame) -> np.ndarray:
         """Embed unseen data ``X`` using the full-data model.
 
         Always runs inference through ``model_`` (fit on the full training set)
@@ -142,7 +162,7 @@ class NoriEmbedding(TransformerMixin, BaseEstimator):
         check_is_fitted(self, "model_")
         return self.model_.get_embeddings(X, data_source="test")
 
-    def fit_transform(self, X: np.ndarray, y: np.ndarray, **fit_params) -> np.ndarray:
+    def fit_transform(self, X: np.ndarray | pd.DataFrame, y: np.ndarray, **fit_params) -> np.ndarray:
         """Fit and return embeddings for the training data.
 
         For ``n_fold >= 2`` these are out-of-fold embeddings; for ``n_fold == 0``
