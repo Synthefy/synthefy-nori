@@ -45,14 +45,14 @@ def drop_outliers(
         cut_off = data_std * std_sigma
         lower, upper = data_mean - cut_off, data_mean + cut_off
 
-        data[torch.logical_or(data > upper, data < lower)] = np.nan
+        data[torch.logical_or(data > upper.unsqueeze(dim), data < lower.unsqueeze(dim))] = np.nan
         data_mean, value_num = calc_mean(data, dim=dim)
         data_std = calc_std(data, dim=dim, mean_v=data_mean, value_num=value_num)
         cut_off = data_std * std_sigma
         lower, upper = data_mean - cut_off, data_mean + cut_off
 
-    x = torch.maximum(-torch.log(1 + torch.abs(x)) + lower, x)
-    x = torch.minimum(torch.log(1 + torch.abs(x)) + upper, x)
+    x = torch.maximum(-torch.log(1 + torch.abs(x)) + lower.unsqueeze(dim), x)
+    x = torch.minimum(torch.log(1 + torch.abs(x)) + upper.unsqueeze(dim), x)
 
     return x, lower, upper
 
