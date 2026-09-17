@@ -19,6 +19,7 @@ import math
 import os
 import sys
 import types
+from dataclasses import fields
 from datetime import datetime
 
 import torch
@@ -57,6 +58,51 @@ def load_resume_configs(source: str) -> tuple[dict, object | None]:
     finally:
         del state
     return model_config, training_config
+
+
+# CLI names whose TrainingConfig field differs, or whose polarity is inverted.
+_RESUME_ARG_FIELDS = {
+    "max_budget": ("max_sample_feature_budget", False),
+    "quality_filter_rules": ("quality_filter_rules_path", False),
+    "no_wandb": ("use_wandb", True),
+    "no_mixed_precision": ("mixed_precision", True),
+    "no_rich_reg_targets": ("rich_reg_targets", True),
+    "no_scale_variation": ("scale_variation", True),
+    "v4_keep_edge_noise": ("v4_no_edge_noise", True),
+}
+
+
+def inherit_resume_arguments(parser, args, saved_config, explicit_options):
+    """Resolve omitted full-resume options before validation and model construction."""
+    values = saved_config if isinstance(saved_config, dict) else vars(saved_config)
+    saved = {f.name: copy.deepcopy(values[f.name]) for f in fields(TrainingConfig) if f.name in values}
+    explicit_dests = {action.dest for action in parser._actions if explicit_options.intersection(action.option_strings)}
+    # Execution placement is resolved from this invocation/environment. Run-step
+    # caps and debug outputs describe an invocation, not its continuation.
+    invocation_only = {
+        "device",
+        "run_steps",
+        "debug_dump_dir",
+    }
+    # Architecture comes from model_config, not potentially stale training metadata.
+    architecture_metadata = {"features_per_group", "model_v2"}
+    for action in parser._actions:
+        dest = action.dest
+        if dest in explicit_dests or dest in invocation_only or dest in architecture_metadata:
+            continue
+        key, invert = _RESUME_ARG_FIELDS.get(dest, (dest, False))
+        if key in saved:
+            value = saved[key]
+            setattr(args, dest, not value if invert else value)
+    # These aliases override an inherited primary value, even when their parser
+    # defaults would otherwise let the checkpoint win.
+    if "fixed_size" in explicit_dests and "shape_palette" not in explicit_dests:
+        args.shape_palette = ()
+    if not {"fixed_size", "shape_palette"}.intersection(explicit_dests):
+        rows, features = saved.get("fixed_n_samples"), saved.get("fixed_n_features")
+        if rows is not None and features is not None:
+            args.fixed_size = f"{rows}x{features}"
+    return saved
 
 
 def parse_quantiles(raw: str) -> tuple[float, ...]:
@@ -375,7 +421,7 @@ def parse_context_ratio_palette(raw: str | None) -> tuple[float, ...]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train Nori from scratch")
+    parser = argparse.ArgumentParser(description="Train Nori from scratch", allow_abbrev=False)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument(
         "--checkpoint",
@@ -384,7 +430,12 @@ def main():
         help="Checkpoint (.ckpt/.pt) or JSON file to load model architecture config from. "
         "Defaults to the bundled model_base.json.",
     )
-    parser.add_argument("--resume", type=str, default=None, help="Training checkpoint to resume from")
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Resume weights and training settings; explicitly passed flags override saved settings",
+    )
     parser.add_argument(
         "--resume-model-only",
         action="store_true",
@@ -1041,6 +1092,15 @@ def main():
     )
     raw_cli_options = {token.split("=", 1)[0] for token in sys.argv[1:] if token.startswith("--")}
     args = parser.parse_args()
+    resume_model_config = None
+    resume_training_config = None
+    saved_training_values = {}
+    if args.resume:
+        resume_model_config, resume_training_config = load_resume_configs(args.resume)
+        if not args.resume_model_only:
+            if resume_training_config is None:
+                parser.error("full resume requires saved training config; use --resume-model-only for weights only")
+            saved_training_values = inherit_resume_arguments(parser, args, resume_training_config, raw_cli_options)
 
     # Seed Python/NumPy/torch from --seed so same-seed runs are reproducible.
     # Model init, the subortho feature embeddings, and the tabicl prior all draw
@@ -1098,7 +1158,7 @@ def main():
     config_source_label = model_config_source or "bundled model_base.json"
     print(f"Loading model config from {config_source_label}")
     if args.resume:
-        model_config, resume_training_config = load_resume_configs(args.resume)
+        model_config = resume_model_config
     else:
         model_config = load_model_config(model_config_source)
         resume_training_config = None
@@ -1181,6 +1241,10 @@ def main():
             torch.cuda.set_device(device)
         effective_lr = args.lr
 
+    if args.resume and not args.resume_model_only and "--lr" not in raw_cli_options:
+        # Saved config.lr is already world-size scaled; do not scale it twice.
+        effective_lr = args.lr
+
     # Apply dimension overrides (before v2 arch changes since deepnorm_alpha depends on nlayers)
     for key, arg_val in [
         ("embed_dim", args.embed_dim),
@@ -1191,6 +1255,8 @@ def main():
     ]:
         if arg_val is not None:
             old_val = model_config.get(key)
+            if args.resume and arg_val != old_val:
+                parser.error(f"--{key.replace('_', '-')} cannot change on a resume ({old_val} -> {arg_val})")
             model_config[key] = arg_val
             if local_rank == 0:
                 print(f"Model override: {key} {old_val} -> {arg_val}")
@@ -1427,7 +1493,7 @@ def main():
         print(f"Static sampling contract: {physical_shapes} physical shapes x {context_shapes} context ratios")
 
     # Training config
-    train_config = TrainingConfig(
+    train_config_values = dict(
         device=device,
         optimizer=args.optimizer,
         muon_include_embeddings=args.muon_include_embeddings,
@@ -1554,6 +1620,8 @@ def main():
         debug_dump_dir=args.debug_dump_dir,
         debug_dump_steps=args.debug_dump_steps,
     )
+
+    train_config = TrainingConfig(**{**saved_training_values, **train_config_values})
 
     # Create trainer (model already on device, skip internal .to())
     trainer = NoriTrainer(model, train_config, model_config=model_config)

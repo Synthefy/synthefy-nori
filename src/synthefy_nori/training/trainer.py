@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import random
 import os
 import time
 import math
@@ -188,6 +190,8 @@ class NoriTrainer:
                 self.quality_rules = None
 
         # Async data prefetching
+        self._prefetch_requests = []
+        self._prefetch_params_queue = []
         self.prefetcher = None
         if config.prefetch_workers > 0:
             self.prefetcher = DataPrefetcher(
@@ -218,6 +222,7 @@ class NoriTrainer:
 
         # Wandb
         self.wandb_run = None
+        self._resume_wandb = None
 
     # Shape buckets for torch.compile. These keep recompiles bounded while still
     # allowing larger late-curriculum tables.
@@ -493,6 +498,7 @@ class NoriTrainer:
             context_ratio=context_ratio,
         )
         self.prefetcher.submit(seed=seed, gen_kwargs=gen_kwargs)
+        self._prefetch_requests.append((seed, gen_kwargs))
 
     # ── GPU-batched ICL learnability filter ──────────────────────────────
 
@@ -1276,6 +1282,8 @@ class NoriTrainer:
                 # consume self.rng to keep it advancing (the seed was
                 # already drawn when this batch was submitted).
                 result = self.prefetcher.get()
+                if self._prefetch_requests:
+                    self._prefetch_requests.pop(0)
                 from synthefy_nori.training.prefetch import _ErrorSentinel
 
                 if isinstance(result, _ErrorSentinel):
@@ -1640,8 +1648,95 @@ class NoriTrainer:
                 else:
                     ema_tensor.copy_(tensor)
 
+    def _local_runtime_state(self):
+        """Snapshot rank-local streams plus recipes for unconsumed worker batches."""
+        state = {
+            "shared_rng": copy.deepcopy(self.shared_rng.bit_generator.state),
+            "rng": copy.deepcopy(self.rng.bit_generator.state),
+            "python_rng": random.getstate(),
+            "numpy_rng": np.random.get_state(),
+            "torch_rng": torch.get_rng_state(),
+            "cuda_rng": torch.cuda.get_rng_state(self.device) if self.device.type == "cuda" else None,
+            "prefetch_requests": copy.deepcopy(self._prefetch_requests),
+            "prefetch_params": copy.deepcopy(self._prefetch_params_queue),
+        }
+        state["sampling"] = {"_loss_ema": self._loss_ema}
+        return state
+
+    def _checkpoint_runtime_states(self):
+        state = self._local_runtime_state()
+        if not self.config.distributed:
+            return [state]
+        states = [None] * torch.distributed.get_world_size()
+        torch.distributed.all_gather_object(states, state)
+        return states
+
+    def _restore_runtime_state(self, state):
+        self.shared_rng.bit_generator.state = state["shared_rng"]
+        self.rng.bit_generator.state = state["rng"]
+        random.setstate(state["python_rng"])
+        np.random.set_state(state["numpy_rng"])
+        torch.set_rng_state(state["torch_rng"].cpu())
+        if state["cuda_rng"] is not None and self.device.type == "cuda":
+            torch.cuda.set_rng_state(state["cuda_rng"].cpu(), self.device)
+        for name, value in state["sampling"].items():
+            if torch.is_tensor(value):
+                value = value.to(self.device)
+            setattr(self, name, value)
+        self._prefetch_requests = state["prefetch_requests"]
+        self._prefetch_params_queue = state["prefetch_params"]
+        if self._prefetch_requests and self.prefetcher is None:
+            warnings.warn(
+                "Prefetch disabled on resume; discarding pending batches and continuing the saved RNG streams."
+            )
+            self._prefetch_requests = []
+            self._prefetch_params_queue = []
+
+    def _discard_incompatible_sampling_state(self, saved_config):
+        """Explicit data/shape overrides take effect before the first resumed batch."""
+        saved = saved_config if isinstance(saved_config, dict) else vars(saved_config)
+        shape_fields = (
+            "fixed_n_samples",
+            "fixed_n_features",
+            "min_samples",
+            "max_samples",
+            "min_features",
+            "max_features",
+            "features_per_group",
+            "max_sample_feature_budget",
+            "dim_bias_samples",
+            "dim_bias_features",
+            "shape_palette",
+            "context_ratio_min",
+            "context_ratio_max",
+            "context_ratio_palette",
+        )
+        shapes_changed = any(name in saved and saved[name] != getattr(self.config, name) for name in shape_fields)
+        generation_changed = False
+        for params, (_seed, queued_kwargs) in zip(self._prefetch_params_queue, self._prefetch_requests):
+            current = self._build_gen_kwargs(*params[:4], context_ratio=params[4])
+            generation_changed |= any(queued_kwargs.get(key) != value for key, value in current.items())
+        generation_changed |= saved.get("prefetch_count", self.config.prefetch_count) != self.config.prefetch_count
+        if (shapes_changed or generation_changed) and self._prefetch_requests:
+            warnings.warn(
+                "Data settings changed on resume; discarding pending batches and continuing saved RNG streams."
+            )
+            self._prefetch_requests = []
+            self._prefetch_params_queue = []
+
+    def _start_training_prefetch(self):
+        self.prefetcher.start()
+        # Regenerate queued batches without advancing either trainer RNG.
+        for seed, kwargs in self._prefetch_requests:
+            self.prefetcher.submit(seed=seed, gen_kwargs=kwargs)
+        for _ in range(max(0, self.config.prefetch_count - len(self._prefetch_params_queue))):
+            params = self._sample_data_params()
+            self._prefetch_params_queue.append(params)
+            self._submit_prefetch(*params)
+
     def save_checkpoint(self, path=None):
-        """Save a training checkpoint (rank 0 only in DDP)."""
+        """Gather runtime state on all ranks; write the checkpoint on rank 0."""
+        runtime_states = self._checkpoint_runtime_states()
         if not self.is_main:
             return
 
@@ -1659,6 +1754,12 @@ class NoriTrainer:
             "accumulated_micro_steps": self.accumulated_micro_steps,
             "best_loss": self.best_loss,
             "config": self.config,
+            "runtime_states": runtime_states,
+            "wandb_run": (
+                {"id": self.wandb_run.id, "project": self.wandb_run.project, "entity": self.wandb_run.entity}
+                if self.wandb_run is not None
+                else self._resume_wandb
+            ),
         }
         if self.ema_state_dict is not None:
             save_dict["ema_state_dict"] = self.ema_state_dict
@@ -1673,9 +1774,8 @@ class NoriTrainer:
     def load_checkpoint(self, path, model_only: bool = False):
         """Load a training checkpoint.
 
-        After loading, re-applies config.lr to optimizer and scheduler to handle
-        cases where LR changed (e.g., resuming single-GPU checkpoint with DDP
-        which scales LR by world_size).
+        After loading, evaluates the current schedule at the saved position,
+        including any explicitly changed base LR.
         """
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
         # strict=False allows new optional parameters (e.g. column_y_aware_alpha
@@ -1719,7 +1819,7 @@ class NoriTrainer:
         self.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
         self.scaler.load_state_dict(ckpt["scaler_state_dict"])
         self.global_step = ckpt["global_step"]
-        self.optimizer_step = ckpt.get("optimizer_step", max(self.scheduler.last_epoch, 0))
+        self.optimizer_step = ckpt.get("optimizer_step", max(self.scheduler.last_epoch - 1, 0))
         loaded_accumulated_micro_steps = ckpt.get("accumulated_micro_steps", 0)
         # Checkpoints do not serialize in-flight parameter gradients, so resuming
         # mid accumulation would otherwise step with missing micro-batch grads.
@@ -1737,16 +1837,33 @@ class NoriTrainer:
                 self.ema_state_dict = current_state
         self._set_target_aware_scale(self._get_current_target_aware_scale())
 
-        # Re-apply current config LR (handles DDP LR scaling on resume).
-        # load_state_dict overwrites param_groups with checkpoint LR;
-        # we need to set it to the current effective LR.
+        # LambdaLR.load_state_dict restores counters, not the current schedule's
+        # LR. Set the value used by the very next optimizer update without taking
+        # an extra scheduler step (which would shift all subsequent updates).
         new_lr = self.config.lr
         self.optimizer.defaults["lr"] = new_lr
-        for pg in self.optimizer.param_groups:
-            pg["lr"] = new_lr
+        self.scheduler.base_lrs = [new_lr] * len(self.optimizer.param_groups)
+        for pg, lr_lambda in zip(self.optimizer.param_groups, self.scheduler.lr_lambdas):
             pg["initial_lr"] = new_lr
-        self.scheduler.base_lrs = [new_lr] * len(self.scheduler.base_lrs)
+            pg["lr"] = new_lr * lr_lambda(self.scheduler.last_epoch)
+        self.scheduler._last_lr = [pg["lr"] for pg in self.optimizer.param_groups]
         self.optimizer.zero_grad()
+        self._resume_wandb = ckpt.get("wandb_run")
+        runtime_states = ckpt.get("runtime_states")
+        if runtime_states is not None:
+            rank = torch.distributed.get_rank() if self.config.distributed else 0
+            world_size = torch.distributed.get_world_size() if self.config.distributed else 1
+            if len(runtime_states) != world_size:
+                raise ValueError("Full resume requires the checkpoint world size to restore per-rank RNG streams")
+            self._restore_runtime_state(runtime_states[rank])
+            if ckpt.get("config") is not None:
+                self._discard_incompatible_sampling_state(ckpt["config"])
+        else:
+            # Old checkpoints cannot reproduce the continuation exactly. Avoid
+            # replaying their opening stream and make that limitation visible.
+            warnings.warn("Checkpoint has no RNG state; continuing with fresh step-seeded streams (not exact replay).")
+            self.shared_rng = np.random.default_rng([self.config.seed, self.global_step, 1])
+            self.rng = np.random.default_rng([self.config.seed, self.global_step, self.config.local_rank, 2])
 
         if self.is_main:
             if loaded_accumulated_micro_steps:
@@ -1779,6 +1896,10 @@ class NoriTrainer:
                     wandb_kwargs["job_type"] = cfg.wandb_job_type
                 if cfg.wandb_tags:
                     wandb_kwargs["tags"] = list(cfg.wandb_tags)
+                if self._resume_wandb is not None:
+                    if os.environ.get("WANDB_RUN_ID") not in (None, self._resume_wandb["id"]):
+                        raise ValueError("WANDB_RUN_ID differs from the checkpoint's W&B run")
+                    wandb_kwargs.update(self._resume_wandb, resume="must")
                 self.wandb_run = wandb.init(
                     **wandb_kwargs,
                 )
@@ -1786,6 +1907,8 @@ class NoriTrainer:
                 print("wandb not installed, disabling logging")
                 cfg.use_wandb = False
             except Exception as e:
+                if self._resume_wandb is not None:
+                    raise RuntimeError("resumed training requires W&B initialization to succeed") from e
                 print(f"wandb init failed ({e}), disabling logging")
                 cfg.use_wandb = False
 
@@ -1856,19 +1979,7 @@ class NoriTrainer:
 
         # --- Start prefetcher and pre-fill pipeline ---
         if self.prefetcher is not None and self.optimizer_step < target_optimizer_step:
-            self.prefetcher.start()
-            self._prefetch_params_queue = []
-            for _ in range(cfg.prefetch_count):
-                params = self._sample_data_params()
-                n_samples, n_features, task_type, n_classes, context_ratio = params
-                self._prefetch_params_queue.append(params)
-                self._submit_prefetch(
-                    n_samples,
-                    n_features,
-                    task_type,
-                    n_classes,
-                    context_ratio,
-                )
+            self._start_training_prefetch()
         else:
             self._prefetch_params_queue = []
 

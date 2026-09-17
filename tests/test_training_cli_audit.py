@@ -1,4 +1,4 @@
-"""Regression coverage for issue #635 section E (CLI/config correctness)."""
+"""Regression coverage for issue #635 sections A and E (CLI/config correctness)."""
 
 from __future__ import annotations
 
@@ -55,6 +55,7 @@ def capture_cli(monkeypatch):
 @pytest.mark.parametrize(
     "options, message",
     [
+        (["--num-b", "64"], "unrecognized arguments"),
         (["--feature-positional-embedding-num-slots", "64"], "requires --feature-positional-embedding-type learned"),
     ],
 )
@@ -101,3 +102,23 @@ def test_architecture_only_checkpoint_is_recorded_without_loading_weights(captur
     assert record["model_v2"] is True
     assert record["model_config_source"] == str(checkpoint)
     assert "checkpoint_path" not in record
+
+
+def test_full_resume_config_and_dimension_guard(capture_cli, tmp_path, capsys):
+    original = capture_cli("--lr", "0.001", "--synth-v4", "--warmup-steps", "5000")
+    checkpoint = tmp_path / "resume.pt"
+    config = original["config"]
+    expected = asdict(config)
+    # Architecture must come from model_config, even with stale training metadata.
+    config.features_per_group += 1
+    torch.save({"model_config": original["model_config"], "config": config}, checkpoint)
+    resumed = capture_cli("--resume", str(checkpoint))
+    expected["model_config_source"] = str(checkpoint)
+    assert asdict(resumed["config"]) == expected
+    overridden = capture_cli("--resume", str(checkpoint), "--lr=0.002", "--no-prefetch")
+    assert overridden["config"].lr == 0.002
+    assert overridden["config"].prefetch_workers == 0
+    assert overridden["config"].synth_v4 is True
+    with pytest.raises(SystemExit):
+        capture_cli("--resume", str(checkpoint), "--resume-model-only", "--nlayers", "2")
+    assert "--nlayers cannot change on a resume" in capsys.readouterr().err
