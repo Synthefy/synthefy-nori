@@ -14,6 +14,7 @@ Design constraints:
 from __future__ import annotations
 
 import multiprocessing as mp
+import queue
 import traceback
 from collections import deque
 from typing import Any
@@ -21,7 +22,7 @@ from typing import Any
 import numpy as np
 
 
-def _worker_loop(task_queue, result_queue, worker_id):
+def _worker_loop(task_queue, result_queue, worker_id, worker_task_ids):
     """Long-lived worker process that generates batches from the task queue.
 
     Each task contains all parameters needed for generate_batch plus a
@@ -38,6 +39,7 @@ def _worker_loop(task_queue, result_queue, worker_id):
             break
 
         task_id, seed, gen_kwargs = task
+        worker_task_ids[worker_id] = task_id
         try:
             rng = np.random.default_rng(seed)
             X_batch, y_batch, n_classes = generate_batch(rng=rng, **gen_kwargs)
@@ -56,7 +58,7 @@ class DataPrefetcher:
         prefetcher.start()
 
         # In training loop:
-        prefetcher.submit(seed=..., gen_kwargs={...})  # non-blocking
+        prefetcher.submit(seed=..., gen_kwargs={...})
         result = prefetcher.get()  # blocks until next result ready
         X_batch, y_batch, n_classes = result
 
@@ -79,18 +81,48 @@ class DataPrefetcher:
         self._task_queue = ctx.Queue(maxsize=self.prefetch_count + self.num_workers)
         self._result_queue = ctx.Queue(maxsize=self.prefetch_count + self.num_workers)
         self._workers = []
+        # Diagnostic only: avoid locks that a killed worker could leave held.
+        # Keep the last assigned logical ID even while its result is in transit.
+        self._worker_task_ids = ctx.Array("q", [-1] * self.num_workers, lock=False)
         for i in range(self.num_workers):
             p = ctx.Process(
                 target=_worker_loop,
-                args=(self._task_queue, self._result_queue, i),
+                args=(self._task_queue, self._result_queue, i, self._worker_task_ids),
                 daemon=True,
             )
             p.start()
             self._workers.append(p)
         self._started = True
 
+    def _check_workers(self, *, awaiting_task):
+        """Fail the pool if any worker exits; its consumed task may be lost."""
+        for worker_id, worker in enumerate(self._workers):
+            if not worker.is_alive():
+                last_task = self._worker_task_ids[worker_id]
+                raise RuntimeError(
+                    f"DataPrefetcher worker {worker_id} (pid={worker.pid}, "
+                    f"exitcode={worker.exitcode}) exited unexpectedly; "
+                    f"last assigned logical task={last_task if last_task >= 0 else 'none'}, "
+                    f"awaiting logical task={awaiting_task}"
+                )
+
+    def _enqueue_task(self, task):
+        """Submit through bounded queues while servicing worker backpressure."""
+        while True:
+            self._check_workers(awaiting_task=task[0])
+            try:
+                self._task_queue.put_nowait(task)
+                return
+            except queue.Full:
+                try:
+                    result = self._result_queue.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                # Queue arrival never changes FIFO order, including errors.
+                self._cache_result(*result)
+
     def submit(self, seed: int, gen_kwargs: dict[str, Any]):
-        """Submit a batch generation task (non-blocking).
+        """Submit a batch, collecting completed results if transport is full.
 
         Args:
             seed: deterministic RNG seed for this batch
@@ -102,7 +134,12 @@ class DataPrefetcher:
         task_id = self._task_counter
         self._task_counter += 1
         self._pending_ids.append(task_id)
-        self._task_queue.put((task_id, seed, gen_kwargs))
+        self._enqueue_task((task_id, seed, gen_kwargs))
+
+    def _cache_result(self, task_id, success, payload):
+        if not success:
+            payload = _ErrorSentinel(*payload)
+        self._results_cache[task_id] = payload
 
     def get(
         self,
@@ -118,29 +155,18 @@ class DataPrefetcher:
         if not self._pending_ids:
             raise RuntimeError("No pending tasks. Call submit() first.")
 
-        target_id = self._pending_ids.popleft()
+        target_id = self._pending_ids[0]
+        while target_id not in self._results_cache:
+            # Check even when other workers keep returning later batches.
+            self._check_workers(awaiting_task=target_id)
+            try:
+                result = self._result_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            self._cache_result(*result)
 
-        # Check if we already have this result cached (arrived out of order)
-        if target_id in self._results_cache:
-            return self._results_cache.pop(target_id)
-
-        # Block-read from result queue until we get the one we need
-        while True:
-            task_id, success, payload = self._result_queue.get()
-            if not success:
-                err_type, err_msg, tb = payload
-                if task_id == target_id:
-                    return _ErrorSentinel(err_type, err_msg, tb)
-                else:
-                    # Cache the error for when that task_id is requested
-                    self._results_cache[task_id] = _ErrorSentinel(err_type, err_msg, tb)
-                    continue
-
-            if task_id == target_id:
-                return payload
-            else:
-                # Cache for later retrieval
-                self._results_cache[task_id] = payload
+        self._pending_ids.popleft()
+        return self._results_cache.pop(target_id)
 
     def pending_count(self) -> int:
         """Number of submitted but not-yet-retrieved tasks."""

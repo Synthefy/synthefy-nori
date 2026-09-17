@@ -1220,6 +1220,7 @@ def main():
 
     # --- Distributed setup ---
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    rank = int(os.environ.get("RANK", local_rank))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     distributed = world_size > 1
 
@@ -1258,7 +1259,7 @@ def main():
             if args.resume and arg_val != old_val:
                 parser.error(f"--{key.replace('_', '-')} cannot change on a resume ({old_val} -> {arg_val})")
             model_config[key] = arg_val
-            if local_rank == 0:
+            if rank == 0:
                 print(f"Model override: {key} {old_val} -> {arg_val}")
 
     # Feature positional embedding type / slots
@@ -1269,7 +1270,7 @@ def main():
         if slots is None:
             slots = model_config.get("feature_positional_embedding_num_slots", 1000)
         model_config["feature_positional_embedding_num_slots"] = slots
-        if local_rank == 0:
+        if rank == 0:
             print(
                 f"Model override: feature_positional_embedding_type {old_val} -> {positional_type} (num_slots={slots})"
             )
@@ -1292,7 +1293,7 @@ def main():
             model_config["preprocess_config_x"]["num_features"] = fpg
         if "encoder_config_x" in model_config and "num_features" in model_config["encoder_config_x"]:
             model_config["encoder_config_x"]["num_features"] = fpg
-        if local_rank == 0:
+        if rank == 0:
             print(f"Propagated features_per_group={fpg} to preprocess_config_x and encoder_config_x")
 
     # Apply v2 architecture overrides
@@ -1303,7 +1304,7 @@ def main():
         model_config["deepnorm_alpha"] = model_config["nlayers"] ** (-0.5)
         model_config["encoder_config_x"]["numeric_embed_type"] = "PBLD"
         model_config["encoder_config_x"]["PBLD_config"] = {"n_frequencies": 48}
-        if local_rank == 0:
+        if rank == 0:
             print("Model v2 enabled: SwiGLU + RMSNorm + pre-norm/DeepNorm + PBLD")
     elif args.model_v2_lite:
         model_config["activation"] = "swiglu"
@@ -1311,9 +1312,9 @@ def main():
         model_config["pre_norm"] = True
         model_config["deepnorm_alpha"] = model_config["nlayers"] ** (-0.5)
         # Keep RBF numeric embedding (no PBLD) for speed
-        if local_rank == 0:
+        if rank == 0:
             print("Model v2-lite enabled: SwiGLU + RMSNorm + pre-norm/DeepNorm (RBF kept)")
-    if local_rank == 0:
+    if rank == 0:
         print(
             f"Architecture extras: QASSMax={'on' if model_config['use_qassmax'] else 'off'}, "
             f"TAE={'on' if model_config['use_target_aware_embedding'] else 'off'}"
@@ -1323,11 +1324,11 @@ def main():
     # been applied. model_config is the only architecture record the checkpoint
     # carries, so a flag left unwritten here is a flag a later load has to guess.
     finalize_arch_config(model_config)
-    if local_rank == 0 and "qass_mode" in model_config:
+    if rank == 0 and "qass_mode" in model_config:
         print(f"QASS mode: {model_config['qass_mode']} (pinned into model_config)")
 
     # Build model from scratch (random init)
-    if local_rank == 0:
+    if rank == 0:
         print("Building model from scratch (random initialization)")
     model = build_model(model_config)
 
@@ -1337,7 +1338,7 @@ def main():
             if isinstance(module, RMSNorm):
                 module.use_native = True
                 native_norm_count += 1
-        if local_rank == 0:
+        if rank == 0:
             print(f"Native RMSNorm enabled ({native_norm_count} modules)")
 
     if args.freeze_unused_heads and feature_loss_stays_zero:
@@ -1349,18 +1350,18 @@ def main():
             action = "skipped" if args.skip_zero_feature_decoder else "grad disabled"
         else:
             action = "omitted"
-        if local_rank == 0:
+        if rank == 0:
             print(f"  [freeze] feature_decoder {action} (feature loss is 0)")
 
     # Freeze column_y_aware_alpha if requested (V10c control experiment).
     if args.freeze_column_y_alpha and getattr(model, "column_y_aware_alpha", None) is not None:
         model.column_y_aware_alpha.requires_grad_(False)
-        if local_rank == 0:
+        if rank == 0:
             print(
                 f"  [freeze] column_y_aware_alpha grad disabled (value held at {model.column_y_aware_alpha.item():.4f})"
             )
 
-    if local_rank == 0:
+    if rank == 0:
         n_params = sum(p.numel() for p in model.parameters())
         n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"Model parameters: {n_params:,} total, {n_trainable:,} trainable")
@@ -1386,7 +1387,7 @@ def main():
         )
         for layer in layers:
             layer.forward = types.MethodType(compiled_forward, layer)
-        if local_rank == 0:
+        if rank == 0:
             print(
                 f"{args.compile_encoder_layers.capitalize()} regional "
                 "compilation enabled: "
@@ -1397,7 +1398,7 @@ def main():
 
     if args.gradient_checkpointing:
         model.transformer_encoder.gradient_checkpointing = True
-        if local_rank == 0:
+        if rank == 0:
             print("Gradient checkpointing enabled on transformer encoder layers")
 
     # torch.compile (before DDP wrapping)
@@ -1418,7 +1419,7 @@ def main():
         def _set_cfg(cfg, name, value):
             if hasattr(cfg, name):
                 setattr(cfg, name, value)
-            elif local_rank == 0:
+            elif rank == 0:
                 print(f"torch.compile: skipping unavailable config '{name}' (torch {torch.__version__})")
 
         _set_cfg(_inductor_cfg, "fx_graph_cache", False)
@@ -1435,7 +1436,7 @@ def main():
         _set_cfg(_dynamo_cfg, "assume_static_by_default", True)
         _set_cfg(_dynamo_cfg, "automatic_dynamic_shapes", False)
 
-        if local_rank == 0:
+        if rank == 0:
             print(
                 "Compiling model with torch.compile (FX cache disabled, DDP optimize off, "
                 "cache_size=512, static shapes)..."
@@ -1447,7 +1448,7 @@ def main():
         from torch.nn.parallel import DistributedDataParallel as DDP
 
         model = DDP(model, device_ids=[local_rank], find_unused_parameters=False, gradient_as_bucket_view=True)
-        if local_rank == 0:
+        if rank == 0:
             print(f"DDP enabled: {world_size} GPUs, effective LR={effective_lr:.2e}")
 
     # OOM budget: default 200K for single GPU, 100K with compile/DDP
@@ -1469,7 +1470,7 @@ def main():
         features_per_group = model_config.get("features_per_group", 2)
         if fixed_n_features % features_per_group != 0:
             fixed_n_features += features_per_group - (fixed_n_features % features_per_group)
-        if local_rank == 0:
+        if rank == 0:
             print(f"Fixed size: {fixed_n_samples} samples x {fixed_n_features} features")
 
     feature_multiple = int(model_config.get("features_per_group", 2))
@@ -1481,7 +1482,7 @@ def main():
             )
         if rows * features > max_budget:
             parser.error(f"Explicit palette shape {rows}x{features} exceeds --max-budget={max_budget}")
-    if local_rank == 0 and (args.shape_palette or args.context_ratio_palette):
+    if rank == 0 and (args.shape_palette or args.context_ratio_palette):
         physical_shapes = len(args.shape_palette) if args.shape_palette else "sampled"
         context_shapes = (
             len(args.context_ratio_palette)
@@ -1534,6 +1535,7 @@ def main():
         target_aware_warmup_steps=args.target_aware_warmup_steps,
         compile=args.compile,
         distributed=distributed,
+        rank=rank,
         local_rank=local_rank,
         world_size=world_size,
         max_sample_feature_budget=max_budget,

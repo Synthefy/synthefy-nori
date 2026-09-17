@@ -122,3 +122,25 @@ def test_full_resume_config_and_dimension_guard(capture_cli, tmp_path, capsys):
     with pytest.raises(SystemExit):
         capture_cli("--resume", str(checkpoint), "--resume-model-only", "--nlayers", "2")
     assert "--nlayers cannot change on a resume" in capsys.readouterr().err
+
+
+def test_cli_uses_global_rank_but_local_cuda_device(monkeypatch, capture_cli):
+    monkeypatch.setenv("RANK", "4")
+    monkeypatch.setenv("LOCAL_RANK", "0")
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    devices = []
+    ddp_options = {}
+    monkeypatch.setattr(torch.distributed, "init_process_group", lambda **kwargs: None)
+    monkeypatch.setattr(torch.cuda, "set_device", devices.append)
+    monkeypatch.setattr(torch.nn.Module, "to", lambda self, *args, **kwargs: self)
+
+    def ddp(model, **kwargs):
+        ddp_options.update(kwargs)
+        return model
+
+    monkeypatch.setattr(torch.nn.parallel, "DistributedDataParallel", ddp)
+    result = capture_cli()
+    assert result["config"].rank == 4
+    assert result["config"].local_rank == 0
+    assert devices == ["cuda:0"]
+    assert ddp_options["device_ids"] == [0]
