@@ -95,7 +95,7 @@ class NoriTrainer:
             self.model.to(self.device)
 
         # Rank-0 flag for logging/checkpointing
-        self.is_main = config.local_rank == 0
+        self.is_main = config.rank == 0
 
         # ``min_*``/``max_*`` bound the continuous draw, but the physical
         # tables are bucketed.  Resolve that finite support once, fail early if
@@ -155,7 +155,7 @@ class NoriTrainer:
         # IMPORTANT: all shared_rng consumption must happen at the TOP of
         # train_step, before any error-prone code, to stay in sync across ranks.
         self.shared_rng = np.random.default_rng(config.seed)
-        self.rng = np.random.default_rng(config.seed + config.local_rank)
+        self.rng = np.random.default_rng(config.seed + config.rank)
 
         # State
         self.global_step = 0
@@ -1207,7 +1207,7 @@ class NoriTrainer:
             raise fatal_error
         if fatal_error is not None:
             raise RuntimeError(
-                f"Fatal {phase} error on rank {self.config.local_rank}: {type(fatal_error).__name__}: {fatal_error}"
+                f"Fatal {phase} error on rank {self.config.rank}: {type(fatal_error).__name__}: {fatal_error}"
             ) from fatal_error
         raise RuntimeError(f"Fatal {phase} error on another rank; see that rank's log")
 
@@ -1863,7 +1863,7 @@ class NoriTrainer:
             # replaying their opening stream and make that limitation visible.
             warnings.warn("Checkpoint has no RNG state; continuing with fresh step-seeded streams (not exact replay).")
             self.shared_rng = np.random.default_rng([self.config.seed, self.global_step, 1])
-            self.rng = np.random.default_rng([self.config.seed, self.global_step, self.config.local_rank, 2])
+            self.rng = np.random.default_rng([self.config.seed, self.global_step, self.config.rank, 2])
 
         if self.is_main:
             if loaded_accumulated_micro_steps:

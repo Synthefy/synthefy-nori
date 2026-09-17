@@ -103,7 +103,8 @@ class TrainingConfig:
 
     # Distributed
     distributed: bool = False
-    local_rank: int = 0
+    rank: int = 0  # Global process identity (logging and data seeds).
+    local_rank: int = 0  # Node-local CUDA device index.
     world_size: int = 1
 
     # Model
