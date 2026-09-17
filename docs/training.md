@@ -60,3 +60,19 @@ the curriculum and should be treated as a data/quality decision rather than a
 drop-in compiler switch. See
 [Training acceleration and optional static-shape compilation](training_static_compile.md)
 for the controls, cache contract, benchmark caveats, and rollout procedure.
+
+### Full resume through the Python CLI
+
+`synthefy-nori-train --resume checkpoint.pt` inherits saved training settings;
+explicit full-length flags override them. Device placement, `--run-steps`, and
+debug output are invocation-specific. Model dimensions cannot change. The first
+update uses the restored scheduled LR. Inherited LR is already world-size scaled;
+explicit `--lr` retains the usual DDP scaling.
+
+Checkpoints save each rank's RNGs, sampling state, pending prefetch requests, and
+W&B identity. Full resume requires the same world size and reconnects to W&B with
+`resume="must"`. Unchanged data settings preserve queued batches; changed settings
+discard incompatible lookahead. Exact continuation requires an optimizer-step
+boundary (in-flight gradients are not saved). Legacy checkpoints without RNG
+state warn and use fresh step-seeded streams. `--resume-model-only` starts fresh
+optimizer, counters, RNG streams, and W&B identity.
