@@ -424,6 +424,7 @@ def test_flex_lse_adapter_supports_both_torch_apis(monkeypatch, uses_aux_api):
         return expected_output, expected_lse
 
     monkeypatch.setattr(layer_module, "_FLEX_LSE_REQUEST", request)
+    monkeypatch.setattr(layer_module, "_streamed_attention_uses_fallback", lambda: False)
     monkeypatch.setattr(layer_module, "_compiled_flex_attention", lambda: fake_compiled)
     output, lse = layer_module._flex_attention_with_lse(
         q,

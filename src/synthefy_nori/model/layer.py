@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 import functools
+import importlib.util
 import inspect
+import logging
 from typing import Callable, Literal, Optional
 import math
 import os
@@ -31,10 +33,100 @@ if _FLEX_SUPPORTS_RETURN_AUX and _FLEX_AUX_REQUEST is None:
 _FLEX_LSE_REQUEST = _FLEX_AUX_REQUEST(lse=True) if _FLEX_SUPPORTS_RETURN_AUX else None
 
 
+logger = logging.getLogger(__name__)
+
+#: Why streamed attention runs the plain PyTorch fallback in this process, or None
+#: while the compiled FlexAttention kernel is usable. Set at most once: a missing
+#: compile backend does not come back, so recompiling on every call would only repeat
+#: the failure.
+_STREAMED_FALLBACK_REASON: str | None = None
+
+
 @functools.lru_cache(maxsize=1)
 def _compiled_flex_attention():
     """Compile FlexAttention once for streamed CUDA K/V blocks."""
     return torch.compile(flex_attention)
+
+
+def _use_streamed_attention_fallback(reason: str) -> None:
+    """Route every later streamed block to the plain PyTorch fallback and say so once."""
+    global _STREAMED_FALLBACK_REASON
+    if _STREAMED_FALLBACK_REASON is not None:
+        return
+    _STREAMED_FALLBACK_REASON = reason
+    logger.warning(
+        "FlexAttention cannot be compiled (%s); streamed context attention runs the "
+        "plain PyTorch fallback: slower, same results.",
+        reason,
+    )
+
+
+def _streamed_attention_uses_fallback() -> bool:
+    """Whether streamed attention must use the plain PyTorch fallback in this process.
+
+    Inductor generates the fused CUDA kernel with Triton, so an environment without
+    it (the SageMaker image ships without Triton) cannot compile the call at all.
+    """
+    if _STREAMED_FALLBACK_REASON is None and importlib.util.find_spec("triton") is None:
+        _use_streamed_attention_fallback("triton is not installed")
+    return _STREAMED_FALLBACK_REASON is not None
+
+
+def _is_flex_compile_failure(exc: BaseException) -> bool:
+    """Whether ``exc`` is the compile backend failing rather than the attention call.
+
+    Covers ``torch._inductor.exc.InductorError``, ``torch._dynamo.exc.BackendCompilerFailed``
+    and the other compiler errors by module, plus a bare missing-Triton import. A CUDA
+    OOM is ``torch.OutOfMemoryError`` and must keep reaching the memory-policy ladder.
+    """
+    if isinstance(exc, ModuleNotFoundError) and "triton" in str(exc):
+        return True
+    return type(exc).__module__.startswith(("torch._dynamo", "torch._inductor"))
+
+
+def _call_flex_attention(fn, q, k, v, *, scale: float, enable_gqa: bool):
+    if _FLEX_LSE_REQUEST is not None:
+        out, aux = fn(q, k, v, scale=scale, enable_gqa=enable_gqa, return_aux=_FLEX_LSE_REQUEST)
+        if aux.lse is None:
+            raise RuntimeError("FlexAttention did not return the requested LSE")
+        return out, aux.lse
+    return fn(q, k, v, scale=scale, enable_gqa=enable_gqa, return_lse=True)
+
+
+def _math_attention_with_lse(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    scale: float,
+    enable_gqa: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Exact attention over one K/V block in plain tensor ops, with its log-sum-exp.
+
+    Takes and returns what the FlexAttention call does: ``q`` is ``[B, H, Q, D]``,
+    ``k``/``v`` are ``[B, Hkv, K, D]``; the output is ``[B, H, Q, Dv]`` in ``q``'s
+    dtype and the natural-log LSE of the scaled scores is FP32 ``[B, H, Q]``. With
+    ``enable_gqa``, query head ``h`` attends to K/V head ``h // (H // Hkv)``, the
+    same as repeating each K/V head ``H // Hkv`` times; the query heads are grouped
+    per K/V head instead, so K/V are never copied per query head.
+
+    Nothing here calls into ``torch.nn.attention.flex_attention``: outside
+    ``torch.compile`` that function still traces itself with dynamo, which is the
+    compile machinery this fallback exists to avoid.
+    """
+    batch, n_heads, n_query, _ = q.shape
+    kv_heads = k.shape[-3]
+    if n_heads % kv_heads or (kv_heads != n_heads and not enable_gqa):
+        raise ValueError(f"query heads {n_heads} cannot attend to {kv_heads} K/V heads (enable_gqa={enable_gqa})")
+    q_grouped = q.to(torch.float32).reshape(batch, kv_heads, (n_heads // kv_heads) * n_query, q.shape[-1])
+    scores = torch.matmul(q_grouped, k.to(torch.float32).transpose(-2, -1)).mul_(scale)
+    lse = torch.logsumexp(scores, dim=-1)
+    # exp(scores - lse) is the softmax; reuse the score allocation for the weights.
+    out = torch.matmul(scores.sub_(lse.unsqueeze(-1)).exp_(), v.to(torch.float32))
+    return (
+        out.reshape(batch, n_heads, n_query, v.shape[-1]).to(q.dtype),
+        lse.reshape(batch, n_heads, n_query),
+    )
 
 
 def _flex_attention_with_lse(
@@ -45,29 +137,49 @@ def _flex_attention_with_lse(
     scale: float,
     enable_gqa: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run fused exact attention and retain each block's softmax normalizer."""
-    compiled = _compiled_flex_attention()
-    if _FLEX_LSE_REQUEST is not None:
-        out, aux = compiled(
-            q,
-            k,
-            v,
+    """Run exact attention over one K/V block and retain its softmax normalizer.
+
+    Uses the compiled FlexAttention kernel when the compile backend works and the
+    plain PyTorch fallback (``_math_attention_with_lse``) when it does not. Torch
+    compiles lazily, so a broken backend first raises from the first compiled call;
+    that block is then computed by the fallback and the process stays on it.
+    """
+    if not _streamed_attention_uses_fallback():
+        try:
+            return _call_flex_attention(_compiled_flex_attention(), q, k, v, scale=scale, enable_gqa=enable_gqa)
+        except Exception as exc:
+            if not _is_flex_compile_failure(exc):
+                raise
+            # Compiler errors span many lines; retain a bounded root-cause message.
+            _use_streamed_attention_fallback(" ".join(f"{type(exc).__name__}: {exc}".split())[:200])
+
+    # A lazy compile failure can switch modes AFTER the caller sized its K/V
+    # iterator for the fused kernel. Bound the fallback here too, including the
+    # failing block and every subsequent block from that already-open iterator.
+    score_bytes_per_key_row = math.prod(q.shape[:-1]) * FP32_ELEMENT_BYTES
+    block_rows = max(1, BLOCKWISE_SCORE_WORKSPACE_BYTES // max(score_bytes_per_key_row, 1))
+    if k.shape[-2] <= block_rows:
+        return _math_attention_with_lse(q, k, v, scale=scale, enable_gqa=enable_gqa)
+
+    running_output = None
+    running_lse = None
+    q_float = q.float()
+    for start in range(0, k.shape[-2], block_rows):
+        block_output, block_lse = _math_attention_with_lse(
+            q_float,
+            k[..., start : start + block_rows, :],
+            v[..., start : start + block_rows, :],
             scale=scale,
             enable_gqa=enable_gqa,
-            return_aux=_FLEX_LSE_REQUEST,
         )
-        if aux.lse is None:
-            raise RuntimeError("FlexAttention did not return the requested LSE")
-        return out, aux.lse
-    out, lse = compiled(
-        q,
-        k,
-        v,
-        scale=scale,
-        enable_gqa=enable_gqa,
-        return_lse=True,
-    )
-    return out, lse
+        if running_output is None:
+            running_output, running_lse = block_output, block_lse
+            continue
+        new_lse = torch.logaddexp(running_lse, block_lse)
+        running_output.mul_(torch.exp(running_lse - new_lse).unsqueeze(-1))
+        running_output.add_(block_output * torch.exp(block_lse - new_lse).unsqueeze(-1))
+        running_lse = new_lse
+    return running_output.to(q.dtype), running_lse
 
 
 # Internal defines HAVE_FLASH_ATTN / HAVE_FLASH_ATTN_4 here and dispatches
@@ -679,8 +791,9 @@ class MultiheadAttention(torch.nn.Module):
     ) -> torch.Tensor:
         """Fuse each K/V block and merge its normalized output by exact LSE.
 
-        FlexAttention never materializes ``[BG, H, Q, K]`` scores. Each call
-        returns the block-local normalized output and log-sum-exp; combining
+        The compiled FlexAttention kernel never materializes ``[BG, H, Q, K]``
+        scores. Each call returns the block-local normalized output and
+        log-sum-exp; combining
         those pairs in FP32 is algebraically identical to one softmax over all
         context rows while retaining only O(BG * H * Q * D) accumulators.
         """
@@ -708,7 +821,15 @@ class MultiheadAttention(torch.nn.Module):
             dtype=torch.float32,
         )
 
-        for kv_block in kv_cache.iter_kv_blocks():
+        # The plain PyTorch fallback materializes FP32 [BG, H, Q, K] scores, which
+        # the fused kernel never does. Bound K by the same score workspace as the
+        # CPU path; the LSE merge below is exact for any block split.
+        block_rows = None
+        if _streamed_attention_uses_fallback():
+            score_bytes_per_key_row = batch_groups * n_heads * n_query * FP32_ELEMENT_BYTES
+            block_rows = max(1, BLOCKWISE_SCORE_WORKSPACE_BYTES // max(score_bytes_per_key_row, 1))
+
+        for kv_block in kv_cache.iter_kv_blocks(block_rows=block_rows):
             if kv_block.ndim != 5 or kv_block.shape[0] != batch_groups:
                 raise ValueError(f"streamed K/V block must be [BG, K, 2, Hkv, D], got {tuple(kv_block.shape)}")
             if kv_block.shape[-1] != head_dim:
@@ -730,7 +851,7 @@ class MultiheadAttention(torch.nn.Module):
             )
             if block_lse.shape != running_lse.shape:
                 raise RuntimeError(
-                    "FlexAttention returned an unexpected LSE shape: "
+                    "streamed block attention returned an unexpected LSE shape: "
                     f"expected {tuple(running_lse.shape)}, "
                     f"got {tuple(block_lse.shape)}"
                 )
