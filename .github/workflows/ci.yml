@@ -23,7 +23,7 @@ jobs:
           assert synthefy_nori.__version__ == '0.21.0'"
       - run: uv run pytest
       - run: >-
-          uv run ruff check src scripts tests
+          uv run ruff check src scripts tests libs/synthefy/src libs/synthefy/tests
           ci/validate_distribution_boundaries.py
           ci/probe_installed_distributions.py
           ci/probe_cutover_matrix.py

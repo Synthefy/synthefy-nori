@@ -32,7 +32,7 @@ task-specific training. It is trained entirely on synthetic data.
 ```bash
 uv sync --extra dev
 uv run pytest                       # fast suite; slow/network tests deselected by default
-uv run ruff check src scripts tests
+uv run ruff check src scripts tests libs/synthefy/src libs/synthefy/tests
 uv build
 uv build --package synthefy
 ```
