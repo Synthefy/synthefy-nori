@@ -85,6 +85,16 @@ dev = [
     "tomli>=2.0; python_version < '3.11'",
 ]
 
+# uv dependency groups are per-package, so the client's own dev group
+# (libs/synthefy/pyproject.toml) is not addressable when running from the workspace root.
+# This group carries the two things the client's tests need beyond the root dev extra
+# (pytest is already there), with the member's dev group as the source of truth for the pins.
+[dependency-groups]
+client-test = [
+    "boto3>=1.34.0,<2.0.0",
+    "pytest-socket>=0.7.0",
+]
+
 [project.scripts]
 synthefy-nori-train = "synthefy_nori.training.cli:main"
 synthefy-nori-eval = "synthefy_nori.evaluation.cli:main"
