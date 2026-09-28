@@ -331,8 +331,15 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v8.2.0
-      - run: uv sync --locked --extra dev
+      - run: uv sync --locked --extra dev --group client-test
       - run: uv run pytest -m slow tests/test_inference_e2e.py tests/test_memory_policy_e2e.py
+      - name: Client real-model inference tests
+        run: |
+          uv run --no-sync python -c "import synthefy_nori; import synthefy_nori.discretize"
+          uv run --no-sync pytest -c libs/synthefy/pytest.ini --import-mode=importlib -m slow \
+            libs/synthefy/tests/test_nori_client.py::test_local_predict_real_inference \
+            libs/synthefy/tests/test_nori_client.py::test_local_discretize_real_inference \
+            libs/synthefy/tests/test_nori_client.py::test_local_quantiles_real_inference
 
   # Apple-Silicon gate: prove that the no-argument device path selects MPS and
   # completes both numeric and MiniLM-backed text inference. macos-15 is an

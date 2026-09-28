@@ -6616,6 +6616,14 @@ train = [
     { name = "xgboost", version = "3.2.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
 ]
 
+[package.dev-dependencies]
+client-test = [
+    { name = "boto3", version = "1.42.97", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "boto3", version = "1.43.69", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "pytest-socket", version = "0.7.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "pytest-socket", version = "0.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "build", marker = "extra == 'dev'" },
@@ -6655,6 +6663,12 @@ requires-dist = [
     { name = "xgboost", marker = "extra == 'train'" },
 ]
 provides-extras = ["forecasting", "timeseries", "train", "eval", "interpretability", "explainability", "text", "dev"]
+
+[package.metadata.requires-dev]
+client-test = [
+    { name = "boto3", specifier = ">=1.34.0,<2.0.0" },
+    { name = "pytest-socket", specifier = ">=0.7.0" },
+]
 
 [[package]]
 name = "threadpoolctl"
