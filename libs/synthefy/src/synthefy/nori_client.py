@@ -317,8 +317,8 @@ def _coerce_vector(arr: VectorLike, name: str) -> np.ndarray:
     """Coerce targets into a 1D vector or 2D multi-target matrix.
 
     Accepts nested Python sequences, numpy arrays, a pandas Series, or a
-    single-column pandas DataFrame. NaN/missing values are preserved and
-    forwarded for server-side imputation.
+    pandas DataFrame. NaN/missing values are preserved here; hosted modes
+    reject them before prediction, while local validation belongs to the runtime.
     """
     if isinstance(arr, pd.DataFrame):
         _reject_non_numeric_columns(arr, name)
@@ -341,6 +341,12 @@ def _coerce_vector(arr: VectorLike, name: str) -> np.ndarray:
     if vector.ndim == 2 and vector.shape[1] < 2:
         vector = vector.reshape(-1)
     return vector
+
+
+def _validate_hosted_targets(y_train: VectorLike) -> None:
+    """Reject missing or infinite labels before preprocessing or hosted transport."""
+    if not np.isfinite(_coerce_vector(y_train, "y_train")).all():
+        raise ValueError("y_train must contain only finite numbers (no null/NaN/inf targets) for hosted inference.")
 
 
 def _build_nori_request(
@@ -373,7 +379,8 @@ def _build_nori_request(
     fully numeric matrix.
     Otherwise columns are matched positionally, as before. Raises ``ValueError``
     on any shape mismatch before a request leaves the process. NaN/missing
-    values are preserved and imputed server-side.
+    feature values are preserved for server-side imputation. Hosted targets
+    must already have been checked by :func:`_validate_hosted_targets`.
 
     ``output_type``/``quantile_levels`` are expected to have been validated
     already (by :func:`_validate_output_type`); a default ``output_type`` leaves
@@ -1375,7 +1382,9 @@ class SynthefyNoriClient:
             becomes its own indicator under one-hot.
         y_train : array-like of shape (n_context,)
             Target value for each context row. A Python list, numpy array, or a
-            pandas Series / single-column DataFrame is accepted.
+            pandas Series / single-column DataFrame is accepted. Hosted modes
+            require finite targets (no null, NaN, or infinity); only missing
+            feature values are imputed.
         X_test : array-like of shape (n_query, n_features)
             Query rows to predict. Must have the same number of features as
             ``X_train``. When both ``X_train`` and ``X_test`` are DataFrames,
@@ -1595,7 +1604,8 @@ class SynthefyNoriClient:
             if a column is
             numeric in one of ``X_train``/``X_test`` but not the other; if a
             column has unsupported ``timedelta`` dtype; if a non-DataFrame input
-            contains non-numeric values; if ``categorical_encoding`` is not one
+            contains non-numeric values; if hosted targets contain null, NaN,
+            or infinity; if ``categorical_encoding`` is not one
             of ``"ordinal"``/``"onehot"``; if featurization leaves no usable
             columns; if ``output_type`` is not one of the four names, or
             ``quantiles`` is missing/empty/outside ``(0, 1)`` for
@@ -1664,6 +1674,8 @@ class SynthefyNoriClient:
             quantiles,
             discretizing=discretize is not None or categorical_levels is not None,
         )
+        if self.mode != "local":
+            _validate_hosted_targets(y_train)
         is_multi_target = _validate_multi_target_controls(
             y_train,
             output_type=output_type,
