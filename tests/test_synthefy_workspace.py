@@ -307,6 +307,12 @@ def test_time_series_forecaster_has_one_lightweight_implementation_owner():
     facade = (legacy / "__init__.py").read_text()
     assert '_CANONICAL_PACKAGE = "synthefy.nori_ts.tsfeatures"' in facade
     assert 'exc.name not in {"synthefy.nori_ts", _CANONICAL_PACKAGE}' in facade
+    legacy_basic = legacy / "basic_features.py"
+    assert not any(
+        isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        for node in ast.parse(legacy_basic.read_text()).body
+    )
+    assert _import_time_modules(legacy_basic) == ["synthefy.nori_ts.tsfeatures.basic_features"]
 
 
 def test_import_time_scan_descends_guards_but_skips_deferred_imports(tmp_path):

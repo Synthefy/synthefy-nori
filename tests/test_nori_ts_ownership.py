@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import pickle
 import sys
 
 import pandas as pd
@@ -48,6 +49,20 @@ def test_v7_legacy_exports_and_deep_modules_are_canonical():
         assert historical_module is canonical_module
 
 
+def test_historical_calendar_pickle_resolves_and_generates_default_features():
+    old_path = b"csynthefy_nori.nori_ts.tsfeatures.basic_features\nAdditionalCalendarFeature\np0\n."
+    restored = pickle.loads(old_path)  # noqa: S301
+    assert restored is canonical.AdditionalCalendarFeature
+
+    frame = pd.DataFrame(
+        {"target": [1.0, 2.0]},
+        index=pd.MultiIndex.from_product(
+            [[0], pd.date_range("2021-01-01", periods=2, freq="h")], names=["item_id", "timestamp"]
+        ),
+    )
+    pd.testing.assert_frame_equal(restored().generate(frame), canonical.CalendarFeature().generate(frame))
+
+
 def test_forecaster_has_one_lightweight_owner_and_a_legacy_identity_alias():
     from synthefy.nori_ts import NoriTSForecaster as canonical_forecaster
     from synthefy.nori_ts import core
@@ -90,6 +105,10 @@ def test_facade_falls_back_only_when_the_canonical_owner_is_missing(monkeypatch)
             )
         )
         assert list(frame.item_ids) == [0]
+        pd.testing.assert_frame_equal(
+            fallback.AdditionalCalendarFeature().generate(frame),
+            canonical.CalendarFeature().generate(frame),
+        )
     finally:
         for name in _DEEP_MODULES:
             sys.modules.pop(f"synthefy_nori.nori_ts.tsfeatures.{name}", None)

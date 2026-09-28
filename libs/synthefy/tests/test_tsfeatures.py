@@ -13,7 +13,10 @@ pytest.importorskip("joblib")
 pytest.importorskip("scipy")
 pytest.importorskip("statsmodels")
 
+import gluonts.time_feature
+
 from synthefy.nori_ts.tsfeatures import (
+    AdditionalCalendarFeature,
     AutoSeasonalFeature,
     CalendarFeature,
     FeatureTransformer,
@@ -36,6 +39,41 @@ def _tsdf(*, n: int = 48, item_id: int = 0) -> TimeSeriesDataFrame:
 
 def _features():
     return [RunningIndexFeature(), CalendarFeature(), AutoSeasonalFeature()]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{}, {"additional_seasonal_features": None}, {"additional_seasonal_features": {}}],
+    ids=["omitted", "none", "empty"],
+)
+def test_additional_calendar_generates_defaults_without_additions(kwargs):
+    frame = _tsdf()
+
+    pd.testing.assert_frame_equal(
+        AdditionalCalendarFeature(**kwargs).generate(frame),
+        CalendarFeature().generate(frame),
+    )
+
+
+def test_additional_calendar_merges_features_without_mutating_additions(monkeypatch):
+    monkeypatch.setattr(
+        gluonts.time_feature, "custom_hour_index", gluonts.time_feature.hour_of_day_index, raising=False
+    )
+    additions = {"custom_hour": [12], "hour_of_day": [12]}
+    feature = AdditionalCalendarFeature(components=["month"], additional_seasonal_features=additions)
+    frame = _tsdf()
+    generated = feature.generate(frame)
+
+    # Existing defaults keep precedence when an added feature has the same name.
+    pd.testing.assert_frame_equal(
+        generated.drop(columns=["custom_hour_sin", "custom_hour_cos"]),
+        CalendarFeature(components=["month"]).generate(frame),
+        check_like=True,
+    )
+    angle = 2 * np.pi * frame.index.get_level_values("timestamp").hour / 11
+    np.testing.assert_allclose(generated["custom_hour_sin"], np.sin(angle))
+    np.testing.assert_allclose(generated["custom_hour_cos"], np.cos(angle))
+    assert additions == {"custom_hour": [12], "hour_of_day": [12]}
 
 
 def test_generate_test_x_builds_a_contiguous_unknown_horizon():
