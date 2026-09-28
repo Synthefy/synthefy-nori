@@ -22,6 +22,7 @@ import pytest
 from synthefy import (
     SynthefyNoriClient,
 )
+from synthefy import nori_client as nori_client_module
 from synthefy.errors import (
     AuthenticationError,
     BadRequestError,
@@ -1050,7 +1051,7 @@ def test_as_pandas_with_non_pandas_inputs_uses_defaults():
 
 
 # --------------------------------------------------------------------------- #
-# NaN / missing values are forwarded for server-side imputation (not rejected)
+# Missing features are supported; hosted targets must be finite
 # --------------------------------------------------------------------------- #
 
 
@@ -1065,7 +1066,7 @@ def test_nan_is_sent_to_the_server_as_json_null():
     client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
     _attach_mock(client, _ok_handler([1.0], capture))
 
-    # A missing value in any input must NOT raise; the model imputes it server-side.
+    # Missing feature values must NOT raise; the model imputes them server-side.
     client.predict(
         X_train=pd.DataFrame({"a": [0.0, 1.0], "b": [1.0, np.nan]}),
         y_train=[1.0, 2.0],
@@ -1074,6 +1075,100 @@ def test_nan_is_sent_to_the_server_as_json_null():
 
     sent = capture["body"]["X_train"]
     assert sent[1][1] is None
+
+
+def _create_stubbed_hosted_target_client(monkeypatch, mode, *, multi_target=False):
+    predictions = [[10.0, 11.0], [20.0, 21.0]] if multi_target else [10.0, 20.0]
+    response = {"task": "regression", "predictions": predictions}
+    if multi_target:
+        response["multi_target_prediction_strategy"] = "copula"
+    requests = []
+    if mode == "sagemaker":
+        response["model"] = "nori-30m"
+
+        class FakeRuntime:
+            def invoke_endpoint_with_response_stream(self, **kwargs):
+                requests.append(kwargs)
+                return {"Body": [{"PayloadPart": {"Bytes": json.dumps(response).encode()}}]}
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(nori_client_module, "_create_sagemaker_runtime_client", lambda **_kwargs: FakeRuntime())
+        client = SynthefyNoriClient(mode="sagemaker", model="nori-30m", endpoint_name="nori-test")
+        return client, requests
+
+    def capture_hosted_prediction_request(request):
+        requests.append(request)
+        return httpx.Response(200, json=response)
+
+    client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
+    _attach_mock(client, capture_hosted_prediction_request)
+    return client, requests
+
+
+@pytest.mark.parametrize("mode", ["remote", "sagemaker"])
+@pytest.mark.parametrize("missing", [None, np.nan, np.inf, -np.inf], ids=["null", "nan", "inf", "-inf"])
+@pytest.mark.parametrize("target_format", ["list", "matrix", "series", "dataframe"])
+def test_hosted_rejects_non_finite_targets_without_network(monkeypatch, mode, missing, target_format):
+    y_train = [1.0, missing]
+    if target_format == "matrix":
+        y_train = np.array([[1.0, 2.0], [3.0, missing]], dtype=float)
+    elif target_format == "series":
+        y_train = pd.Series(y_train, dtype="Float64")
+    elif target_format == "dataframe":
+        y_train = pd.DataFrame({"a": [2.0, 3.0], "b": pd.Series(y_train, dtype="Float64")})
+    client, requests = _create_stubbed_hosted_target_client(monkeypatch, mode)
+
+    with client, pytest.raises(ValueError, match="y_train must contain only finite numbers"):
+        client.predict([[0.0], [1.0]], y_train, [[2.0], [3.0]])
+
+    assert requests == []
+
+
+@pytest.mark.parametrize("mode", ["remote", "sagemaker"])
+def test_hosted_rejects_non_finite_targets_before_text_preprocessing(monkeypatch, mode):
+    def reject_text_preprocessing(*args, **kwargs):
+        pytest.fail("Invalid targets must be rejected before text preprocessing")
+
+    monkeypatch.setattr(nori_client_module, "_widen_text_columns", reject_text_preprocessing)
+    client, requests = _create_stubbed_hosted_target_client(monkeypatch, mode)
+    with client, pytest.raises(ValueError, match="y_train must contain only finite numbers"):
+        client.predict(
+            pd.DataFrame({"text": ["a", "b"]}),
+            [1.0, np.nan],
+            pd.DataFrame({"text": ["c", "d"]}),
+            text_columns=["text"],
+        )
+
+    assert requests == []
+
+
+@pytest.mark.parametrize("mode", ["remote", "sagemaker"])
+@pytest.mark.parametrize("multi_target", [False, True], ids=["vector", "matrix"])
+def test_hosted_accepts_finite_targets_with_missing_features(monkeypatch, mode, multi_target):
+    y_train = [[1.0, 2.0], [3.0, 4.0]] if multi_target else [1.0, 2.0]
+    client, requests = _create_stubbed_hosted_target_client(monkeypatch, mode, multi_target=multi_target)
+    with client:
+        predictions = client.predict([[0.0, np.nan], [1.0, 2.0]], y_train, [[2.0, None], [3.0, 4.0]])
+
+    assert predictions == ([[10.0, 11.0], [20.0, 21.0]] if multi_target else [10.0, 20.0])
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("missing", [None, np.nan, np.inf, -np.inf], ids=["null", "nan", "inf", "-inf"])
+def test_local_delegates_non_finite_target_validation_to_runtime(monkeypatch, missing):
+    captured = {}
+
+    def predict_locally(X_train, y_train, X_test, *, task, model):
+        captured["targets"] = y_train
+        return [10.0, 20.0]
+
+    monkeypatch.setattr(nori_client_module, "_load_local_predict", lambda: predict_locally)
+    with SynthefyNoriClient(mode="local", model="nori-30m") as client:
+        assert client.predict([[0.0], [1.0]], [1.0, missing], [[2.0], [3.0]]) == [10.0, 20.0]
+
+    np.testing.assert_equal(captured["targets"], np.asarray([1.0, missing], dtype=float))
 
 
 def test_custom_http_endpoint_still_requires_and_sends_model():
