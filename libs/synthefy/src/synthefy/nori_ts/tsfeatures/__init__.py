@@ -4,20 +4,23 @@ Vendored from PriorLabs/tabpfn-time-series @ `a756ae3` (2026-07-13), which was
 upstream `main` at vendoring time. Upstream:
 https://github.com/PriorLabs/tabpfn-time-series
 
-Five of the six vendored modules retain that revision's implementation apart
+The following vendored modules retain that revision's implementation apart
 from distribution-local provenance/ownership wording and intra-package imports:
 
-    basic_features.py  auto_features.py  feature_generator_base.py
+    auto_features.py  feature_generator_base.py
     feature_transformer.py  ts_dataframe.py
 
 `feature_transformer.py` additionally enables postponed annotation evaluation
 for Python 3.9; this changes annotation representation, not forecasting behavior.
 
-`data_preparation.py` carries the one deliberate behavioral change, named in its own
+`basic_features.py` accepts omitted or None seasonal additions in
+`AdditionalCalendarFeature` and assembles periodic feature columns with one concat.
+
+`data_preparation.py` carries the explicit-frequency change named in its own
 file header: `generate_test_X` takes an explicit `freq`, because re-inferring it
-from a NaN-dropped index yields None. That is the only behavioral delta in this
-subpackage. (`ts_dataframe.py` retains the upstream implementation body; its
-distribution-local header records the AutoGluon -> Prior Labs -> here chain.)
+from a NaN-dropped index yields None. (`ts_dataframe.py` retains the upstream
+implementation body; its distribution-local header records the
+AutoGluon -> Prior Labs -> here chain.)
 
 Vendoring (rather than depending on tabpfn-time-series) keeps the tabpfn /
 tabpfn_client runtime dependencies out of the tree. No TabPFN model code or

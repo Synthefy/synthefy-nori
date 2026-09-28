@@ -5,8 +5,9 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Modifications by Synthefy: intra-package import paths rewritten for
-# synthefy. Otherwise byte-identical to that revision — no behavioral
-# change. (See tsfeatures/__init__.py for the pin and how to re-verify it.)
+# synthefy; AdditionalCalendarFeature accepts omitted seasonal additions;
+# PeriodicSinCosineFeature assembles columns with one concat.
+# See synthefy.nori_ts.tsfeatures for the pin and how to re-verify it.
 #
 # No TabPFN model code or weights are included — only the dependency-light
 # time-feature engineering.
@@ -79,6 +80,8 @@ class AdditionalCalendarFeature(CalendarFeature):
     ):
         super().__init__(components=components)
 
+        if additional_seasonal_features is None:
+            additional_seasonal_features = {}
         self.seasonal_features = {
             **additional_seasonal_features,
             **self.seasonal_features,
