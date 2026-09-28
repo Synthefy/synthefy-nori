@@ -10,7 +10,7 @@ Before opening a PR, run:
 ```bash
 uv sync --extra dev
 uv run pytest tests
-uv run ruff check src scripts tests
+uv run ruff check src scripts tests libs/synthefy/src libs/synthefy/tests
 uv build
 ```
 
