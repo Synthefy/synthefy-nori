@@ -42,6 +42,40 @@ def _features():
 
 
 @pytest.mark.parametrize(
+    "feature,component,period,freq,start",
+    [
+        ("second_of_minute", "second", 60, "s", "2026-01-01"),
+        ("minute_of_hour", "minute", 60, "min", "2026-01-01"),
+        ("hour_of_day", "hour", 24, "h", "2026-01-01"),
+        ("day_of_week", "dayofweek", 7, "D", "2026-01-05"),
+        ("month_of_year", "month", 12, "MS", "2026-01-01"),
+    ],
+)
+def test_calendar_features_preserve_the_full_cycle(feature, component, period, freq, start):
+    train = TimeSeriesDataFrame.from_data_frame(
+        pd.DataFrame(
+            {
+                "item_id": 0,
+                "timestamp": pd.date_range(start, periods=period, freq=freq),
+                "target": np.arange(period, dtype=float),
+            }
+        )
+    )
+    horizon = generate_test_X(train, prediction_length=2, freq=freq)
+    history, future = FeatureTransformer([CalendarFeature()]).transform(train, horizon)
+    generated = pd.concat([history, future])
+    index = getattr(generated.index.get_level_values("timestamp"), component).to_numpy()
+    if component == "month":
+        index = index - 1
+    angle = 2 * np.pi * index / period
+    actual = generated[[f"{feature}_sin", f"{feature}_cos"]].to_numpy()
+
+    np.testing.assert_allclose(actual, np.column_stack([np.sin(angle), np.cos(angle)]), atol=1e-7)
+    # The wrap to the next cycle has the same spacing as every other step.
+    np.testing.assert_allclose(np.linalg.norm(np.diff(actual, axis=0), axis=1), 2 * np.sin(np.pi / period), atol=1e-7)
+
+
+@pytest.mark.parametrize(
     "kwargs",
     [{}, {"additional_seasonal_features": None}, {"additional_seasonal_features": {}}],
     ids=["omitted", "none", "empty"],
@@ -70,7 +104,7 @@ def test_additional_calendar_merges_features_without_mutating_additions(monkeypa
         CalendarFeature(components=["month"]).generate(frame),
         check_like=True,
     )
-    angle = 2 * np.pi * frame.index.get_level_values("timestamp").hour / 11
+    angle = 2 * np.pi * frame.index.get_level_values("timestamp").hour / 12
     np.testing.assert_allclose(generated["custom_hour_sin"], np.sin(angle))
     np.testing.assert_allclose(generated["custom_hour_cos"], np.cos(angle))
     assert additions == {"custom_hour": [12], "hour_of_day": [12]}
