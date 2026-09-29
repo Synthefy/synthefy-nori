@@ -382,7 +382,7 @@ an existing client's routing.
 
 Nori does in-context regression, so your table is **input**: one prediction keeps a
 per-layer key/value cache over every context row, and that cache — not the
-~6M-parameter model — is what exhausts GPU memory on a big table. `memory_policy=` decides
+model weights — is what exhausts GPU memory on a big table. `memory_policy=` decides
 what to do about it. Omit it and the defaults handle almost every request.
 
 ```python

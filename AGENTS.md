@@ -12,8 +12,9 @@ workflows. The published dependency points heavy → light. Base `synthefy` must
 never import Torch or `synthefy_nori`; only an explicit `mode="local"` call
 may lazily load the installed runtime.
 
-Nori is a small (~6M-parameter) tabular foundation model
-(`FeaturesTransformer`) for **regression** via in-context learning. Given a few
+Nori is a tabular foundation model (`FeaturesTransformer`), shipped in three
+sizes — `nori-6m`, `nori-30m`, `nori-100m` (~6M / ~29M / ~98M parameters) — for
+**regression** via in-context learning. Given a few
 labeled context rows, it predicts on query rows in a single forward pass, with no
 task-specific training. It is trained entirely on synthetic data.
 
@@ -46,8 +47,10 @@ uv build --package synthefy
 
 ## How inference works (and how to test it)
 
-- The default checkpoint lives at the **public** HF repo
-  `Synthefy/Nori` (file `nori.pt`). First use downloads
+- There is **no default checkpoint**: `model=` is required and selects one of
+  three **public** HF repos, each holding `nori.pt` — `nori-6m` → `Synthefy/Nori`,
+  `nori-30m` → `Synthefy/Nori-30M`, `nori-100m` → `Synthefy/Nori-100M`
+  (registry: `NORI_MODELS` in `src/synthefy_nori/hf.py`). First use downloads
   and caches it — **no token or access request needed**. A token is only used
   for higher rate limits or for pointing at a private/custom repo.
 - Public API (`src/synthefy_nori/api.py`): `NoriRegressor`
@@ -116,8 +119,8 @@ tests/            Fast tests plus opt-in slow end-to-end tests.
   build and test candidates. The release process is in `RELEASING.md`.
 - **Training is GPU + DDP.** Real runs go through `scripts/train.sh` (torchrun)
   on one or more CUDA GPUs; the distributed path places each rank on
-  `cuda:<rank>`. Heads-up: the non-distributed `--device` default is `cuda:2`,
-  so `NPROC_PER_NODE=1 bash scripts/train.sh` only works on a box with ≥3 GPUs.
+  `cuda:<rank>`. With a single process (`NPROC_PER_NODE=1`), training runs
+  non-distributed on `--device`, which defaults to `cuda:0`.
 - **CPU smoke (no GPU needed)** — exercises the full loop (data-gen →
   CCMM/pinball loss → Muon step → checkpoint write) in 2 steps:
 

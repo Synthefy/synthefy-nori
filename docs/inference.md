@@ -10,8 +10,8 @@ reg.fit(X_train, y_train)
 y_pred = reg.predict(X_test)
 ```
 
-If `model_path` is omitted, the default checkpoint is resolved from Hugging
-Face through `synthefy_nori.hf.download_checkpoint()`.
+If `model_path` is omitted, `model=` is required, and the checkpoint for that
+size is resolved from Hugging Face through `synthefy_nori.hf.download_checkpoint()`.
 
 ## DataFrame features: numeric, categorical, and text
 
@@ -99,7 +99,7 @@ pinball checkpoint — a `bar_distribution` checkpoint raises `NotImplementedErr
 
 Nori predicts in context, so your table is *input*: every call reads all of
 `X_train` and keeps a per-layer key/value cache over those rows. That cache — not
-the ~6M parameters — is what fills a GPU on a big table.
+the model weights — is what fills a GPU on a big table.
 
 Omit `memory_policy` and nothing changes. The defaults cache at full precision,
 drop to int8 only if that is what keeps the cache on the GPU, spend at most 40% of

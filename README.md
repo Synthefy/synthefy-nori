@@ -310,10 +310,12 @@ More detail in [docs/inference.md](docs/inference.md).
 
 ## Authentication (optional)
 
-The default checkpoint at
-[`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori)
-is **public**: the first inference call downloads and caches it automatically,
-with no token and no access request.
+All three checkpoints —
+[`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori),
+[`Synthefy/Nori-30M`](https://huggingface.co/Synthefy/Nori-30M) and
+[`Synthefy/Nori-100M`](https://huggingface.co/Synthefy/Nori-100M) —
+are **public**: the first inference call downloads and caches the one you
+selected automatically, with no token and no access request.
 
 A Hugging Face token is only worth setting if you hit anonymous download rate
 limits, or if you point the package at a private/gated checkpoint of your own.
