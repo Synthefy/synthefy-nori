@@ -5,7 +5,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Modifications by Synthefy: intra-package import paths rewritten for
-# synthefy; AdditionalCalendarFeature accepts omitted seasonal additions;
+# synthefy; calendar phases use the full cycle length;
+# AdditionalCalendarFeature accepts omitted seasonal additions;
 # PeriodicSinCosineFeature assembles columns with one concat.
 # See synthefy.nori_ts.tsfeatures for the pin and how to re-verify it.
 #
@@ -63,7 +64,7 @@ class CalendarFeature(FeatureGenerator):
 
             if periods is not None:
                 for period in periods:
-                    period = period - 1  # Adjust for 0-based indexing
+                    # Zero-based indices change the phase origin, not the cycle length.
                     df[f"{feature_name}_sin"] = np.sin(2 * np.pi * feature / period)
                     df[f"{feature_name}_cos"] = np.cos(2 * np.pi * feature / period)
             else:

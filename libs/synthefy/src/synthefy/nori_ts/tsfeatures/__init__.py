@@ -14,7 +14,8 @@ from distribution-local provenance/ownership wording and intra-package imports:
 for Python 3.9; this changes annotation representation, not forecasting behavior.
 
 `basic_features.py` accepts omitted or None seasonal additions in
-`AdditionalCalendarFeature` and assembles periodic feature columns with one concat.
+`AdditionalCalendarFeature`, encodes calendar phases with the full cycle length,
+and assembles periodic feature columns with one concat.
 
 `data_preparation.py` carries the explicit-frequency change named in its own
 file header: `generate_test_X` takes an explicit `freq`, because re-inferring it
