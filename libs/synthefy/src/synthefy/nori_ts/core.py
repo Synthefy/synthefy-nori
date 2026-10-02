@@ -98,7 +98,8 @@ class NoriTSForecaster:
     context_length : int
         Cap on history rows per series (last-N kept), matching TabPFN-TS's 4096.
     quantiles : list[float]
-        Forecast quantile levels (also used to derive the point/median forecast).
+        Forecast quantile levels to return. The median is also requested internally
+        when 0.5 is absent, so the point forecast is always the median.
     features : list | None
         Feature generators; defaults to the TabPFN-TS default set.
     """
@@ -209,7 +210,13 @@ class NoriTSForecaster:
         )
         q_levels = self.quantiles
         q_names = [str(q) for q in q_levels]
-        median_idx = q_levels.index(0.5) if 0.5 in q_levels else None
+        if not q_levels:
+            raise ValueError("quantiles must contain at least one level in (0, 1)")
+        # Request the median in the same inference call even when callers only
+        # need interval endpoints. Their average is not the distribution median.
+        predict_levels = q_levels if 0.5 in q_levels else sorted(q_levels + [0.5])
+        median_idx = predict_levels.index(0.5)
+        output_indices = [predict_levels.index(q) for q in q_levels]
 
         # One groupby pass each instead of an xs() per item (O(n) vs O(n^2) on
         # the 300+-series datasets); droplevel mirrors what xs() returned.
@@ -227,18 +234,18 @@ class NoriTSForecaster:
 
             # (K, n_horizon) quantile forecasts from Nori's quantile head.
             q_pred = np.asarray(
-                self._predict_quantiles(X_tr, y_tr, X_te, q_levels),
+                self._predict_quantiles(X_tr, y_tr, X_te, predict_levels),
                 dtype=np.float64,
             )
             # Redundant safety: predict() already returns monotone quantiles per
-            # row (api.py sorts its inverse-CDF), and self.quantiles is ascending,
+            # row (api.py sorts its inverse-CDF), and predict_levels is ascending,
             # so this is a no-op guard rather than a real de-crossing step.
             q_pred = np.sort(q_pred, axis=0)
 
-            point = q_pred[median_idx] if median_idx is not None else q_pred.mean(0)
+            point = q_pred[median_idx]
             data = {_TARGET: point}
-            for name, row in zip(q_names, q_pred):
-                data[name] = row
+            for name, row_idx in zip(q_names, output_indices):
+                data[name] = q_pred[row_idx]
             # Rebuild the (item_id, timestamp) MultiIndex that xs() dropped.
             idx = pd.MultiIndex.from_product([[item_id], te.index], names=["item_id", "timestamp"])
             out_frames.append(pd.DataFrame(data, index=idx))
