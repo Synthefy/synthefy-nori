@@ -2086,7 +2086,7 @@ class NoriPredictor:
 
     @staticmethod
     def _bundle_device_bytes(bundle) -> int:
-        """Best-effort GPU byte count for a context bundle.
+        """Best-effort CUDA/MPS byte count for a context bundle.
 
         Walks the bundle's tensors rather than trusting a declared size: the cache may
         hold int8-quantized or host-offloaded K/V (``ScalableSeqKV``) whose real
@@ -2104,7 +2104,7 @@ class NoriPredictor:
                 return
             seen.add(id(obj))
             if isinstance(obj, torch.Tensor):
-                if obj.is_cuda:
+                if obj.device.type in ("cuda", "mps"):
                     total += obj.element_size() * obj.nelement()
                 return
             if isinstance(obj, dict):
