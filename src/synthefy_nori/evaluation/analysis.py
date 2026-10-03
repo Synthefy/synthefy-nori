@@ -207,7 +207,7 @@ class EvalAnalyzer:
     # --- Deep diagnostics / plots ---
 
     @staticmethod
-    def _best_other_row(row, other_cols):
+    def _best_other_row(row, other_cols, *, higher_is_better=True):
         valid = []
         for col in other_cols:
             v = row[col]
@@ -215,12 +215,14 @@ class EvalAnalyzer:
                 valid.append((col, float(v)))
         if not valid:
             return pd.Series({"best_other_model": None, "best_other_score": float("nan")})
-        best_model, best_score = max(valid, key=lambda x: x[1])
+        select_best = max if higher_is_better else min
+        best_model, best_score = select_best(valid, key=lambda x: x[1])
         return pd.Series({"best_other_model": best_model, "best_other_score": best_score})
 
     def comparison_vs_best_other(self, focus_model, task_type, metric=None):
-        """Dataset-level comparison: focus model score vs best non-focus model."""
+        """Compare to the best non-focus model; positive deltas favor the focus model."""
         metric = metric or self._primary_metric(task_type)
+        higher = self._higher_is_better(metric)
         df = self._clean(task_type)
         if df.empty or metric not in df.columns:
             return pd.DataFrame()
@@ -249,10 +251,12 @@ class EvalAnalyzer:
         if not other_cols:
             return pd.DataFrame()
 
-        best = comp.apply(lambda row: self._best_other_row(row, other_cols), axis=1)
+        best = comp.apply(lambda row: self._best_other_row(row, other_cols, higher_is_better=higher), axis=1)
         comp = pd.concat([comp, best], axis=1)
         comp = comp[np.isfinite(comp["focus_score"])]
         comp["delta_vs_best_other"] = comp["focus_score"] - comp["best_other_score"]
+        if not higher:
+            comp["delta_vs_best_other"] = -comp["delta_vs_best_other"]
 
         if "n_train" in comp.columns and "n_test" in comp.columns:
             comp["total_samples"] = comp["n_train"].fillna(0) + comp["n_test"].fillna(0)
@@ -461,7 +465,7 @@ class EvalAnalyzer:
         ax.set_yticks(y)
         ax.set_yticklabels(labels, fontsize=9)
         ax.axvline(0.0, color="black", linewidth=1, alpha=0.8)
-        ax.set_xlabel(f"Delta = {focus_model} - best_other ({metric.upper()})")
+        ax.set_xlabel(f"{focus_model} advantage over best_other ({metric.upper()}; positive is better)")
         ax.set_title(f"{task_type.title()} hardest datasets for {focus_model} (Top {len(data)})")
         ax.grid(axis="x", alpha=0.25)
 

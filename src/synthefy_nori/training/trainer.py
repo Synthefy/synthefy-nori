@@ -6,11 +6,14 @@ import copy
 import json
 import random
 import os
+import stat
+import tempfile
 import time
 import math
 import warnings
 from collections import defaultdict
 from contextlib import nullcontext
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -1766,7 +1769,20 @@ class NoriTrainer:
             save_dict["ema_decay"] = self.ema_decay
         if self.model_config is not None:
             save_dict["model_config"] = self.model_config
-        torch.save(save_dict, path)
+        # Publish only complete archives: the launcher chooses the highest
+        # checkpoint_step_*.pt, and an interrupted write must not replace a
+        # resumable checkpoint or leave a partial higher-step candidate.
+        checkpoint_path = Path(path)
+        with tempfile.TemporaryDirectory(dir=checkpoint_path.parent, prefix=f".{checkpoint_path.name}.") as directory:
+            temporary_path = Path(directory) / checkpoint_path.name
+            torch.save(save_dict, temporary_path)
+            try:
+                existing_mode = stat.S_IMODE(checkpoint_path.stat().st_mode)
+            except FileNotFoundError:
+                pass
+            else:
+                temporary_path.chmod(existing_mode)
+            os.replace(temporary_path, checkpoint_path)
         print(f"Checkpoint saved to {path}")
         if self.on_checkpoint_saved is not None:
             self.on_checkpoint_saved()
