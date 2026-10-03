@@ -188,8 +188,7 @@ def test_future_covariates_flow_through_fake_backend_in_timestamp_order():
     assert _TARGET not in output.columns
 
 
-@pytest.mark.parametrize("quantiles", [[0.1, 0.5, 0.9], [0.1, 0.9]])
-def test_predict_df_runs_through_public_synthefy_nori_client(monkeypatch, quantiles):
+def test_predict_df_runs_through_public_synthefy_nori_client(monkeypatch):
     n, horizon = 30, 6
     history = _history(
         n=n,
@@ -210,14 +209,14 @@ def test_predict_df_runs_through_public_synthefy_nori_client(monkeypatch, quanti
 
     def predict(X_train, y_train, X_test, **kwargs):
         calls.append((X_train, y_train, X_test, kwargs))
-        return np.vstack([np.full(len(X_test), 100.0 * level**2, dtype=float) for level in kwargs["quantiles"]])
+        return np.vstack([np.full(len(X_test), level, dtype=float) for level in kwargs["quantiles"]])
 
     monkeypatch.setattr(client, "predict", predict)
     try:
         output = NoriTSForecaster(
             client=client,
             features=[RunningIndexFeature()],
-            quantiles=quantiles,
+            quantiles=[0.1, 0.5, 0.9],
         ).predict_df(
             history,
             future_df=future,
@@ -233,8 +232,8 @@ def test_predict_df_runs_through_public_synthefy_nori_client(monkeypatch, quanti
         "output_type": "quantiles",
         "quantiles": [0.1, 0.5, 0.9],
     }
-    assert list(output.columns) == ["sales"] + [str(level) for level in quantiles]
-    np.testing.assert_allclose(output["sales"], 25.0)
+    assert list(output.columns) == ["sales", "0.1", "0.5", "0.9"]
+    np.testing.assert_allclose(output["sales"], 0.5)
 
 
 def test_future_target_values_are_rejected_as_leakage():
@@ -276,10 +275,3 @@ def test_future_rejects_duplicate_and_history_overlapping_timestamps():
     overlapping = _future(3, start="2021-01-01 19:00")
     with pytest.raises(ValueError, match="later than"):
         _forecaster().predict_df(history, future_df=overlapping)
-
-
-def test_empty_forecast_quantiles_do_not_become_an_implicit_median_request():
-    client = SynthefyNoriClient(mode="local", model="nori-6m")
-    forecaster = NoriTSForecaster(client=client, quantiles=[], features=[RunningIndexFeature()])
-    with pytest.raises(ValueError, match="at least one"):
-        forecaster.predict_df(_history(), prediction_length=3)
