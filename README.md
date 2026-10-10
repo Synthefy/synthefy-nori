@@ -512,7 +512,8 @@ cap context rows by available memory.
 
 The command prints a per-source mean R² summary and
 writes per-dataset metrics to `results/eval/all_results.csv`. Expect roughly
-30–40 minutes on a single large GPU (`--device cuda:0` by default).
+30–40 minutes on a single large GPU. `--device` defaults to CUDA when available,
+then Apple MPS, then CPU; pass e.g. `--device cuda:1` to pick a GPU.
 
 Exact per-dataset R² can move by ±0.001–0.002 across GPU models and
 PyTorch/NumPy versions; per-source means should match the table to within
