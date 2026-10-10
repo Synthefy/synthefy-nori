@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import gc
 import json
-import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -189,65 +188,6 @@ class NoriWrapper(BaseModelWrapper):
             torch.cuda.empty_cache()
 
 
-class NoriEnsembleWrapper(BaseModelWrapper):
-    """Average predictions from N Synthefy checkpoints.
-
-    Each component is a fully-configured NoriWrapper (its own checkpoint,
-    inference config, augmentations). The ensemble runs each component for
-    every dataset and averages predictions in y-space.
-
-    Component weights default to uniform (1/N each). Pass `weights` for a
-    weighted ensemble.
-
-    Memory: holds all N models in GPU memory simultaneously. For 5-12M-param
-    models on H200 (143 GB), 2-4 component ensembles fit comfortably; for
-    larger ensembles consider sequential load+predict+free, but that adds
-    model-load overhead per dataset.
-    """
-
-    def __init__(self, model_name: str, components: list, weights: list | None = None):
-        if not components:
-            raise ValueError("NoriEnsembleWrapper requires at least one component")
-        self._name = model_name
-        self.components = components
-        self._device = components[0].device_str
-        if weights is None:
-            self.weights = np.ones(len(components)) / float(len(components))
-        else:
-            w = np.asarray(weights, dtype=np.float64)
-            if len(w) != len(components):
-                raise ValueError(f"weights length {len(w)} != components {len(components)}")
-            self.weights = w / w.sum()  # normalize to sum=1
-
-    @property
-    def name(self):
-        return self._name
-
-    @property
-    def device_str(self):
-        return self._device
-
-    def predict_regression(self, X_train, y_train, X_test):
-        preds = None
-        for w, c in zip(self.weights, self.components):
-            p = np.asarray(c.predict_regression(X_train, y_train, X_test), dtype=np.float64)
-            if preds is None:
-                preds = w * p
-            else:
-                preds = preds + w * p
-        return preds
-
-    def cleanup(self):
-        for c in self.components:
-            try:
-                c.cleanup()
-            except Exception:
-                pass
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-
 # ---------------------------------------------------------------------------
 # Model Entry and Registry
 # ---------------------------------------------------------------------------
@@ -259,7 +199,7 @@ class ModelEntry:
 
     name: str
     wrapper: BaseModelWrapper
-    model_type: str  # "synthefy", "synthefy_ensemble", "custom"
+    model_type: str  # "synthefy", "custom"
     description: str = ""
     metadata: dict = field(default_factory=dict)
 
@@ -318,57 +258,6 @@ class ModelRegistry:
                 model_type="synthefy",
                 description=description,
                 metadata={"model_path": model_path, "device": device},
-            )
-        )
-
-    def add_synthefy_ensemble(
-        self,
-        ensemble_name: str,
-        component_specs: list,  # list of dicts: {path, label, reg_config, ...}
-        device=None,
-        default_reg_config=None,
-        augmentations=None,
-        yj_skew_threshold: float = 10.0,
-        weights=None,
-        description="",
-    ):
-        """Register an ensemble of N Synthefy checkpoints.
-
-        Each component_spec is a dict with keys:
-          - path (required): checkpoint path
-          - label (optional): logging label, defaults to filename
-          - reg_config (optional): override default reg config for this component
-        Predictions are averaged in y-space.
-        """
-        device = device or self.device
-        components: list[NoriWrapper] = []
-        for spec in component_specs:
-            if isinstance(spec, str):
-                spec = {"path": spec}
-            path = spec["path"]
-            label = spec.get("label") or os.path.splitext(os.path.basename(path))[0]
-            cmp_reg_config = spec.get("reg_config") or default_reg_config
-            wrapper = NoriWrapper(
-                model_name=label,
-                model_path=path,
-                device=device,
-                reg_config_path=cmp_reg_config,
-                augmentations=augmentations,
-                yj_skew_threshold=yj_skew_threshold,
-            )
-            components.append(wrapper)
-
-        ens = NoriEnsembleWrapper(ensemble_name, components, weights=weights)
-        self.register(
-            ModelEntry(
-                name=ensemble_name,
-                wrapper=ens,
-                model_type="synthefy_ensemble",
-                description=description or f"Ensemble of {len(components)} Synthefy checkpoints",
-                metadata={
-                    "components": [c.model_path for c in components],
-                    "weights": (weights if weights else [1.0 / len(components)] * len(components)),
-                },
             )
         )
 
