@@ -1,10 +1,13 @@
 # Hugging Face
 
-Download the default checkpoint:
+Download a checkpoint by size (`nori-6m`, `nori-30m`, or `nori-100m`):
 
 ```bash
-synthefy-nori-download
+synthefy-nori-download --model nori-30m
 ```
+
+With no `--model` (or `--repo-id`), it downloads the base `nori-6m` checkpoint
+from `Synthefy/Nori`. The command prints the local path of the cached file.
 
 Upload a checkpoint:
 
