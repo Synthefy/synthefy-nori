@@ -1024,7 +1024,7 @@ benchmark run.
 ## Hugging Face
 
 ```bash
-synthefy-nori-download                                            # fetch default checkpoint
+synthefy-nori-download --model nori-30m                           # fetch a checkpoint by size (default: nori-6m)
 synthefy-nori-upload path/to/checkpoint.pt --repo-id Synthefy/Nori
 ```
 
