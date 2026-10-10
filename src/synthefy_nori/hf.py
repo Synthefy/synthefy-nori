@@ -206,7 +206,14 @@ def push_checkpoint(
 
 def download_cli(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Download a Nori checkpoint")
-    parser.add_argument("--repo-id", default=DEFAULT_MODEL_REPO_ID)
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument(
+        "--model",
+        choices=list(NORI_MODELS),
+        default=None,
+        help=f"Checkpoint size to download. Default (with no --repo-id): {DEFAULT_MODEL_REPO_ID}, i.e. nori-6m.",
+    )
+    source.add_argument("--repo-id", default=None, help="Explicit Hugging Face repo id.")
     parser.add_argument("--filename", default=DEFAULT_CHECKPOINT_FILENAME)
     parser.add_argument("--revision", default=None)
     parser.add_argument("--cache-dir", default=None)
@@ -215,7 +222,9 @@ def download_cli(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     print(
         download_checkpoint(
-            repo_id=args.repo_id,
+            # model= overrides repo_id; with neither flag, keep the long-standing base-repo default.
+            repo_id=args.repo_id or DEFAULT_MODEL_REPO_ID,
+            model=args.model,
             filename=args.filename,
             revision=args.revision,
             cache_dir=args.cache_dir,
