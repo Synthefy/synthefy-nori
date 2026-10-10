@@ -511,7 +511,8 @@ class NoriTrainer:
 
         Accepted values:
           ``'limix'``         -- download LimiX-2M from ``stableai-org/LimiX-2M``
-          ``'hf'``            -- download the default Synthefy checkpoint
+          ``'nori-6m'`` etc.  -- download that Synthefy checkpoint size (any ``NORI_MODELS`` name)
+          ``'hf'``            -- legacy alias for ``'nori-6m'`` (the ``Synthefy/Nori`` checkpoint)
           ``'org/repo'``      -- download from an arbitrary HuggingFace repo
           local file path     -- used as-is
         """
@@ -519,13 +520,14 @@ class NoriTrainer:
             from synthefy_nori.hf import download_limix
 
             return download_limix()
+        from synthefy_nori.hf import NORI_MODELS, download_checkpoint
+
         if model_path == "hf":
-            from synthefy_nori.hf import download_checkpoint
-
-            return download_checkpoint()
+            # Predates the required model= size; keep it pointing at the checkpoint it always loaded.
+            model_path = "nori-6m"
+        if model_path in NORI_MODELS:
+            return download_checkpoint(model=model_path)
         if "/" in model_path and not os.path.exists(model_path):
-            from synthefy_nori.hf import download_checkpoint
-
             return download_checkpoint(repo_id=model_path)
         return model_path
 
@@ -533,7 +535,8 @@ class NoriTrainer:
         """Load a frozen model for GPU-batched learnability filtering.
 
         Supports:
-          - ``'hf'`` -- auto-download the default Synthefy checkpoint from HuggingFace
+          - ``'nori-6m'`` / ``'nori-30m'`` / ``'nori-100m'`` -- auto-download that Synthefy checkpoint
+          - ``'hf'`` -- legacy alias for ``'nori-6m'``
           - ``'org/repo'`` -- auto-download from a custom HuggingFace repo
           - Local file paths (.pt/.ckpt) -- uses native forward pass
         """
