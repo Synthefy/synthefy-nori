@@ -2238,17 +2238,6 @@ class SynthefyNoriClient:
                 extra["discretize"] = discretize
             if categorical_levels is not None:
                 extra["categorical_levels"] = categorical_levels
-        if request.memory_policy is not None:
-            _require_local_memory_policy_capabilities(request.memory_policy)
-            # A dict, not our MemoryPolicy instance: the library's coerce() accepts its OWN
-            # class, a dict, a preset name or None -- a same-named class from this package is
-            # none of those and would raise. exclude_unset for the same reason as the wire
-            # path: let the library apply its own defaults to whatever was not set.
-            extra["memory_policy"] = (
-                request.memory_policy
-                if isinstance(request.memory_policy, str)
-                else request.memory_policy.model_dump(exclude_unset=True)
-            )
         if self._local_variant is not None:
             # Selecting a non-base local variant needs a synthefy-nori that exposes the model=
             # selector; fail with a clear upgrade hint instead of an opaque TypeError on old builds.
