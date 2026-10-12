@@ -70,6 +70,19 @@ def test_nori_models_are_canonical_data_models_with_compatible_exports():
     assert PublicResponse is ClientResponse is NoriPredictResponse
 
 
+def test_the_response_keeps_the_model_prefix_legal():
+    # `model_version` sits in the `model_` namespace pydantic protected by default until
+    # 2.10, and this package still allows pydantic 2.0. Declaring the namespace empty is
+    # what keeps the field from warning on import there, which a consumer running
+    # warnings as errors would experience as a failed `import synthefy`.
+    import warnings
+
+    assert NoriPredictResponse.model_config.get("protected_namespaces") == ()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        NoriPredictResponse.model_rebuild(force=True)
+
+
 def _attach_mock(client: SynthefyNoriClient, handler: Handler) -> None:
     """Swap the client's httpx transport for an in-memory mock (no network)."""
     client.close()

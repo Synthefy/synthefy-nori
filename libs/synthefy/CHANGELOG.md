@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.2.0] - 2026-10-13
+
+### Added
+
+- **`model_version` on `NoriPredictResponse`**, the `sha256:<hex>` digest of the
+  released specification that answered: the served model's checkpoint sha256,
+  the name of its inference config, its Thinking budget, and the capabilities
+  that budget implies. Equal values mean the same released model specification
+  served the two responses, whichever host ran them, so a result can be pinned
+  to a model rather than to a name that may later be re-pointed. It tracks that
+  record alone, not the serving build. A deployment that predates the field
+  leaves the attribute `None`.
+
 ## [7.1.3] - 2026-09-14
 
 ### Fixed
