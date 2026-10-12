@@ -146,6 +146,14 @@ class NoriPredictResponse(BaseModel):
         the client can verify that a named endpoint served the requested model and
         fail closed instead of returning valid-looking predictions from the wrong
         model specification.
+    model_version : str or None, optional
+        ``sha256:<hex>`` digest of the served model's registry record (checkpoint
+        sha256, the name of the inference config, the Thinking budget, and the
+        capabilities that budget implies). Equal values mean the same released
+        model specification answered, whichever host served it, so a client can pin
+        results to a model rather than to a name that may be re-pointed. It tracks
+        that record alone: not the serving build, and not the contents of the file
+        the inference config names. A deployment that predates the field omits it.
     memory_report : dict, optional
         Present only when a scalar-target request set ``memory_policy``: what the server
         actually did about it. Matrix-target requests use
@@ -173,9 +181,16 @@ class NoriPredictResponse(BaseModel):
         the request selected a large-context policy.
     """
 
+    # `model_version` falls inside pydantic's `model_` protected namespace, whose default
+    # membership pydantic narrowed in 2.10. Declaring the namespace empty keeps the field
+    # legal on the `pydantic>=2.0.0` floor this package allows, where the name would
+    # otherwise warn on import and fail a consumer running warnings as errors.
+    model_config = ConfigDict(protected_namespaces=())
+
     task: str
     predictions: Union[List[Optional[float]], List[List[Optional[float]]]]
     model: Optional[str] = None
+    model_version: Optional[str] = None
     memory_report: Optional[MemoryReport] = None
     multi_target_memory_reports: Optional[List[MultiTargetMemoryReport]] = None
     output_type: Optional[str] = None

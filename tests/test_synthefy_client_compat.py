@@ -308,6 +308,9 @@ def test_migrated_client_matches_frozen_6_3_except_the_v7_categorical_contract(m
     current_response.pop("multi_target_prediction_strategy", None)
     current_response.pop("target_orders", None)
     current_response.pop("multi_target_memory_reports", None)
+    # Same treatment for the served model's registry digest: additive, null on a response
+    # the 6.3 oracle never saw.
+    current_response.pop("model_version", None)
     assert current == golden
     assert golden_dataframe["transport"]["body"]["X_test"][0] == [4.0, -1.0]
     expected_dataframe = copy.deepcopy(golden_dataframe)
