@@ -24,6 +24,7 @@ from synthefy_nori.training.data_generator import (
     SyntheticDataFilterError,
     generate_batch,
 )
+from synthefy_nori.training.filtering import decode_filter_regression_mean
 from synthefy_nori.training.masking import create_masks, random_mask_type, random_mask_ratio
 from synthefy_nori.training.loss import compute_ccmm_loss
 from synthefy_nori.training.optim import build_optimizer
@@ -701,7 +702,12 @@ class NoriTrainer:
                     margin = cfg.icl_filter_cls_min_auc - 0.5
                     return acc > (chance + margin)
                 else:
-                    preds = out["reg_output"][:, :n_qry, 0].float().cpu().numpy()
+                    preds = (
+                        decode_filter_regression_mean(out["reg_output"][:, :n_qry], self._icl_filter_model)
+                        .float()
+                        .cpu()
+                        .numpy()
+                    )
                     true = y_np[:, n_ctx : n_ctx + n_qry]
                     ss_res = ((true - preds) ** 2).sum(axis=-1)
                     ss_tot = ((true - true.mean(axis=-1, keepdims=True)) ** 2).sum(axis=-1)

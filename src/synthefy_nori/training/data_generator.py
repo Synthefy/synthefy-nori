@@ -21,6 +21,8 @@ import re
 
 import numpy as np
 
+from synthefy_nori.training.filtering import decode_filter_regression_mean
+
 
 # ---------------------------------------------------------------------------
 # Edge function factories
@@ -1522,7 +1524,7 @@ def _check_learnability_icl(
         chance = 1.0 / n_classes
         return np.isfinite(acc) and acc > chance + (cls_min_auc - 0.5)
 
-    preds = out["reg_output"][:, :n_qry, 0].squeeze(0).numpy()
+    preds = decode_filter_regression_mean(out["reg_output"][:, :n_qry], model).squeeze(0).float().cpu().numpy()
     true = y_sub[n_ctx : n_ctx + n_qry]
     if not np.isfinite(preds).all() or not np.isfinite(true).all():
         return False
