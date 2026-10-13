@@ -18,7 +18,11 @@ def _parse_checkpoint(raw: str) -> tuple[str, str]:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Evaluate Nori checkpoints")
     parser.add_argument("--checkpoint", action="append", default=[], help="Checkpoint path or label:path. Repeatable.")
-    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Torch device (e.g. cuda:0, mps, cpu). Default: CUDA if available, then MPS, then CPU.",
+    )
     parser.add_argument("--output-dir", default="results/eval")
     parser.add_argument("--tabarena-reg-dir", default="cache/tabarena_reg")
     parser.add_argument("--talent-reg-dir", default="cache/talent_reg")
@@ -60,10 +64,15 @@ def main(argv: list[str] | None = None) -> None:
 
     os.environ.setdefault("SYNTHEFY_MAX_ELEMENTS_BUDGET", str(args.max_elements_budget))
 
+    from synthefy_nori.api import _as_device
     from synthefy_nori.evaluation.datasets import DatasetRegistry
     from synthefy_nori.evaluation.models import ModelRegistry
     from synthefy_nori.evaluation.runner import EvalRunner
     from synthefy_nori.hf import download_checkpoint
+
+    # Resolve (and validate) the device up front, the same way NoriRegressor does, so an
+    # unavailable device fails once here instead of once per dataset inside the runner.
+    device = str(_as_device(args.device))
 
     datasets = DatasetRegistry(max_train_samples=args.max_train_samples)
     if args.download_benchmarks:
@@ -76,14 +85,14 @@ def main(argv: list[str] | None = None) -> None:
     if args.custom_reg_dir:
         datasets.load_custom_dir(args.custom_reg_dir)
 
-    models = ModelRegistry(device=args.device)
+    models = ModelRegistry(device=device)
     checkpoints = args.checkpoint or [f"Synthefy:{download_checkpoint()}"]
     for raw in checkpoints:
         label, path = _parse_checkpoint(raw)
         models.add_checkpoint(
             label,
             path,
-            device=args.device,
+            device=device,
             reg_config=args.reg_config,
         )
 
