@@ -22,11 +22,6 @@ def recorded_checkpoint_download_calls(monkeypatch):
     return calls
 
 
-def test_hf_is_an_alias_for_the_base_checkpoint(recorded_checkpoint_download_calls):
-    assert NoriTrainer._resolve_icl_filter_path("hf") == "/cache/nori-6m/nori.pt"
-    assert recorded_checkpoint_download_calls == [{"model": "nori-6m", "repo_id": None}]
-
-
 @pytest.mark.parametrize("size", list(hf.NORI_MODELS))
 def test_size_names_download_that_size(recorded_checkpoint_download_calls, size):
     assert NoriTrainer._resolve_icl_filter_path(size) == f"/cache/{size}/nori.pt"

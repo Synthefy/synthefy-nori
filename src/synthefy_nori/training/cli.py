@@ -603,8 +603,7 @@ def main():
         default="",
         help="GPU model for ICL learnability filtering. Options: "
         '"limix" to auto-download LimiX-2M from HuggingFace, '
-        '"nori-6m"/"nori-30m"/"nori-100m" to auto-download that Synthefy checkpoint '
-        '("hf" is a legacy alias for "nori-6m"), '
+        '"nori-6m"/"nori-30m"/"nori-100m" to auto-download that Synthefy checkpoint, '
         "path to local checkpoint (.pt/.ckpt), "
         "or empty string to disable. "
         "Runs on the training GPU after each batch.",

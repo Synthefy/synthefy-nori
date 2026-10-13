@@ -17,9 +17,8 @@ TOTAL_STEPS=2 NPROC_PER_NODE=1 WANDB_MODE=disabled bash scripts/train.sh
 ## ICL learnability filtering
 
 `--icl-filter-model` selects a frozen checkpoint to score synthetic training
-episodes. Use `nori-6m`, `nori-30m`, or `nori-100m` to download a Nori checkpoint;
-`hf` remains an alias for `nori-6m`. Local checkpoint paths and `limix` are also
-supported.
+episodes. Use `nori-6m`, `nori-30m`, or `nori-100m` to download a Nori checkpoint.
+Local checkpoint paths and `limix` are also supported.
 
 Both CPU and GPU filters score a point mean: scalar heads are unchanged,
 quantile heads use the saved probability grid and the inference trapezoidal
