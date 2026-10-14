@@ -363,6 +363,7 @@ jobs:
           assert platform.machine() == 'arm64', platform.machine();
           assert torch.backends.mps.is_available(), 'PyTorch MPS is unavailable'"
       - run: uv run pytest -m slow tests/test_inference_e2e.py -k mps
+      - run: uv run pytest tests/test_context_cache.py -k mps
 
   # Merge gate (part 2): one real training step from scratch on CPU (data-gen ->
   # loss -> optimizer step -> checkpoint write). Offline; no checkpoint download.

@@ -40,6 +40,7 @@ import numpy as np
 import pytest
 import torch
 
+from synthefy_nori.inference.predictor import NoriPredictor
 from synthefy_nori.model.transformer import ContextCache, FeaturesTransformer
 
 N_TRAIN, N_TEST, N_FEATURES = 300, 120, 8
@@ -1198,3 +1199,40 @@ def test_mps_context_cache_uses_recommended_working_set(monkeypatch):
     assert predictor._total_vram_gb() == 16.0
     assert predictor._context_cache_budget_bytes() == 4 * 1024**3
     assert predictor._default_max_elements_budget() == 2_000_000
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="requires Apple MPS")
+def test_context_cache_counts_mps_tensors_without_counting_host_copies():
+    resident = torch.empty(32, dtype=torch.float32, device="mps")
+    host_copy = torch.empty(32, dtype=torch.float32)
+    bundle = {"layers": [{"key": resident, "value": resident}], "offloaded": host_copy}
+
+    assert NoriPredictor._bundle_device_bytes(bundle) == 128
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="requires Apple MPS")
+def test_mps_context_cache_evicts_resident_tensors_at_the_working_set_budget(monkeypatch):
+    predictor = object.__new__(NoriPredictor)
+    predictor.device = torch.device("mps")
+    predictor._context_cache_budget_frac = 0.25
+    monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: 1024)
+    old = torch.empty(48, dtype=torch.float32, device="mps")
+    incoming = torch.empty(32, dtype=torch.float32, device="mps")
+    cache = {"old_pipe": [("key", None, None, {"kv": old})]}
+
+    assert predictor._evict_context_cache_for(cache, {"kv": incoming}) is True
+    assert cache == {}, "192 + 128 resident bytes exceed the 256-byte retention budget"
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="requires Apple MPS")
+def test_mps_context_cache_does_not_retain_a_bundle_larger_than_the_budget(monkeypatch):
+    predictor = object.__new__(NoriPredictor)
+    predictor.device = torch.device("mps")
+    predictor._context_cache_budget_frac = 0.25
+    monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: 1024)
+    small = torch.empty(16, dtype=torch.float32, device="mps")
+    oversized = torch.empty(65, dtype=torch.float32, device="mps")
+    cache = {"old_pipe": [("key", None, None, {"kv": small})]}
+
+    assert predictor._evict_context_cache_for(cache, {"kv": oversized}) is False
+    assert cache == {}
