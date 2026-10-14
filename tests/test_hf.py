@@ -62,3 +62,46 @@ def test_download_checkpoint_model_overrides_repo(monkeypatch):
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_hub_download)
     hf.download_checkpoint(model="nori-30m", token=False)
     assert seen["repo_id"] == "Synthefy/Nori-30M"
+
+
+@pytest.fixture
+def hub_downloads(monkeypatch):
+    seen = []
+
+    def fake_hub_download(repo_id, filename, **kwargs):
+        seen.append(repo_id)
+        return f"/cache/{repo_id}/{filename}"
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_hub_download)
+    # download_checkpoint also fetches the config.json sidecar from the same repo, so
+    # assert on the set of repos touched rather than on the number of calls.
+    return seen
+
+
+def test_download_cli_defaults_to_base_repo(hub_downloads, capsys):
+    hf.download_cli([])
+    assert set(hub_downloads) == {"Synthefy/Nori"}
+    assert capsys.readouterr().out.strip() == "/cache/Synthefy/Nori/nori.pt"
+
+
+@pytest.mark.parametrize("size", list(hf.NORI_MODELS))
+def test_download_cli_model_selects_size(hub_downloads, size):
+    hf.download_cli(["--model", size])
+    assert set(hub_downloads) == {hf.NORI_MODELS[size]}
+
+
+def test_download_cli_repo_id_still_works(hub_downloads):
+    hf.download_cli(["--repo-id", "org/repo"])
+    assert set(hub_downloads) == {"org/repo"}
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["--model", "nori-30m", "--repo-id", "org/repo"], ["--model", "nori-7b"]],
+)
+def test_download_cli_rejects_bad_model_args(hub_downloads, argv):
+    with pytest.raises(SystemExit):
+        hf.download_cli(argv)
+    assert hub_downloads == []
