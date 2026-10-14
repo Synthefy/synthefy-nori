@@ -24,6 +24,7 @@ from synthefy_nori.training.data_generator import (
     SyntheticDataFilterError,
     generate_batch,
 )
+from synthefy_nori.training.filtering import decode_filter_regression_mean
 from synthefy_nori.training.masking import create_masks, random_mask_type, random_mask_ratio
 from synthefy_nori.training.loss import compute_ccmm_loss
 from synthefy_nori.training.optim import build_optimizer
@@ -511,7 +512,7 @@ class NoriTrainer:
 
         Accepted values:
           ``'limix'``         -- download LimiX-2M from ``stableai-org/LimiX-2M``
-          ``'hf'``            -- download the default Synthefy checkpoint
+          ``'nori-6m'`` etc.  -- download that Synthefy checkpoint size (any ``NORI_MODELS`` name)
           ``'org/repo'``      -- download from an arbitrary HuggingFace repo
           local file path     -- used as-is
         """
@@ -519,13 +520,11 @@ class NoriTrainer:
             from synthefy_nori.hf import download_limix
 
             return download_limix()
-        if model_path == "hf":
-            from synthefy_nori.hf import download_checkpoint
+        from synthefy_nori.hf import NORI_MODELS, download_checkpoint
 
-            return download_checkpoint()
+        if model_path in NORI_MODELS:
+            return download_checkpoint(model=model_path)
         if "/" in model_path and not os.path.exists(model_path):
-            from synthefy_nori.hf import download_checkpoint
-
             return download_checkpoint(repo_id=model_path)
         return model_path
 
@@ -533,7 +532,7 @@ class NoriTrainer:
         """Load a frozen model for GPU-batched learnability filtering.
 
         Supports:
-          - ``'hf'`` -- auto-download the default Synthefy checkpoint from HuggingFace
+          - ``'nori-6m'`` / ``'nori-30m'`` / ``'nori-100m'`` -- auto-download that Synthefy checkpoint
           - ``'org/repo'`` -- auto-download from a custom HuggingFace repo
           - Local file paths (.pt/.ckpt) -- uses native forward pass
         """
@@ -698,7 +697,12 @@ class NoriTrainer:
                     margin = cfg.icl_filter_cls_min_auc - 0.5
                     return acc > (chance + margin)
                 else:
-                    preds = out["reg_output"][:, :n_qry, 0].float().cpu().numpy()
+                    preds = (
+                        decode_filter_regression_mean(out["reg_output"][:, :n_qry], self._icl_filter_model)
+                        .float()
+                        .cpu()
+                        .numpy()
+                    )
                     true = y_np[:, n_ctx : n_ctx + n_qry]
                     ss_res = ((true - preds) ** 2).sum(axis=-1)
                     ss_tot = ((true - true.mean(axis=-1, keepdims=True)) ** 2).sum(axis=-1)
