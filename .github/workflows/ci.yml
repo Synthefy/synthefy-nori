@@ -19,7 +19,7 @@ jobs:
       - run: >-
           uv run python -c
           "import synthefy, synthefy_nori;
-          assert synthefy.__version__ == '7.2.0';
+          assert synthefy.__version__ == '7.3.0';
           assert synthefy_nori.__version__ == '0.22.0'"
       - run: uv run pytest
       - run: >-
@@ -42,13 +42,13 @@ jobs:
         include:
           - python_version: "3.9"
             kind: wheel
-            artifact_file: dist/synthefy/synthefy-7.2.0-py3-none-any.whl
+            artifact_file: dist/synthefy/synthefy-7.3.0-py3-none-any.whl
           - python_version: "3.9"
             kind: sdist
-            artifact_file: dist/synthefy/synthefy-7.2.0.tar.gz
+            artifact_file: dist/synthefy/synthefy-7.3.0.tar.gz
           - python_version: "3.11"
             kind: wheel
-            artifact_file: dist/synthefy/synthefy-7.2.0-py3-none-any.whl
+            artifact_file: dist/synthefy/synthefy-7.3.0-py3-none-any.whl
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -72,10 +72,11 @@ jobs:
 
           uv pip install --python "$CLIENT_TEST_PY" --strict "$CLIENT_TEST_ARTIFACT"
           uv pip check --python "$CLIENT_TEST_PY"
-          "$CLIENT_TEST_PY" -c 'import importlib.util; import synthefy; from importlib.metadata import metadata; assert "site-packages" in synthefy.__file__; assert synthefy.__version__ == "7.2.0"; assert metadata("synthefy")["Requires-Python"] == ">=3.9"; assert all(importlib.util.find_spec(name) is None for name in ("boto3", "joblib", "scipy", "sentence_transformers", "sklearn", "synthefy_nori", "torch"))'
+          "$CLIENT_TEST_PY" -c 'import importlib.util; import synthefy; from importlib.metadata import metadata; assert "site-packages" in synthefy.__file__; assert synthefy.__version__ == "7.3.0"; assert metadata("synthefy")["Requires-Python"] == ">=3.9"; assert all(importlib.util.find_spec(name) is None for name in ("boto3", "joblib", "scipy", "sentence_transformers", "sklearn", "synthefy_nori", "torch"))'
 
           uv pip install --python "$CLIENT_TEST_PY" --strict \
-            "boto3>=1.34,<2" \
+            "boto3==1.42.54" \
+            "botocore==1.42.54" \
             "pytest>=7.4,<9" \
             "pytest-socket>=0.7"
           uv pip check --python "$CLIENT_TEST_PY"
@@ -242,8 +243,8 @@ jobs:
           test "${#NORI_WHEELS[@]}" -eq 1
           printf 'CLIENT_WHEEL=%s\n' "${CLIENT_WHEELS[0]}" >> "$GITHUB_ENV"
           printf 'NORI_WHEEL=%s\n' "${NORI_WHEELS[0]}" >> "$GITHUB_ENV"
-          python -c 'import pathlib, tomllib; print("CLIENT_VERSION=" + tomllib.loads(pathlib.Path("libs/synthefy/pyproject.toml").read_text())["project"]["version"])' >> "$GITHUB_ENV"
-          python -c 'import pathlib, tomllib; print("NORI_VERSION=" + tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])' >> "$GITHUB_ENV"
+          printf 'CLIENT_VERSION=%s\n' "$(python ci/declared_version.py)" >> "$GITHUB_ENV"
+          printf 'NORI_VERSION=%s\n' "$(python ci/declared_version.py synthefy-nori)" >> "$GITHUB_ENV"
 
       - name: Rehearse candidate lightweight wheel by itself
         run: |

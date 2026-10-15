@@ -188,7 +188,8 @@ def test_future_covariates_flow_through_fake_backend_in_timestamp_order():
     assert _TARGET not in output.columns
 
 
-def test_predict_df_runs_through_public_synthefy_nori_client(monkeypatch):
+@pytest.mark.parametrize("quantiles", [[0.1, 0.5, 0.9], [0.1, 0.9]])
+def test_predict_df_runs_through_public_synthefy_nori_client(monkeypatch, quantiles):
     n, horizon = 30, 6
     history = _history(
         n=n,
@@ -209,14 +210,14 @@ def test_predict_df_runs_through_public_synthefy_nori_client(monkeypatch):
 
     def predict(X_train, y_train, X_test, **kwargs):
         calls.append((X_train, y_train, X_test, kwargs))
-        return np.vstack([np.full(len(X_test), level, dtype=float) for level in kwargs["quantiles"]])
+        return np.vstack([np.full(len(X_test), 100.0 * level**2, dtype=float) for level in kwargs["quantiles"]])
 
     monkeypatch.setattr(client, "predict", predict)
     try:
         output = NoriTSForecaster(
             client=client,
             features=[RunningIndexFeature()],
-            quantiles=[0.1, 0.5, 0.9],
+            quantiles=quantiles,
         ).predict_df(
             history,
             future_df=future,
@@ -232,8 +233,8 @@ def test_predict_df_runs_through_public_synthefy_nori_client(monkeypatch):
         "output_type": "quantiles",
         "quantiles": [0.1, 0.5, 0.9],
     }
-    assert list(output.columns) == ["sales", "0.1", "0.5", "0.9"]
-    np.testing.assert_allclose(output["sales"], 0.5)
+    assert list(output.columns) == ["sales"] + [str(level) for level in quantiles]
+    np.testing.assert_allclose(output["sales"], 25.0)
 
 
 def test_future_target_values_are_rejected_as_leakage():
@@ -275,3 +276,109 @@ def test_future_rejects_duplicate_and_history_overlapping_timestamps():
     overlapping = _future(3, start="2021-01-01 19:00")
     with pytest.raises(ValueError, match="later than"):
         _forecaster().predict_df(history, future_df=overlapping)
+
+
+def test_empty_forecast_quantiles_do_not_become_an_implicit_median_request():
+    client = SynthefyNoriClient(mode="local", model="nori-6m")
+    forecaster = NoriTSForecaster(client=client, quantiles=[], features=[RunningIndexFeature()])
+    with pytest.raises(ValueError, match="at least one"):
+        forecaster.predict_df(_history(), prediction_length=3)
+
+
+@pytest.mark.parametrize("name", ["year", "running_index", "hour_of_day_sin", "sin_#0"])
+def test_predict_df_rejects_covariate_overwritten_by_generated_feature(name):
+    pattern = [100.0, 0.0, 0.0, 100.0, 0.0]
+    covariate = np.asarray((pattern * 9)[:43])
+    history = _history(n=40, **{name: covariate[:40]})
+    future = pd.DataFrame(
+        {"timestamp": pd.date_range("2021-01-02 16:00", periods=3, freq="h"), "item_id": 0, name: covariate[40:]}
+    )
+    forecaster = _forecaster()
+
+    with pytest.raises(ValueError, match="collide with generated time-feature names"):
+        forecaster.predict_df(history, future_df=future)
+    assert forecaster.client.calls == []
+
+
+def test_predict_df_keeps_a_covariate_equal_to_the_generated_calendar_year():
+    history = _history(n=40, year=np.full(40, 2021.0))
+    future = pd.DataFrame(
+        {"timestamp": pd.date_range("2021-01-02 16:00", periods=3, freq="h"), "item_id": 0, "year": 2021.0}
+    )
+    forecaster = _forecaster()
+    forecaster.predict_df(history, future_df=future)
+    assert len(forecaster.client.calls) == 1
+
+
+@pytest.mark.parametrize("entrypoint", ["predict", "predict_df"])
+def test_forecast_rejects_covariate_named_like_internal_train_marker(entrypoint):
+    history = _history(n=40, _is_train=np.arange(40, dtype=float))
+    future = _future(3, start="2021-01-02 16:00", _is_train=np.arange(40, 43, dtype=float))
+    forecaster = _forecaster(features=[RunningIndexFeature()])
+    history_before = history.copy(deep=True)
+    future_before = future.copy(deep=True)
+
+    with pytest.raises(ValueError, match="_is_train.*reserved"):
+        if entrypoint == "predict_df":
+            forecaster.predict_df(history, future_df=future)
+        else:
+            train, horizon = forecaster._build_forecast_frames(history, None, future, "target")
+            forecaster.predict(train, horizon)
+
+    assert forecaster.client.calls == []
+    pd.testing.assert_frame_equal(history, history_before)
+    pd.testing.assert_frame_equal(future, future_before)
+
+
+def test_predict_rejects_internal_marker_present_only_in_horizon():
+    forecaster = _forecaster(features=[RunningIndexFeature()])
+    history, horizon = forecaster._build_forecast_frames(_history(), 3, None, "target")
+    horizon["_is_train"] = [100.0, 200.0, 300.0]
+
+    with pytest.raises(ValueError, match="_is_train.*reserved"):
+        forecaster.predict(history, horizon)
+
+    assert forecaster.client.calls == []
+
+
+@pytest.mark.parametrize("context_length", [1, 2])
+@pytest.mark.parametrize("freq", ["h", "ME"])
+def test_predict_df_infers_horizon_frequency_before_capping_history(context_length, freq):
+    history = pd.concat(
+        [
+            _history(n=12, freq=freq, item_id="b", start="2021-03-01"),
+            _history(n=15, freq=freq, item_id="a", start="2021-01-01"),
+        ],
+        ignore_index=True,
+    ).sample(frac=1, random_state=19)
+    original = history.copy(deep=True)
+    forecaster = _forecaster(context_length=context_length, features=[RunningIndexFeature()])
+
+    output = forecaster.predict_df(history, prediction_length=3)
+
+    assert len(forecaster.client.calls) == 2
+    for item_id, call in zip(["a", "b"], forecaster.client.calls):
+        series = history[history["item_id"] == item_id].sort_values("timestamp")
+        expected_times = pd.date_range(series["timestamp"].iloc[-1], periods=4, freq=freq)[1:]
+        pd.testing.assert_index_equal(output.xs(item_id).index, expected_times.rename("timestamp"), check_names=True)
+        np.testing.assert_array_equal(call["y_train"], series["target"].iloc[-context_length:])
+        assert call["X_train"].shape[0] == context_length
+        assert call["X_test"].shape[0] == 3
+    pd.testing.assert_frame_equal(history, original)
+
+
+def test_predict_orders_unsorted_frames_by_time_before_capping_and_featurizing():
+    forecaster = _forecaster(context_length=5, features=[RunningIndexFeature()])
+    history, horizon = forecaster._build_forecast_frames(_history(n=20), 3, None, "target")
+    shuffled_history = history.iloc[np.random.default_rng(0).permutation(len(history))]
+    shuffled_horizon = horizon.iloc[[2, 0, 1]]
+    assert not shuffled_history.index.is_monotonic_increasing
+
+    sorted_output = forecaster.predict(history, horizon)
+    shuffled_output = forecaster.predict(shuffled_history, shuffled_horizon)
+
+    sorted_call, shuffled_call = forecaster.client.calls
+    np.testing.assert_array_equal(shuffled_call["y_train"], np.arange(15, 20, dtype=float))
+    for key in ("X_train", "y_train", "X_test"):
+        np.testing.assert_array_equal(shuffled_call[key], sorted_call[key])
+    pd.testing.assert_frame_equal(shuffled_output, sorted_output)
