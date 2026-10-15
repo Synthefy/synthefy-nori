@@ -163,9 +163,9 @@ def _probe_client_extra(extra: str) -> None:
     _assert_not_importable(*sorted(all_optional.difference(optional_modules[extra])))
 
     if extra == "aws":
-        from synthefy.nori_client import _load_aws_sdk
+        from synthefy._aws import load_aws_sdk
 
-        boto3, config = _load_aws_sdk()
+        boto3, config = load_aws_sdk()
         if boto3.__name__ != "boto3" or config.__name__ != "Config":
             raise AssertionError("the AWS extra did not load boto3 and botocore.Config")
     elif extra == "forecasting":

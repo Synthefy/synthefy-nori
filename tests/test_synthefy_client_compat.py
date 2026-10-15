@@ -2,7 +2,8 @@
 
 The fixture records the exact public source commit and blobs used as the
 compatibility oracle. CI compares against it and never regenerates it from the
-current implementation.
+current implementation. SageMaker's intentionally replaced asynchronous S3
+transport has a separate assertion below.
 """
 
 import copy
@@ -11,6 +12,7 @@ import importlib.util
 import importlib.machinery
 import json
 import math
+import struct
 import sys
 import types
 from pathlib import Path
@@ -19,7 +21,7 @@ from typing import Any
 import httpx
 import pandas as pd
 
-import synthefy.nori_client as nori_client_module
+import synthefy._aws as aws_module
 from synthefy import NoriPredictRequest, NoriPredictResponse, SynthefyNoriClient
 from synthefy.errors import BadRequestError
 
@@ -178,38 +180,75 @@ def _public_trace(monkeypatch) -> dict:
 
     aws_capture = {}
 
-    class FakeStream:
-        def __iter__(self):
-            yield {
-                "PayloadPart": {
-                    "Bytes": json.dumps(
-                        {
-                            "task": "regression",
-                            "model": "nori-30m",
-                            "predictions": [8.0],
-                        }
-                    ).encode()
+    class MissingS3Object(Exception):
+        response = {"Error": {"Code": "404"}}
+
+    class FakeS3:
+        def __init__(self) -> None:
+            self.objects = {}
+
+        def upload_file(self, path: str, bucket: str, key: str) -> None:
+            with Path(path).open("rb") as source:
+                magic, header_size = struct.unpack("<8sI", source.read(12))
+                assert magic == b"NORI_REQ"
+                header = json.loads(source.read(header_size))
+            aws_capture["upload"] = {
+                "bucket": bucket,
+                "key": key,
+                "metadata": header["metadata"],
+            }
+            self.objects[(bucket, key)] = Path(path).read_bytes()
+
+        def head_object(self, *, Bucket: str, Key: str) -> dict:
+            if (Bucket, Key) not in self.objects:
+                raise MissingS3Object()
+            return {"ContentLength": len(self.objects[(Bucket, Key)])}
+
+        def download_file(self, bucket: str, key: str, path: str) -> None:
+            Path(path).write_bytes(self.objects[(bucket, key)])
+
+        def delete_object(self, *, Bucket: str, Key: str) -> None:
+            aws_capture.setdefault("deletes", []).append([Bucket, Key])
+            self.objects.pop((Bucket, Key), None)
+
+        def close(self) -> None:
+            aws_capture["s3_closed"] = True
+
+    class FakeRuntime:
+        def __init__(self, s3: FakeS3) -> None:
+            self.s3 = s3
+
+        def invoke_endpoint_async(self, **kwargs: Any) -> dict:
+            aws_capture["request"] = kwargs
+            invocation_id = kwargs["InferenceId"]
+            output = f"s3://results/invocations/{invocation_id}/result.json.out"
+            failure = f"s3://results/invocations/{invocation_id}/failure.json.out"
+            self.s3.objects[("results", output.split("results/", 1)[1])] = json.dumps(
+                {
+                    "task": "regression",
+                    "model": "nori-30m",
+                    "predictions": [8.0],
                 }
+            ).encode()
+            return {
+                "InferenceId": invocation_id,
+                "OutputLocation": output,
+                "FailureLocation": failure,
             }
 
         def close(self) -> None:
-            aws_capture["closed"] = True
+            aws_capture["runtime_closed"] = True
 
-    class FakeRuntime:
-        def invoke_endpoint_with_response_stream(self, **kwargs: Any) -> dict:
-            aws_capture["request"] = {**kwargs, "Body": kwargs["Body"].decode()}
-            return {"Body": FakeStream()}
-
-        def close(self) -> None:
-            pass
+    fake_s3 = FakeS3()
+    fake_runtime = FakeRuntime(fake_s3)
 
     class FakeSession:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             aws_capture["session"] = {"args": list(args), "kwargs": kwargs}
 
-        def client(self, service_name: str, **kwargs: Any) -> FakeRuntime:
-            aws_capture["service"] = service_name
-            return FakeRuntime()
+        def client(self, service_name: str, **kwargs: Any) -> Any:
+            aws_capture.setdefault("services", []).append(service_name)
+            return fake_runtime if service_name == "sagemaker-runtime" else fake_s3
 
     class FakeConfig:
         def __init__(self, **_kwargs: Any) -> None:
@@ -217,8 +256,8 @@ def _public_trace(monkeypatch) -> dict:
 
     fake_boto3 = types.SimpleNamespace(Session=FakeSession)
     monkeypatch.setattr(
-        nori_client_module,
-        "_load_aws_sdk",
+        aws_module,
+        "load_aws_sdk",
         lambda: (fake_boto3, FakeConfig),
     )
     aws_client = SynthefyNoriClient(
@@ -226,9 +265,12 @@ def _public_trace(monkeypatch) -> dict:
         model="nori-30m",
         endpoint_name="golden-endpoint",
         region_name="us-east-1",
+        s3_staging_uri="s3://golden-bucket/nori/golden",
     )
+    aws_result = aws_client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])
+    aws_client.close()
     trace["sagemaker_default"] = {
-        "result": _normalized(aws_client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])),
+        "result": _normalized(aws_result),
         "transport": _normalized(aws_capture),
     }
 
@@ -277,8 +319,10 @@ def _public_trace(monkeypatch) -> dict:
         ).to_wire(),
         # The golden pins the 6.3 fields. New additive response capabilities
         # have their own contract tests and are excluded from this legacy view.
+        # `discretize` is echoed only when a request discretized, so it is absent
+        # from the body a 6.3 caller sees.
         "response": NoriPredictResponse(task="regression", predictions=[1.0, None]).model_dump(
-            exclude={"large_context_report"}
+            exclude={"large_context_report", "discretize"}
         ),
     }
     return trace
@@ -290,9 +334,12 @@ def test_fixture_is_pinned_to_the_public_client_snapshot():
     assert json.loads(golden_bytes)["oracle"] == _ORACLE
 
 
-def test_migrated_client_matches_frozen_6_3_except_the_v7_categorical_contract(monkeypatch):
+def test_migrated_client_matches_frozen_6_3_except_reviewed_contract_changes(monkeypatch):
     current = _public_trace(monkeypatch)
     golden = json.loads(_GOLDEN_PATH.read_text())
+
+    sagemaker = current.pop("sagemaker_default")
+    golden.pop("sagemaker_default")
 
     # Issue #246 intentionally replaces 6.3's out-of-range -1 sentinel with the
     # bounded K "other" code shared by the estimator and one-shot helper. Keep
@@ -317,3 +364,17 @@ def test_migrated_client_matches_frozen_6_3_except_the_v7_categorical_contract(m
     expected_dataframe["transport"]["body"]["X_test"][0] = [4.0, 2.0]
     expected_dataframe["transport"]["raw"] = expected_dataframe["transport"]["raw"].replace("[4.0, -1.0]", "[4.0, 2.0]")
     assert current_dataframe == expected_dataframe
+
+    assert sagemaker["result"] == [8.0]
+    transport = sagemaker["transport"]
+    assert transport["session"] == {"args": [], "kwargs": {}}
+    assert transport["services"] == ["sagemaker-runtime", "s3"]
+    assert transport["upload"]["bucket"] == "golden-bucket"
+    assert transport["upload"]["metadata"]["model"] == "nori-30m"
+    request = transport["request"]
+    assert request["EndpointName"] == "golden-endpoint"
+    assert request["ContentType"] == "application/vnd.synthefy.nori.tensorfile"
+    assert request["InputLocation"].startswith("s3://golden-bucket/nori/golden/")
+    assert "Body" not in request and "CustomAttributes" not in request
+    assert transport["runtime_closed"] is True
+    assert transport["s3_closed"] is True

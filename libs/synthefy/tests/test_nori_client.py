@@ -9,41 +9,47 @@ import builtins
 import importlib.util
 import json
 import math
+import struct
 import sys
 import types
 import warnings
 from pathlib import Path
 from typing import Optional, Callable, Dict, List
 
+import boto3
+import botocore.session
 import httpx
 import numpy as np
 import pandas as pd
 import pytest
-from synthefy import (
-    SynthefyNoriClient,
-)
+from botocore.stub import Stubber
+from botocore.validate import ParamValidator
+from synthefy import SynthefyNoriClient
+from synthefy import _aws as aws_module
 from synthefy import nori_client as nori_client_module
 from synthefy.errors import (
+    APITimeoutError,
     AuthenticationError,
     BadRequestError,
     InternalServerError,
+    SageMakerInvocationError,
 )
 from synthefy.data_models import NoriPredictRequest, NoriPredictResponse
 from synthefy.nori_client import (
     GATEWAY_ENDPOINT,
     NORI_VARIANTS,
-    SAGEMAKER_MAX_BODY_BYTES,
+    SAGEMAKER_MAX_INPUT_BYTES,
     SAGEMAKER_VARIANTS,
     _MODEL_NAMES,
+    _build_nori_request,
     _is_thinking_model,
     _nullable_matrix,
     _resolve_local_variant,
-    _resolve_remote_levels,
     _resolve_text_device,
-    _snap_to_levels,
     _validate_multi_target_controls,
     _widen_text_columns,
 )
+from synthefy.nori_data_models import FINE_TUNED_MODEL_NAME_PATTERN
 
 Handler = Callable[[httpx.Request], httpx.Response]
 
@@ -109,19 +115,18 @@ def _ok_handler(predictions: List[Optional[float]], capture: Dict) -> Handler:
 
 def test_aws_factory_uses_argument_free_boto3_session(monkeypatch):
     """The public transport must use boto3's chain, never accept/pass raw keys."""
-    from synthefy import nori_client as module
-
     capture: Dict = {}
 
     class FakeConfig:
         def __init__(self, **kwargs):
             capture["config"] = kwargs
 
-    class FakeRuntime:
-        def close(self):
-            capture["closed"] = True
+    class FakeClient:
+        def __init__(self, name):
+            self.name = name
 
-    runtime = FakeRuntime()
+        def close(self):
+            capture.setdefault("closed", []).append(self.name)
 
     class FakeSession:
         def __init__(self, *args, **kwargs):
@@ -129,39 +134,36 @@ def test_aws_factory_uses_argument_free_boto3_session(monkeypatch):
             capture["session_kwargs"] = kwargs
 
         def client(self, service_name, **kwargs):
-            capture["service_name"] = service_name
-            capture["client_kwargs"] = kwargs
-            return runtime
+            capture.setdefault("clients", []).append((service_name, kwargs))
+            return FakeClient(service_name)
 
     class FakeBoto3:
         Session = FakeSession
 
-    monkeypatch.setattr(module, "_load_aws_sdk", lambda: (FakeBoto3, FakeConfig))
+    monkeypatch.setattr(aws_module, "load_aws_sdk", lambda: (FakeBoto3, FakeConfig))
 
     client = SynthefyNoriClient(
         mode="sagemaker",
         model="nori-30m",
         endpoint_name="nori-dev-123",
         region_name="us-east-1",
+        s3_staging_uri="s3://customer-bucket/nori/staging/",
         timeout=75.0,
         max_retries=3,
     )
 
     assert capture["session_args"] == ()
     assert capture["session_kwargs"] == {}
-    assert capture["service_name"] == "sagemaker-runtime"
-    assert capture["client_kwargs"]["region_name"] == "us-east-1"
+    assert [name for name, _ in capture["clients"]] == ["sagemaker-runtime", "s3"]
+    assert all(kwargs["region_name"] == "us-east-1" for _, kwargs in capture["clients"])
     assert capture["config"]["read_timeout"] == 75.0
     assert capture["config"]["retries"]["total_max_attempts"] == 4
     client.close()
-    assert capture["closed"] is True
+    assert capture["closed"] == ["sagemaker-runtime", "s3"]
 
 
-def test_botocore_stubber_accepts_the_streaming_request_shape():
-    """Keep the exact operation and signed parameter names checked by botocore."""
-    import boto3
-    from botocore.stub import Stubber
-
+def test_botocore_stubber_accepts_the_async_request_shape():
+    """Keep the exact async operation and signed parameter names checked by botocore."""
     runtime = boto3.client(
         "sagemaker-runtime",
         region_name="us-east-1",
@@ -170,91 +172,170 @@ def test_botocore_stubber_accepts_the_streaming_request_shape():
     )
     request = {
         "EndpointName": "nori-dev-123",
-        "ContentType": "application/json",
+        "InputLocation": "s3://customer-bucket/nori/staging/request.tensorfile",
+        "ContentType": "application/vnd.synthefy.nori.tensorfile",
         "Accept": "application/json",
-        "CustomAttributes": "synthefy-response-stream=v1",
-        "Body": b"{}",
+        "InferenceId": "invocation-123",
+        "RequestTTLSeconds": 21_600,
+        "InvocationTimeoutSeconds": 3_600,
+        "S3OutputPathExtension": "invocations/invocation-123",
+        "Filename": "result.json",
     }
     stubber = Stubber(runtime)
     stubber.add_response(
-        "invoke_endpoint_with_response_stream",
-        {"Body": {"PayloadPart": {"Bytes": b"{}"}}},
+        "invoke_endpoint_async",
+        {
+            "InferenceId": "invocation-123",
+            "OutputLocation": ("s3://customer-bucket/nori/output/invocations/invocation-123/result.json.out"),
+            "FailureLocation": ("s3://customer-bucket/nori/failure/invocations/invocation-123/result.json.out"),
+        },
         request,
     )
 
     with stubber:
-        response = runtime.invoke_endpoint_with_response_stream(**request)
-        assert response["Body"]["PayloadPart"]["Bytes"] == b"{}"
+        response = runtime.invoke_endpoint_async(**request)
+        assert response["InferenceId"] == "invocation-123"
         stubber.assert_no_pending_responses()
 
 
-def test_aws_predict_streams_named_endpoint_with_canonical_body(monkeypatch):
-    from synthefy import nori_client as module
+class _MissingObject(Exception):
+    response = {"Error": {"Code": "404"}}
 
-    capture: Dict = {}
-    response_body = json.dumps(
-        {
-            "task": "regression",
-            "model": "nori-30m",
-            "predictions": [10.0, 20.0],
+
+class _FakeS3:
+    def __init__(self):
+        self.objects = {}
+        self.uploads = []
+        self.deletes = []
+        self.fail_upload = None
+        self.fail_download = None
+
+    def upload_file(self, filename, bucket, key):
+        if self.fail_upload:
+            raise self.fail_upload
+        with Path(filename).open("rb") as request:
+            magic, header_size = struct.unpack("<8sI", request.read(12))
+            assert magic == b"NORI_REQ"
+            header = json.loads(request.read(header_size))
+        self.uploads.append(
+            {
+                "bucket": bucket,
+                "key": key,
+                "metadata": header["metadata"],
+                "dtypes": {name: descriptor["dtype"] for name, descriptor in header["tensors"].items()},
+                "shapes": {name: descriptor["shape"] for name, descriptor in header["tensors"].items()},
+            }
+        )
+        self.objects[(bucket, key)] = Path(filename).read_bytes()
+
+    def head_object(self, *, Bucket, Key):
+        if (Bucket, Key) not in self.objects:
+            raise _MissingObject()
+        return {"ContentLength": len(self.objects[(Bucket, Key)])}
+
+    def download_file(self, bucket, key, filename):
+        if self.fail_download:
+            raise self.fail_download
+        Path(filename).write_bytes(self.objects[(bucket, key)])
+
+    def delete_object(self, *, Bucket, Key):
+        self.deletes.append((Bucket, Key))
+        self.objects.pop((Bucket, Key), None)
+
+    def close(self):
+        pass
+
+
+class _FakeRuntime:
+    def __init__(self, s3, *, result="success"):
+        self.s3 = s3
+        self.result = result
+        self.requests = []
+        self.failure = None
+        self.failure_message = "container rejected the table"
+        self.response_overrides = {}
+
+    def invoke_endpoint_async(self, **request):
+        if self.failure:
+            raise self.failure
+        self.requests.append(request)
+        invocation_id = request["InferenceId"]
+        output = f"s3://results/output/invocations/{invocation_id}/result.json.out"
+        failure = f"s3://results/failure/invocations/{invocation_id}/result.json.out"
+        if self.result == "success":
+            model = self.s3.uploads[-1]["metadata"]["model"]
+            response = {
+                "task": "regression",
+                "model": model,
+                "predictions": [10.0, 20.0],
+                **self.response_overrides,
+            }
+            self.s3.objects[("results", output.split("results/", 1)[1])] = json.dumps(response).encode()
+        elif self.result == "failure":
+            self.s3.objects[("results", failure.split("results/", 1)[1])] = json.dumps(
+                {"ErrorMessage": self.failure_message}
+            ).encode()
+        return {
+            "InferenceId": invocation_id,
+            "OutputLocation": output,
+            "FailureLocation": failure,
         }
-    ).encode("utf-8")
-    request_body = json.dumps(
-        {
-            "X_train": [[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]],
-            "y_train": [1.0, 1.0, 2.0],
-            "X_test": [[2.0, 2.0], [3.0, 3.0]],
-            "task": "regression",
-            "model": "nori-30m",
-        },
-        separators=(",", ":"),
-    ).encode("utf-8")
 
-    class FakeEventStream:
-        def __iter__(self):
-            yield {"PayloadPart": {"Bytes": b" \n"}}
-            yield {"PayloadPart": {"Bytes": response_body}}
+    def invoke_endpoint_with_response_stream(self, **_request):
+        raise AssertionError("the removed response-stream operation was called")
 
-        def close(self):
-            capture["closed"] = True
+    def close(self):
+        pass
 
-    class FakeRuntime:
-        def invoke_endpoint_with_response_stream(self, **kwargs):
-            capture["request"] = kwargs
-            return {"Body": FakeEventStream()}
 
-        def close(self):
-            pass
-
-    monkeypatch.setattr(module, "_create_sagemaker_runtime_client", lambda **_kwargs: FakeRuntime())
-
+def _stubbed_aws_client(monkeypatch, *, model="nori-30m", result="success", timeout=5):
+    s3 = _FakeS3()
+    runtime = _FakeRuntime(s3, result=result)
+    monkeypatch.setattr(
+        nori_client_module,
+        "create_aws_clients",
+        lambda _service_names, **_kwargs: (runtime, s3),
+    )
     client = SynthefyNoriClient(
         mode="sagemaker",
-        model="nori-30m",
-        endpoint_name="nori-dev-123",
+        model=model,
+        endpoint_name="nori-shared",
         region_name="us-east-1",
+        s3_staging_uri="s3://customer-bucket/nori/staging/",
+        timeout=timeout,
     )
-    predictions = client.predict(
-        X_train=[[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]],
-        y_train=[1.0, 1.0, 2.0],
-        X_test=[[2.0, 2.0], [3.0, 3.0]],
-    )
+    return client, runtime, s3
 
+
+@pytest.mark.parametrize("model", SAGEMAKER_VARIANTS)
+def test_aws_predict_uses_s3_and_invoke_endpoint_async_for_every_model(monkeypatch, model):
+    """Every peer uses one binary S3 path; no model can fall back to streaming."""
+    client, runtime, s3 = _stubbed_aws_client(monkeypatch, model=model)
+    predictions = client.predict(
+        [[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]],
+        [1.0, 1.0, 2.0],
+        [[2.0, 2.0], [3.0, 3.0]],
+    )
     assert predictions == [10.0, 20.0]
-    assert capture["request"] == {
-        "EndpointName": "nori-dev-123",
-        "ContentType": "application/json",
-        "Accept": "application/json",
-        "CustomAttributes": "synthefy-response-stream=v1",
-        "Body": request_body,
-    }
-    assert capture["closed"] is True
+    upload = s3.uploads[0]
+    assert upload["bucket"] == "customer-bucket"
+    assert upload["key"].startswith("nori/staging/nori-shared/")
+    assert upload["metadata"]["model"] == model
+    assert upload["shapes"] == {"X_test": [2, 2], "X_train": [3, 2], "y_train": [3]}
+    assert upload["dtypes"] == {"X_test": "<f4", "X_train": "<f4", "y_train": "<f8"}
+    request = runtime.requests[0]
+    assert request["EndpointName"] == "nori-shared"
+    assert request["InputLocation"] == f"s3://customer-bucket/{upload['key']}"
+    assert request["ContentType"] == "application/vnd.synthefy.nori.tensorfile"
+    assert request["RequestTTLSeconds"] == 21_600
+    assert request["InvocationTimeoutSeconds"] == 3_600
+    assert "Body" not in request and "CustomAttributes" not in request
+    deleted_keys = {key for _, key in s3.deletes}
+    assert upload["key"] in deleted_keys
+    assert any(f"invocations/{request['InferenceId']}" in key for key in deleted_keys)
 
 
 def test_sagemaker_large_context_uses_the_shared_wire_and_report(monkeypatch):
-    from synthefy import nori_client as module
-
-    capture: Dict = {}
     report = {
         "applied": True,
         "policy": "cluster_route_g4",
@@ -270,36 +351,8 @@ def test_sagemaker_large_context_uses_the_shared_wire_and_report(monkeypatch):
         "reused_train_state": False,
         "gate_winner": None,
     }
-    response_body = json.dumps(
-        {
-            "task": "regression",
-            "model": "nori-30m",
-            "predictions": [10.0, 20.0],
-            "large_context_report": report,
-        }
-    ).encode()
-
-    class FakeEventStream:
-        def __iter__(self):
-            yield {"PayloadPart": {"Bytes": response_body}}
-
-        def close(self):
-            pass
-
-    class FakeRuntime:
-        def invoke_endpoint_with_response_stream(self, **kwargs):
-            capture["request"] = kwargs
-            return {"Body": FakeEventStream()}
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(module, "_create_sagemaker_runtime_client", lambda **_kwargs: FakeRuntime())
-    client = SynthefyNoriClient(
-        mode="sagemaker",
-        model="nori-30m",
-        endpoint_name="nori-dev-123",
-    )
+    client, runtime, s3 = _stubbed_aws_client(monkeypatch)
+    runtime.response_overrides["large_context_report"] = report
     assert client.predict(
         _X_TRAIN,
         _Y_TRAIN,
@@ -308,202 +361,370 @@ def test_sagemaker_large_context_uses_the_shared_wire_and_report(monkeypatch):
         large_context_threshold=1,
         large_context_seed=11,
     ) == [10.0, 20.0]
-    body = json.loads(capture["request"]["Body"])
-    assert body["large_context_policy"] == "cluster_route_g4"
-    assert body["large_context_threshold"] == 1
-    assert body["large_context_seed"] == 11
+    metadata = s3.uploads[0]["metadata"]
+    assert metadata["large_context_policy"] == "cluster_route_g4"
+    assert metadata["large_context_threshold"] == 1
+    assert metadata["large_context_seed"] == 11
     assert client.last_large_context_report == report
 
 
-def test_sagemaker_thinking_medium_uses_response_stream_and_checks_model(monkeypatch):
-    from synthefy import nori_client as module
-
-    capture: Dict = {}
-
-    class FakeEventStream:
-        def __iter__(self):
-            yield {"PayloadPart": {"Bytes": b" \n"}}
-            yield {
-                "PayloadPart": {
-                    "Bytes": json.dumps(
-                        {
-                            "task": "regression",
-                            "model": "nori-30m-thinking-medium",
-                            "predictions": [3.0],
-                        }
-                    ).encode()
-                }
-            }
-
-        def close(self):
-            capture["closed"] = True
-
-    class FakeRuntime:
-        def invoke_endpoint_with_response_stream(self, **kwargs):
-            capture["request"] = kwargs
-            return {"Body": FakeEventStream()}
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(
-        module,
-        "_create_sagemaker_runtime_client",
-        lambda **_kwargs: FakeRuntime(),
+def test_sagemaker_array_request_keeps_compact_feature_arrays_without_a_copy():
+    """A contiguous float32 table must not gain a payload-sized float64 twin."""
+    X_train = np.arange(24, dtype=np.float32).reshape(6, 4)
+    X_test = np.arange(8, dtype=np.float32).reshape(2, 4)
+    y_train = np.arange(6, dtype=np.float64)
+    request = _build_nori_request(
+        X_train,
+        y_train,
+        X_test,
+        array_backed=True,
     )
-    client = SynthefyNoriClient(
-        mode="sagemaker",
-        model="nori-30m-thinking-medium",
-        endpoint_name="nori-thinking-medium-prod",
-    )
+    assert np.shares_memory(request.X_train, X_train)
+    assert np.shares_memory(request.X_test, X_test)
+    assert np.shares_memory(request.y_train, y_train)
 
-    predictions = client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])
 
-    assert predictions == [3.0]
-    assert capture["request"]["EndpointName"] == "nori-thinking-medium-prod"
-    assert capture["request"]["CustomAttributes"] == "synthefy-response-stream=v1"
-    assert json.loads(capture["request"]["Body"])["model"] == "nori-30m-thinking-medium"
-    assert capture["closed"] is True
+def test_sagemaker_invocation_ids_are_unique(monkeypatch):
+    client, runtime, _ = _stubbed_aws_client(monkeypatch, model="nori-6m")
+    runtime.response_overrides["predictions"] = [10.0]
+    for _ in range(2):
+        client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])
+    assert len({request["InferenceId"] for request in runtime.requests}) == 2
 
 
 def test_sagemaker_response_model_mismatch_fails_closed(monkeypatch):
-    from synthefy import nori_client as module
-
-    class FakeRuntime:
-        def invoke_endpoint_with_response_stream(self, **_kwargs):
-            return {
-                "Body": [
-                    {
-                        "PayloadPart": {
-                            "Bytes": json.dumps(
-                                {
-                                    "task": "regression",
-                                    "model": "nori-6m",
-                                    "predictions": [2.0],
-                                }
-                            ).encode()
-                        }
-                    }
-                ]
-            }
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(
-        module,
-        "_create_sagemaker_runtime_client",
-        lambda **_kwargs: FakeRuntime(),
-    )
-    client = SynthefyNoriClient(
-        mode="sagemaker",
-        model="nori-30m",
-        endpoint_name="wrong-model-endpoint",
-    )
+    client, runtime, _ = _stubbed_aws_client(monkeypatch, model="nori-30m")
+    runtime.response_overrides["model"] = "nori-6m"
 
     with pytest.raises(ValueError, match="model identity mismatch"):
         client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])
 
 
-def test_aws_model_error_preserves_original_container_status(monkeypatch):
-    from botocore.exceptions import ClientError
-    from synthefy import nori_client as module
-
-    class FailingRuntime:
-        def invoke_endpoint_with_response_stream(self, **_kwargs):
-            raise ClientError(
-                {
-                    "Error": {"Code": "ModelError", "Message": "wrapped"},
-                    "OriginalStatusCode": 400,
-                    "OriginalMessage": "invalid Nori request",
-                    "LogStreamArn": "arn:aws:logs:us-east-1:123:log-stream/test",
-                    "ResponseMetadata": {"RequestId": "aws-request-123"},
-                },
-                "InvokeEndpoint",
-            )
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(
-        module,
-        "_create_sagemaker_runtime_client",
-        lambda **_kwargs: FailingRuntime(),
-    )
-    client = SynthefyNoriClient(
-        mode="sagemaker",
-        model="nori-30m",
-        endpoint_name="nori-dev-123",
-    )
-
-    with pytest.raises(BadRequestError) as caught:
+def test_sagemaker_failure_object_is_a_useful_client_exception(monkeypatch):
+    client, runtime, s3 = _stubbed_aws_client(monkeypatch, result="failure")
+    with pytest.raises(SageMakerInvocationError, match="container rejected") as caught:
         client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])
+    assert caught.value.invocation_id == runtime.requests[0]["InferenceId"]
+    assert not s3.objects
 
-    assert str(caught.value) == "invalid Nori request"
-    assert caught.value.status_code == 400
-    assert caught.value.request_id == "aws-request-123"
-    assert caught.value.response_body["error"]["log_stream_arn"].endswith("log-stream/test")
+
+def test_sagemaker_timeout_preserves_input_for_the_queued_invocation(monkeypatch):
+    client, runtime, s3 = _stubbed_aws_client(monkeypatch, result="pending", timeout=1)
+    unrelated = ("customer-bucket", "nori/staging/someone-else/request.tensorfile")
+    s3.objects[unrelated] = b"keep"
+    clock = iter((0.0, 2.0))
+    monkeypatch.setattr(nori_client_module.time, "monotonic", lambda: next(clock))
+    with pytest.raises(APITimeoutError, match="does not cancel"):
+        client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])
+    assert unrelated in s3.objects
+    assert unrelated not in s3.deletes
+    assert runtime.requests
+    upload = s3.uploads[0]
+    # Simulate the queued worker fetching its payload after the caller timed out.
+    assert s3.head_object(Bucket=upload["bucket"], Key=upload["key"])["ContentLength"] > 0
+    assert not s3.deletes
+
+
+@pytest.mark.parametrize("failure_at", ["poll", "invoke-response"])
+def test_sagemaker_uncertain_completion_preserves_staged_input(monkeypatch, failure_at):
+    client, runtime, s3 = _stubbed_aws_client(monkeypatch, result="pending")
+
+    def fail(*args, **kwargs):
+        raise ConnectionError("connection lost")
+
+    if failure_at == "poll":
+        monkeypatch.setattr(s3, "head_object", fail)
+    else:
+        invoke = runtime.invoke_endpoint_async
+
+        def accepted_but_response_lost(**request):
+            invoke(**request)
+            fail()
+
+        monkeypatch.setattr(runtime, "invoke_endpoint_async", accepted_but_response_lost)
+    with pytest.raises(ConnectionError, match="connection lost"):
+        client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])
+    upload = s3.uploads[0]
+    assert (upload["bucket"], upload["key"]) in s3.objects
+    assert not s3.deletes
+
+
+@pytest.mark.parametrize("failure_at", ["upload", "invoke", "download"])
+def test_sagemaker_failures_cleanup_only_before_submission(monkeypatch, failure_at):
+    client, runtime, s3 = _stubbed_aws_client(monkeypatch)
+    if failure_at == "upload":
+        s3.fail_upload = RuntimeError("upload failed")
+    elif failure_at == "invoke":
+        runtime.failure = RuntimeError("invoke failed")
+    else:
+        s3.fail_download = RuntimeError("download failed")
+    with pytest.raises(RuntimeError, match=f"{failure_at} failed"):
+        client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])
+    if failure_at == "upload":
+        assert any(key.endswith("request.tensorfile") for _, key in s3.deletes)
+    else:
+        upload = s3.uploads[0]
+        assert (upload["bucket"], upload["key"]) in s3.objects
+        assert not s3.deletes
+
+
+def test_sagemaker_never_deletes_an_unrelated_returned_location(monkeypatch):
+    client, runtime, s3 = _stubbed_aws_client(monkeypatch)
+
+    def unrelated_output(**request):
+        runtime.requests.append(request)
+        return {"OutputLocation": "s3://results/unrelated/result.json"}
+
+    runtime.invoke_endpoint_async = unrelated_output
+    s3.objects[("results", "unrelated/result.json")] = b"keep"
+    with pytest.raises(RuntimeError, match="outside this invocation"):
+        client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])
+    assert ("results", "unrelated/result.json") in s3.objects
+    assert ("results", "unrelated/result.json") not in s3.deletes
+
+
+def test_sagemaker_rejects_over_one_gb_without_allocating_it(monkeypatch):
+    client, _, s3 = _stubbed_aws_client(monkeypatch)
+    monkeypatch.setattr(
+        nori_client_module.Path,
+        "stat",
+        lambda _path: types.SimpleNamespace(st_size=SAGEMAKER_MAX_INPUT_BYTES + 1),
+    )
+    with pytest.raises(ValueError, match="1 GB"):
+        client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])
+    assert not s3.uploads
 
 
 def test_aws_constructor_and_predict_reject_transport_mismatches(monkeypatch):
-    from synthefy import nori_client as module
-
-    class FakeRuntime:
-        def invoke_endpoint_with_response_stream(self, **_kwargs):
-            return {
-                "Body": [
-                    {
-                        "PayloadPart": {
-                            "Bytes": json.dumps(
-                                {
-                                    "task": "regression",
-                                    "model": "nori-30m",
-                                    "predictions": [2.0],
-                                }
-                            ).encode()
-                        }
-                    }
-                ]
-            }
-
-        def close(self):
-            pass
-
     monkeypatch.setattr(
-        module,
-        "_create_sagemaker_runtime_client",
-        lambda **_kwargs: FakeRuntime(),
+        nori_client_module,
+        "create_aws_clients",
+        lambda _service_names, **_kwargs: (object(), object()),
     )
 
     with pytest.raises(ValueError, match="model is required"):
-        SynthefyNoriClient(mode="sagemaker", endpoint_name="nori-dev")
+        SynthefyNoriClient(
+            mode="sagemaker",
+            endpoint_name="nori-dev",
+            s3_staging_uri="s3://customer-bucket/nori/staging",
+        )
     with pytest.raises(ValueError, match="endpoint_name is required"):
-        SynthefyNoriClient(mode="sagemaker", model="nori-30m")
+        SynthefyNoriClient(
+            mode="sagemaker",
+            model="nori-30m",
+            s3_staging_uri="s3://customer-bucket/nori/staging",
+        )
+    with pytest.raises(ValueError, match="s3_staging_uri is required"):
+        SynthefyNoriClient(mode="sagemaker", endpoint_name="nori-dev", model="nori-30m")
     with pytest.raises(ValueError, match="published Nori inference specification"):
-        SynthefyNoriClient(mode="sagemaker", endpoint_name="nori-dev", model="custom")
+        SynthefyNoriClient(
+            mode="sagemaker",
+            endpoint_name="nori-dev",
+            model="synthefy/custom",
+            s3_staging_uri="s3://customer-bucket/nori/staging",
+        )
     with pytest.raises(ValueError, match="api_key is not used"):
         SynthefyNoriClient(
             mode="sagemaker",
             endpoint_name="nori-dev",
             model="nori-30m",
             api_key="secret",
+            s3_staging_uri="s3://customer-bucket/nori/staging",
         )
 
-    client = SynthefyNoriClient(mode="sagemaker", endpoint_name="nori-dev", model="nori-30m")
+    client, runtime, _ = _stubbed_aws_client(monkeypatch)
+    runtime.response_overrides["predictions"] = [10.0]
     with pytest.raises(ValueError, match="extra_headers"):
         client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]], extra_headers={"x-test": "no"})
     with pytest.warns(UserWarning, match="Per-prediction timeout is ignored"):
         client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]], timeout=60)
 
-    monkeypatch.setattr(module, "SAGEMAKER_MAX_BODY_BYTES", 1)
-    with pytest.raises(ValueError, match="exceeding InvokeEndpoint"):
-        client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])
+
+def test_aws_constructor_requires_a_scoped_customer_staging_prefix(monkeypatch):
+    monkeypatch.setattr(
+        nori_client_module,
+        "create_aws_clients",
+        lambda _service_names, **_kwargs: (object(), object()),
+    )
+    with pytest.raises(ValueError, match="include a customer-owned prefix"):
+        SynthefyNoriClient(
+            mode="sagemaker",
+            endpoint_name="nori-dev",
+            model="nori-30m",
+            s3_staging_uri="s3://customer-bucket",
+        )
 
 
-def test_sagemaker_body_limit_matches_marketplace_runtime():
-    # AWS Marketplace documents 25 MB as non-adjustable; a live runtime probe pins the decimal
-    # byte boundary (25,000,000 is accepted, 25,000,001 returns HTTP 413).
-    assert SAGEMAKER_MAX_BODY_BYTES == 25_000_000
+def test_sagemaker_input_limit_matches_async_inference():
+    assert SAGEMAKER_MAX_INPUT_BYTES == 1024**3
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["synthefy/ft-acme-churn-v1", "acme-churn-v1", "nori-6n", "Custom_Model", "ft-" + "a" * 61, 42],
+    ids=["namespaced", "no-prefix", "mistyped-released", "uppercase-and-underscore", "64-characters", "not-a-string"],
+)
+def test_sagemaker_refuses_a_name_that_is_neither_released_nor_fine_tuned(monkeypatch, model):
+    monkeypatch.setattr(
+        nori_client_module,
+        "create_aws_clients",
+        lambda _service_names, **_kwargs: (object(), object()),
+    )
+    with pytest.raises(ValueError, match="published Nori inference specification") as caught:
+        SynthefyNoriClient(
+            mode="sagemaker",
+            endpoint_name="nori-dev",
+            model=model,
+            s3_staging_uri="s3://customer-bucket/nori/staging",
+        )
+    assert "a fine-tuned model deployed on the endpoint" in str(caught.value)
+    assert FINE_TUNED_MODEL_NAME_PATTERN in str(caught.value)
+
+
+@pytest.mark.parametrize("model", ["ft-acme-churn-v1", "ft-" + "a" * 60], ids=["hyphenated", "63-characters"])
+def test_sagemaker_sends_a_fine_tuned_name_as_the_request_model(monkeypatch, model):
+    client, runtime, s3 = _stubbed_aws_client(monkeypatch, model=model)
+
+    assert client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST) == [10.0, 20.0]
+    assert s3.uploads[0]["metadata"]["model"] == model
+    assert runtime.requests[0]["EndpointName"] == "nori-shared"
+
+
+def test_sagemaker_refuses_an_answer_from_a_released_model_to_a_fine_tuned_name(monkeypatch):
+    client, runtime, _ = _stubbed_aws_client(monkeypatch, model="ft-acme-churn-v1")
+    runtime.response_overrides["model"] = "nori-6m"
+
+    with pytest.raises(ValueError, match="requested 'ft-acme-churn-v1', received 'nori-6m'"):
+        client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+
+
+def test_sagemaker_leaves_a_fine_tuned_name_it_cannot_see_served_for_the_endpoint_to_refuse(monkeypatch):
+    client, runtime, s3 = _stubbed_aws_client(monkeypatch, model="ft-acme-churn-v9", result="failure")
+    runtime.failure_message = (
+        "Requested model 'ft-acme-churn-v9' is not available on this endpoint. "
+        "Choose one of ['nori-6m', 'nori-30m', 'ft-acme-churn-v1'] or its synthefy/ gateway slug."
+    )
+
+    with pytest.raises(SageMakerInvocationError, match="'ft-acme-churn-v9' is not available on this endpoint"):
+        client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+    assert s3.uploads[0]["metadata"]["model"] == "ft-acme-churn-v9"
+
+
+def test_a_fine_tuned_name_containing_thinking_predicts_a_target_matrix(monkeypatch):
+    client, runtime, s3 = _stubbed_aws_client(monkeypatch, model="ft-churn-thinking-v1")
+    runtime.response_overrides.update(
+        {"predictions": [[10.0, 11.0], [20.0, 21.0]], "multi_target_prediction_strategy": "copula"}
+    )
+
+    predictions = client.predict([[0.0], [1.0]], [[0.0, 1.0], [1.0, 0.0]], [[2.0], [3.0]])
+
+    assert predictions == [[10.0, 11.0], [20.0, 21.0]]
+    assert s3.uploads[0]["shapes"]["y_train"] == [2, 2]
+
+
+def test_a_released_thinking_name_refuses_a_target_matrix_on_sagemaker(monkeypatch):
+    client, runtime, s3 = _stubbed_aws_client(monkeypatch, model="nori-30m-thinking-medium")
+
+    with pytest.raises(ValueError, match="not available on Nori Thinking"):
+        client.predict([[0.0], [1.0]], [[0.0, 1.0], [1.0, 0.0]], [[2.0], [3.0]])
+    assert not s3.uploads and not runtime.requests
+
+
+def test_sagemaker_last_model_version_is_the_latest_accepted_answer(monkeypatch):
+    digest = "sha256:" + "ab" * 32
+    client, runtime, _ = _stubbed_aws_client(monkeypatch, model="ft-acme-churn-v1")
+    runtime.response_overrides["model_version"] = digest
+
+    client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+    assert client.last_model_version == digest
+
+    runtime.response_overrides["model"] = "nori-6m"
+    with pytest.raises(ValueError, match="model identity mismatch"):
+        client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+    assert client.last_model_version is None
+
+    del runtime.response_overrides["model"]
+    client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+    del runtime.response_overrides["model_version"]
+    client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+    assert client.last_model_version is None
+
+
+def test_remote_last_model_version_is_set_from_the_response_and_cleared_by_the_next_call():
+    digest = "sha256:" + "cd" * 32
+    responses = iter(
+        [
+            {"task": "regression", "predictions": [1.0, 2.0], "model_version": digest},
+            {"task": "regression", "predictions": [1.0, 2.0]},
+        ]
+    )
+    client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
+    _attach_mock(client, lambda _request: httpx.Response(200, json=next(responses)))
+
+    client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+    assert client.last_model_version == digest
+    client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+    assert client.last_model_version is None
+
+
+_REFUSED_ANSWERS = {
+    "quantiles-without-a-quantile-block": (
+        {"output_type": "quantiles", "quantiles": [0.1, 0.5, 0.9]},
+        {"output_type": "quantiles"},
+        "returned no quantile block",
+    ),
+    "different-quantile-levels": (
+        {"output_type": "quantiles", "quantiles": [0.1, 0.5, 0.9]},
+        {
+            "output_type": "quantiles",
+            "quantiles": [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+            "taus": [0.2, 0.5, 0.8],
+        },
+        r"Requested quantile levels \[0.1, 0.5, 0.9\] but the server returned \[0.2, 0.5, 0.8\]",
+    ),
+    "wrong-multi-target-shape": (
+        {"y_train": [[0.0, 1.0], [1.0, 0.0], [0.5, 0.5]]},
+        {"predictions": [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], "multi_target_prediction_strategy": "copula"},
+        r"multi-target predictions of shape \(2, 3\); expected \(2, 2\)",
+    ),
+}
+
+
+@pytest.mark.parametrize("transport", ["remote", "sagemaker"])
+@pytest.mark.parametrize("case", sorted(_REFUSED_ANSWERS))
+def test_an_answer_refused_after_parsing_leaves_last_model_version_none(monkeypatch, transport, case):
+    """A digest on an answer the shape checks refuse must not be published as the latest model."""
+    predict_kwargs, refused_answer, message = _REFUSED_ANSWERS[case]
+    answer = {"model_version": "sha256:" + "ef" * 32, **refused_answer}
+    if transport == "sagemaker":
+        client, runtime, _ = _stubbed_aws_client(monkeypatch)
+        runtime.response_overrides.update(answer)
+    else:
+        client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
+        body = {"task": "regression", "predictions": [10.0, 20.0], **answer}
+        _attach_mock(client, lambda _request: httpx.Response(200, json=body))
+    arguments = {"X_train": _X_TRAIN, "y_train": _Y_TRAIN, "X_test": _X_TEST, **predict_kwargs}
+
+    with pytest.raises(ValueError, match=message):
+        client.predict(**arguments)
+    assert client.last_model_version is None
+
+
+def test_installed_botocore_knows_every_parameter_the_async_invocation_sends(monkeypatch):
+    """Every name the client passes must exist in the installed botocore's SageMaker Runtime model.
+
+    A parameter botocore does not know fails with ParamValidationError before any request is
+    signed. CI's artifact legs install boto3 and botocore at the ``synthefy[aws]`` floor, so
+    there this proves the floor knows what predict() sends; the workspace run checks the
+    newest locked release.
+    """
+    client, runtime, _ = _stubbed_aws_client(monkeypatch)
+    client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+    service_model = botocore.session.get_session().get_service_model("sagemaker-runtime")
+    shape = service_model.operation_model("InvokeEndpointAsync").input_shape
+
+    report = ParamValidator().validate(runtime.requests[0], shape)
+    assert not report.has_errors(), report.generate_report()
 
 
 # --------------------------------------------------------------------------- #
@@ -633,7 +854,7 @@ def test_dataframe_column_set_mismatch_raises():
 def test_non_numeric_columns_are_ordinal_encoded_by_default():
     capture: Dict = {}
     client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
-    _attach_mock(client, _ok_handler([5.0], capture))
+    _attach_mock(client, _ok_handler([5.0, 6.0], capture))
 
     out = client.predict(
         X_train=pd.DataFrame({"a": [0.0, 1.0, 2.0], "cat": ["y", "x", "y"]}),
@@ -642,7 +863,7 @@ def test_non_numeric_columns_are_ordinal_encoded_by_default():
         X_test=pd.DataFrame({"a": [3.0, 4.0], "cat": ["x", "z"]}),
     )
 
-    assert out == [5.0]
+    assert out == [5.0, 6.0]
     # one column per categorical, codes in sorted-category order: x=0, y=1
     assert capture["body"]["X_train"] == [[0.0, 1.0], [1.0, 0.0], [2.0, 1.0]]
     assert capture["body"]["X_test"] == [[3.0, 0.0], [4.0, 2.0]]
@@ -758,7 +979,7 @@ def test_auto_high_cardinality_column_requires_explicit_choice():
 def test_explicit_high_cardinality_column_uses_top_k_plus_other():
     capture: Dict = {}
     client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
-    _attach_mock(client, _ok_handler([1.0], capture))
+    _attach_mock(client, _ok_handler([1.0, 2.0], capture))
 
     client.predict(
         X_train=pd.DataFrame({"a": [0.0, 1.0, 2.0], "hc": ["p", "q", "r"]}),
@@ -1095,21 +1316,12 @@ def _create_stubbed_hosted_target_client(monkeypatch, mode, *, multi_target=Fals
     response = {"task": "regression", "predictions": predictions}
     if multi_target:
         response["multi_target_prediction_strategy"] = "copula"
-    requests = []
     if mode == "sagemaker":
-        response["model"] = "nori-30m"
+        client, runtime, s3 = _stubbed_aws_client(monkeypatch)
+        runtime.response_overrides.update(response)
+        return client, s3.uploads, runtime.requests
 
-        class FakeRuntime:
-            def invoke_endpoint_with_response_stream(self, **kwargs):
-                requests.append(kwargs)
-                return {"Body": [{"PayloadPart": {"Bytes": json.dumps(response).encode()}}]}
-
-            def close(self):
-                pass
-
-        monkeypatch.setattr(nori_client_module, "_create_sagemaker_runtime_client", lambda **_kwargs: FakeRuntime())
-        client = SynthefyNoriClient(mode="sagemaker", model="nori-30m", endpoint_name="nori-test")
-        return client, requests
+    requests = []
 
     def capture_hosted_prediction_request(request):
         requests.append(request)
@@ -1117,7 +1329,7 @@ def _create_stubbed_hosted_target_client(monkeypatch, mode, *, multi_target=Fals
 
     client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
     _attach_mock(client, capture_hosted_prediction_request)
-    return client, requests
+    return client, [], requests
 
 
 @pytest.mark.parametrize("mode", ["remote", "sagemaker"])
@@ -1131,11 +1343,12 @@ def test_hosted_rejects_non_finite_targets_without_network(monkeypatch, mode, mi
         y_train = pd.Series(y_train, dtype="Float64")
     elif target_format == "dataframe":
         y_train = pd.DataFrame({"a": [2.0, 3.0], "b": pd.Series(y_train, dtype="Float64")})
-    client, requests = _create_stubbed_hosted_target_client(monkeypatch, mode)
+    client, uploads, requests = _create_stubbed_hosted_target_client(monkeypatch, mode)
 
     with client, pytest.raises(ValueError, match="y_train must contain only finite numbers"):
         client.predict([[0.0], [1.0]], y_train, [[2.0], [3.0]])
 
+    assert uploads == []
     assert requests == []
 
 
@@ -1145,7 +1358,7 @@ def test_hosted_rejects_non_finite_targets_before_text_preprocessing(monkeypatch
         pytest.fail("Invalid targets must be rejected before text preprocessing")
 
     monkeypatch.setattr(nori_client_module, "_widen_text_columns", reject_text_preprocessing)
-    client, requests = _create_stubbed_hosted_target_client(monkeypatch, mode)
+    client, uploads, requests = _create_stubbed_hosted_target_client(monkeypatch, mode)
     with client, pytest.raises(ValueError, match="y_train must contain only finite numbers"):
         client.predict(
             pd.DataFrame({"text": ["a", "b"]}),
@@ -1154,6 +1367,7 @@ def test_hosted_rejects_non_finite_targets_before_text_preprocessing(monkeypatch
             text_columns=["text"],
         )
 
+    assert uploads == []
     assert requests == []
 
 
@@ -1161,12 +1375,13 @@ def test_hosted_rejects_non_finite_targets_before_text_preprocessing(monkeypatch
 @pytest.mark.parametrize("multi_target", [False, True], ids=["vector", "matrix"])
 def test_hosted_accepts_finite_targets_with_missing_features(monkeypatch, mode, multi_target):
     y_train = [[1.0, 2.0], [3.0, 4.0]] if multi_target else [1.0, 2.0]
-    client, requests = _create_stubbed_hosted_target_client(monkeypatch, mode, multi_target=multi_target)
+    client, uploads, requests = _create_stubbed_hosted_target_client(monkeypatch, mode, multi_target=multi_target)
     with client:
         predictions = client.predict([[0.0, np.nan], [1.0, 2.0]], y_train, [[2.0, None], [3.0, 4.0]])
 
     assert predictions == ([[10.0, 11.0], [20.0, 21.0]] if multi_target else [10.0, 20.0])
     assert len(requests) == 1
+    assert len(uploads) == (1 if mode == "sagemaker" else 0)
 
 
 @pytest.mark.parametrize("missing", [None, np.nan, np.inf, -np.inf], ids=["null", "nan", "inf", "-inf"])
@@ -1290,7 +1505,7 @@ def test_auto_mode_is_rejected_before_credentials_model_or_transport(monkeypatch
     monkeypatch.delenv("SYNTHEFY_NORI_API_KEY", raising=False)
     monkeypatch.setattr(httpx, "Client", unexpected_transport)
     monkeypatch.setattr(
-        "synthefy.nori_client._create_sagemaker_runtime_client",
+        "synthefy.nori_client.create_aws_clients",
         unexpected_transport,
     )
     monkeypatch.setattr("synthefy.nori_client._load_local_predict", unexpected_transport)
@@ -1493,6 +1708,8 @@ def test_request_model_roundtrip():
         "memory_policy": None,
         "output_type": None,
         "quantiles": None,
+        "discretize": None,
+        "categorical_levels": None,
         "large_context_policy": None,
         "large_context_threshold": None,
         "large_context_seed": None,
@@ -1609,7 +1826,7 @@ def test_multi_target_work_bounds_apply_only_to_hosted_modes():
         },
         "large_context_policy": None,
         "discretizing": False,
-        "model": "synthefy/nori-30m",
+        "is_thinking": False,
     }
 
     assert _validate_multi_target_controls(**controls, mode="local") is True
@@ -1814,8 +2031,8 @@ def test_nori_100m_resolves_like_the_other_sizes():
 
 
 def test_nori_100m_is_offered_everywhere_the_size_list_is_derived():
-    # _MODEL_NAMES and SAGEMAKER_VARIANTS are both derived from NORI_VARIANTS, so a new size
-    # must appear in each without a second edit.
+    # NORI_VARIANTS, _MODEL_NAMES and SAGEMAKER_VARIANTS all derive from RELEASED_MODEL_NAMES, so a
+    # new size must appear in each without a second edit.
     assert "nori-100m" in _MODEL_NAMES
     assert "nori-100m" in SAGEMAKER_VARIANTS
     assert "nori-30m-thinking-medium" in _MODEL_NAMES
@@ -1960,10 +2177,31 @@ def test_unknown_model_still_passes_through_in_remote_mode():
 # --------------------------------------------------------------------------- #
 
 
-def test_remote_snap_mean_snaps_to_y_train_levels():
-    # y_train levels {1, 2}; returned means snap to the nearest level.
+def _discretized_handler(predictions, strategy, capture):
+    """A deployment that discretized: levels plus the echo naming what ran."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        capture["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "task": "regression",
+                "predictions": predictions,
+                "discretize": strategy,
+            },
+        )
+
+    return handler
+
+
+def test_remote_returns_the_levels_the_deployment_chose():
+    """The client passes the server's answer through rather than re-deriving it.
+
+    It used to snap the returned means itself, which only ever worked for snap-mean.
+    """
+    capture: Dict = {}
     client = SynthefyNoriClient(api_key="k", model="nori-30m")
-    _attach_mock(client, _ok_handler([0.9, 1.6, 2.4], {}))
+    _attach_mock(client, _discretized_handler([1.0, 2.0, 2.0], "snap-mean", capture))
     preds = client.predict(
         X_train=[[0.0], [1.0], [2.0]],
         y_train=[1.0, 1.0, 2.0],
@@ -1971,32 +2209,18 @@ def test_remote_snap_mean_snaps_to_y_train_levels():
         discretize="snap-mean",
     )
     assert preds == [1.0, 2.0, 2.0]
+    assert capture["body"]["discretize"] == "snap-mean"
 
 
-def test_remote_snap_mean_uses_explicit_categorical_levels():
+def test_remote_discretization_survives_the_pandas_wrapper():
+    """The as_pandas path must not reshape or re-round what came back."""
     capture: Dict = {}
     client = SynthefyNoriClient(api_key="k", model="nori-30m")
-    _attach_mock(client, _ok_handler([0.9, 4.2], capture))
-    preds = client.predict(
-        X_train=[[0.0], [1.0], [2.0]],
-        y_train=[2.0, 2.0, 3.0],
-        X_test=[[0.5], [1.5]],
-        discretize="snap-mean",
-        categorical_levels=[1, 2, 3, 4, 5],
-    )
-    assert preds == [1.0, 4.0]
-    # Discretization is client-side: the wire payload is unchanged.
-    assert set(capture["body"]) == {"X_train", "y_train", "X_test", "task", "model"}
-
-
-def test_remote_snap_mean_as_pandas_stays_on_lattice():
-    client = SynthefyNoriClient(api_key="k", model="nori-30m")
-    _attach_mock(client, _ok_handler([0.9, 1.6], {}))
-    X_test = pd.DataFrame({"a": [0.5, 1.5]}, index=[10, 20])
+    _attach_mock(client, _discretized_handler([1.0, 2.0], "snap-mean", capture))
     preds = client.predict(
         X_train=pd.DataFrame({"a": [0.0, 1.0, 2.0]}),
         y_train=pd.Series([1.0, 1.0, 2.0], name="rating"),
-        X_test=X_test,
+        X_test=pd.DataFrame({"a": [0.5, 1.5]}, index=[10, 20]),
         as_pandas=True,
         discretize="snap-mean",
     )
@@ -2006,46 +2230,162 @@ def test_remote_snap_mean_as_pandas_stays_on_lattice():
     assert preds.tolist() == [1.0, 2.0]
 
 
-def test_remote_bank_strategy_raises_with_guidance():
-    # Validation runs before the request: no paid round-trip on a bad strategy.
+def test_a_deployment_that_ignored_discretize_raises_instead_of_returning_means():
+    """The echo is the only evidence a level was ever chosen.
+
+    A deployment predating the field drops it and answers with continuous predictions,
+    which are numerically valid and look like any other result. Returning those as if
+    they were levels is the failure the echo exists to prevent.
+    """
+    client = SynthefyNoriClient(api_key="k", model="nori-30m")
+    _attach_mock(client, _ok_handler([0.9, 1.6], {}))  # no discretize key
+    with pytest.raises(ValueError, match="predates the capability"):
+        client.predict(
+            X_train=[[0.0], [1.0]],
+            y_train=[1.0, 2.0],
+            X_test=[[0.5], [1.5]],
+            discretize="snap-mean",
+        )
+
+
+def test_a_normalized_echo_is_not_mistaken_for_a_different_strategy():
+    """The server lowercases the name and echoes the resolved one, as it does for
+    output_type. Comparing against the raw string rejected a correct response."""
+    client = SynthefyNoriClient(api_key="k", model="nori-30m")
+    _attach_mock(client, _discretized_handler([1.0, 2.0], "map-cell", {}))
+    preds = client.predict(
+        X_train=[[0.0], [1.0]],
+        y_train=[1.0, 2.0],
+        X_test=[[0.5], [1.5]],
+        discretize="MAP-CELL",
+    )
+    assert preds == [1.0, 2.0]
+
+
+def test_a_deployment_that_ran_another_strategy_raises():
+    client = SynthefyNoriClient(api_key="k", model="nori-30m")
+    _attach_mock(client, _discretized_handler([1.0, 2.0], "map-cell", {}))
+    with pytest.raises(ValueError, match="ran 'map-cell' instead"):
+        client.predict(
+            X_train=[[0.0], [1.0]],
+            y_train=[1.0, 2.0],
+            X_test=[[0.5], [1.5]],
+            discretize="snap-mean",
+        )
+
+
+def test_levels_alone_accept_whichever_default_the_deployment_resolved():
+    """The caller named no strategy, so any echoed one is the server's to choose."""
+    client = SynthefyNoriClient(api_key="k", model="nori-30m")
+    _attach_mock(client, _discretized_handler([1.0, 2.0], "map-cell", {}))
+    preds = client.predict(
+        X_train=[[0.0], [1.0]],
+        y_train=[1.0, 2.0],
+        X_test=[[0.5], [1.5]],
+        categorical_levels=[1, 2],
+    )
+    assert preds == [1.0, 2.0]
+
+
+def test_remote_sends_the_strategy_rather_than_snapping_locally():
+    """The server owns the arithmetic, so the client's job is to forward, not compute.
+
+    Every strategy needs the model's own predictive distribution, which only the
+    deployment has without the caller installing torch. The client used to refuse all
+    but ``snap-mean`` and snap the returned means itself; now it sends the request.
+    """
+    capture: Dict = {}
+    client = SynthefyNoriClient(api_key="k", model="nori-30m")
+    _attach_mock(client, _discretized_handler([1.0], "map-cell", capture))
+
+    client.predict(
+        X_train=_XTR,
+        y_train=_YTR,
+        X_test=_XTE,
+        discretize="map-cell",
+        categorical_levels=[3, 1, 2],
+    )
+
+    assert capture["body"]["discretize"] == "map-cell"
+    assert capture["body"]["categorical_levels"] == [3.0, 1.0, 2.0]
+
+
+def test_remote_sends_levels_without_a_strategy():
+    """Levels alone are meaningful: the server resolves them to its default strategy.
+
+    Refusing here would re-impose a restriction the server does not have, and the
+    response's ``discretize`` echo is what tells the caller which default ran.
+    """
+    capture: Dict = {}
+    client = SynthefyNoriClient(api_key="k", model="nori-30m")
+    _attach_mock(client, _discretized_handler([1.0], "map-cell", capture))
+
+    client.predict(X_train=_XTR, y_train=_YTR, X_test=_XTE, categorical_levels=[1, 2])
+
+    assert "discretize" not in capture["body"]
+    assert capture["body"]["categorical_levels"] == [1.0, 2.0]
+
+
+def test_a_request_that_does_not_discretize_carries_neither_field():
+    """An unused optional field must not appear, or older deployments see a new key."""
     capture: Dict = {}
     client = SynthefyNoriClient(api_key="k", model="nori-30m")
     _attach_mock(client, _ok_handler([1.0], capture))
-    with pytest.raises(ValueError, match="snap-mean"):
-        client.predict(X_train=_XTR, y_train=_YTR, X_test=_XTE, discretize="map-cell")
-    assert "body" not in capture
+
+    client.predict(X_train=_XTR, y_train=_YTR, X_test=_XTE)
+
+    assert "discretize" not in capture["body"]
+    assert "categorical_levels" not in capture["body"]
 
 
-def test_remote_levels_without_strategy_raises_with_guidance():
+@pytest.mark.parametrize(
+    "levels, phrase",
+    [
+        ([1.0, float("nan")], "finite"),
+        (["a", "b"], "must be numbers"),
+        ([], "empty"),
+    ],
+)
+def test_unsendable_levels_name_the_argument_they_came_from(levels, phrase):
+    """The deployment owns the policy; the client owns being able to serialize the call.
+
+    Without this, a NaN level reached the payload guard and was reported as a problem with
+    `y_train`, and a text level surfaced as a raw numpy conversion error.
+    """
     capture: Dict = {}
     client = SynthefyNoriClient(api_key="k", model="nori-30m")
     _attach_mock(client, _ok_handler([1.0], capture))
-    with pytest.raises(ValueError, match='discretize="snap-mean"'):
-        client.predict(X_train=_XTR, y_train=_YTR, X_test=_XTE, categorical_levels=[1, 2])
+    with pytest.raises(ValueError, match=phrase) as exc:
+        client.predict(
+            X_train=_XTR,
+            y_train=_YTR,
+            X_test=_XTE,
+            discretize="snap-mean",
+            categorical_levels=levels,
+        )
+    assert "categorical_levels" in str(exc.value)
     assert "body" not in capture
 
 
-def test_remote_empty_or_nonfinite_levels_raise():
-    for bad in ([], [1.0, float("nan")]):
-        with pytest.raises(ValueError, match="finite"):
-            _resolve_remote_levels([1.0, 2.0], "snap-mean", bad)
+def test_discretize_still_refuses_a_distribution_output_type_before_the_request():
+    """The one check that stays client-side, because it needs no server to decide.
 
-
-def test_remote_all_nan_y_train_raises_instead_of_opaque_error():
-    with pytest.raises(ValueError, match="categorical_levels explicitly"):
-        _resolve_remote_levels([float("nan"), float("nan")], "snap-mean", None)
-
-
-def test_remote_levels_order_and_duplicates_are_irrelevant():
-    levels = _resolve_remote_levels([1.0], "snap-mean", [3, 1, 2, 1, 3])
-    assert levels.tolist() == [1.0, 2.0, 3.0]
-
-
-def test_snap_to_levels_preserves_nan_predictions():
-    levels = _resolve_remote_levels([1.0, 2.0, 3.0], "snap-mean", None)
-    snapped = _snap_to_levels([0.9, float("nan"), 2.6], levels)
-    assert snapped[0] == 1.0 and snapped[2] == 3.0
-    assert math.isnan(snapped[1])
+    The strategy chooses the summary, so pairing it with output_type is a contradiction.
+    The server rejects it too; failing here saves a paid round-trip.
+    """
+    capture: Dict = {}
+    client = SynthefyNoriClient(api_key="k", model="nori-30m")
+    _attach_mock(client, _ok_handler([1.0], capture))
+    with pytest.raises(ValueError, match="discretize"):
+        client.predict(
+            X_train=_XTR,
+            y_train=_YTR,
+            X_test=_XTE,
+            discretize="map-cell",
+            output_type="quantiles",
+            quantiles=[0.1, 0.9],
+        )
+    assert "body" not in capture
 
 
 def test_local_mode_passes_discretize_and_levels(monkeypatch):

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import struct
+from pathlib import Path
 
 import httpx
 import numpy as np
@@ -81,17 +83,25 @@ class _RecordingFakeClient:
         return np.asarray(_quantile_rows(len(X_test), kwargs["quantiles"]), dtype=float).T
 
 
-class _EventStream:
-    def __init__(self, body: bytes):
-        self.body = body
-        self.closed = False
+class _MissingS3Object(Exception):
+    response = {"Error": {"Code": "404"}}
 
-    def __iter__(self):
-        yield {"PayloadPart": {"Bytes": b" \n"}}
-        yield {"PayloadPart": {"Bytes": self.body}}
 
-    def close(self):
-        self.closed = True
+def _read_tensor_request(path: str) -> dict:
+    with Path(path).open("rb") as source:
+        magic, header_size = struct.unpack("<8sI", source.read(12))
+        assert magic == b"NORI_REQ"
+        header = json.loads(source.read(header_size))
+    payload = dict(header["metadata"])
+    for name, descriptor in header["tensors"].items():
+        payload[name] = np.memmap(
+            path,
+            dtype=descriptor["dtype"],
+            mode="r",
+            offset=descriptor["offset"],
+            shape=tuple(descriptor["shape"]),
+        ).tolist()
+    return payload
 
 
 @pytest.mark.parametrize("levels", [_LEVELS, [0.1, 0.9], [0.9], [0.9, 0.1, 0.1]])
@@ -139,25 +149,59 @@ def test_forecasting_preparation_and_reconstruction_match_every_backend(monkeypa
         remote_headers.append(dict(request.headers))
         return httpx.Response(200, json=_hosted_response(payload))
 
-    class SageMakerRuntime:
+    class SageMakerS3:
         def __init__(self):
             self.closed = False
+            self.objects = {}
+            self.last_payload = None
 
-        def invoke_endpoint_with_response_stream(self, **kwargs):
-            payload = json.loads(kwargs["Body"])
-            requests["sagemaker"].append(payload)
-            sagemaker_invocations.append(kwargs)
-            response = _hosted_response(payload, model=payload["model"])
-            return {"Body": _EventStream(json.dumps(response).encode())}
+        def upload_file(self, path, bucket, key):
+            self.last_payload = _read_tensor_request(path)
+            requests["sagemaker"].append(self.last_payload)
+            self.objects[(bucket, key)] = Path(path).read_bytes()
+
+        def head_object(self, *, Bucket, Key):
+            if (Bucket, Key) not in self.objects:
+                raise _MissingS3Object()
+            return {"ContentLength": len(self.objects[(Bucket, Key)])}
+
+        def download_file(self, bucket, key, path):
+            Path(path).write_bytes(self.objects[(bucket, key)])
+
+        def delete_object(self, *, Bucket, Key):
+            self.objects.pop((Bucket, Key), None)
 
         def close(self):
             self.closed = True
 
-    runtime = SageMakerRuntime()
+    class SageMakerRuntime:
+        def __init__(self, s3):
+            self.s3 = s3
+            self.closed = False
+
+        def invoke_endpoint_async(self, **kwargs):
+            payload = self.s3.last_payload
+            sagemaker_invocations.append(kwargs)
+            response = _hosted_response(payload, model=payload["model"])
+            invocation_id = kwargs["InferenceId"]
+            output = f"s3://results/invocations/{invocation_id}/result.json.out"
+            failure = f"s3://results/invocations/{invocation_id}/failure.json.out"
+            self.s3.objects[("results", output.split("results/", 1)[1])] = json.dumps(response).encode()
+            return {
+                "InferenceId": invocation_id,
+                "OutputLocation": output,
+                "FailureLocation": failure,
+            }
+
+        def close(self):
+            self.closed = True
+
+    s3 = SageMakerS3()
+    runtime = SageMakerRuntime(s3)
     monkeypatch.setattr(
         client_module,
-        "_create_sagemaker_runtime_client",
-        lambda **_kwargs: runtime,
+        "create_aws_clients",
+        lambda _service_names, **_kwargs: (runtime, s3),
     )
 
     fake = NoriTSForecaster(
@@ -185,6 +229,7 @@ def test_forecasting_preparation_and_reconstruction_match_every_backend(monkeypa
         model="nori-30m",
         endpoint_name="nori-parity",
         region_name="us-east-1",
+        s3_staging_uri="s3://customer-bucket/nori/parity",
         quantiles=list(reversed(levels)),
     )
 
@@ -228,8 +273,12 @@ def test_forecasting_preparation_and_reconstruction_match_every_backend(monkeypa
     assert all(payload["model"] == "synthefy/nori-30m" for payload in requests["remote"])
     assert all(header["authorization"] == "Bearer test-key" for header in remote_headers)
     assert all(payload["model"] == "nori-30m" for payload in requests["sagemaker"])
+    assert all(invocation["EndpointName"] == "nori-parity" for invocation in sagemaker_invocations)
     assert all(
-        invocation["EndpointName"] == "nori-parity" and invocation["CustomAttributes"] == "synthefy-response-stream=v1"
+        invocation["ContentType"] == "application/vnd.synthefy.nori.tensorfile"
+        and invocation["InputLocation"].startswith("s3://customer-bucket/nori/parity/")
+        and "Body" not in invocation
         for invocation in sagemaker_invocations
     )
     assert runtime.closed is True
+    assert s3.closed is True
