@@ -79,14 +79,14 @@ def _write_wheel(
 def _valid_artifacts(tmp_path: Path):
     client_requirements = (
         "httpx<0.28.0,>=0.24.0",
-        'boto3<2.0.0,>=1.34.0; extra == "aws"',
+        'boto3<2.0.0,>=1.42.54; extra == "aws"',
         'datasets>=2.0; extra == "forecasting"',
         'gluonts>=0.16; extra == "forecasting"',
         'joblib>=1.1; extra == "forecasting"',
         'scipy>=1.13; extra == "forecasting"',
         'statsmodels>=0.14; extra == "forecasting"',
         'scikit-learn>=1.4; extra == "text"',
-        'sentence-transformers; extra == "text"',
+        'sentence-transformers>=3.0; extra == "text"',
     )
     nori_requirements = (
         "numpy>=2.0",
@@ -172,7 +172,7 @@ def test_misassigned_client_extra_requirement_is_rejected(tmp_path):
     artifacts = _valid_artifacts(tmp_path)
     wrong_requirements = (
         "httpx<0.28.0,>=0.24.0",
-        'boto3<2.0.0,>=1.34.0; extra == "aws"',
+        'boto3<2.0.0,>=1.42.54; extra == "aws"',
         'datasets>=2.0; extra == "forecasting"',
         'gluonts>=0.16; extra == "forecasting"',
         'joblib>=1.1; extra == "forecasting"',
@@ -216,14 +216,14 @@ def test_extra_requirement_with_an_additional_environment_marker_is_rejected(tmp
     artifacts = _valid_artifacts(tmp_path)
     conditional_requirements = (
         "httpx<0.28.0,>=0.24.0",
-        'boto3<2.0.0,>=1.34.0; python_version < "3.10" or extra == "aws"',
+        'boto3<2.0.0,>=1.42.54; python_version < "3.10" or extra == "aws"',
         'datasets>=2.0; extra == "forecasting"',
         'gluonts>=0.16; extra == "forecasting"',
         'joblib>=1.1; extra == "forecasting"',
         'scipy>=1.13; extra == "forecasting"',
         'statsmodels>=0.14; extra == "forecasting"',
         'scikit-learn>=1.4; extra == "text"',
-        'sentence-transformers; extra == "text"',
+        'sentence-transformers>=3.0; extra == "text"',
     )
     for build in ("direct", "rebuilt"):
         artifacts[f"client_{build}"] = _write_wheel(
@@ -273,7 +273,7 @@ def test_sdist_rebuild_with_different_runtime_files_is_rejected(tmp_path):
         namespace="synthefy",
         requirements=(
             "httpx<0.28.0,>=0.24.0",
-            'boto3<2.0.0,>=1.34.0; extra == "aws"',
+            'boto3<2.0.0,>=1.42.54; extra == "aws"',
         ),
         extras=("aws", "forecasting", "text"),
         extra_runtime_files=("synthefy/client.py", "synthefy/unexpected.py"),
@@ -293,7 +293,7 @@ def test_sdist_rebuild_with_same_paths_but_different_bytes_is_rejected(tmp_path)
         namespace="synthefy",
         requirements=(
             "httpx<0.28.0,>=0.24.0",
-            'boto3<2.0.0,>=1.34.0; extra == "aws"',
+            'boto3<2.0.0,>=1.42.54; extra == "aws"',
         ),
         extras=("aws", "forecasting", "text"),
         init_payload=b"__all__ = ['changed']\n",

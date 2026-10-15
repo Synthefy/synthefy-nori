@@ -22,7 +22,9 @@ tabpfn-time-series (PriorLabs)
     - basic_features.py: import/provenance changes, omitted seasonal additions
       are accepted by AdditionalCalendarFeature, and periodic feature columns
       are assembled with one concat. Calendar phases use the full cycle length
-      so the first and last positions remain distinct.
+      so the first and last positions remain distinct. Multiple calendar periods
+      retain every sine/cosine pair in indexed columns; single-period column
+      names are unchanged.
     - auto_features.py and feature_generator_base.py:
       intra-package import paths and distribution-local provenance/ownership
       wording changed; implementation behavior is unchanged.
@@ -32,8 +34,9 @@ tabpfn-time-series (PriorLabs)
     - data_preparation.py: import/provenance changes, and `generate_test_X`
       takes an explicit `freq` because re-inferring it from a NaN-dropped index
       yields None and fails horizon construction.
-    - ts_dataframe.py: implementation body unchanged; only the
-      distribution-local provenance/ownership wording changed.
+    - ts_dataframe.py: iterable dataset records are retained once before
+      validation and conversion, preserving single-pass iterators and correct
+      validation record indices; distribution-local provenance wording changed.
 
   NO TabPFN model code or weights are included; the TabPFN model carries a
   separate, non-Apache license and is not used or redistributed here.
@@ -49,7 +52,8 @@ AutoGluon
   src/synthefy/nori_ts/tsfeatures/ts_dataframe.py (TimeSeriesDataFrame)
   originates in AutoGluon's timeseries dataset module. It reached this
   distribution via PriorLabs/tabpfn-time-series, which made the modifications
-  recorded in the file header; Synthefy retained the implementation body.
+  recorded in the file header. Synthefy corrected iterable dataset consumption
+  and validation indices as described above.
 
 ------------------------------------------------------------------------------
 Chronos (amazon-science)
