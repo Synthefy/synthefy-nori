@@ -560,7 +560,7 @@ for details, including the current RelBench submission status.
 ## Performance (inference speedups)
 
 The speedups below are **on by default** and **deterministic** — identical results
-run-to-run with the same settings — and the published [Results](#results) were
+run-to-run with the same settings — and the published [Results](#benchmarks) were
 produced with them on. The **KV cache** is **R²-equivalent** to the un-cached path,
 not bit-identical: the two paths reduce in a different order, so predictions differ by
 mixed-precision noise (max abs diff ~3e-3, measured below) at identical R². The
@@ -1019,7 +1019,7 @@ synthefy-nori-eval --checkpoint "Synthefy:path/to/checkpoint.pt"
 
 or `bash scripts/evaluate.sh`. See [docs/evaluation.md](docs/evaluation.md) for
 benchmark sources and how to evaluate a Nori checkpoint, and
-[Reproducing these numbers](#reproducing-these-numbers) for the published
+[Running the benchmark](#running-the-benchmark) for the published
 benchmark run.
 
 ## Hugging Face
