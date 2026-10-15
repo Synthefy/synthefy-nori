@@ -116,7 +116,7 @@ jobs:
           EXPECTED_VERSION: ${{ steps.coordinates.outputs.version }}
         run: |
           set -euo pipefail
-          project_version=$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("libs/synthefy/pyproject.toml").read_text())["project"]["version"])')
+          project_version=$(python ci/declared_version.py)
           module_version=$(python -c 'import ast, pathlib; tree=ast.parse(pathlib.Path("libs/synthefy/src/synthefy/__init__.py").read_text()); print(next(node.value.value for node in tree.body if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__version__" for t in node.targets)))')
           wheel=(dist/synthefy/synthefy-*.whl)
           sdist=(dist/synthefy/synthefy-*.tar.gz)

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synthefy"
-version = "7.2.0"
+dynamic = ["version"]
 description = "Lightweight client and workflow SDK for Synthefy Nori regression and forecasting"
 readme = "README.md"
 license = "Apache-2.0"
@@ -48,13 +48,21 @@ forecasting = [
     "scipy>=1.13",
     "statsmodels>=0.14",
 ]
-text = ["scikit-learn>=1.4", "sentence-transformers"]
-# Signed Amazon SageMaker endpoint invocation. boto3 resolves credentials from
-# its standard chain; the public client deliberately accepts no raw AWS keys.
-aws = ["boto3>=1.34.0,<2.0.0"]
+text = ["scikit-learn>=1.4", "sentence-transformers>=3.0"]
+# Signed Amazon SageMaker endpoint invocation and fine-tuning. boto3 resolves credentials
+# from its standard chain; the public client deliberately accepts no raw AWS keys. 1.42.54
+# is the first release whose InvokeEndpointAsync takes S3OutputPathExtension and Filename,
+# which every SageMaker prediction sends.
+aws = ["boto3>=1.42.54,<2.0.0"]
 
 [project.urls]
 Homepage = "https://synthefy.com"
+
+# The version is written once, in the package itself, and every consumer derives it:
+# the wheel metadata from here, CI from the same file, and the tests by comparing the two
+# rather than restating a literal.
+[tool.hatch.version]
+path = "src/synthefy/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/synthefy"]
@@ -74,7 +82,7 @@ exclude = [
 
 [dependency-groups]
 dev = [
-    "boto3>=1.34.0,<2.0.0",
+    "boto3>=1.42.54,<2.0.0",
     "pytest>=7.4.0,<9.0.0",
     "pytest-socket>=0.7.0",
 ]

@@ -50,6 +50,17 @@ class NoriPredictRequest(BaseModel):
     quantiles : List[float] or None, optional
         Tau levels in ``(0, 1)`` for ``output_type="quantiles"``, in the caller's
         order. Omitted from the body when ``None``.
+    discretize : str or None, optional
+        Return a value from the target's level lattice instead of a continuous
+        prediction, using one of the strategies in ``synthefy_nori.discretize``.
+        Rejected by the server alongside a non-default ``output_type``, since the
+        strategy already chooses the summary. Omitted from the body when ``None``.
+    categorical_levels : List[float] or None, optional
+        The values the target can take, numeric and order-significant. Defaults
+        server-side to the distinct values of ``y_train``; pass it when a legal
+        level is absent from the context so it stays predictable. Setting it
+        without ``discretize`` applies the server's default strategy. Omitted from
+        the body when ``None``.
     large_context_policy : optional
         A policy-name string in hosted modes; local mode also accepts a callable.
         The client forwards it unchanged, and the installed policy registry is the
@@ -74,6 +85,8 @@ class NoriPredictRequest(BaseModel):
     memory_policy: Optional[MemoryPolicyInput] = None
     output_type: Optional[str] = None
     quantiles: Optional[List[float]] = None
+    discretize: Optional[str] = None
+    categorical_levels: Optional[List[float]] = None
     large_context_policy: Optional[LargeContextPolicy] = None
     large_context_threshold: Optional[int] = Field(default=None, strict=True, ge=1, le=MAX_LARGE_CONTEXT_THRESHOLD)
     large_context_seed: Optional[int] = Field(default=None, strict=True, ge=0, le=MAX_LARGE_CONTEXT_SEED)
@@ -159,6 +172,11 @@ class NoriPredictResponse(BaseModel):
         actually did about it. Matrix-target requests use
         ``multi_target_memory_reports``. See
         :attr:`synthefy.nori_client.SynthefyNoriClient.last_memory_report`.
+    discretize : str or None, optional
+        The discretization strategy the server actually ran, present only when one
+        did. A deployment that predates the field ignores the request's
+        ``discretize`` and answers with continuous predictions, which this echo is
+        what distinguishes from levels that happen to look round.
     output_type : str or None, optional
         The output type the server actually honored. A deployment that predates
         distribution output omits this field, which is how the client detects
@@ -193,6 +211,7 @@ class NoriPredictResponse(BaseModel):
     model_version: Optional[str] = None
     memory_report: Optional[MemoryReport] = None
     multi_target_memory_reports: Optional[List[MultiTargetMemoryReport]] = None
+    discretize: Optional[str] = None
     output_type: Optional[str] = None
     quantiles: Optional[List[List[Optional[float]]]] = None
     taus: Optional[List[float]] = None
