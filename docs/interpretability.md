@@ -33,6 +33,12 @@ print(sv)
 sv.plot_waterfall()
 ```
 
+`X_train` can be a DataFrame with text or categorical columns. The explainer
+predicts through the fitted column names and imputes categorical features (the
+non-numeric columns and the regressor's `categorical_columns`) by their most
+common value; pass rows to `explain` as an object array in column order, such as
+`X_test.iloc[[0]].to_numpy(dtype=object)`.
+
 **Budget:** start at `128` and raise only if explanations look noisy. Guide:
 `<10` features → 64–128; 10–20 → 128–512; 20+ → 512–2048.
 
