@@ -2,6 +2,7 @@
 plus a slow end-to-end embedding extraction against the real checkpoint."""
 
 import numpy as np
+import pandas as pd
 import pytest
 from sklearn.base import BaseEstimator, RegressorMixin, clone
 
@@ -21,6 +22,15 @@ class _StubEmbModel(RegressorMixin, BaseEstimator):
 
     def get_embeddings(self, X, *, data_source="test"):
         return np.asarray(X, dtype=float)[None, :, :]
+
+
+class _StubPredictor:
+    """Return preprocessed query features as embeddings without loading a checkpoint."""
+
+    def get_embeddings(self, X_train, y_train, X_test, *, data_source="test"):
+        del X_train, y_train
+        assert data_source == "test"
+        return np.asarray(X_test, dtype=np.float32)[None, :, :]
 
 
 def test_embedding_is_sklearn_estimator_and_clones():
@@ -72,6 +82,58 @@ def test_oof_embeddings_are_aligned_to_original_order():
     np.testing.assert_allclose(oof[0], X)
     # fit also refits the full-data model for transform()
     np.testing.assert_allclose(e.transform(X[:2])[0], X[:2])
+
+
+@pytest.mark.parametrize("n_fold", [0, 2])
+@pytest.mark.parametrize("categorical_columns", ["auto", ["plan"]], ids=["auto", "explicit"])
+def test_dataframe_categorical_columns_survive_folds(monkeypatch, n_fold, categorical_columns):
+    monkeypatch.setattr(NoriRegressor, "_get_predictor", lambda self: _StubPredictor())
+    X = pd.DataFrame(
+        {
+            "amount": [10.0, 20.0, 30.0, 40.0],
+            "plan": ["free", "pro", "free", "pro"],
+        },
+        index=[10, 20, 30, 40],
+    )
+    y = np.arange(len(X), dtype=float)
+    embedding = NoriEmbedding(
+        n_fold=n_fold,
+        model=NoriRegressor(model_path="unused.pt", categorical_columns=categorical_columns),
+    )
+
+    train_embeddings = embedding.fit_transform(X, y)
+
+    np.testing.assert_equal(
+        train_embeddings[0],
+        np.asarray([[10.0, 0.0], [20.0, 1.0], [30.0, 0.0], [40.0, 1.0]], dtype=np.float32),
+    )
+    assert embedding.model_._feature_preprocessor.categorical_columns_ == ["plan"]
+
+
+def test_dataframe_transform_replays_fitted_schema_after_oof(monkeypatch):
+    monkeypatch.setattr(NoriRegressor, "_get_predictor", lambda self: _StubPredictor())
+    X = pd.DataFrame(
+        {
+            "amount": [10.0, 20.0, 30.0, 40.0],
+            "plan": ["free", "pro", "free", "pro"],
+        }
+    )
+    embedding = NoriEmbedding(
+        n_fold=2,
+        model=NoriRegressor(model_path="unused.pt", categorical_columns=["plan"]),
+    ).fit(X, np.arange(len(X), dtype=float))
+
+    query = pd.DataFrame({"plan": ["enterprise"], "amount": [50.0]})
+    np.testing.assert_equal(
+        embedding.transform(query)[0],
+        np.asarray([[50.0, 2.0]], dtype=np.float32),
+    )
+
+    mismatched = pd.DataFrame({"amount": [50.0], "region": ["us"]})
+    with pytest.raises(ValueError) as caught:
+        embedding.transform(mismatched)
+    assert "missing columns=['plan']" in str(caught.value)
+    assert "extra columns=['region']" in str(caught.value)
 
 
 @pytest.mark.slow
