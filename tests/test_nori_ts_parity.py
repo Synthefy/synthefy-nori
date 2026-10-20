@@ -38,18 +38,19 @@ def _multi_series_frame() -> TimeSeriesDataFrame:
     return TimeSeriesDataFrame.from_data_frame(pd.concat(frames, ignore_index=True))
 
 
-def _quantile_rows(n_query: int) -> list[list[float]]:
-    return [[1.0 + row, 5.0 + row, 9.0 + row] for row in range(n_query)]
+def _quantile_rows(n_query: int, levels: list[float]) -> list[list[float]]:
+    # A skewed distribution: averaging interval endpoints is not its median.
+    return [[100.0 * level**2 + row for level in levels] for row in range(n_query)]
 
 
 def _hosted_response(payload: dict, *, model: str | None = None) -> dict:
-    rows = _quantile_rows(len(payload["X_test"]))
+    rows = _quantile_rows(len(payload["X_test"]), payload["quantiles"])
     response = {
         "task": "regression",
-        "predictions": [row[1] for row in rows],
+        "predictions": [25.0 + row for row in range(len(rows))],
         "output_type": "quantiles",
         "quantiles": rows,
-        "taus": _LEVELS,
+        "taus": payload["quantiles"],
     }
     if model is not None:
         response["model"] = model
@@ -77,7 +78,7 @@ class _RecordingFakeClient:
             "quantiles": kwargs["quantiles"],
         }
         self.requests.append(payload)
-        return np.asarray(_quantile_rows(len(X_test)), dtype=float).T
+        return np.asarray(_quantile_rows(len(X_test), kwargs["quantiles"]), dtype=float).T
 
 
 class _EventStream:
@@ -93,7 +94,8 @@ class _EventStream:
         self.closed = True
 
 
-def test_forecasting_preparation_and_reconstruction_match_every_backend(monkeypatch):
+@pytest.mark.parametrize("levels", [_LEVELS, [0.1, 0.9], [0.9], [0.9, 0.1, 0.1]])
+def test_forecasting_preparation_and_reconstruction_match_every_backend(monkeypatch, levels):
     """Only transport details may differ across fake/local/Baseten/SageMaker."""
     requests: dict[str, list[dict]] = {
         "fake": [],
@@ -127,7 +129,7 @@ def test_forecasting_preparation_and_reconstruction_match_every_backend(monkeypa
                     "quantiles": quantiles,
                 }
             )
-            return np.asarray(_quantile_rows(len(X_test)), dtype=float).T
+            return np.asarray(_quantile_rows(len(X_test), quantiles), dtype=float).T
 
     monkeypatch.setattr(client_module, "_load_local_regressor", lambda: LocalRegressor)
 
@@ -160,18 +162,18 @@ def test_forecasting_preparation_and_reconstruction_match_every_backend(monkeypa
 
     fake = NoriTSForecaster(
         client=_RecordingFakeClient(requests["fake"]),
-        quantiles=list(reversed(_LEVELS)),
+        quantiles=list(reversed(levels)),
     )
     local = NoriTSForecaster(
         mode="local",
         model="nori-30m",
-        quantiles=list(reversed(_LEVELS)),
+        quantiles=list(reversed(levels)),
     )
     remote = NoriTSForecaster(
         mode="remote",
         model="nori-30m",
         api_key="test-key",
-        quantiles=list(reversed(_LEVELS)),
+        quantiles=list(reversed(levels)),
     )
     remote.client.close()
     remote.client.client = httpx.Client(
@@ -183,7 +185,7 @@ def test_forecasting_preparation_and_reconstruction_match_every_backend(monkeypa
         model="nori-30m",
         endpoint_name="nori-parity",
         region_name="us-east-1",
-        quantiles=list(reversed(_LEVELS)),
+        quantiles=list(reversed(levels)),
     )
 
     train = _multi_series_frame()
@@ -200,19 +202,28 @@ def test_forecasting_preparation_and_reconstruction_match_every_backend(monkeypa
 
     expected_contracts = [_numeric_contract(payload) for payload in requests["fake"]]
     assert len(expected_contracts) == 2
+    expected_levels = sorted(levels if 0.5 in levels else levels + [0.5])
     for backend, captured in requests.items():
         assert [_numeric_contract(payload) for payload in captured] == expected_contracts, backend
 
     expected = pd.DataFrame(results["fake"])
-    assert list(expected.columns) == ["target", "0.1", "0.5", "0.9"]
+    assert list(expected.columns) == ["target"] + [str(level) for level in sorted(set(levels))]
     for backend, result in results.items():
         pd.testing.assert_frame_equal(pd.DataFrame(result), expected, obj=backend)
         for item_id in (0, 1):
             np.testing.assert_allclose(
                 result.xs(item_id, level="item_id")["target"],
-                np.arange(6, dtype=float) + 5.0,
+                np.arange(6, dtype=float) + 25.0,
             )
 
+        for level in sorted(set(levels)):
+            np.testing.assert_allclose(
+                result.xs(0, level="item_id")[str(level)],
+                np.arange(6, dtype=float) + 100.0 * level**2,
+            )
+        assert forecasters[backend].quantiles == sorted(levels)
+
+    assert all(payload["quantiles"] == expected_levels for payload in expected_contracts)
     assert local_models == ["nori-30m"]
     assert all(payload["model"] == "synthefy/nori-30m" for payload in requests["remote"])
     assert all(header["authorization"] == "Bearer test-key" for header in remote_headers)
