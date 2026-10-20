@@ -115,6 +115,14 @@ def get_expected_inference_config_path(model_name: str | None) -> str | None:
 def _resolve_model_path(model_path: str | None, token: str | bool | None = None, model: str | None = None) -> str:
     if model_path is not None:
         return model_path
+    if model is None:
+        # Name the caller's own arguments; otherwise this surfaces from download_checkpoint
+        # as a "requires model= ... or repo_id=" error, and repo_id= is not a NoriRegressor arg.
+        raise ValueError(
+            "Nori requires model= (one of "
+            f"{', '.join(repr(name) for name in NORI_MODELS)}) "
+            "or model_path= pointing to a local checkpoint; there is no default model."
+        )
     from synthefy_nori.hf import download_checkpoint
 
     return download_checkpoint(model=model, token=token)
