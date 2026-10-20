@@ -56,7 +56,7 @@ def main() -> None:
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=args.test_size, random_state=args.seed)
     print(f"rows: {len(X_train)} context / {len(X_test)} query, {X.shape[1]} features")
 
-    reg = NoriRegressor(device=args.device, model="nori-30m")
+    reg = NoriRegressor(device=args.device, model="nori-1-5")
     reg.fit(X_train, y_train)
 
     mean_pred = reg.predict(X_test)  # (n,) distribution mean

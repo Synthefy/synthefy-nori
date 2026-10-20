@@ -102,10 +102,12 @@ def test_config_path_points_to_bundled_file():
     assert path.exists()
 
 
-def test_regressor_uses_default_regression_config():
+def test_regressor_stores_no_config_until_its_predictor_is_built():
+    # None is stored verbatim (sklearn convention) and resolved from `model` when the
+    # predictor is built.
     model = NoriRegressor(model_path="local.pt")
     assert model.model_path == "local.pt"
-    assert model.inference_config.endswith("default_inference.json")
+    assert model.inference_config is None
 
 
 def test_regressor_stores_model_variant_verbatim():

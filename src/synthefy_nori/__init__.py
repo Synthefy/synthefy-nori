@@ -14,7 +14,7 @@ from synthefy_nori.multi_target import (
     DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY,
     MultiTargetPredictionPolicy,
 )
-from synthefy_nori.configs import DEFAULT_INFERENCE_CONFIG, DEFAULT_MODEL_CONFIG
+from synthefy_nori.configs import DEFAULT_INFERENCE_CONFIG, DEFAULT_MODEL_CONFIG, MODEL_V3_INFERENCE_CONFIG
 from synthefy_nori.api import (
     NoriRegressor,
     config_path,
@@ -24,7 +24,7 @@ from synthefy_nori.api import (
 from synthefy_nori.embedding import NoriEmbedding
 from synthefy_nori.pricing import billable_price
 
-__version__ = "0.21.1"
+__version__ = "0.22.0"
 
 __all__ = [
     "ContextSubsampledWarning",
@@ -41,6 +41,7 @@ __all__ = [
     "billable_price",
     "DEFAULT_INFERENCE_CONFIG",
     "DEFAULT_MODEL_CONFIG",
+    "MODEL_V3_INFERENCE_CONFIG",
     "config_path",
     "infer",
     "predict",

@@ -19,7 +19,7 @@ All local public paths share one fitted DataFrame schema:
 
 ```python
 reg = NoriRegressor(
-    model="nori-30m",
+    model="nori-1-5",
     categorical_columns=["plan", "region"],
     text_columns=["ticket_description"],
 )
@@ -69,6 +69,27 @@ switch. Advanced callers that need the exact historical execution path can pass
 `native_rms_norm=False` to lower-level `load_model()` or `NoriPredictor`, and
 `skip_unused_feature_decoder=False` to `NoriPredictor`. These controls change
 execution only; they do not select different weights.
+
+## Default inference config per model
+
+A release checkpoint can store the inference config it was evaluated with; the
+released `nori-1-5` file stores its 4-member `MODEL_V3_INFERENCE_CONFIG`. The
+code also maps released names to configs in `INFERENCE_CONFIG_BY_MODEL_NAME`
+(`synthefy_nori.configs`), and checks a stored config against it.
+
+| Call | Inference config |
+| --- | --- |
+| `inference_config=...` given | the caller's, no check |
+| file stores a config, `model=` a released name | the stored one; it must match the name's entry, else `ValueError` |
+| file stores a config, no `model=` (path only) | the stored one |
+| file stores none, `model=` given | the name's entry (`DEFAULT_INFERENCE_CONFIG` if unlisted) |
+| file stores none, no `model=` | `DEFAULT_INFERENCE_CONFIG` |
+
+The released `nori-6m`, `nori-30m` and `nori-100m` files store no config and
+keep the 8-member `DEFAULT_INFERENCE_CONFIG`. `ci/convert_checkpoint.py
+--inference-config <bundled filename>` writes a config into a release file.
+The evaluation harness passes no config unless `--reg-config` is given, so it
+uses the stored config too.
 
 ## Output types
 
@@ -155,7 +176,7 @@ the standard `synthefy-nori` install.
 ```python
 from synthefy_nori import MultiTargetPredictionPolicy, NoriRegressor
 
-regressor = NoriRegressor(model="nori-6m").fit(X_train, Y_train)
+regressor = NoriRegressor(model="nori-1-5").fit(X_train, Y_train)
 mean = regressor.predict(X_test)  # (n_test, n_targets)
 samples = regressor.predict(
     X_test,
@@ -182,7 +203,7 @@ policy = MultiTargetPredictionPolicy(
     autoregressive_orders=[[0, 1, 2], [2, 0, 1]],
 )
 regressor = NoriRegressor(
-    model="nori-6m",
+    model="nori-1-5",
     multi_target_prediction_strategy="autoregressive",
     multi_target_prediction_policy=policy,
 ).fit(X_train, Y_train)
@@ -227,7 +248,7 @@ quality scores), declare it and predictions are mapped onto the level lattice
 observed in `fit`'s `y`:
 
 ```python
-reg = NoriRegressor(model="nori-30m").fit(X_train, y_train)          # y ∈ {3, 4, 5, 6, 7, 8}
+reg = NoriRegressor(model="nori-1-5").fit(X_train, y_train)          # y ∈ {3, 4, 5, 6, 7, 8}
 labels = reg.predict(X_test, discretize="map-cell")                 # accuracy-optimal
 labels = reg.predict(X_test, discretize="median-cell")              # MAE-optimal
 labels = reg.predict(X_test, categorical_levels=[3, 4, 5, 6, 7, 8]) # known lattice, map-cell
@@ -285,7 +306,7 @@ Notes:
   reach them — `predict` kwargs override per call:
 
   ```python
-  gs = GridSearchCV(NoriRegressor(model="nori-30m"),
+  gs = GridSearchCV(NoriRegressor(model="nori-1-5"),
                     {"discretize": ["map-cell", "median-cell", "snap-mean"]},
                     scoring="accuracy", cv=5)
   ```

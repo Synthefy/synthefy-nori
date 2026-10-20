@@ -17,13 +17,16 @@ DEFAULT_CHECKPOINT_FILENAME = os.environ.get(
 )
 
 # Model-variant registry: friendly name -> Hugging Face repo id. A size is REQUIRED -- there is no
-# default "nori"; every caller must pick ``model="nori-6m"``, ``model="nori-30m"``, or
-# ``model="nori-100m"`` on NoriRegressor / infer / predict (or ``download_checkpoint(model=...)``).
+# default "nori"; every caller must pick ``model="nori-6m"``, ``model="nori-1-5"``, ``model="nori-30m"``,
+# or ``model="nori-100m"`` on NoriRegressor / infer / predict (or ``download_checkpoint(model=...)``).
 # Naming the size keeps the identifier stable: it never silently changes which weights it loads.
 # ``"nori-6m"`` is the ~6M base and honors the SYNTHEFY_NORI_HF_REPO override. Add one line per new
 # variant. An unknown name is treated as a raw repo id, so an explicit ``"org/repo"`` still works.
 NORI_MODELS = {
     "nori-6m": DEFAULT_MODEL_REPO_ID,  # ~6M base (honors SYNTHEFY_NORI_HF_REPO)
+    # Nori 1.5: ~20.8M Model v3 (two-phase encoder). Versions are spelled with hyphens
+    # (nori-1-5, not nori-1.5) because serving model names allow only [a-z0-9-].
+    "nori-1-5": "Synthefy/Nori-1-5",
     "nori-30m": "Synthefy/Nori-30M",  # ~29.2M scaling-law variant
     "nori-100m": "Synthefy/Nori-100M",  # ~98.3M scaling-law variant
 }
@@ -204,14 +207,23 @@ def push_checkpoint(
     )
 
 
+#: The checkpoint ``synthefy-nori-download`` fetches when given neither --model nor --repo-id.
+DEFAULT_DOWNLOAD_MODEL_NAME = "nori-1-5"
+
+
 def download_cli(argv: list[str] | None = None) -> None:
+    """Download a Nori checkpoint and print its local path.
+
+    ``--model`` picks a released model, ``--repo-id`` an explicit Hub repo; with neither,
+    it downloads :data:`DEFAULT_DOWNLOAD_MODEL_NAME`.
+    """
     parser = argparse.ArgumentParser(description="Download a Nori checkpoint")
     source = parser.add_mutually_exclusive_group()
     source.add_argument(
         "--model",
         choices=list(NORI_MODELS),
         default=None,
-        help=f"Checkpoint size to download. Default (with no --repo-id): {DEFAULT_MODEL_REPO_ID}, i.e. nori-6m.",
+        help=f"Model to download. Default (with no --repo-id): {DEFAULT_DOWNLOAD_MODEL_NAME}.",
     )
     source.add_argument("--repo-id", default=None, help="Explicit Hugging Face repo id.")
     parser.add_argument("--filename", default=DEFAULT_CHECKPOINT_FILENAME)
@@ -222,9 +234,9 @@ def download_cli(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     print(
         download_checkpoint(
-            # model= overrides repo_id; with neither flag, keep the long-standing base-repo default.
-            repo_id=args.repo_id or DEFAULT_MODEL_REPO_ID,
-            model=args.model,
+            # --repo-id names a repo explicitly; otherwise a model name, defaulting to Nori 1.5.
+            repo_id=args.repo_id,
+            model=None if args.repo_id else (args.model or DEFAULT_DOWNLOAD_MODEL_NAME),
             filename=args.filename,
             revision=args.revision,
             cache_dir=args.cache_dir,

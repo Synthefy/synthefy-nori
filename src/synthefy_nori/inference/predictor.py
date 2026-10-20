@@ -28,6 +28,8 @@ from synthefy_nori.inference.memory_policy import (
 )
 from synthefy_nori.model.layer import RMSNorm
 from synthefy_nori.utils.loading import load_model
+from synthefy_nori.configs import DEFAULT_INFERENCE_CONFIG, config_path, get_inference_config_digest
+import copy
 import contextlib
 import importlib.util
 import torch
@@ -72,6 +74,62 @@ PIPELINE_BATCH_HOST_BUDGET_BYTES = 512 * 1024**2
 EXACT_CACHED_CUDAGRAPHS_ENV = "SYNTHEFY_EXACT_CACHED_CUDAGRAPHS"
 
 
+def read_inference_config(inference_config: list | str) -> list:
+    """Return an inference config as its own member list, reading it first when given a path.
+
+    A caller's list is deep-copied: the predictor edits members in place (the mask_prediction
+    branch of ``build_preprocess_pipeline``), which must not leak into the caller's object.
+    """
+    if isinstance(inference_config, str):
+        if not os.path.isfile(inference_config):
+            raise ValueError(f"inference_config is not a config file path: {inference_config}")
+        with open(inference_config, "r") as f:
+            inference_config = json.load(f)
+    else:
+        inference_config = copy.deepcopy(inference_config)
+    for inference_config_item in inference_config:
+        retrieval_config = inference_config_item.get("retrieval_config")
+        if retrieval_config and retrieval_config.get("use_retrieval"):
+            raise ValueError("retrieval inference has been removed; omit retrieval_config and use the full context")
+    return inference_config
+
+
+def get_default_inference_config_members(model, expected_inference_config: list | str | None, model_path) -> list:
+    """Return the inference config members to use when the caller passed no config.
+
+    Order of precedence:
+    1. The config stored in the checkpoint (``model.stored_inference_config``). When the
+       caller's model name implies a config (``expected_inference_config``), the two must
+       match exactly, or this raises.
+    2. ``expected_inference_config``: the bundled config the caller's model name maps to.
+    3. ``DEFAULT_INFERENCE_CONFIG``.
+
+    Raises:
+        ValueError: the checkpoint stores a config that differs from the expected one.
+    """
+    expected_members = None if expected_inference_config is None else read_inference_config(expected_inference_config)
+    stored = getattr(model, "stored_inference_config", None)
+    if stored is None:
+        if expected_members is not None:
+            return expected_members
+        return read_inference_config(config_path(DEFAULT_INFERENCE_CONFIG))
+    stored_members = read_inference_config(stored["members"])
+    if expected_members is not None:
+        stored_digest = get_inference_config_digest(stored_members)
+        expected_digest = get_inference_config_digest(expected_members)
+        if stored_digest != expected_digest:
+            expected_label = (
+                os.path.basename(expected_inference_config) if isinstance(expected_inference_config, str) else "a list"
+            )
+            raise ValueError(
+                f"{model_path or 'The checkpoint'} stores inference config {stored['name']!r} ({stored_digest}), "
+                f"but the model name selects {expected_label!r} ({expected_digest}). The checkpoint and this "
+                "synthefy-nori release disagree: check that model= names this checkpoint, upgrade synthefy-nori, "
+                "or pass inference_config= to choose a config explicitly."
+            )
+    return stored_members
+
+
 class NoriPredictor:
     """Nori model inferencer, supporting tasks such as classification, regression, and missing value prediction."""
 
@@ -97,6 +155,7 @@ class NoriPredictor:
         memory_policy: "MemoryPolicy | dict | str | None" = None,
         skip_unused_feature_decoder: bool = True,
         native_rms_norm: bool | None = None,
+        expected_inference_config: list | str | None = None,
     ):
         """
         init NoriPredictor
@@ -109,7 +168,9 @@ class NoriPredictor:
             softmax_temperature: Softmax temperature coefficient
             mask_prediction: Whether to enable missing value prediction
             categorical_features_indices: Index numbers of categorical features, currently not in use
-            inference_config: inference_config_setting,
+            inference_config: a member list or a config file path; it always wins. ``None``
+                uses the config stored in the checkpoint, else ``expected_inference_config``,
+                else ``DEFAULT_INFERENCE_CONFIG`` (see ``get_default_inference_config_members``).
             inference_with_DDP: If using DDP to inference,
             seed: Random seed
             model: Pre-loaded model instance (skips load_model when provided)
@@ -127,17 +188,13 @@ class NoriPredictor:
                 largest per-row difference one bf16 ulp, ~+1.3% end-to-end
                 (preprocessing dominates inference, so the ~+10% kernel win
                 does not survive).
+            expected_inference_config: the bundled config the caller's released model name
+                maps to, as a path or member list. ``NoriRegressor`` passes it; when the
+                checkpoint stores a config, the two must match. ``None`` skips the check.
         """
-        if isinstance(inference_config, str):
-            if os.path.isfile(inference_config):
-                with open(inference_config, "r") as f:
-                    inference_config = json.load(f)
-            else:
-                raise ValueError(f"inference_config is not a config file path: {inference_config}")
-        for inference_config_item in inference_config:
-            retrieval_config = inference_config_item.get("retrieval_config")
-            if retrieval_config and retrieval_config.get("use_retrieval"):
-                raise ValueError("retrieval inference has been removed; omit retrieval_config and use the full context")
+        # An explicit config is read before the weights so a bad one fails fast. Without
+        # one, the config is chosen after loading, because the checkpoint may store its own.
+        explicit_inference_config = None if inference_config is None else read_inference_config(inference_config)
         self.model_path = model_path
         self.device = device
         # Route GPU SVD (preprocess._TorchTruncatedSVD) to this predictor's
@@ -153,10 +210,6 @@ class NoriPredictor:
         self.mix_precision = mix_precision
         self.categorical_features_indices = categorical_features_indices
         self.seed = seed
-        self.inference_config = inference_config
-        n_estimators = len(inference_config)
-        assert n_estimators > 0, f"Invalid configuration file! the number of pipelines is 0!"
-        self.n_estimators = n_estimators
         self.model = None
         self.outlier_remove_std = outlier_remove_std
         self.class_shuffle_factor = 3
@@ -277,6 +330,15 @@ class NoriPredictor:
             self.model = model
         else:
             self.model = load_model(model_path=model_path, mask_prediction=mask_prediction)
+        if explicit_inference_config is not None:
+            self.inference_config = explicit_inference_config
+        else:
+            self.inference_config = get_default_inference_config_members(
+                self._bare_model(), expected_inference_config, model_path
+            )
+        n_estimators = len(self.inference_config)
+        assert n_estimators > 0, f"Invalid configuration file! the number of pipelines is 0!"
+        self.n_estimators = n_estimators
         if self.mask_prediction and getattr(self._bare_model(), "feature_decoder", None) is None:
             raise ValueError(
                 "mask_prediction=True requires a model with feature_decoder; "
@@ -301,6 +363,8 @@ class NoriPredictor:
 
         if self.mask_prediction:
             for inference_config_item in self.inference_config:
+                if "RebalanceFeatureDistribution" not in inference_config_item:
+                    continue
                 if len(inference_config_item["RebalanceFeatureDistribution"]["worker_tags"]) > 0:
                     for i, v in enumerate(inference_config_item["RebalanceFeatureDistribution"]["worker_tags"]):
                         if v == "power":
@@ -2474,7 +2538,10 @@ class NoriPredictor:
 
         chunk_size = self._chunk_size(max_elements_budget, budget_n_features, n_samples_train)
         cache_eligible = (
-            hasattr(bare_model, "forward_cached_regression") and n_samples_test > chunk_size and requested.cache
+            hasattr(bare_model, "forward_cached_regression")
+            and getattr(bare_model, "supports_context_cache", True)
+            and n_samples_test > chunk_size
+            and requested.cache
         )
         if cache_eligible:
             fpg = max(int(getattr(bare_model, "features_per_group", 2)), 1)
@@ -3018,6 +3085,7 @@ class NoriPredictor:
                     )
                 use_cached = (
                     hasattr(bare_model, "forward_cached_regression")
+                    and getattr(bare_model, "supports_context_cache", True)
                     and not model_mask_pred
                     and (policy.stream_context or n_samples_test > chunk_size)
                     and policy.cache

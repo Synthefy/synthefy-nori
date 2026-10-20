@@ -21,7 +21,7 @@ selection.
 ```python
 from synthefy_nori import NoriRegressor
 
-reg = NoriRegressor(device=None, model="nori-30m")   # None -> cuda:0 if available, else cpu
+reg = NoriRegressor(device=None, model="nori-1-5")   # None -> cuda:0 if available, else cpu
 reg.fit(X_train, y_train)          # stores context; X -> float32 (n, d), y -> float64 (n,)
 point = reg.predict(X_test)        # (n,) distribution mean
 ```
