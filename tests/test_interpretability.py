@@ -16,7 +16,7 @@ def test_regressor_is_sklearn_estimator_and_clones():
     assert params["model_path"] == "local.pt"
     c = clone(m)  # required by SequentialFeatureSelector/cross_val
     assert c.get_params()["model_path"] == "local.pt"
-    assert c.inference_config.endswith("default_inference.json")
+    assert c.inference_config is None
 
 
 def test_imputation_explainer_requires_shapiq_or_runs():

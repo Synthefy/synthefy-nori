@@ -1,0 +1,96 @@
+[
+  {
+    "MaxFeatureSubsampler": {
+      "max_features": 500
+    },
+    "PolynomialInteractionGenerator": {
+      "max_interaction_features": 10
+    },
+    "CategoricalFeatureEncoder": {
+      "encoding_strategy": "ordinal_strict_feature_shuffled"
+    },
+    "FeatureShuffler": {
+      "mode": "shuffle"
+    },
+    "RebalanceFeatureDistribution": {
+      "worker_tags": [
+        "quantile_uniform_all_data"
+      ],
+      "discrete_flag": false,
+      "original_flag": true,
+      "svd_tag": "svd"
+    },
+    "FingerprintFeatureEncoder": true,
+    "HighDimFeatureSelector": {
+      "strategy": "svd_all",
+      "svd_components": 512,
+      "n_features_threshold": 256,
+      "binary_threshold": 1.01,
+      "svd_rows_per_component": 3,
+      "fit_on_test": true
+    }
+  },
+  {
+    "PolynomialInteractionGenerator": {
+      "max_interaction_features": 10
+    },
+    "CategoricalFeatureEncoder": {
+      "encoding_strategy": "ordinal_strict_feature_shuffled"
+    },
+    "FeatureShuffler": {
+      "mode": "shuffle"
+    },
+    "RebalanceFeatureDistribution": {
+      "discrete_flag": false,
+      "original_flag": false,
+      "svd_tag": null,
+      "worker_tags": [
+        "quantile_uniform_all_data"
+      ]
+    },
+    "FingerprintFeatureEncoder": true
+  },
+  {
+    "MaxFeatureSubsampler": {
+      "max_features": 500
+    },
+    "PolynomialInteractionGenerator": {
+      "max_interaction_features": 10
+    },
+    "CategoricalFeatureEncoder": {
+      "encoding_strategy": "ordinal_strict_feature_shuffled"
+    },
+    "FeatureShuffler": {
+      "mode": "shuffle"
+    },
+    "RebalanceFeatureDistribution": {
+      "worker_tags": [
+        "adaptive"
+      ],
+      "discrete_flag": false,
+      "original_flag": false,
+      "svd_tag": null
+    },
+    "FingerprintFeatureEncoder": true,
+    "HighDimFeatureSelector": {
+      "strategy": "svd_all",
+      "svd_components": 512,
+      "n_features_threshold": 256,
+      "binary_threshold": 1.01,
+      "svd_rows_per_component": 3,
+      "fit_on_test": true
+    }
+  },
+  {
+    "PolynomialInteractionGenerator": {
+      "max_interaction_features": 10
+    },
+    "CategoricalFeatureEncoder": {
+      "encoding_strategy": "ordinal_strict_feature_shuffled"
+    },
+    "FeatureShuffler": {
+      "mode": "shuffle"
+    },
+    "FingerprintFeatureEncoder": true
+  }
+]

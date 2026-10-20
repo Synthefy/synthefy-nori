@@ -102,8 +102,14 @@ def test_project_identities_versions_and_build_backends_are_disjoint():
     assert root["project"]["version"] == "0.21.1"
     assert root["build-system"]["build-backend"] == "setuptools.build_meta"
     assert client["project"]["name"] == "synthefy"
-    assert client["project"]["version"] == "7.2.0"
-    assert _declared_version() == "7.2.0"
+    # The client version is written once, in the package. Assert the wiring that makes every
+    # other consumer derive it, not the value: a literal here is one more copy to forget.
+    assert "version" not in client["project"], (
+        "src/synthefy/__init__.py owns the client version; pyproject must stay dynamic"
+    )
+    assert client["project"]["dynamic"] == ["version"]
+    assert client["tool"]["hatch"]["version"] == {"path": "src/synthefy/__init__.py"}
+    assert _declared_version()
     assert client["build-system"] == {
         "requires": ["hatchling==1.27.0"],
         "build-backend": "hatchling.build",
@@ -134,7 +140,7 @@ def test_published_dependencies_point_only_from_heavy_to_light():
     assert len(edge) == 1
     assert edge[0].specifier == SpecifierSet(">=7,<8")
     assert not edge[0].extras and edge[0].marker is None and edge[0].url is None
-    assert Version(client["version"]) in edge[0].specifier
+    assert Version(_declared_version()) in edge[0].specifier
 
     client_optionals = client["optional-dependencies"]
     assert set(client_optionals) == {"aws", "forecasting", "text"}
@@ -349,7 +355,10 @@ def test_the_root_lock_is_the_only_lock_and_contains_both_editable_projects():
     assert len(root_entries) == len(client_entries) == 1
     assert root_entries[0]["source"] == {"editable": "."}
     assert client_entries[0]["source"] == {"editable": "libs/synthefy"}
-    assert client_entries[0]["version"] == "7.2.0"
+    # uv omits the version for a dynamic-version workspace member: it is only knowable by
+    # building the package, so the lock stops carrying a copy to bump on release. That is the
+    # point of the dynamic declaration, so assert the absence rather than a value.
+    assert "version" not in client_entries[0], "the lock should not restate a version the package computes"
     assert "synthefy" in {dep["name"] for dep in root_entries[0]["dependencies"]}
 
     hatchling = [item for item in packages if item["name"] == "hatchling"]

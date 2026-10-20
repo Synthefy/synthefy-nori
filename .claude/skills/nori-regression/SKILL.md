@@ -17,7 +17,7 @@ description: >-
 ## What this is and when to use it
 
 A playbook for regression with **Nori** (`synthefy-nori` on PyPI), a tabular
-foundation model (sizes `nori-6m` / `nori-30m` / `nori-100m`) that predicts by
+foundation model (sizes `nori-6m` / `nori-1-5` / `nori-30m` / `nori-100m`) that predicts by
 **in-context learning**: `fit()` just
 stores your training rows as context, and `predict()` conditions the frozen
 model on them. No training loop, no hyperparameters to tune, and the full
@@ -62,7 +62,7 @@ The exact, verified API is in `references/api.md` — read it before writing cod
 ```python
 from synthefy_nori import NoriRegressor
 
-reg = NoriRegressor(device=None, model="nori-30m")          # None -> cuda:0 if available, else CPU
+reg = NoriRegressor(device=None, model="nori-1-5")          # None -> cuda:0 if available, else CPU
 reg.fit(X_train, y_train)                 # stores context; no training happens
 point = reg.predict(X_test)               # (n,) distribution mean
 lo, mid, hi = reg.predict(X_test, output_type="quantiles", quantiles=[0.1, 0.5, 0.9])
@@ -70,7 +70,7 @@ lo, mid, hi = reg.predict(X_test, output_type="quantiles", quantiles=[0.1, 0.5, 
 
 Install: `pip install synthefy-nori` (add `[interpretability]` for SHAP/PDP).
 First `predict` downloads the checkpoint for the chosen `model=` from Hugging Face
-(`Synthefy/Nori`, `Synthefy/Nori-30M`, or `Synthefy/Nori-100M`).
+(`Synthefy/Nori`, `Synthefy/Nori-1-5`, `Synthefy/Nori-30M`, or `Synthefy/Nori-100M`).
 
 ## Workflow
 

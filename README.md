@@ -18,8 +18,9 @@ The model is trained entirely on synthetic data.
 This repository contains the public training, inference, evaluation, and Hugging
 Face checkpoint tooling.
 
-Three sizes ship, and `model=` is required — there is no default:
-**`"nori-6m"`** (the base), **`"nori-30m"`**, and **`"nori-100m"`** (the largest).
+Four models ship, and `model=` is required — there is no default:
+**`"nori-6m"`** (the base), **`"nori-1-5"`**, **`"nori-30m"`**, and **`"nori-100m"`**
+(the largest).
 See [Benchmarks](#benchmarks) for how to evaluate any of them on the public suites.
 
 ## Table of contents
@@ -57,7 +58,7 @@ and it automatically uses CUDA or Apple MPS when available (CPU otherwise).
    ```python
    from synthefy_nori import NoriRegressor
 
-   reg = NoriRegressor(model="nori-6m")   # or "nori-30m" / "nori-100m" for the larger sizes
+   reg = NoriRegressor(model="nori-1-5")   # or "nori-6m" / "nori-30m" / "nori-100m"
    reg.fit(X_train, y_train)              # stores your rows as context — no training happens
    y_pred = reg.predict(X_test)           # point predictions (predictive-distribution mean)
 
@@ -177,6 +178,7 @@ lacks it, the package automatically falls back to a built-in implementation.
 
 Pretrained weights are hosted on the Hugging Face Hub, one repo per size:
 [`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori) (`nori-6m`),
+[`Synthefy/Nori-1-5`](https://huggingface.co/Synthefy/Nori-1-5) (`nori-1-5`),
 [`Synthefy/Nori-30M`](https://huggingface.co/Synthefy/Nori-30M) (`nori-30m`) and
 [`Synthefy/Nori-100M`](https://huggingface.co/Synthefy/Nori-100M) (`nori-100m`).
 The first call downloads and caches the checkpoint automatically, so a complete
@@ -190,7 +192,7 @@ from synthefy_nori import NoriRegressor
 X, y = load_diabetes(return_X_y=True)
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=0)
 
-model = NoriRegressor(model="nori-30m")    # downloads weights from the HF Hub on first use
+model = NoriRegressor(model="nori-1-5")    # downloads weights from the HF Hub on first use
 model.fit(X_train, y_train)           # "fit" just stores the labeled rows as context
 pred = model.predict(X_test)          # predictions in a single forward pass, no training
 ```
@@ -201,7 +203,7 @@ encoders use that same device. A one-shot helper skips the object entirely:
 
 ```python
 from synthefy_nori import predict
-pred = predict(X_train, y_train, X_test, task="regression", model="nori-30m")
+pred = predict(X_train, y_train, X_test, task="regression", model="nori-1-5")
 ```
 
 ### DataFrame features: numeric, categorical, and text
@@ -228,7 +230,7 @@ X_test = pd.DataFrame({
 })
 
 reg = NoriRegressor(
-    model="nori-30m",
+    model="nori-1-5",
     categorical_columns=["plan"],
     text_columns=["ticket_description"],
 ).fit(X_train, [3.0, 1.0, 4.0])
@@ -273,7 +275,7 @@ whole quantile bank (handy for CRPS / interval scoring, calibration, and
 prediction intervals):
 
 ```python
-model = NoriRegressor(model="nori-30m").fit(X_train, y_train)
+model = NoriRegressor(model="nori-1-5").fit(X_train, y_train)
 
 # Quantiles at chosen levels -> shape (n_levels, n_samples)
 q10, q50, q90 = model.predict(X_test, output_type="quantiles",
@@ -310,8 +312,9 @@ More detail in [docs/inference.md](docs/inference.md).
 
 ## Authentication (optional)
 
-All three checkpoints —
+All four checkpoints —
 [`Synthefy/Nori`](https://huggingface.co/Synthefy/Nori),
+[`Synthefy/Nori-1-5`](https://huggingface.co/Synthefy/Nori-1-5),
 [`Synthefy/Nori-30M`](https://huggingface.co/Synthefy/Nori-30M) and
 [`Synthefy/Nori-100M`](https://huggingface.co/Synthefy/Nori-100M) —
 are **public**: the first inference call downloads and caches the one you
@@ -332,7 +335,7 @@ hf auth login
 ```python
 # Option C: pass explicitly in code
 from synthefy_nori import NoriRegressor
-model = NoriRegressor(token="hf_xxxxxxxx", model="nori-30m")
+model = NoriRegressor(token="hf_xxxxxxxx", model="nori-1-5")
 ```
 
 Get a token at <https://huggingface.co/settings/tokens> (read scope is
@@ -343,9 +346,11 @@ needed at all.
 
 ### Architecture
 
-Nori is a **FeaturesTransformer** — one architecture shipped at three sizes (`nori-6m`,
-`nori-30m`, `nori-100m`), differing in width and depth — that alternates
-two kinds of attention:
+Nori is a **FeaturesTransformer**. `nori-6m`, `nori-30m` and `nori-100m` share one
+architecture and differ in width and depth. `nori-1-5` (Nori 1.5, ~21M parameters) is Model v3: it adds a
+two-phase encoder, a cell encoder followed by a separate row encoder, with
+query-key normalisation, and it uses its own default inference config (a
+4-member ensemble). All four alternate two kinds of attention:
 
 - **Feature attention** learns relationships between columns.
 - **Sample attention** learns relationships between rows (context and query).
@@ -393,7 +398,7 @@ pip install "synthefy-nori[interpretability]"
 from synthefy_nori import NoriRegressor
 from synthefy_nori.interpretability.shapiq import get_nori_imputation_explainer
 
-model = NoriRegressor(model="nori-30m").fit(X_train, y_train)
+model = NoriRegressor(model="nori-1-5").fit(X_train, y_train)
 explainer = get_nori_imputation_explainer(model, X_train)   # imputation-based, model-agnostic
 sv = explainer.explain(X_test[:1], budget=128)              # SHAP/Shapley values for one prediction
 sv.plot_waterfall()                                         # additive contribution waterfall
@@ -439,32 +444,26 @@ Reproduce (prints the results table and writes `benchmarks/plots/shap_speed.png`
 
 ## Benchmarks
 
-Mean and median R² across 95 public regression tasks from three suites, for all three
-sizes. Accuracy increases with size on every suite, on both statistics:
+Mean and median R² across 95 public regression tasks from three suites. Nori 1.5 has the
+highest mean on every suite:
 
-| Suite | Datasets | Nori-6M · mean / median | Nori-30M · mean / median | Nori-100M · mean / median |
-|-------|---------:|:-----------------------:|:------------------------:|:-------------------------:|
-| TabArena | 13 | 0.8069 / 0.8772 | 0.8099 / 0.8834 | **0.8118 / 0.8902** |
-| TALENT | 71 | 0.7661 / 0.8928 | 0.7671 / 0.8937 | **0.7677 / 0.8938** |
-| OpenML | 11 | 0.6362 / 0.5718 | 0.6451 / 0.6212 | **0.6495 / 0.6297** |
-| **Overall** | **95** | 0.7567 / 0.8705 | 0.7588 / 0.8752 | **0.7601 / 0.8799** |
+| Suite | Datasets | Nori-6M | **Nori 1.5** | Nori-30M | Nori-100M |
+|-------|---------:|:-------:|:------------:|:--------:|:---------:|
+| TabArena | 13 | 0.8068 / 0.8772 | **0.8175 / 0.8939** | 0.8097 / 0.8831 | 0.8120 / 0.8901 |
+| TALENT | 71 | 0.7561 / 0.8918 | **0.7614 / 0.8939** | 0.7523 / 0.8942 | 0.7539 / 0.8944 |
+| OpenML | 11 | 0.6366 / 0.5719 | **0.6559 / 0.6265** | 0.6430 / 0.6190 | 0.6488 / 0.6313 |
+| **Overall** | **95** | 0.7492 / 0.8708 | **0.7569 / 0.8869** | 0.7475 / 0.8752 | 0.7497 / 0.8799 |
 
-How the table was produced, and the two caveats that matter:
-
-- **Same run, same machine, same protocol.** All three columns come from one sweep of
-  `synthefy-nori-eval` on H200s, using the released `synthefy-nori[eval]` from PyPI — not a
-  local checkout — so the table is reproducible with the command below.
-- **`--max-elements-budget 2000000`, not the 8M default.** Nori-100M's key/value cache
-  reaches ~179 GiB on the long-context tables and does not fit an 80 GB or a 141 GB GPU at
-  the 8M budget. Lowering the budget trims context on the largest tables, which costs a
-  little accuracy for every size — so these numbers are comparable **to each other** but are
-  *not* comparable to figures produced at a different budget.
-- **95 tasks, not 96.** Nori-100M errored on `talent/topo_2_1`, so that dataset is excluded
-  from all three columns rather than being scored for some models and not others.
-
-The gaps are real but small — Overall mean moves 0.7567 → 0.7588 → 0.7601 from 6M to 100M.
-Pick the size that fits your latency and memory budget; the larger checkpoints need
-materially more GPU memory on wide, long-context tables.
+- **One sweep, one protocol.** Every column comes from one `synthefy-nori-eval` sweep on H100s
+  with the same code, each model on its own default inference config. Compare the columns with
+  each other, not with numbers from another sweep.
+- **`--max-elements-budget 2000000`, not the 8M default.** Nori-100M's key/value cache does not
+  fit an 80 GB GPU at 8M on the long-context tables. The lower budget trims context on the
+  largest tables for every model.
+- **95 tasks, not 96.** `talent/topo_2_1` is excluded, as in earlier tables.
+- **Speed.** Nori 1.5 runs 4 ensemble members instead of 8. On TabArena and TALENT it took 309 s
+  against 782 s for Nori-30M and 3,370 s for Nori-100M (separate H100s next to other jobs, so
+  approximate).
 
 Large-context tables (common in TabArena) are the current focus of the
 large-table training stages.
@@ -481,7 +480,7 @@ pip install "synthefy-nori[eval]"
 # the table above was produced. --max-elements-budget must match across sizes for the
 # results to be comparable; 2000000 is what the table used.
 synthefy-nori-eval --download-benchmarks --openml-reg \
-  --checkpoint "nori-100m:$(python -c 'from synthefy_nori.hf import download_checkpoint as d; print(d(model="nori-100m"))')" \
+  --checkpoint "nori-1-5:$(python -c 'from synthefy_nori.hf import download_checkpoint as d; print(d(model="nori-1-5"))')" \
   --max-elements-budget 2000000
 ```
 
@@ -498,8 +497,8 @@ the data is immutable), TALENT from OpenML by name, and the OpenML regression
 suite on the fly. Dataset membership is pinned by lists shipped with the
 package (`synthefy_nori/evaluation/benchmark_lists/`), and train/test
 splits use a fixed seed, so the evaluation data is fully deterministic.
-Evaluation uses the bundled default inference config
-(`default_inference.json`).
+Each checkpoint runs its default inference config: the one stored in the file (Nori 1.5's
+4-member ensemble), else `default_inference.json`.
 
 The benchmark allows up to 50,000 context rows per dataset (no memory-based row cap). The
 inference element budget (`SYNTHEFY_MAX_ELEMENTS_BUDGET`, or `--max-elements-budget`)
@@ -599,7 +598,8 @@ call keeps a per-layer key/value cache over every context row, and that cache �
 model — is what runs you out of GPU memory on a big table.
 
 `memory_policy=` decides what to do about it. Omit it and you get the defaults, which handle
-the common cases:
+the common cases. Nori 1.5 (Model v3) has no key/value cache yet, so the cache settings below
+apply to `nori-6m`, `nori-30m` and `nori-100m`:
 
 ```python
 from synthefy_nori import NoriRegressor, MemoryPolicy
@@ -742,7 +742,7 @@ at by accident.
 **50,000**), a *policy* picks the shared context and chains the calls:
 
 ```python
-NoriRegressor(model="nori-6m", large_context_policy="cluster_route")   # threshold 50_000
+NoriRegressor(model="nori-1-5", large_context_policy="cluster_route")   # threshold 50_000
 ```
 
 | policy | Nori calls | measured vs one random window | use it when |
@@ -834,7 +834,7 @@ category is how you forbid it:
 ```python
 from synthefy_nori import NoriRegressor, SvdFallbackWarning, strict_pipeline
 
-model = NoriRegressor(model="nori-6m")
+model = NoriRegressor(model="nori-1-5")
 model.fit(X_train, y_train)
 
 model.predict(X_test)                     # serving: keep answering, warn if degraded
@@ -1025,7 +1025,7 @@ benchmark run.
 ## Hugging Face
 
 ```bash
-synthefy-nori-download --model nori-30m                           # fetch a checkpoint by size (default: nori-6m)
+synthefy-nori-download --model nori-30m                           # fetch a checkpoint by name (default: nori-1-5)
 synthefy-nori-upload path/to/checkpoint.pt --repo-id Synthefy/Nori
 ```
 

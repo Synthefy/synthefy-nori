@@ -5,8 +5,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from synthefy_nori.configs import DEFAULT_INFERENCE_CONFIG, config_path
-
 
 def _parse_checkpoint(raw: str) -> tuple[str, str]:
     if ":" in raw:
@@ -35,7 +33,12 @@ def main(argv: list[str] | None = None) -> None:
         help="Download the TabArena and TALENT regression CSV caches from OpenML first",
     )
     parser.add_argument("--custom-reg-dir", default=None)
-    parser.add_argument("--reg-config", default=config_path(DEFAULT_INFERENCE_CONFIG))
+    parser.add_argument(
+        "--reg-config",
+        default=None,
+        help="Regression inference config path. Omitted, each checkpoint uses the config stored in it, "
+        "else the bundled default config",
+    )
     parser.add_argument("--sources", nargs="+", default=None)
     parser.add_argument("--max-train-samples", type=int, default=50000)
     parser.add_argument("--max-predict-samples", type=int, default=50000)
@@ -86,7 +89,7 @@ def main(argv: list[str] | None = None) -> None:
         datasets.load_custom_dir(args.custom_reg_dir)
 
     models = ModelRegistry(device=device)
-    checkpoints = args.checkpoint or [f"Synthefy:{download_checkpoint()}"]
+    checkpoints = args.checkpoint or [f"Synthefy:{download_checkpoint(model='nori-1-5')}"]
     for raw in checkpoints:
         label, path = _parse_checkpoint(raw)
         models.add_checkpoint(

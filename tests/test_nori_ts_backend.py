@@ -71,6 +71,7 @@ def test_auto_mode_is_rejected():
                 "model": "nori-6m",
                 "endpoint_name": None,
                 "region_name": None,
+                "s3_staging_uri": None,
             },
         ),
         (
@@ -81,6 +82,7 @@ def test_auto_mode_is_rejected():
                 "model": "nori-30m-thinking-medium",
                 "endpoint_name": None,
                 "region_name": None,
+                "s3_staging_uri": None,
             },
         ),
         (
@@ -89,6 +91,7 @@ def test_auto_mode_is_rejected():
                 "model": "nori-30m",
                 "endpoint_name": "ep",
                 "region_name": "us-east-1",
+                "s3_staging_uri": "s3://customer-bucket/nori/forecasting",
             },
             {
                 "api_key": None,
@@ -96,6 +99,7 @@ def test_auto_mode_is_rejected():
                 "model": "nori-30m",
                 "endpoint_name": "ep",
                 "region_name": "us-east-1",
+                "s3_staging_uri": "s3://customer-bucket/nori/forecasting",
             },
         ),
     ],
@@ -121,6 +125,7 @@ def test_injected_client_owns_backend_configuration():
         {"api_key": "key"},
         {"endpoint_name": "ep"},
         {"region_name": "us-east-1"},
+        {"s3_staging_uri": "s3://customer-bucket/nori/forecasting"},
     ):
         with pytest.raises(ValueError, match="client= already owns"):
             NoriTSForecaster(client=client, **kwargs)

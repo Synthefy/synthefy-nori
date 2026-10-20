@@ -1,6 +1,6 @@
 """Shared Synthefy SDK exceptions and HTTP status mapping."""
 
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 
@@ -15,6 +15,50 @@ class APITimeoutError(SynthefyError):
 
 class APIConnectionError(SynthefyError):
     """The request failed due to a connection issue."""
+
+
+class SageMakerInvocationError(SynthefyError):
+    """A queued SageMaker inference wrote a failure object instead of predictions."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        invocation_id: str,
+        failure_location: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.invocation_id = invocation_id
+        self.failure_location = failure_location
+
+
+class FineTuningError(SynthefyError):
+    """A fine-tuning job, or the deployment of its result, cannot give the caller a model.
+
+    Raised for a job that failed or produced nothing to ship, a missing training report, a job
+    SageMaker started whose first status read failed, and a deployment that failed part way.
+    ``job_arn`` is set when SageMaker accepted the job, so the caller still holds its receipt.
+    ``created`` maps what a deployment had already made (model package ARN, SageMaker model,
+    endpoint config, endpoint) to its name, so the caller can delete those resources or retry
+    the deployment instead of hunting for them.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        job_name: Optional[str] = None,
+        job_arn: Optional[str] = None,
+        status: Optional[str] = None,
+        failure_reason: Optional[str] = None,
+        created: Optional[Dict[str, str]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.job_name = job_name
+        self.job_arn = job_arn
+        self.status = status
+        self.failure_reason = failure_reason
+        self.created: Dict[str, str] = dict(created or {})
 
 
 class APIStatusError(SynthefyError):
