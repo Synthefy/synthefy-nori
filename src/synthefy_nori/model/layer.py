@@ -473,6 +473,11 @@ class MultiheadAttention(torch.nn.Module):
         # Appended, not inserted: this signature is not keyword-only, so adding a
         # parameter mid-list would silently shift any positional caller.
         qass_mode: Optional[str] = None,
+        # Model v3 (two-phase encoder) only. Off by default, so every other model's
+        # attention runs exactly as before.
+        qk_norm: bool = False,
+        reuse_projected_kv_storage: bool = False,
+        prefer_cudnn_inference: bool = False,
     ):
         super().__init__()
         assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
@@ -486,6 +491,16 @@ class MultiheadAttention(torch.nn.Module):
         self.device = device
         self.dtype = dtype
         self.use_qassmax = use_qassmax
+        self.reuse_projected_kv_storage = reuse_projected_kv_storage
+        self.prefer_cudnn_inference = prefer_cudnn_inference
+        # Per-head RMS norm on queries and keys, with a learned gain (Model v3).
+        self.qk_norm = bool(qk_norm)
+        if self.qk_norm:
+            self.q_norm = RMSNorm(self.head_dim, eps=1e-6, elementwise_affine=True, device=device, dtype=dtype)
+            self.k_norm = RMSNorm(self.head_dim, eps=1e-6, elementwise_affine=True, device=device, dtype=dtype)
+        else:
+            self.q_norm = None
+            self.k_norm = None
 
         # logN attention scaling and learnable per-layer temperature.
         # The standard scale is 1/sqrt(head_dim). We pre-multiply Q by an
@@ -580,6 +595,47 @@ class MultiheadAttention(torch.nn.Module):
     # enable_gqa is slower than handing it explicit heads. The cache stays
     # single-head either way; only the transient per-call tensor changes.
     GQA_MIN_HEADS = 4
+
+    def _is_linear_projection_used(self, device: torch.device) -> bool:
+        """Return whether this attention projects Q/K/V and its output with ``F.linear``.
+
+        Only Model v3 attention (``qk_norm``) does, matching the research tier, so the released
+        Nori 1.5 reproduces its reference predictions exactly. Every other model keeps the
+        ``einsum`` projections it was released with. MPS keeps ``einsum`` as well: Torch 2.8's MPS
+        ``F.linear`` can mishandle non-contiguous inputs and weights.
+        """
+        return self.qk_norm and device.type != "mps"
+
+    def _norm_q(self, q: torch.Tensor) -> torch.Tensor:
+        return q if self.q_norm is None else self.q_norm(q)
+
+    def _norm_kv(self, kv: torch.Tensor, *, reuse_storage: bool = False) -> torch.Tensor:
+        """kv: [..., 2, heads, head_dim]; normalises the K half only."""
+        if self.k_norm is None:
+            return kv
+        keys = kv[..., 0, :, :]
+        normalized_keys = self.k_norm(keys)
+        # Only ordinary forward may hand off its fresh linear-projection buffer.
+        # Cache construction and direct normalization keep the non-mutating path.
+        if (
+            reuse_storage
+            and self.reuse_projected_kv_storage
+            and not self.training
+            and not self.recompute
+            and not torch.compiler.is_compiling()
+            and torch.is_inference_mode_enabled()
+            and not torch.is_grad_enabled()
+            and isinstance(self.k_norm, RMSNorm)
+            and self.k_norm.use_native
+            and kv.is_cuda
+            and kv.dtype == torch.float16
+            and normalized_keys.dtype == kv.dtype
+            and kv.is_contiguous()
+            and kv.storage_offset() == 0
+        ):
+            keys.copy_(normalized_keys)
+            return kv
+        return torch.stack((normalized_keys, kv[..., 1, :, :]), dim=-3)
 
     def _kv_for_kernel(self, kv: torch.Tensor, *, needs_explicit_heads: bool) -> torch.Tensor:
         """Broadcast single-head MQA K/V as required by the consumer."""
@@ -927,7 +983,7 @@ class MultiheadAttention(torch.nn.Module):
                 for s in range(0, B, chunk):
                     e = min(s + chunk, B)
                     m = attn_mask[s:e] if mask_batched else attn_mask
-                    o = torch.nn.functional.scaled_dot_product_attention(
+                    o = self._get_sdpa_output_with_inference_backend(
                         q[s:e].transpose(1, 2),
                         k[s:e].transpose(1, 2),
                         v[s:e].transpose(1, 2),
@@ -938,7 +994,7 @@ class MultiheadAttention(torch.nn.Module):
                     outs.append(o.transpose(1, 2))
                 return torch.cat(outs, dim=0)
 
-            attention_outputs = torch.nn.functional.scaled_dot_product_attention(
+            attention_outputs = self._get_sdpa_output_with_inference_backend(
                 q.transpose(1, 2),
                 k.transpose(1, 2),
                 v.transpose(1, 2),
@@ -948,6 +1004,49 @@ class MultiheadAttention(torch.nn.Module):
             )
         attention_outputs = attention_outputs.transpose(1, 2)
         return attention_outputs
+
+    def _get_sdpa_output_with_inference_backend(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        *,
+        attn_mask: torch.Tensor | None,
+        dropout_p: float,
+        enable_gqa: bool,
+    ) -> torch.Tensor:
+        """Return SDPA's output for ``[batch, heads, seq, head_dim]`` inputs.
+
+        Model v3's column attention (``prefer_cudnn_inference``) runs on cuDNN for fp16 inference
+        on H100, the backend its reference predictions were produced with. Every other call, and
+        any shape cuDNN cannot take, uses whichever backends the caller's context allows.
+        """
+        if (
+            self.prefer_cudnn_inference
+            and not self.training
+            and not torch.compiler.is_compiling()
+            and torch.is_inference_mode_enabled()
+            and not torch.is_grad_enabled()
+            and query.is_cuda
+            and query.dtype == torch.float16
+            and attn_mask is None
+            and dropout_p == 0.0
+            and not enable_gqa
+            # Preserve an enclosing explicit flash/efficient/math-only context.
+            and torch.backends.cuda.flash_sdp_enabled()
+            and torch.backends.cuda.mem_efficient_sdp_enabled()
+            and torch.backends.cuda.math_sdp_enabled()
+            and torch.cuda.get_device_capability(query.device) == (9, 0)
+        ):
+            with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+                params = torch.backends.cuda.SDPAParams(query, key, value, attn_mask, dropout_p, False, enable_gqa)
+                if torch.backends.cuda.can_use_cudnn_attention(params):
+                    return torch.nn.functional.scaled_dot_product_attention(
+                        query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, enable_gqa=enable_gqa
+                    )
+        return torch.nn.functional.scaled_dot_product_attention(
+            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, enable_gqa=enable_gqa
+        )
 
     def caculate_attention_score(self, q: torch.Tensor | None, k: torch.Tensor | None) -> torch.Tensor:
         if len(q.shape) == 3:
@@ -992,6 +1091,8 @@ class MultiheadAttention(torch.nn.Module):
         # seqlen = None
         if self.qkv_combined:
             qkv = torch.einsum("... s, j h d s -> ... j h d", x, self.qkv_proj_weight)
+            if self.qk_norm:
+                qkv = torch.stack((self.q_norm(qkv[:, :, 0]), self.k_norm(qkv[:, :, 1]), qkv[:, :, 2]), dim=2)
             if self.use_qassmax:
                 q_scaled = self.apply_qassmax(qkv[:, :, 0], qkv.shape[1])
                 qkv = torch.stack((q_scaled, qkv[:, :, 1], qkv[:, :, 2]), dim=2)
@@ -1000,12 +1101,35 @@ class MultiheadAttention(torch.nn.Module):
             self.kv_proj_weight = self.qkv_proj_weight[1:]
             assert x_kv is not None, "kv combined attention requires kv input"
             x_kv = x_kv.reshape(-1, *x_kv.shape[-2:])
-            q = torch.einsum("... s, h d s -> ... h d", x, self.q_proj_weight)
+            use_linear_projection = self._is_linear_projection_used(x.device)
+            if use_linear_projection:
+                q = torch.nn.functional.linear(
+                    x,
+                    self.q_proj_weight.reshape(self.num_heads * self.head_dim, self.embed_dim),
+                ).view(*x.shape[:-1], self.num_heads, self.head_dim)
+            else:
+                q = torch.einsum("... s, h d s -> ... h d", x, self.q_proj_weight)
             if copy_first_head_kv:
                 kv_weights = self.kv_proj_weight[:, :1]
                 kv = torch.einsum("... s, j h d s -> ... j h d", x_kv, kv_weights)
+            elif use_linear_projection:
+                kv = torch.nn.functional.linear(
+                    x_kv,
+                    self.kv_proj_weight.reshape(2 * self.num_heads * self.head_dim, self.embed_dim),
+                ).view(*x_kv.shape[:-1], 2, self.num_heads, self.head_dim)
             else:
                 kv = torch.einsum("... s, j h d s -> ... j h d", x_kv, self.kv_proj_weight)
+            if self.qk_norm:
+                q = self._norm_q(q)
+                kv = self._norm_kv(
+                    kv,
+                    reuse_storage=(
+                        use_linear_projection
+                        and not copy_first_head_kv
+                        and not calculate_sample_attention
+                        and not calculate_feature_attention
+                    ),
+                )
             if self.use_qassmax:
                 q = self.apply_qassmax(q, kv.shape[1])
 
@@ -1023,11 +1147,17 @@ class MultiheadAttention(torch.nn.Module):
 
         if calculate_sample_attention:
             sample_attention = self.caculate_attention_score(q[-1], k[-1])
-        out = torch.einsum(
-            "... h d, h d s -> ... s",
-            atten_out,
-            self.out_proj_weight,
-        )
+        if self._is_linear_projection_used(atten_out.device):
+            out = torch.nn.functional.linear(
+                atten_out.reshape(*atten_out.shape[:-2], self.num_heads * self.head_dim),
+                self.out_proj_weight.reshape(self.num_heads * self.head_dim, self.embed_dim).transpose(0, 1),
+            )
+        else:
+            out = torch.einsum(
+                "... h d, h d s -> ... s",
+                atten_out,
+                self.out_proj_weight,
+            )
 
         return out.reshape(B, S, *out.shape[1:]), feature_attention, sample_attention
 

@@ -12,8 +12,9 @@ workflows. The published dependency points heavy → light. Base `synthefy` must
 never import Torch or `synthefy_nori`; only an explicit `mode="local"` call
 may lazily load the installed runtime.
 
-Nori is a tabular foundation model (`FeaturesTransformer`), shipped in three
-sizes — `nori-6m`, `nori-30m`, `nori-100m` (~6M / ~29M / ~98M parameters) — for
+Nori is a tabular foundation model (`FeaturesTransformer`), shipped in four
+sizes — `nori-6m`, `nori-1-5`, `nori-30m`, `nori-100m` (~6M / ~21M / ~29M / ~98M
+parameters; `nori-1-5` is Nori 1.5, the Model v3 release) — for
 **regression** via in-context learning. Given a few
 labeled context rows, it predicts on query rows in a single forward pass, with no
 task-specific training. It is trained entirely on synthetic data.
@@ -48,8 +49,9 @@ uv build --package synthefy
 ## How inference works (and how to test it)
 
 - There is **no default checkpoint**: `model=` is required and selects one of
-  three **public** HF repos, each holding `nori.pt` — `nori-6m` → `Synthefy/Nori`,
-  `nori-30m` → `Synthefy/Nori-30M`, `nori-100m` → `Synthefy/Nori-100M`
+  four **public** HF repos, each holding `nori.pt` — `nori-6m` → `Synthefy/Nori`,
+  `nori-1-5` → `Synthefy/Nori-1-5`, `nori-30m` → `Synthefy/Nori-30M`,
+  `nori-100m` → `Synthefy/Nori-100M`
   (registry: `NORI_MODELS` in `src/synthefy_nori/hf.py`). First use downloads
   and caches it — **no token or access request needed**. A token is only used
   for higher rate limits or for pointing at a private/custom repo.

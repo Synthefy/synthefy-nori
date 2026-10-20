@@ -10,6 +10,7 @@ def test_hf_defaults_are_public_strings():
 
 def test_model_variant_registry_resolution():
     # friendly variant names -> HF repo ids
+    assert hf.resolve_model_repo("nori-1-5") == "Synthefy/Nori-1-5"
     assert hf.resolve_model_repo("nori-30m") == "Synthefy/Nori-30M"
     assert hf.resolve_model_repo("nori-100m") == "Synthefy/Nori-100M"
     assert hf.resolve_model_repo("nori-6m") == hf.DEFAULT_MODEL_REPO_ID  # ~6M base
@@ -18,7 +19,7 @@ def test_model_variant_registry_resolution():
         with pytest.raises(ValueError, match=r"model is required"):
             hf.resolve_model_repo(missing)
     assert hf.resolve_model_repo("Synthefy/Custom-Repo") == "Synthefy/Custom-Repo"  # raw id passes through
-    assert set(hf.NORI_MODELS) == {"nori-6m", "nori-30m", "nori-100m"}
+    assert set(hf.NORI_MODELS) == {"nori-6m", "nori-1-5", "nori-30m", "nori-100m"}
     assert "nori" not in hf.NORI_MODELS
 
 
@@ -80,10 +81,10 @@ def hub_downloads(monkeypatch):
     return seen
 
 
-def test_download_cli_defaults_to_base_repo(hub_downloads, capsys):
+def test_download_cli_defaults_to_nori_1_5(hub_downloads, capsys):
     hf.download_cli([])
-    assert set(hub_downloads) == {"Synthefy/Nori"}
-    assert capsys.readouterr().out.strip() == "/cache/Synthefy/Nori/nori.pt"
+    assert set(hub_downloads) == {"Synthefy/Nori-1-5"}
+    assert capsys.readouterr().out.strip() == "/cache/Synthefy/Nori-1-5/nori.pt"
 
 
 @pytest.mark.parametrize("size", list(hf.NORI_MODELS))

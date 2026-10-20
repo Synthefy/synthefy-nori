@@ -60,7 +60,7 @@ def build_features(y: pd.Series, *, horizon: int, season: int, n_lags: int = 3) 
 def rolling_direct(y: np.ndarray, X: np.ndarray, origins: range, *, horizon: int, device: str | None) -> pd.DataFrame:
     """At each origin t: context = rows whose features AND target are fully in
     the past (target rows <= t-h), then predict row t."""
-    reg = NoriRegressor(device=device, model="nori-30m")
+    reg = NoriRegressor(device=device, model="nori-1-5")
     rows = []
     for t in origins:
         cut = t - horizon + 1  # rows [0, cut) have targets <= t-h+... strictly before t's info

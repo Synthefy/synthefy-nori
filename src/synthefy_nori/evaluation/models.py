@@ -16,7 +16,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
-from synthefy_nori.configs import DEFAULT_INFERENCE_CONFIG, config_path
+from synthefy_nori.configs import config_path
 from synthefy_nori.model.quantile_dist import quantile_dist_mean_numpy
 
 
@@ -78,7 +78,9 @@ class NoriWrapper(BaseModelWrapper):
         self._name = model_name
         self.model_path = model_path
         self.device = torch.device(device)
-        self.reg_config_path = reg_config_path or config_path(DEFAULT_INFERENCE_CONFIG)
+        # None is passed through so the predictor uses the config stored in the checkpoint
+        # (the released nori-1-5 file carries one), else DEFAULT_INFERENCE_CONFIG.
+        self.reg_config_path = reg_config_path
         self.base_config_path = base_config_path
         self.augmentations = tuple(augmentations) if augmentations else ()
         self.yj_skew_threshold = float(yj_skew_threshold)

@@ -62,6 +62,7 @@ class ContextCache:
 
 
 from synthefy_nori.model.encoders import get_x_encoder, get_cls_y_encoder, get_reg_y_encoder, preprocesss_4_x
+from synthefy_nori.model.two_phase import TwoPhaseEncoder
 from torch.amp import autocast
 
 
@@ -98,6 +99,7 @@ class FeaturesTransformer(nn.Module):
         use_learnable_attn_temperature: bool = False,
         attn_n_ref: float = 1024.0,
         omit_feature_decoder: bool = False,
+        two_phase_config: dict[str, Any] | None = None,
         **layer_kwargs: Any,
     ):
         super().__init__()
@@ -133,6 +135,9 @@ class FeaturesTransformer(nn.Module):
         self.norm_type = norm_type
         self.deepnorm_alpha = deepnorm_alpha
         self.omit_feature_decoder = bool(omit_feature_decoder)
+        # Model v3 (Nori 1.5): a two-phase encoder replaces the dense layer stack. It is
+        # regression-only here, so its checkpoint carries no classification heads.
+        self.two_phase_config = dict(two_phase_config) if two_phase_config else None
         self.num_reg_quantiles = int(decoder_config.get("num_reg_quantiles", 1))
         # Bar-distribution metadata (persisted via decoder_config at training).
         # When regression_loss == 'bar_distribution', the K reg_y_decoder outputs
@@ -265,14 +270,18 @@ class FeaturesTransformer(nn.Module):
         )
 
         self.encoder_x = get_x_encoder(**encoder_config_x)
-        self.cls_y_encoder = get_cls_y_encoder(**encoder_config_y)
+        self.cls_y_encoder = get_cls_y_encoder(**encoder_config_y) if self.two_phase_config is None else None
         self.reg_y_encoder = get_reg_y_encoder(**encoder_config_y)
         if self.use_target_aware_embedding:
-            self.cls_target_aware_embedding = nn.Embedding(
-                self.max_num_classes,
-                self.embed_dim,
-                device=self.device,
-                dtype=self.dtype,
+            self.cls_target_aware_embedding = (
+                nn.Embedding(
+                    self.max_num_classes,
+                    self.embed_dim,
+                    device=self.device,
+                    dtype=self.dtype,
+                )
+                if self.two_phase_config is None
+                else None
             )
             self.reg_target_aware_embedding = nn.Linear(
                 1,
@@ -280,14 +289,41 @@ class FeaturesTransformer(nn.Module):
                 device=self.device,
                 dtype=self.dtype,
             )
-            nn.init.normal_(self.cls_target_aware_embedding.weight, std=0.02)
+            if self.cls_target_aware_embedding is not None:
+                nn.init.normal_(self.cls_target_aware_embedding.weight, std=0.02)
             nn.init.normal_(self.reg_target_aware_embedding.weight, std=0.02)
             nn.init.zeros_(self.reg_target_aware_embedding.bias)
         else:
             self.cls_target_aware_embedding = None
             self.reg_target_aware_embedding = None
 
-        self.transformer_encoder = LayerStack([layer_creator() for _ in range(self.nlayers)])
+        if self.two_phase_config is None:
+            self.transformer_encoder = LayerStack([layer_creator() for _ in range(self.nlayers)])
+            decoder_input_dim = self.embed_dim
+        else:
+            two_phase = self.two_phase_config
+            self.transformer_encoder = TwoPhaseEncoder(
+                self.embed_dim,
+                self.nhead,
+                self.hid_dim,
+                target_tokens=int(two_phase["target_tokens"]),
+                cell_layers=self.nlayers,
+                row_layers=int(two_phase["row_layers"]),
+                row_heads=int(two_phase["row_heads"]),
+                row_hidden_dim=int(two_phase["row_hidden_dim"]),
+                task_type="reg",
+                max_num_classes=self.max_num_classes,
+                layer_norm_eps=self.layer_norm_eps,
+                device=self.device,
+                dtype=self.dtype,
+            )
+            # The single y-token encoder is unused by the two-phase path; keep it out of
+            # optimizer bookkeeping while preserving the checkpoint schema.
+            for parameter in self.reg_y_encoder.parameters():
+                parameter.requires_grad_(False)
+            decoder_input_dim = self.transformer_encoder.width
+        # Row-level context caching is implemented for the dense layer stack only.
+        self.supports_context_cache = self.two_phase_config is None
         if pre_norm:
             if norm_type == "rmsnorm":
                 self.encoder_out_norm = RMSNorm(self.embed_dim, eps=self.layer_norm_eps, elementwise_affine=False)
@@ -296,14 +332,18 @@ class FeaturesTransformer(nn.Module):
         else:
             self.encoder_out_norm = nn.Identity()
 
-        self.cls_y_decoder = nn.Sequential(
-            nn.Linear(self.embed_dim, self.hid_dim),
-            nn.GELU(),
-            nn.Linear(self.hid_dim, decoder_config["num_classes"]),
+        self.cls_y_decoder = (
+            nn.Sequential(
+                nn.Linear(self.embed_dim, self.hid_dim),
+                nn.GELU(),
+                nn.Linear(self.hid_dim, decoder_config["num_classes"]),
+            )
+            if self.two_phase_config is None
+            else None
         )
 
         self.reg_y_decoder = nn.Sequential(
-            nn.Linear(self.embed_dim, self.hid_dim),
+            nn.Linear(decoder_input_dim, self.hid_dim),
             nn.LayerNorm(self.hid_dim),
             nn.GELU(),
             nn.Linear(self.hid_dim, self.num_reg_quantiles),
@@ -357,6 +397,8 @@ class FeaturesTransformer(nn.Module):
         assert eval_pos < x.shape[1] and eval_pos <= y.shape[1], (
             "The split point between train x and test x must be less than the feature dimension of x, and less than or equal to the label dimension of y"
         )
+        if self.two_phase_config is not None and task_type != "reg":
+            raise ValueError("the two-phase encoder (Model v3) supports regression only; pass task_type='reg'")
 
         _, seq_len, _ = x.shape
         x, feature_to_add = self._build_x_preprocess_inputs(x, eval_pos)
@@ -409,6 +451,15 @@ class FeaturesTransformer(nn.Module):
             task_type=task_type,
             eval_pos=eval_pos,
         )
+        if self.two_phase_config is not None:
+            return self._forward_two_phase(
+                embedded_x,
+                preprocessed_x,
+                y_data_masked.squeeze(-1),
+                eval_pos,
+                feature_to_add=feature_to_add,
+                return_embeddings=return_embeddings,
+            )
         embedded_all = torch.cat((embedded_x, embedded_y.unsqueeze(2)), dim=2)
         if calculate_sample_attention or calculate_feature_attention:
             return self.transformer_encoder(
@@ -470,6 +521,45 @@ class FeaturesTransformer(nn.Module):
                 output_decoded = self.reg_y_decoder(test_encoder_out)
 
         return output_decoded
+
+    def _forward_two_phase(
+        self,
+        embedded_x: torch.Tensor,
+        preprocessed_x: dict,
+        y_masked: torch.Tensor,
+        eval_pos: int,
+        *,
+        feature_to_add: int,
+        return_embeddings: bool,
+    ) -> torch.Tensor | dict[str, Any]:
+        """Run the Model v3 path: cell layers with a target stream, then row-level ICL.
+
+        Returns the per-row states ``[batch, seq, width]`` when ``return_embeddings`` is set;
+        otherwise the regression head output for the query rows, wrapped in the same dict as
+        :meth:`forward` when ``mask_prediction`` is on.
+        """
+        row_states, cell_states = self.transformer_encoder(embedded_x, y_masked, eval_pos)
+        if return_embeddings:
+            return row_states
+        reg_output = self.reg_y_decoder(row_states[:, eval_pos:])
+        if not self.mask_prediction:
+            return reg_output
+        feature_pred = (
+            None
+            if (self.feature_decoder is None or getattr(self, "_skip_feature_decoder", False))
+            else self.feature_decoder(cell_states)
+        )
+        return {
+            "reg_output": reg_output,
+            "feature_pred": feature_pred,
+            "process_config": {
+                "n_x_padding": feature_to_add,
+                "features_per_group": self.features_per_group,
+                "num_used_features": preprocessed_x.get("_valid_feature_num"),
+                "mean_for_normalization": preprocessed_x.get("_norm_mean"),
+                "std_for_normalization": preprocessed_x.get("_norm_std"),
+            },
+        }
 
     def _build_x_preprocess_inputs(
         self,
@@ -670,6 +760,8 @@ class FeaturesTransformer(nn.Module):
         Returns:
             Predictions for the query rows.
         """
+        if self.two_phase_config is not None:
+            raise NotImplementedError("context caching is not implemented for the two-phase encoder")
         # Aliases: honour them, but let the new names win when both are given, so a
         # caller migrating one call site cannot end up with the old value silently
         # applied.
@@ -744,6 +836,8 @@ class FeaturesTransformer(nn.Module):
         concrete row cap; it never materializes a full-N activation or K/V layer on
         the compute device.
         """
+        if self.two_phase_config is not None:
+            raise NotImplementedError("context caching is not implemented for the two-phase encoder")
         if quantize_kv_cache is not None and cache_dtype == "bf16":
             cache_dtype = "int8" if quantize_kv_cache else "bf16"
         if cache_dtype not in ("bf16", "int8"):

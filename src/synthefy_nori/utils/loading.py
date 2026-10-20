@@ -110,9 +110,40 @@ def build_model(config: dict):
     # table finalize stamps in, so old and new checkpoints agree.
     attn_scale = {k: config.get(k, v) for k, v in _ATTENTION_SCALE_DEFAULTS.items()}
     use_qassmax = bool(config.get("use_qassmax", False))
+    # Training switches that only the research tier implements. Nori 1.5 records each of them
+    # as off; refuse a config that turns one on rather than building a different model.
+    enabled_unsupported_options = [
+        key for key in ("feature_group_circular", "use_column_deepset", "use_conditional_landmarks") if config.get(key)
+    ]
+    if config.get("use_conditional_landmarks") is None and int(config.get("conditional_landmark_embedding_dim", 0)):
+        enabled_unsupported_options.append("conditional_landmark_embedding_dim")
+    if config.get("task_type", "reg") != "reg":
+        enabled_unsupported_options.append("task_type")
+    if enabled_unsupported_options:
+        raise ValueError(
+            f"Checkpoint config enables options this release does not support: {enabled_unsupported_options}"
+        )
+    # Model v3 tokenizes each cell as RBF plus prompt-quantile PLE channels. The bin count must
+    # agree between the preprocessing step (which builds the quantile edges) and the X encoder.
+    preprocess_config_x = dict(config["preprocess_config_x"])
+    encoder_config_x = dict(config["encoder_config_x"])
+    legacy_ple_bins = int(encoder_config_x.get("prompt_quantile_ple_bins", 0))
+    preprocess_ple_bins = int(preprocess_config_x.get("prompt_quantile_ple_bins", 0))
+    if legacy_ple_bins != preprocess_ple_bins:
+        raise ValueError("prompt-quantile PLE config must match between preprocessing and X encoder")
+    use_prompt_quantile_ple = bool(config.get("use_prompt_quantile_ple", legacy_ple_bins > 0))
+    configured_ple_bins = int(
+        config.get(
+            "prompt_quantile_ple_bins",
+            legacy_ple_bins if legacy_ple_bins > 0 else 32,
+        )
+    )
+    effective_ple_bins = configured_ple_bins if use_prompt_quantile_ple else 0
+    preprocess_config_x["prompt_quantile_ple_bins"] = effective_ple_bins
+    encoder_config_x["prompt_quantile_ple_bins"] = effective_ple_bins
     model = FeaturesTransformer(
-        preprocess_config_x=config["preprocess_config_x"],
-        encoder_config_x=config["encoder_config_x"],
+        preprocess_config_x=preprocess_config_x,
+        encoder_config_x=encoder_config_x,
         encoder_config_y=config["encoder_config_y"],
         decoder_config=config["decoder_config"],
         feature_positional_embedding_type=config.get("feature_positional_embedding_type", "subortho"),
@@ -152,8 +183,27 @@ def build_model(config: dict):
         # Legacy configs omit this flag and therefore retain the decoder. That
         # preserves their state-dict schema for strict checkpoint loading.
         omit_feature_decoder=bool(config.get("omit_feature_decoder", False)),
+        two_phase_config=config.get("two_phase_config"),
     )
     return model
+
+
+def get_stored_inference_config(checkpoint: dict, model_path) -> dict | None:
+    """Return the inference config a checkpoint carries, or ``None`` when it has none.
+
+    The stored form is ``{"name": <bundled filename it came from>, "members": [...]}``.
+    Anything else under the ``inference_config`` key raises, so a malformed file fails at
+    load time instead of silently falling back to a different ensemble.
+    """
+    stored = checkpoint.get("inference_config")
+    if stored is None:
+        return None
+    if not isinstance(stored, dict) or not isinstance(stored.get("members"), list) or not stored["members"]:
+        raise ValueError(
+            f"{model_path}: 'inference_config' must be {{'name': ..., 'members': [non-empty list]}}, "
+            f"got {type(stored).__name__}"
+        )
+    return {"name": str(stored.get("name", "unnamed")), "members": stored["members"]}
 
 
 def load_model(model_path, mask_prediction: bool = False, base_config_path: str = None, native_rms_norm: bool = True):
@@ -213,6 +263,10 @@ def load_model(model_path, mask_prediction: bool = False, base_config_path: str 
 
     model = build_model(config)
     model.load_state_dict(weights)
+    # A release checkpoint may carry the inference config it was evaluated with
+    # ({"name": ..., "members": [...]}, written by ci/convert_checkpoint.py). The predictor
+    # uses it when the caller passes no config; None means the file carries none.
+    model.stored_inference_config = get_stored_inference_config(state_dict, model_path)
 
     if native_rms_norm:
         from synthefy_nori.model.layer import RMSNorm

@@ -16,7 +16,8 @@ from synthefy.featurize import CATEGORICAL_AUTO, DataFramePreprocessor
 
 # Re-exported: `synthefy_nori.config_path` and `from synthefy_nori.api import config_path`
 # are both long-standing entry points. The implementation lives in one place.
-from synthefy_nori.configs import DEFAULT_INFERENCE_CONFIG, config_path
+from synthefy_nori.configs import INFERENCE_CONFIG_BY_MODEL_NAME, config_path, get_default_inference_config_name
+from synthefy_nori.hf import NORI_MODELS
 from synthefy_nori.inference.large_context import (
     DEFAULT_LARGE_CONTEXT_THRESHOLD,
     LargeContextUnsupportedOutputError,
@@ -97,6 +98,18 @@ def _as_device(device):
         )
         raise RuntimeError(f"device='mps' was requested, but {reason}.")
     return resolved
+
+
+def get_expected_inference_config_path(model_name: str | None) -> str | None:
+    """Return the bundled inference-config path a released model name implies, or ``None``.
+
+    ``None`` for no name or a name that is not a released model (for example a raw
+    ``"org/repo"`` id): there is nothing to check a stored config against, so the
+    checkpoint's own config, or the default, is used as is.
+    """
+    if model_name in NORI_MODELS or model_name in INFERENCE_CONFIG_BY_MODEL_NAME:
+        return config_path(get_default_inference_config_name(model_name))
+    return None
 
 
 def _resolve_model_path(model_path: str | None, token: str | bool | None = None, model: str | None = None) -> str:
@@ -216,15 +229,20 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
             model_path: path to a local ``.pt`` checkpoint. When ``None``, ``model``
                 is required and its checkpoint is downloaded/cached from Hugging Face.
             model: variant selector -- REQUIRED when ``model_path`` is None. Choose
-                ``"nori-6m"`` (the base), ``"nori-30m"`` or ``"nori-100m"`` (the
-                largest); there is no default and omitting both raises. Ignored when
-                ``model_path`` is given.
+                ``"nori-6m"`` (the base), ``"nori-1-5"``, ``"nori-30m"`` or
+                ``"nori-100m"`` (the largest); there is no default and omitting both
+                raises. With ``model_path`` the weights come from that file, but
+                ``model`` still selects the default inference config.
             device: torch device for inference (``"cuda:0"``, ``"cpu"``, ...).
                 ``None`` automatically picks CUDA, then Apple MPS when available,
                 and otherwise CPU. The fitted ``device_`` attribute records the
                 device actually selected.
-            inference_config: path to an inference-config JSON. ``None`` uses
-                the bundled default config.
+            inference_config: path to an inference-config JSON; it always wins. ``None``
+                uses the config stored in the checkpoint (the released ``nori-1-5`` file
+                carries its 4-member ``MODEL_V3_INFERENCE_CONFIG``), checked against the
+                one ``model`` maps to in ``INFERENCE_CONFIG_BY_MODEL_NAME``. A checkpoint
+                that stores none uses the config ``model`` maps to, else the 8-member
+                ``DEFAULT_INFERENCE_CONFIG``.
             token: Hugging Face token (higher rate limits / private repos);
                 never required for the public checkpoint.
             augmentations: preprocessing ensemble members, e.g. ``("yj",)`` for
@@ -344,13 +362,15 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
         effect at ``fit``.
         """
         self.model_path = model_path
-        # Variant selector (required when model_path is None): "nori-6m" / "nori-30m" /
-        # "nori-100m", resolved to a Hugging Face repo via synthefy_nori.hf. Ignored when
-        # model_path is given.
+        # Variant selector (required when model_path is None): "nori-6m" / "nori-1-5" /
+        # "nori-30m" / "nori-100m", resolved to a Hugging Face repo via synthefy_nori.hf.
+        # With model_path it no longer picks the weights, but still picks the inference config.
         self.model = model
         self.device = device
         self.token = token
-        self.inference_config = inference_config or config_path(DEFAULT_INFERENCE_CONFIG)
+        # Stored verbatim (sklearn convention): None is resolved when the predictor loads the
+        # checkpoint, from the config stored in it or the one `model` maps to.
+        self.inference_config = inference_config
         self.augmentations = tuple(augmentations) if augmentations else ()
         self.yj_skew_threshold = float(yj_skew_threshold)
         self.quantile_collapse = quantile_collapse
@@ -823,6 +843,7 @@ class NoriRegressor(RegressorMixin, BaseEstimator):
                 device=resolved_device,
                 model_path=_resolve_model_path(self.model_path, self.token, self.model),
                 inference_config=self.inference_config,
+                expected_inference_config=get_expected_inference_config_path(self.model),
                 augmentations=self.augmentations,
                 yj_skew_threshold=self.yj_skew_threshold,
                 quantile_collapse=self.quantile_collapse,
@@ -1392,7 +1413,8 @@ def infer(
     numeric.
 
     ``model`` selects a variant (e.g. ``"nori-30m"``); ``model_path`` still takes
-    an explicit local checkpoint and wins over ``model`` when both are given.
+    an explicit local checkpoint, and its weights win over ``model`` when both are
+    given. ``model`` still selects the default inference config in that case.
     ``discretize`` / ``categorical_levels`` map predictions onto a discrete
     target's levels — see ``NoriRegressor.predict``.
     """

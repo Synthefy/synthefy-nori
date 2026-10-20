@@ -95,7 +95,7 @@ def main() -> None:
         X, y = X.loc[y.notna()], y.loc[y.notna()]
 
     X_train, X_test, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=args.seed)
-    reg = NoriRegressor(device=args.device, model="nori-30m")
+    reg = NoriRegressor(device=args.device, model="nori-1-5")
     reg.fit(X_train.values, y_train.values)
 
     imp = shap_importance(reg, X_train.values, X_test.values[: args.k], list(X.columns), budget=args.budget)

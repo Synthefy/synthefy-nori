@@ -306,6 +306,129 @@ class PBLDEmbedding(nn.Module):
         return out
 
 
+class PromptQuantilePLEEncoder(nn.Module):
+    """Build context-only quantile boundaries for piecewise-linear encoding.
+
+    The reference contains ``n_bins + 1`` quantiles for every scalar feature.
+    It is computed from the context prefix only and can be frozen in a context
+    cache, so query values never influence their own representation.
+
+    This preprocessing stage stores only the small boundary tensor. The dense
+    per-cell PLE coordinates are materialized later by :class:`MaskEmbEncoder`,
+    immediately before they are concatenated with the scientific-RBF path.
+    """
+
+    reference_key = "_prompt_quantile_ple_reference"
+    frozen_reference_key = "_frozen_prompt_quantile_ple_reference"
+
+    def __init__(self, n_bins: int):
+        super().__init__()
+        if n_bins < 2:
+            raise ValueError("prompt-quantile PLE requires at least 2 bins")
+        self.n_bins = int(n_bins)
+        self.register_buffer(
+            "quantile_levels",
+            torch.linspace(0.0, 1.0, self.n_bins + 1, dtype=torch.float32),
+            persistent=False,
+        )
+
+    def _build_reference(
+        self,
+        x: torch.Tensor,
+        valid: torch.Tensor,
+        eval_pos: int,
+    ) -> dict[str, torch.Tensor]:
+        context = x[:, :eval_pos]
+        context_valid = valid[:, :eval_pos]
+
+        # Sort along rows after placing missing values at the end. Working in
+        # [B, G, F, S] makes the subsequent gather over quantile indices direct.
+        sortable = torch.where(context_valid, context, torch.full_like(context, float("inf")))
+        sorted_values = sortable.permute(0, 2, 3, 1).sort(dim=-1).values
+        valid_count = context_valid.sum(dim=1)
+
+        levels = self.quantile_levels.to(device=x.device, dtype=x.dtype)
+        max_index = (valid_count - 1).clamp(min=0).to(x.dtype)
+        positions = max_index.unsqueeze(-1) * levels
+        lower_index = positions.floor().to(torch.long)
+        upper_index = positions.ceil().to(torch.long)
+
+        lower = torch.gather(sorted_values, -1, lower_index)
+        upper = torch.gather(sorted_values, -1, upper_index)
+        interpolation = positions - lower_index.to(positions.dtype)
+        edges = lower + interpolation * (upper - lower)
+        edges = torch.where(valid_count.unsqueeze(-1) > 0, edges, torch.zeros_like(edges))
+        return {"edges": edges.detach()}
+
+    def _validate_reference(
+        self,
+        reference: dict[str, torch.Tensor],
+        x: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        edges = reference.get("edges")
+        if not isinstance(edges, torch.Tensor):
+            raise TypeError("prompt-quantile PLE reference is missing tensor 'edges'")
+        expected_shape = (x.shape[0], x.shape[2], x.shape[3], self.n_bins + 1)
+        if tuple(edges.shape) != expected_shape:
+            raise ValueError(f"prompt-quantile PLE reference has shape {tuple(edges.shape)}, expected {expected_shape}")
+        return {"edges": edges.to(device=x.device, dtype=x.dtype)}
+
+    def forward(self, input: dict[str, torch.Tensor | int]) -> dict[str, torch.Tensor | int]:
+        x = input.get("data")
+        mask = input.get("mask")
+        if not isinstance(x, torch.Tensor) or not isinstance(mask, torch.Tensor):
+            raise TypeError("PromptQuantilePLEEncoder requires tensor data and mask inputs")
+        if x.dim() != 4 or mask.shape != x.shape:
+            raise ValueError("PromptQuantilePLEEncoder expects data and mask shaped [batch, rows, groups, features]")
+
+        frozen = input.get(self.frozen_reference_key)
+        if frozen is None:
+            eval_pos = int(input["eval_pos"])
+            if eval_pos <= 0 or eval_pos > x.shape[1]:
+                raise ValueError(
+                    f"eval_pos must select a non-empty context prefix, got {eval_pos} for {x.shape[1]} rows"
+                )
+            valid = torch.isfinite(x) & ~mask.to(torch.bool)
+            reference = self._build_reference(x, valid, eval_pos)
+        else:
+            if not isinstance(frozen, dict):
+                raise TypeError("_frozen_prompt_quantile_ple_reference must be a dictionary")
+            reference = frozen
+
+        input[self.reference_key] = self._validate_reference(reference, x)
+        return input
+
+    @staticmethod
+    def encode(
+        x: torch.Tensor,
+        reference: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """Return cumulative PLE coordinates for ``x``.
+
+        Channel ``i`` is ``clamp((x-b_i)/(b_{i+1}-b_i), 0, 1)``. Hence bins
+        below the value are one, its active bin is fractional, and bins above
+        it are zero. Duplicate boundaries produce a zero channel rather than a
+        data-dependent removal, keeping the representation shape static.
+        """
+
+        edges = reference["edges"].to(device=x.device, dtype=x.dtype)
+        left = edges[..., :-1]
+        right = edges[..., 1:]
+        width = right - left
+        nonzero_width = width > 0
+        safe_width = torch.where(nonzero_width, width, torch.ones_like(width))
+
+        values = x.permute(0, 2, 3, 1).unsqueeze(-1)
+        coordinates = ((values - left.unsqueeze(-2)) / safe_width.unsqueeze(-2)).clamp(0.0, 1.0)
+        valid_values = torch.isfinite(values)
+        coordinates = torch.where(
+            valid_values & nonzero_width.unsqueeze(-2),
+            coordinates,
+            torch.zeros_like(coordinates),
+        )
+        return coordinates.permute(0, 3, 1, 2, 4).contiguous()
+
+
 class MaskEmbEncoder(nn.Module):
     """
     For masked features, use the mask vector to obtain their representations;
@@ -320,6 +443,7 @@ class MaskEmbEncoder(nn.Module):
         numeric_embed_type: str = "linear",
         RBF_config: dict | None = None,
         PBLD_config: dict | None = None,
+        prompt_quantile_ple_bins: int = 0,
         nan_to_zero: bool = False,
         bias: bool = True,
         in_keys: list[str] = ["data"],
@@ -330,6 +454,10 @@ class MaskEmbEncoder(nn.Module):
         Args:
             num_features: The number of input features.
             emsize: The embedding size, i.e. the number of output features.
+            prompt_quantile_ple_bins: Model v3 only. When positive, the last this-many channels of
+                each cell token are piecewise-linear coordinates against context quantiles (see
+                :class:`PromptQuantilePLEEncoder`) and the numeric embedding fills the rest.
+                0 (the default) keeps the numeric embedding at the full width.
             nan_to_zero: Whether to replace NaN values in the input by zero. Defaults to False.
             bias: Whether to use a bias term in the linear layer. Defaults to True.
         """
@@ -338,6 +466,18 @@ class MaskEmbEncoder(nn.Module):
         self.mask_embedding_size = mask_embedding_size
         self.in_keys = in_keys
         self.out_key = out_key
+        self.prompt_quantile_ple_bins = int(prompt_quantile_ple_bins)
+        if self.prompt_quantile_ple_bins < 0:
+            raise ValueError("prompt_quantile_ple_bins cannot be negative")
+        if self.prompt_quantile_ple_bins == 1:
+            raise ValueError("prompt_quantile_ple_bins must be 0 (disabled) or at least 2")
+        if self.prompt_quantile_ple_bins >= self.embedding_dim:
+            raise ValueError("prompt_quantile_ple_bins must be smaller than the embedding dimension")
+        if self.prompt_quantile_ple_bins and self.in_keys != ["data"]:
+            raise ValueError("prompt-quantile PLE requires in_keys=['data']")
+        if self.prompt_quantile_ple_bins and numeric_embed_type != "RBF":
+            raise ValueError("prompt-quantile PLE is supported only with the RBF numeric encoder")
+        numeric_embedding_dim = self.embedding_dim - self.prompt_quantile_ple_bins
 
         # All masked positions use the same vector
         self.mask_embedding = nn.Parameter(torch.randn(self.mask_embedding_size))
@@ -363,8 +503,21 @@ class MaskEmbEncoder(nn.Module):
                 nn.ReLU(),
             )
         elif numeric_embed_type == "RBF":
+            # This tier implements only the scientific-notation RBF in float64. Refuse a config
+            # that asks for anything else rather than silently computing a different embedding.
+            unsupported_rbf_options = {
+                key: RBF_config[key]
+                for key, supported in (
+                    ("input_transform", "scientific"),
+                    ("compute_dtype", "float64"),
+                    ("use_raw_input_residual", False),
+                )
+                if key in RBF_config and RBF_config[key] != supported
+            }
+            if unsupported_rbf_options:
+                raise ValueError(f"Unsupported RBF_config options in this release: {unsupported_rbf_options}")
             self.numeric_mlp = RBFembedding(
-                embedding_size=self.embedding_dim,
+                embedding_size=numeric_embedding_dim,
                 exponent_digits=1,
                 token_embed_dim=RBF_config["token_embed_dim"],
                 n_kernels=RBF_config["n_kernels"],
@@ -406,6 +559,12 @@ class MaskEmbEncoder(nn.Module):
         x = x.masked_fill(is_mask, 0.0)
 
         x_emb = self.numeric_mlp(x)
+        if self.prompt_quantile_ple_bins:
+            reference = input.get(PromptQuantilePLEEncoder.reference_key)
+            if not isinstance(reference, dict):
+                raise TypeError("prompt-quantile PLE reference is required when the tokenizer is enabled")
+            ple = PromptQuantilePLEEncoder.encode(x.squeeze(-1), reference).to(x_emb.dtype)
+            x_emb = torch.cat((x_emb, ple), dim=-1)
 
         if self.nan_to_zero:
             # The input was already filled with zero above. Honor the flag by
@@ -735,6 +894,7 @@ def get_x_encoder(
     numeric_embed_type: str = "linear",
     RBF_config: dict | None = None,
     PBLD_config: dict | None = None,
+    prompt_quantile_ple_bins: int = 0,
     in_keys: list = ["data"],
     nan_to_zero: bool = False,
 ):
@@ -757,6 +917,7 @@ def get_x_encoder(
             in_keys=in_keys,
             RBF_config=RBF_config,
             PBLD_config=PBLD_config,
+            prompt_quantile_ple_bins=prompt_quantile_ple_bins,
             numeric_embed_type=numeric_embed_type,
         ),
     ]
@@ -816,6 +977,7 @@ def preprocesss_4_x(
     normalize_x: bool,
     remove_outliers: bool,
     normalize_by_used_features: bool,
+    prompt_quantile_ple_bins: int = 0,
 ):
     """feature preprocess"""
     preprocess_steps = []
@@ -840,5 +1002,8 @@ def preprocesss_4_x(
             nan_normalize=normalize_by_used_features,
         ),
     ]
+
+    if prompt_quantile_ple_bins:
+        preprocess_steps += [PromptQuantilePLEEncoder(prompt_quantile_ple_bins)]
 
     return nn.Sequential(*preprocess_steps)
