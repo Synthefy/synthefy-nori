@@ -2065,6 +2065,103 @@ def test_remote_body_uses_nori_100m_gateway_slug():
     assert capture["body"]["model"] == "synthefy/nori-100m"
 
 
+def test_nori_1_5_is_offered_on_every_backend():
+    client = SynthefyNoriClient(api_key="k", model="nori-1-5")
+    assert client.model == "synthefy/nori-1-5"
+    assert client._local_variant == "nori-1-5"
+    assert "nori-1-5" in _MODEL_NAMES
+    assert "nori-1-5" in SAGEMAKER_VARIANTS
+    assert _resolve_local_variant("synthefy/nori-1-5") == "nori-1-5"
+    assert not _is_thinking_model("nori-1-5")
+
+
+def test_sagemaker_mode_refuses_nori_1_5_cache_settings_before_any_upload(monkeypatch):
+    # SageMaker serves Nori 1.5 (test_aws_predict_uses_s3_and_invoke_endpoint_async_for_every_model
+    # covers it); a cache setting is refused before anything is staged in the customer's bucket.
+    client, runtime, s3 = _stubbed_aws_client(monkeypatch, model="nori-1-5")
+    with pytest.raises(ValueError, match="is a context-cache preset"):
+        client.predict(_XTR, _YTR, _XTE, memory_policy="exact")
+    assert s3.uploads == [] and runtime.requests == []
+
+
+def test_remote_body_uses_nori_1_5_gateway_slug():
+    capture: Dict = {}
+    client = SynthefyNoriClient(api_key="k", model="nori-1-5")
+    _attach_mock(client, _ok_handler([1.0], capture))
+    client.predict(X_train=_XTR, y_train=_YTR, X_test=_XTE)
+    assert capture["body"]["model"] == "synthefy/nori-1-5"
+
+
+@pytest.mark.parametrize(
+    ("mode", "model"),
+    [
+        ("remote", "nori-1-5"),
+        ("remote", "synthefy/nori-1-5"),
+        ("remote", "synthefy/nori-1-5-dev"),
+        ("local", "nori-1-5"),
+        ("local", "synthefy/nori-1-5"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("memory_policy", "message"),
+    [
+        ("off", "'off' is a context-cache preset, and 'nori-1-5' keeps no context cache"),
+        (
+            {"cache_dtype": "int8", "allow_subsample": True},
+            r"memory_policy fields \['cache_dtype'\] configure the key/value context cache",
+        ),
+    ],
+)
+def test_nori_1_5_refuses_context_cache_settings_before_any_request(model, mode, memory_policy, message):
+    # Nori 1.5 builds no context cache: the hosted API refuses these settings and local
+    # synthefy-nori would ignore them, so the client refuses them in every mode, before a paid
+    # request or a checkpoint load. A 500 from the mock would mean a request went out.
+    client = SynthefyNoriClient(mode=mode, model=model, **({"api_key": "k"} if mode == "remote" else {}))
+    if mode == "remote":
+        _attach_mock(client, lambda _request: httpx.Response(500))
+    with pytest.raises(ValueError, match=message):
+        client.predict(_XTR, _YTR, _XTE, memory_policy=memory_policy)
+
+
+def test_nori_1_5_sends_the_context_budget_fields():
+    capture: Dict = {}
+    client = SynthefyNoriClient(api_key="k", model="nori-1-5")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        capture["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "task": "regression",
+                "model": "nori-1-5",
+                "predictions": [1.0],
+                "memory_report": {**_REPORT, "rung": "no_cache", "clamped": [], "notes": []},
+            },
+        )
+
+    _attach_mock(client, handler)
+    client.predict(_XTR, _YTR, _XTE, memory_policy={"elements_budget": 1_000_000, "allow_subsample": False})
+    assert capture["body"]["memory_policy"] == {"elements_budget": 1_000_000, "allow_subsample": False}
+    assert client.last_memory_report["rung"] == "no_cache"
+
+
+def test_models_with_a_context_cache_keep_every_memory_policy_field():
+    # The refusal is Nori 1.5's alone; the other sizes still take presets and cache fields.
+    capture: Dict = {}
+    client = SynthefyNoriClient(api_key="k", model="nori-6m")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        capture["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"task": "regression", "predictions": [1.0], "memory_report": {**_REPORT, "clamped": [], "notes": []}},
+        )
+
+    _attach_mock(client, handler)
+    client.predict(_XTR, _YTR, _XTE, memory_policy="exact")
+    assert capture["body"]["memory_policy"] == "exact"
+
+
 def test_remote_body_uses_variant_gateway_slug():
     capture: Dict = {}
     client = SynthefyNoriClient(api_key="k", model="nori-30m")

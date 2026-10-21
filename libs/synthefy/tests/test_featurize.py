@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from synthefy.featurize import DataFramePreprocessor, align_and_featurize
+from synthefy.nori_client import _build_nori_request
 
 
 def _rows(frame):
@@ -79,6 +80,20 @@ def test_auto_high_cardinality_requires_an_explicit_choice():
         DataFramePreprocessor(max_categorical_cardinality=3).fit(frame)
     assert "categorical_columns=['email']" in str(caught.value)
     assert "text_columns" in str(caught.value)
+
+
+def test_categorical_dtype_is_an_explicit_high_cardinality_role():
+    train = pd.DataFrame({"category": pd.Series([f"value-{index}" for index in range(4)], dtype="category")})
+    query = pd.DataFrame({"category": pd.Series(["value-0", "unseen"], dtype="category")})
+
+    X_train, X_query = align_and_featurize(
+        train,
+        query,
+        max_categorical_cardinality=2,
+    )
+
+    assert X_train["category"].tolist() == [0.0, 1.0, 2.0, 2.0]
+    assert X_query["category"].tolist() == [0.0, 2.0]
 
 
 def test_text_and_categorical_declarations_are_validated_before_text_import(monkeypatch):
@@ -163,3 +178,26 @@ def test_column_declaration_iterators_are_materialized_once():
 
     assert _rows(X_train) == [[0.0, 1.0], [1.0, 2.0]]
     assert _rows(X_test) == [[0.0, 3.0]]
+
+
+@pytest.mark.parametrize("multiindex", [False, True])
+@pytest.mark.parametrize("categorical", [False, True])
+def test_tuple_feature_labels_keep_a_one_dimensional_fitted_schema(multiindex, categorical):
+    labels = [("sensor", "value"), ("sensor", "group")]
+    columns = pd.MultiIndex.from_tuples(labels) if multiindex else pd.Index(labels, tupleize_cols=False)
+    train = pd.DataFrame([[1.0, "a" if categorical else 2.0], [3.0, "b" if categorical else 4.0]], columns=columns)
+    query = train.iloc[[1], ::-1]
+    preprocessor = DataFramePreprocessor().fit(train)
+
+    restored = pickle.loads(pickle.dumps(preprocessor))
+    result = restored.transform(query)
+    expected = [[3.0, 1.0 if categorical else 4.0]]
+    assert _rows(result) == expected
+    assert list(result.columns) == labels
+    assert restored.feature_names_in_.shape == (2,)
+    assert restored.get_feature_names_out().shape == (2,)
+    assert restored.get_feature_names_out().tolist() == labels
+    assert restored.get_feature_names_out(labels).tolist() == labels
+
+    request = _build_nori_request(train, [0.0, 1.0], query)
+    assert request.X_test == expected

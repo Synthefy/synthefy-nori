@@ -134,7 +134,7 @@ Synthefy API if you'd rather not run it locally.
    from synthefy import SynthefyNoriClient
 
    # model is required -- name a size: "nori-100m" (~98.3M), "nori-30m" (~29.2M),
-   # or "nori-6m" (~6M base).
+   # "nori-1-5" (Nori 1.5, ~21M; needs synthefy-nori >= 0.22.0), or "nori-6m" (~6M base).
    client = SynthefyNoriClient(mode="local", model="nori-30m")   # runs on this machine, no API key
 
    y_pred = client.predict(
@@ -254,8 +254,8 @@ preds = client.predict(X_train, y_train, X_test, as_pandas=True)
 
 The client targets the Baseten inference **gateway**
 (`https://inference.baseten.co/predict`); `model=` is required and names a size —
-`"nori-100m"` (→ `synthefy/nori-100m`), `"nori-30m"` (→ `synthefy/nori-30m`), or
-`"nori-6m"` (→ `synthefy/nori-6m`). The
+`"nori-100m"` (→ `synthefy/nori-100m`), `"nori-30m"` (→ `synthefy/nori-30m`),
+`"nori-1-5"` (→ `synthefy/nori-1-5`), or `"nori-6m"` (→ `synthefy/nori-6m`). The
 gateway resolves that slug to a deployment, so you never name a deployment yourself.
 
 `timeout` and `max_retries` are also configurable on the constructor.
@@ -443,6 +443,12 @@ far more query rows than the hosted request-body limit (~64 MiB) allows — so l
 In `mode="local"` the same argument works when the installed `synthefy-nori` exposes
 the field. An older runtime raises `ImportError` with an upgrade hint before inference.
 `last_memory_report` exposes the resolved local report just as it does for hosted calls.
+
+**Nori 1.5 (`model="nori-1-5"`) builds no key/value cache**, so the cache fields and
+the presets have nothing to act on. With it, `memory_policy=` may set only
+`elements_budget` and `allow_subsample`, which decide whether context rows are dropped
+to fit the element budget; anything else raises `ValueError` before a request is sent,
+in every mode, and its `last_memory_report` always reports the `no_cache` rung.
 
 ### Choosing Context on Large Tables (`large_context_policy=`)
 
@@ -963,7 +969,7 @@ once through a `SynthefyNoriClient` built with `mode="sagemaker"`, `model="nori-
 
 ### SynthefyNoriClient (Tabular Regression)
 
-- `SynthefyNoriClient(api_key=None, *, mode="remote", timeout=300.0, max_retries=2, base_url=..., endpoint=..., model, user_agent=None, endpoint_name=None, region_name=None, s3_staging_uri=None)`: `model` is **required everywhere** and accepts the released Nori variants (`nori-6m`, `nori-30m`, `nori-100m`, and `nori-30m-thinking-medium`) or an explicit custom HTTP slug; in SageMaker mode it also accepts a fine-tuned model's name (`ft-` then lowercase letters, digits and hyphens, 63 characters at most). There is no `None`/default model path. SageMaker requires `endpoint_name` plus a customer-owned `s3_staging_uri` and uses asynchronous inference for every variant while `predict()` still returns one normal result.
+- `SynthefyNoriClient(api_key=None, *, mode="remote", timeout=300.0, max_retries=2, base_url=..., endpoint=..., model, user_agent=None, endpoint_name=None, region_name=None, s3_staging_uri=None)`: `model` is **required everywhere** and accepts the released Nori variants (`nori-6m`, `nori-1-5`, `nori-30m`, `nori-100m`, and `nori-30m-thinking-medium`) or an explicit custom HTTP slug; in SageMaker mode it also accepts a fine-tuned model's name (`ft-` then lowercase letters, digits and hyphens, 63 characters at most). There is no `None`/default model path. SageMaker requires `endpoint_name` plus a customer-owned `s3_staging_uri` and uses asynchronous inference for every variant while `predict()` still returns one normal result.
   - `mode`: `"remote"` (hosted, default), `"local"` (in-process via
     `synthefy-nori`), or `"sagemaker"` (a named SageMaker endpoint using the AWS
     credential chain).

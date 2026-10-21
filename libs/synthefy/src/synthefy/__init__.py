@@ -25,7 +25,7 @@ from synthefy.errors import FineTuningError, SageMakerInvocationError
 from synthefy.nori_client import SynthefyNoriClient
 from synthefy.nori_fine_tune import SynthefyNoriFineTuner
 
-__version__ = "7.3.0"
+__version__ = "7.4.0"
 
 __all__ = [
     "DEFAULT_LARGE_CONTEXT_SEED",
