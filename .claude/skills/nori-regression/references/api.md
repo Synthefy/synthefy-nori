@@ -91,7 +91,7 @@ Rules (all raise informative errors):
 
 ```python
 from synthefy_nori import infer
-y_pred = infer(X_train, y_train, X_test)   # mean point predictions only
+y_pred = infer(X_train, y_train, X_test, model="nori-1-5")   # mean point predictions only
 ```
 
 `predict(...)` (module-level) is an alias of `infer`.
