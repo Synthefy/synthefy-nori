@@ -69,12 +69,6 @@ _REQUIRED = object()
 _SUPPORTED_MODES = frozenset({"local", "remote", "sagemaker"})
 
 
-def _same_values(a: pd.Series, b: pd.Series) -> bool:
-    return np.array_equal(
-        a.to_numpy(np.float64, na_value=np.nan), b.to_numpy(np.float64, na_value=np.nan), equal_nan=True
-    )
-
-
 def _default_features():
     # Fresh instances (AutoSeasonalFeature holds config; cheap to rebuild).
     return [RunningIndexFeature(), CalendarFeature(), AutoSeasonalFeature()]
@@ -214,41 +208,13 @@ class NoriTSForecaster:
                 f"{len(missing_history)} series appear in the horizon but have no "
                 f"history rows (ids {missing_history[:5]}…); cannot forecast them"
             )
-        # The context cap and the positional features (running index, seasonal
-        # phase) read each series' rows in order, so put both frames in
-        # (item_id, timestamp) order first; predict_df already sorts its frames.
-        if not train_tsdf.index.is_monotonic_increasing:
-            train_tsdf = train_tsdf.sort_index()
-        if not test_tsdf.index.is_monotonic_increasing:
-            test_tsdf = test_tsdf.sort_index()
         # Apply the documented history cap here too, so direct predict() callers
         # get it (predict_df and the eval wrapper also cap; this is idempotent).
         if self.context_length and self.context_length > 0:
             train_tsdf = train_tsdf.slice_by_timestep(-self.context_length, None)
-        covariates = [c for c in train_tsdf.columns if c != _TARGET]
-        # The transformer replaces and then drops its private row marker, so
-        # reject this name before the post-transform value checks can lose it.
-        if "_is_train" in train_tsdf.columns or "_is_train" in test_tsdf.columns:
-            raise ValueError(
-                "covariate column '_is_train' is reserved for the internal train/horizon marker; "
-                "rename it before forecasting"
-            )
         train_feat, test_feat = FeatureTransformer(self.features).transform(
             train_tsdf, test_tsdf, target_column=_TARGET
         )
-        # A generator that writes a column with a covariate's name (``year``,
-        # ``running_index``, ``hour_of_day_sin``, ...) replaces the caller's values.
-        overwritten = [
-            c
-            for c in covariates
-            if not _same_values(train_feat[c], train_tsdf[c])
-            or (c in test_tsdf.columns and not _same_values(test_feat[c], test_tsdf[c]))
-        ]
-        if overwritten:
-            raise ValueError(
-                f"covariate column(s) {overwritten} collide with generated time-feature names; "
-                "rename them so the feature generators do not overwrite their values"
-            )
         q_levels = self.quantiles
         q_names = [str(q) for q in q_levels]
         if not q_levels:
@@ -456,15 +422,13 @@ class NoriTSForecaster:
             if not isinstance(prediction_length, (int, np.integer)) or prediction_length <= 0:
                 raise ValueError(f"`prediction_length` must be a positive integer, got {prediction_length!r}")
             used_cov = []  # no way to know future covariates without an explicit horizon
-            test_tsdf = None  # built from the complete timestamp history below
+            test_tsdf = None  # built from the (capped) history below
 
         # History carries only the target + the covariates we'll actually use.
         train_df = history[["item_id", "timestamp", _TARGET] + used_cov]
         train_tsdf = TimeSeriesDataFrame.from_data_frame(train_df)
-        if test_tsdf is None:
-            # Infer cadence before limiting model context: one or two retained rows
-            # cannot establish a frequency even when the full history is regular.
-            test_tsdf = generate_test_X(train_tsdf, prediction_length=prediction_length, freq=freq)
         if self.context_length and self.context_length > 0:
             train_tsdf = train_tsdf.slice_by_timestep(-self.context_length, None)
+        if test_tsdf is None:
+            test_tsdf = generate_test_X(train_tsdf, prediction_length=prediction_length, freq=freq)
         return train_tsdf, test_tsdf

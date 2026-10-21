@@ -56,13 +56,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `NoriTSForecaster.predict` orders every series by time before it builds the
-  model context and the positional features, so rows passed out of order
-  forecast the same as sorted ones.
-- `NoriTSForecaster` infers a series' cadence from its complete history before
-  `context_length` limits the rows the model sees.
-- `MultimodalPreprocessor` accepts a custom text embedding with a single
-  coordinate when `svd_dim` is set; that coordinate is kept as the feature.
 - `undeploy()` deletes a `FineTunedEndpoint` in the endpoint's own region, the way
   `create_client()` predicts through it, so a handle from another region deletes
   that region's endpoint and not same-named resources in the fine-tuner's region.

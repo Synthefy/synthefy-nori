@@ -111,12 +111,11 @@ class DataFramePreprocessor:
     * a sequence: exactly those columns are categorical;
     * ``None``: categorical inference is disabled.
 
-    Automatically inferred object/string columns above
-    ``max_categorical_cardinality`` raise because they may be identifiers or
-    free text. A pandas categorical dtype is itself an explicit schema
-    declaration. Explicit categoricals keep their most frequent K training
-    levels and map rarer and unseen values to one reserved ``other`` code.
-    Missing values remain NaN under ordinal encoding.
+    Automatically inferred columns above ``max_categorical_cardinality`` raise
+    because they may be identifiers or free text.  An explicitly declared
+    categorical keeps its most frequent K training levels and maps rarer and
+    unseen values to one reserved ``other`` code.  Missing values remain NaN
+    under ordinal encoding.
     """
 
     def __init__(
@@ -222,7 +221,7 @@ class DataFramePreprocessor:
             )
 
         self.columns_ = columns
-        self.feature_names_in_ = frame.columns.to_numpy(dtype=object, copy=True)
+        self.feature_names_in_ = np.asarray(columns, dtype=object)
         self.n_features_in_ = len(columns)
         self.categorical_mode_ = categorical_mode
         self.text_columns_ = declared_text
@@ -232,9 +231,7 @@ class DataFramePreprocessor:
         self.category_other_codes_: dict[Any, int] = {}
         self.category_has_missing_: dict[Any, bool] = {}
 
-        explicitly_declared = set(declared_categorical) | {
-            column for column in categorical_columns if isinstance(frame[column].dtype, pd.CategoricalDtype)
-        }
+        explicitly_declared = set(declared_categorical)
         for column in categorical_columns:
             series = frame[column]
             keys = [_canonical_category(value) for value in series[series.notna()].tolist()]
@@ -378,8 +375,7 @@ class DataFramePreprocessor:
             )
         values = np.hstack(blocks).astype(np.float32, copy=False)
         if fitting:
-            # A tuple is one column label, not an extra array dimension.
-            self.feature_names_out_ = pd.Index(names, tupleize_cols=False).to_numpy(dtype=object, copy=True)
+            self.feature_names_out_ = np.asarray(names, dtype=object)
             self.n_features_out_ = values.shape[1]
         elif names != list(self.feature_names_out_):
             raise RuntimeError("DataFrame preprocessing produced a different feature layout at transform time.")

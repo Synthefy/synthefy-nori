@@ -267,9 +267,8 @@ class MultimodalPreprocessor:
                 f"{self.text_columns_}; check the encoder / that the text is non-empty."
             )
 
-        if self.svd_dim is None or (self.svd_dim > 0 and E.shape[1] == 1):
-            # A single coordinate already fits the requested width; TruncatedSVD
-            # requires at least two input features, so retain it without reduction.
+        if self.svd_dim is None:
+            # raw mode: append the full embedding, no reduction
             Xtext = E.astype(np.float32)
         else:
             k = min(self.svd_dim, E.shape[1], max(1, E.shape[0] - 1))

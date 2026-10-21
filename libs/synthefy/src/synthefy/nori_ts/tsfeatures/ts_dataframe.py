@@ -14,9 +14,9 @@
 #        Apache-2.0), which made the modifications noted above
 #     -> vendored here from tabpfn-time-series @ a756ae3 (2026-07-13)
 #
-# Synthefy materializes iterable datasets once before validating and converting
-# them, preserving single-pass iterators and correct validation record indices.
-# Both upstreams are recorded separately in NOTICE.
+# The implementation body is unchanged from tabpfn-time-series. Synthefy changed
+# only this distribution-local provenance and ownership wording. Both upstreams
+# are recorded separately in NOTICE.
 
 from __future__ import annotations
 
@@ -225,9 +225,6 @@ class TimeSeriesDataFrame(pd.DataFrame):
             idx = pd.MultiIndex.from_product([(item_id,), datetime_index], names=[ITEMID, TIMESTAMP])
             return pd.Series(target, name="target", index=idx).to_frame()
 
-        # Validation and conversion both read the records. Retain the references
-        # once so single-pass iterators work without copying the target arrays.
-        iterable_dataset = list(iterable_dataset)
         cls._validate_iterable(iterable_dataset)
         all_ts = Parallel(n_jobs=num_cpus)(
             delayed(load_single_item)(item_id, ts) for item_id, ts in enumerate(iterable_dataset)
@@ -274,12 +271,11 @@ class TimeSeriesDataFrame(pd.DataFrame):
         if not isinstance(data, Iterable):
             raise ValueError("data must be of type Iterable.")
 
-        iterator = iter(data)
-        first = next(iterator, None)
+        first = next(iter(data), None)
         if first is None:
             raise ValueError("data has no time-series.")
 
-        for i, ts in enumerate(itertools.chain([first], iterator)):
+        for i, ts in enumerate(itertools.chain([first], data)):
             if not isinstance(ts, dict):
                 raise ValueError(f"{i}'th time-series in data must be a dict, got{type(ts)}")
             if not ("target" in ts and "start" in ts):

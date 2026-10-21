@@ -8,23 +8,19 @@ The following vendored modules retain that revision's implementation apart
 from distribution-local provenance/ownership wording and intra-package imports:
 
     auto_features.py  feature_generator_base.py
-    feature_transformer.py
+    feature_transformer.py  ts_dataframe.py
 
 `feature_transformer.py` additionally enables postponed annotation evaluation
 for Python 3.9; this changes annotation representation, not forecasting behavior.
 
-`ts_dataframe.py` materializes iterable dataset records once before validation
-and conversion, preserving single-pass iterators and correct error indices.
-
 `basic_features.py` accepts omitted or None seasonal additions in
 `AdditionalCalendarFeature`, encodes calendar phases with the full cycle length,
-retains every configured calendar period in uniquely indexed columns, and
-assembles periodic feature columns with one concat. Single-period calendar
-column names retain their historical schema.
+and assembles periodic feature columns with one concat.
 
 `data_preparation.py` carries the explicit-frequency change named in its own
 file header: `generate_test_X` takes an explicit `freq`, because re-inferring it
-from a NaN-dropped index yields None. (`ts_dataframe.py` records the
+from a NaN-dropped index yields None. (`ts_dataframe.py` retains the upstream
+implementation body; its distribution-local header records the
 AutoGluon -> Prior Labs -> here chain.)
 
 Vendoring (rather than depending on tabpfn-time-series) keeps the tabpfn /

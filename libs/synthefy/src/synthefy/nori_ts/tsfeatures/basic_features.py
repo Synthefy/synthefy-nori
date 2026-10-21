@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Modifications by Synthefy: intra-package import paths rewritten for
-# synthefy; calendar phases use the full cycle length and retain every period;
+# synthefy; calendar phases use the full cycle length;
 # AdditionalCalendarFeature accepts omitted seasonal additions;
 # PeriodicSinCosineFeature assembles columns with one concat.
 # See synthefy.nori_ts.tsfeatures for the pin and how to re-verify it.
@@ -31,16 +31,6 @@ class RunningIndexFeature(FeatureGenerator):
 
 
 class CalendarFeature(FeatureGenerator):
-    """Generate calendar components and sine/cosine pairs for configured periods.
-
-    ``seasonal_features`` maps each calendar feature to a list of cycle lengths.
-    A single period retains ``<feature>_sin`` / ``<feature>_cos`` column names.
-    Multiple periods receive zero-based suffixes in configured order, such as
-    ``hour_of_day_sin_0`` and ``hour_of_day_sin_1`` for ``[24, 12]``. The index
-    keeps repeated periods distinct. A ``None`` value emits the raw calendar
-    index, and an empty period list emits no columns for that feature.
-    """
-
     def __init__(
         self,
         components: Optional[List[str]] = None,
@@ -73,11 +63,10 @@ class CalendarFeature(FeatureGenerator):
             feature = feature_func(timestamps).astype(np.int32)
 
             if periods is not None:
-                for index, period in enumerate(periods):
-                    suffix = f"_{index}" if len(periods) > 1 else ""
+                for period in periods:
                     # Zero-based indices change the phase origin, not the cycle length.
-                    df[f"{feature_name}_sin{suffix}"] = np.sin(2 * np.pi * feature / period)
-                    df[f"{feature_name}_cos{suffix}"] = np.cos(2 * np.pi * feature / period)
+                    df[f"{feature_name}_sin"] = np.sin(2 * np.pi * feature / period)
+                    df[f"{feature_name}_cos"] = np.cos(2 * np.pi * feature / period)
             else:
                 df[feature_name] = feature
 
