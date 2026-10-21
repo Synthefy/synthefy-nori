@@ -11,11 +11,9 @@ serving code, and that model is what actually validates a request. This file exi
 client user gets a typed, documented object without installing ``synthefy-nori`` — which
 would pull torch, numpy, scikit-learn and wandb into a thin API client.
 
-So the honest description of this file is: **duplicated on purpose, policed by CI.** A
-cross-repo sync check is specced in SynthefyPFN#119 and will compare this module's
-``model_json_schema()`` against the library's, on every merge to either repo. Until that
-exists, ``tests/test_nori_data_models.py`` performs the same comparison wherever both
-packages happen to be installed.
+So the honest description of this file is: **duplicated on purpose, policed by CI.** A CI
+check compares this module's ``model_json_schema()`` against the library's, per field, on every
+merge. This package's own tests cover the mirror's standalone behaviour.
 
 What is copied, and what is deliberately not:
 
@@ -32,13 +30,29 @@ Two peers, deliberately at different versions: the **hosted** path runs the inte
 copy of the library (serving vendors it at deploy time), while ``mode="local"`` uses whatever
 ``synthefy-nori`` is pip-installed from PyPI. So this mirror tracks the *wire* contract, and
 local mode gates separately on what is installed — see ``_local_memory_policy_available``.
+
+The fine-tuning models at the end of this file (``FineTuneHyperparameters``, ``ChildCurve`` and
+``TrainingReport``) and the constants beside them describe the Nori fine-tuning Algorithm: the
+hyperparameters a job takes and the ``training_report.json`` it writes. CI checks them against the
+Algorithm. ``TrainingReport.validation_source`` is a plain ``str``, so a report from a newer
+Algorithm version still parses.
+
+The request and result schemas at the very end (``FineTuneJobRequest``, ``FineTuneJob`` and
+``FineTunedEndpoint``) mirror nothing: they are the client's own description of a SageMaker
+CreateTrainingJob request, of a training job as SageMaker describes it, and of an endpoint
+:class:`~synthefy.SynthefyNoriFineTuner` deployed.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable, List, Literal, Optional, Union
+import json
+import math
+import re
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from synthefy._aws import check_sagemaker_resource_name, format_seconds, parse_s3_uri
 from typing_extensions import Annotated
 
 #: Named starting points accepted wherever a policy is expected, instead of a field dict.
@@ -379,11 +393,13 @@ class MemoryReport(BaseModel):
 
     est_cache_gb: Optional[float] = Field(
         None,
+        ge=0,
         description=("Full-precision cache footprint for this request's context, in GiB. Reported, not set. "),
     )
 
     resident_gb: Optional[float] = Field(
         None,
+        ge=0,
         description=(
             "Footprint at the chosen precision (GiB) — the figure actually compared "
             "against the budget. Reported, not set. "
@@ -392,6 +408,7 @@ class MemoryReport(BaseModel):
 
     query_chunk: Optional[int] = Field(
         None,
+        gt=0,
         description=(
             "Effective query rows per decode forward on the successful cached path. "
             "If decoding exhausted its retries and raised, this is the last attempted "
@@ -554,3 +571,393 @@ def _accept_another_packages_policy(value: Any) -> Any:
 #: What ``memory_policy=`` accepts: a preset name, a policy, a plain dict (validated into one),
 #: or another package's equivalent. Anything else is a pydantic error before a request is sent.
 MemoryPolicyInput = Annotated[Union[MemoryPreset, MemoryPolicy], BeforeValidator(_accept_another_packages_policy)]
+
+
+# ------------------------------------------------------------------ fine-tuning on SageMaker
+#: A served model's name is at most this long: the job's ``model_name``, and the name the endpoint serves it under.
+MAX_MODEL_NAME_CHARS = 63
+#: The prefix that tells a fine-tuned name from a released one in the endpoint's request schema, which lists the
+#: released names and admits a fine-tuned name only by this prefix.
+FINE_TUNED_MODEL_NAME_PREFIX = "ft-"
+_FINE_TUNED_NAME_BODY_CHARS = MAX_MODEL_NAME_CHARS - len(FINE_TUNED_MODEL_NAME_PREFIX)
+#: A fine-tuned model's name, matched whole (``fullmatch``); the job holds ``model_name`` to the same pattern.
+FINE_TUNED_MODEL_NAME_PATTERN = (
+    rf"{FINE_TUNED_MODEL_NAME_PREFIX}[a-z0-9][a-z0-9-]{{0,{_FINE_TUNED_NAME_BODY_CHARS - 1}}}"
+)
+FINE_TUNED_MODEL_NAME_RE = re.compile(FINE_TUNED_MODEL_NAME_PATTERN)
+#: FINE_TUNED_MODEL_NAME_PATTERN in words, the sentence every refusal of a name quotes.
+FINE_TUNED_MODEL_NAME_RULE = (
+    f"'{FINE_TUNED_MODEL_NAME_PREFIX}' followed by 1 to {_FINE_TUNED_NAME_BODY_CHARS} characters of lowercase "
+    "letters, digits and '-', the first a letter or digit"
+)
+
+#: The released model names. A fine-tuned model may not take one, so an answer that names a
+#: released model always comes from that released model.
+RELEASED_MODEL_NAMES = ("nori-6m", "nori-30m", "nori-30m-thinking-medium", "nori-100m")
+
+#: The released models a fine-tuning job accepts as ``base_model``.
+BaseModelName = Literal["nori-6m", "nori-100m"]
+
+#: The fine-tuning Algorithm's 48 GB training instance types; ``nori-100m`` needs one of them.
+LARGE_GPU_INSTANCE_TYPES = ("ml.g6e.xlarge", "ml.g6e.2xlarge")
+
+#: The job's input channels: the training table and the optional validation table.
+TRAIN_CHANNEL = "train"
+VALIDATION_CHANNEL = "validation"
+
+#: The report inside a fine-tuning job's ``model.tar.gz``.
+REPORT_FILENAME = "training_report.json"
+
+
+class FineTuneHyperparameters(BaseModel):
+    """The Nori fine-tuning Algorithm's hyperparameters; each also parses from the string SageMaker delivers."""
+
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+
+    target_column: str = Field(min_length=1, description="The column of the training table to predict.")
+    model_name: str = Field(
+        description=f"The name the fine-tuned model answers to (the request's model): {FINE_TUNED_MODEL_NAME_RULE}."
+    )
+    base_model: BaseModelName = Field("nori-6m", description="The released Nori model to fine-tune.")
+    task: Literal["regression"] = Field("regression", description="Only regression is supported.")
+    feature_columns: Optional[List[str]] = Field(
+        None, description="Comma-separated or JSON list of feature columns; default every other column."
+    )
+    bag: int = Field(
+        8,
+        ge=1,
+        le=8,
+        description=(
+            "The number of children the job trains, 1 to 8. The fine-tuned model is built from them, and each "
+            "child has its own steps and time budget."
+        ),
+    )
+    # The Algorithm's defaults; CI fails if they drift.
+    steps: int = Field(100, ge=1, description="Maximum training steps per child.")
+    lr: float = Field(1e-5, gt=0, description="Learning rate.")
+    patience: int = Field(25, ge=1, description="A child stops after this many steps without improvement.")
+    budget_s: float = Field(900.0, gt=0, description="Wall-clock cap per child, in seconds.")
+    # The Algorithm refuses a negative seed; refusing here names the field.
+    seed: int = Field(0, ge=0, description="The job's random seed.")
+
+    @field_validator("model_name")
+    @classmethod
+    def _validate_model_name(cls, value: str) -> str:
+        # A released name is refused by name first, the likelier mistake (reusing the base's name).
+        if value in RELEASED_MODEL_NAMES:
+            raise ValueError(
+                f"{value!r} is a released model name; a fine-tuned model needs its own: {FINE_TUNED_MODEL_NAME_RULE}"
+            )
+        if not FINE_TUNED_MODEL_NAME_RE.fullmatch(value):
+            raise ValueError(f"must be {FINE_TUNED_MODEL_NAME_RULE}")
+        return value
+
+    @field_validator("feature_columns", mode="before")
+    @classmethod
+    def _parse_feature_columns(cls, value: Any) -> Any:
+        # SageMaker hands over a string: accept a JSON list or a comma-separated list.
+        if isinstance(value, str):
+            text = value.strip()
+            if text.startswith("["):
+                try:
+                    value = json.loads(text)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"not a JSON list: {exc}") from exc
+            else:
+                value = [column.strip() for column in text.split(",") if column.strip()]
+            if not value:
+                raise ValueError("must name at least one column")
+        return value
+
+
+class ChildCurve(BaseModel):
+    """One child's training curve: entry ``i`` of each list belongs to validated step ``steps[i]``.
+
+    ``val_mse_best`` is the child's best validation score, reached at ``best_step``, which is 0 when no step
+    improved; a non-finite number is null. ``interrupted`` is true when a stop request ended the child early.
+    ``joined_average`` is true when the child contributed to the fine-tuned model.
+    """
+
+    child: int
+    steps: List[int]
+    train_loss: List[Optional[float]]
+    val_mse: List[Optional[float]]
+    best_step: int
+    val_mse_best: Optional[float]
+    interrupted: bool
+    joined_average: bool
+
+
+class TrainingReport(BaseModel):
+    """``training_report.json``: what a fine-tuning job did and how its result scores.
+
+    ``val_mse_before`` and ``val_mse_after`` are the mean squared errors of the base model and of the fine-tuned
+    model on the same rows, in standardized target units. ``child_curves`` has one entry per child that started,
+    with that child's own validation scores: a view of progress, not the result.
+    """
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_name: str
+    model_version: str
+    base_model: str
+    base_model_version: str
+    n_rows: int
+    n_rows_used: int
+    n_features: int
+    children: int
+    steps_run: List[int]
+    # A plain str, so a report naming a validation mode added later still parses.
+    validation_source: str
+    n_val_rows: int
+    val_mse_before: Optional[float]
+    val_mse_after: Optional[float]
+    child_curves: List[ChildCurve]
+    # True when a stop request ended the job before training finished.
+    cut_short: bool
+    seconds: float
+    instance_type: str
+
+
+# ------------------------------------------------------------------ fine-tuning requests and results
+#: The training instance when the request names none: the cheapest one the 24 GB bases fit.
+_DEFAULT_TRAINING_INSTANCE_TYPE = "ml.g5.xlarge"
+#: The job's disk when the request names none: the channels and the image's working files fit with room to spare.
+_DEFAULT_VOLUME_SIZE_GB = 30
+#: Bases that need a 48 GB GPU (LARGE_GPU_INSTANCE_TYPES); the job would fail on a 24 GB one after billing it.
+_LARGE_GPU_BASES = frozenset({"nori-100m"})
+#: SageMaker's limit on one hyperparameter value, in characters.
+_MAX_HYPERPARAMETER_CHARS = 2500
+#: The derived MaxRuntimeInSeconds: every child's budget, plus half again and 30 minutes for what the job does
+#: besides training.
+_RUNTIME_MARGIN_FACTOR = 1.5
+_RUNTIME_MARGIN_S = 1800
+
+
+def serialize_hyperparameters(hyperparameters: FineTuneHyperparameters) -> Dict[str, str]:
+    """The job's HyperParameters: every set field as the string SageMaker delivers to the job.
+
+    Every non-None field is sent, defaults included, so the console and ``DescribeTrainingJob`` show every value
+    the job ran with. ``feature_columns`` goes as a JSON list, so a column name may hold a comma. The job parses
+    them back with the same schema (``FineTuneHyperparameters``).
+
+    It lives here, beside :class:`FineTuneJobRequest`, because the request's length check measures exactly these
+    strings when it is built, and this module cannot import the fine-tuner that sends them.
+    """
+    strings: Dict[str, str] = {}
+    for name, value in hyperparameters.model_dump(exclude_none=True).items():
+        strings[name] = json.dumps(value) if name == "feature_columns" else str(value)
+    return strings
+
+
+def _check_channel_uri(value: str, argument: str) -> None:
+    """Refuse a channel URI that is not an S3 folder ending in ``/`` or one ``.csv`` object.
+
+    SageMaker's S3Prefix channel reads every key that starts with the given text, so a folder named without its
+    ``/`` also reads look-alike siblings (``data`` reads ``data-old/``), and the job reads only ``.csv`` files.
+    """
+    parse_s3_uri(value, name=argument)
+    if not (value.endswith("/") or value.lower().endswith(".csv")):
+        raise ValueError(
+            f"{argument} must be an S3 folder ending in '/' or one .csv object; got {value!r}. SageMaker reads "
+            "every key that starts with the given text, so a folder without its '/' also reads look-alike "
+            "siblings, and the job reads only .csv files"
+        )
+
+
+class FineTuneJobRequest(BaseModel):
+    """One fine-tuning job: the tables, what to train, and where.
+
+    Everything SageMaker or the job would refuse only after an instance started billing is checked when the request
+    is built: the S3 URIs, the job name, the instance a base needs, a runtime long enough for the bag, and
+    SageMaker's limit on a hyperparameter value's length. ``hyperparameters`` is a
+    copy of what the caller passed, so changing the caller's object afterwards changes nothing here;
+    :meth:`~synthefy.SynthefyNoriFineTuner.fine_tune` runs every check again before it submits the job.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, protected_namespaces=())
+
+    algorithm: str = Field(
+        min_length=1,
+        description=(
+            "The fine-tuning Algorithm: its ARN, which a Marketplace subscription gives, or its name for an "
+            "Algorithm in the caller's own account."
+        ),
+    )
+    training_data: str = Field(description="The train channel: an S3 folder ending in '/' or one .csv object.")
+    validation_data: Optional[str] = Field(
+        None,
+        description=(
+            "The optional validation channel, in the same form: rows the job validates on instead of rows it sets "
+            "aside from the training table."
+        ),
+    )
+    output_path: str = Field(description="The S3 folder SageMaker writes <job name>/output/model.tar.gz under.")
+    hyperparameters: FineTuneHyperparameters
+    instance_type: Optional[str] = Field(
+        None,
+        validate_default=True,
+        description=(
+            "The training instance; by default the first 48 GB type for nori-100m and ml.g5.xlarge otherwise."
+        ),
+    )
+    role_arn: str = Field(min_length=1, description="The execution role SageMaker assumes to run the job.")
+    job_name: Optional[str] = Field(
+        None,
+        description=(
+            "By default nori-<model_name[:35]>-<UTC timestamp>-<6 random characters>, chosen when fine_tune() runs."
+        ),
+    )
+    max_runtime_s: Optional[int] = Field(
+        None,
+        ge=1,
+        validate_default=True,
+        description=(
+            f"SageMaker stops the job after this; by default ceil({_RUNTIME_MARGIN_FACTOR} x bag x budget_s) + "
+            f"{_RUNTIME_MARGIN_S}."
+        ),
+    )
+    volume_size_gb: int = Field(
+        _DEFAULT_VOLUME_SIZE_GB, ge=1, description="The job's disk; SageMaker copies the channels onto it."
+    )
+    kms_key_id: Optional[str] = Field(None, description="The KMS key SageMaker encrypts the artifact with.")
+
+    @field_validator("training_data", "validation_data")
+    @classmethod
+    def _check_channel(cls, value: Optional[str], info: ValidationInfo) -> Optional[str]:
+        if value is not None:
+            _check_channel_uri(value, info.field_name)
+        return value
+
+    @field_validator("output_path")
+    @classmethod
+    def _check_output_path(cls, value: str) -> str:
+        parse_s3_uri(value, name="output_path")
+        return value
+
+    @field_validator("hyperparameters")
+    @classmethod
+    def _check_hyperparameters(cls, value: FineTuneHyperparameters) -> FineTuneHyperparameters:
+        if value.feature_columns is not None and not value.feature_columns:
+            raise ValueError(
+                "feature_columns must name at least one column, or be left unset to use every column but the target"
+            )
+        if value.feature_columns is not None and value.target_column in value.feature_columns:
+            # The job refuses this too, but only once the instance is running.
+            raise ValueError(
+                f"feature_columns includes the target column {value.target_column!r}; drop it, or leave "
+                "feature_columns unset to use every column but the target"
+            )
+        for name, text in serialize_hyperparameters(value).items():
+            if len(text) > _MAX_HYPERPARAMETER_CHARS:
+                remedy = (
+                    "name fewer columns, or leave feature_columns unset to use every column but the target"
+                    if name == "feature_columns"
+                    else "shorten it"
+                )
+                raise ValueError(
+                    f"{name} is {len(text):,} characters as sent to SageMaker, which allows at most "
+                    f"{_MAX_HYPERPARAMETER_CHARS:,} per hyperparameter value; {remedy}"
+                )
+        # A snapshot, so the instance type and runtime derived below stay true of what the job is sent.
+        return value.model_copy(deep=True)
+
+    @field_validator("instance_type")
+    @classmethod
+    def _resolve_instance_type(cls, value: Optional[str], info: ValidationInfo) -> Optional[str]:
+        hyperparameters = info.data.get("hyperparameters")
+        if hyperparameters is None:
+            return value
+        needs_large_gpu = hyperparameters.base_model in _LARGE_GPU_BASES
+        if value is None:
+            return LARGE_GPU_INSTANCE_TYPES[0] if needs_large_gpu else _DEFAULT_TRAINING_INSTANCE_TYPE
+        if needs_large_gpu and value not in LARGE_GPU_INSTANCE_TYPES:
+            raise ValueError(
+                f"base_model={hyperparameters.base_model!r} needs a 48 GB GPU, which {value!r} does not have; "
+                f"use instance_type {' or '.join(repr(name) for name in LARGE_GPU_INSTANCE_TYPES)}"
+            )
+        return value
+
+    @field_validator("job_name")
+    @classmethod
+    def _check_job_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None:
+            check_sagemaker_resource_name(value, "job_name")
+        return value
+
+    @field_validator("max_runtime_s")
+    @classmethod
+    def _resolve_max_runtime(cls, value: Optional[int], info: ValidationInfo) -> Optional[int]:
+        hyperparameters = info.data.get("hyperparameters")
+        if hyperparameters is None:
+            return value
+        floor = hyperparameters.bag * hyperparameters.budget_s
+        if value is None:
+            return math.ceil(_RUNTIME_MARGIN_FACTOR * floor) + _RUNTIME_MARGIN_S
+        if value < floor:
+            shown = format_seconds(floor)
+            raise ValueError(
+                f"max_runtime_s={value} is below bag x budget_s={shown}, so SageMaker would stop the job before "
+                "every child has had its budget. Lower budget_s or bag, or raise max_runtime_s. The job also needs "
+                f"time besides training; the derived default adds {round((_RUNTIME_MARGIN_FACTOR - 1) * 100)} % plus "
+                f"{_RUNTIME_MARGIN_S // 60} min for that."
+            )
+        return value
+
+
+class FineTuneJob(BaseModel):
+    """One training job as SageMaker describes it at the moment of the call; every method returns a fresh one."""
+
+    model_config = ConfigDict(frozen=True, protected_namespaces=())
+
+    job_name: str
+    job_arn: str
+    status: str = Field(
+        description=(
+            "InProgress, Completed, Failed, Stopping or Stopped; a plain string so a status AWS adds later "
+            "still parses."
+        )
+    )
+    secondary_status: Optional[str] = Field(None, description="SageMaker's finer step, e.g. Starting or Training.")
+    status_message: Optional[str] = Field(
+        None, description="What SageMaker says about the latest secondary status, e.g. that a job waits for capacity."
+    )
+    created_at: datetime
+    ended_at: Optional[datetime] = None
+    artifact_uri: Optional[str] = Field(None, description="The job's model.tar.gz, once SageMaker uploaded it.")
+    failure_reason: Optional[str] = None
+    latest_metrics: Dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "The last value SageMaker read for each metric, which is the last child's last validated step: "
+            "progress only, not a score of the fine-tuned model (get_training_report() has that)."
+        ),
+    )
+    algorithm: str = Field(description="The Algorithm ARN or name the job ran, which deploy() packages with.")
+    model_name: Optional[str] = Field(None, description="The job's model_name hyperparameter: the name predict takes.")
+    billable_seconds: Optional[int] = None
+
+
+class FineTunedEndpoint(BaseModel):
+    """An asynchronous SageMaker endpoint serving one fine-tuned model, and every resource deploy() used for it.
+
+    :meth:`~synthefy.SynthefyNoriFineTuner.create_client` builds a SageMaker-mode client bound to it.
+    """
+
+    model_config = ConfigDict(frozen=True, protected_namespaces=())
+
+    endpoint_name: str
+    model_name: str = Field(description="The name predict() takes: the training job's model_name.")
+    instance_type: str
+    status: str = Field(description="InService after deploy(wait=True); Creating after deploy(wait=False).")
+    model_package_arn: str
+    sagemaker_model_name: str
+    endpoint_config_name: str
+    async_output_uri: str = Field(description="The S3 folder the endpoint writes outputs/ and failures/ under.")
+    cut_short: bool = Field(
+        description=(
+            "The job was stopped before its children finished, so the model trained less than asked "
+            "(the report's cut_short)."
+        )
+    )
+    region_name: str

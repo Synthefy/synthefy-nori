@@ -14,8 +14,8 @@ A single :class:`SynthefyNoriClient` runs predictions in one of three modes,
 selected with the ``mode`` constructor argument:
 
 - ``"remote"`` (default) -- calls the hosted Baseten endpoint over HTTPS.
-- ``"sagemaker"`` -- invokes a named Amazon SageMaker endpoint with AWS Signature V4,
-  using boto3's standard credential chain.
+- ``"sagemaker"`` -- stages each request in customer-owned S3 and submits it to a
+  named asynchronous SageMaker endpoint with boto3's standard credential chain.
 - ``"local"`` -- runs the same prediction in-process via the optional
   ``synthefy-nori`` package (``pip install synthefy-nori``), no network and
   no API key.
@@ -24,16 +24,28 @@ selected with the ``mode`` constructor argument:
 import importlib.util
 import json
 import os
+import random
+import tempfile
 import threading
 import time
+import uuid
 import warnings
-from numbers import Integral, Real
+from dataclasses import dataclass
+from numbers import Integral
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union
 
 import httpx
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
+from synthefy._aws import (
+    AWS_USER_AGENT_EXTRA,
+    check_timeout_and_retries,
+    create_aws_clients,
+    is_missing_s3_object,
+    parse_s3_uri,
+)
 from synthefy.featurize import (
     CATEGORICAL_AUTO as _CATEGORICAL_AUTO,
     DEFAULT_CATEGORICAL_ENCODING as _DEFAULT_CATEGORICAL_ENCODING,
@@ -46,6 +58,9 @@ from synthefy.nori_data_models import (
     DEFAULT_LARGE_CONTEXT_SEED,
     DEFAULT_LARGE_CONTEXT_THRESHOLD,
     DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY,
+    FINE_TUNED_MODEL_NAME_PATTERN,
+    FINE_TUNED_MODEL_NAME_RE,
+    FINE_TUNED_MODEL_NAME_RULE,
     LargeContextPolicy,
     LargeContextHoldout,
     LargeContextReport,
@@ -60,12 +75,16 @@ from synthefy.nori_data_models import (
     MemoryReport,
     MultiTargetPredictionPolicy,
     MultiTargetPredictionStrategy,
+    RELEASED_MODEL_NAMES,
 )
 from synthefy.errors import (
     APIConnectionError,
     APITimeoutError,
+    SageMakerInvocationError,
     _raise_for_status,
 )
+from synthefy.nori_payload import CONTENT_TYPE as NORI_BINARY_CONTENT_TYPE
+from synthefy.nori_payload import MAX_PAYLOAD_BYTES, save_request as save_nori_request
 
 # Gateway endpoint (default): routes to the model by name, body carries "model".
 GATEWAY_BASE_URL = "https://inference.baseten.co"
@@ -78,40 +97,9 @@ NORI_API_KEY_ENV = "SYNTHEFY_NORI_API_KEY"
 # Explicit ``None`` is rejected too: model identity is part of every transport contract.
 _MODEL_REQUIRED: Any = object()
 
-# Model registry. Maps a ``model=`` selector -> ``(remote_gateway_slug, local_variant)``:
-#   key                 = what the caller passes as ``model=`` (a friendly name or a raw gateway slug)
-#   remote_gateway_slug = the "model" string sent in the gateway request body (remote mode)
-#   local_variant       = the name forwarded to synthefy-nori's ``model=`` selector (local mode)
-# Every selector names its size -- there is no bare "nori"/"synthefy/nori", so a slug never silently
-# changes which model it serves (``model=`` is required; see the constructor). "nori-6m" is the ~6M
-# base; "nori-30m" is the ~29.2M variant; "nori-100m" is the ~98.3M variant. The raw gateway slugs
-# are listed too so they load the right checkpoint locally instead of being treated as a raw HF repo.
-# The "nori-30m-thinking-medium" entries are the test-time-compute variant: hosted-API only,
-# so they map a remote gateway slug but have NO local variant -- the thinking guard in __init__
-# refuses it in mode="local" (its ``local_variant`` below is therefore never consulted).
-# A friendly name/slug absent here that reaches local mode has no local checkpoint and is refused
-# rather than silently running a different model (see ``_resolve_local_variant``).
-NORI_VARIANTS = {
-    "nori-6m": ("synthefy/nori-6m", "nori-6m"),
-    "nori-30m": ("synthefy/nori-30m", "nori-30m"),
-    "nori-100m": ("synthefy/nori-100m", "nori-100m"),
-    "synthefy/nori-6m": ("synthefy/nori-6m", "nori-6m"),
-    "synthefy/nori-30m": ("synthefy/nori-30m", "nori-30m"),
-    "synthefy/nori-100m": ("synthefy/nori-100m", "nori-100m"),
-    # Thinking (test-time compute) -- hosted deployments only; local is refused by the
-    # thinking guard. Medium is the only released Thinking budget.
-    "nori-30m-thinking-medium": ("synthefy/nori-30m-thinking-medium", None),
-    "synthefy/nori-30m-thinking-medium": ("synthefy/nori-30m-thinking-medium", None),
-}
-
-# Selectable model names for error messages, derived from NORI_VARIANTS so they stay current as
-# variants are added. Friendly names only (the "synthefy/..." raw slugs are aliases, not listed).
-_MODEL_NAMES = tuple(name for name in NORI_VARIANTS if "/" not in name)
-
-# SageMaker Marketplace publishes these exact named inference specifications. A SageMaker
-# endpoint is created from one specification; the client sends the same canonical name so the
-# container can fail closed if an endpoint and requested model do not match.
-SAGEMAKER_VARIANTS = tuple(_MODEL_NAMES)
+#: The hosted and SageMaker transports' per-call timeout and retry count when the caller sets none.
+DEFAULT_TIMEOUT_S = 300.0
+DEFAULT_MAX_RETRIES = 2
 
 
 def _is_thinking_model(model: Optional[str]) -> bool:
@@ -122,6 +110,41 @@ def _is_thinking_model(model: Optional[str]) -> bool:
     for it. Matching on the ``"thinking"`` token covers both the friendly and slug spellings.
     """
     return model is not None and "thinking" in model.lower()
+
+
+# The namespace of every released model's gateway slug: "nori-6m" is served as "synthefy/nori-6m".
+_GATEWAY_SLUG_PREFIX = "synthefy/"
+
+# Model registry. Maps a ``model=`` selector -> ``(remote_gateway_slug, local_variant)``:
+#   key                 = what the caller passes as ``model=`` (a friendly name or a raw gateway slug)
+#   remote_gateway_slug = the "model" string sent in the gateway request body (remote mode)
+#   local_variant       = the name forwarded to synthefy-nori's ``model=`` selector (local mode)
+# Built from RELEASED_MODEL_NAMES, the one list of released names, so a new release needs no edit
+# here. Every selector names its size -- there is no bare "nori"/"synthefy/nori", so a slug never
+# silently changes which model it serves (``model=`` is required; see the constructor). "nori-6m" is
+# the ~6M base; "nori-30m" is the ~29.2M variant; "nori-100m" is the ~98.3M variant. The raw gateway
+# slugs are listed too so they load the right checkpoint locally instead of being treated as a raw
+# HF repo. "nori-30m-thinking-medium" is the test-time-compute variant: hosted-API only, so its
+# entries map a remote gateway slug but have NO local variant -- the thinking guard in __init__
+# refuses it in mode="local" (its ``local_variant`` is therefore never consulted).
+# A friendly name/slug absent here that reaches local mode has no local checkpoint and is refused
+# rather than silently running a different model (see ``_resolve_local_variant``).
+NORI_VARIANTS = {
+    selector: (f"{_GATEWAY_SLUG_PREFIX}{name}", None if _is_thinking_model(name) else name)
+    for name in RELEASED_MODEL_NAMES
+    for selector in (name, f"{_GATEWAY_SLUG_PREFIX}{name}")
+}
+
+# Selectable model names for error messages, derived from NORI_VARIANTS so they stay current as
+# variants are added. Friendly names only (the "synthefy/..." raw slugs are aliases, not listed).
+_MODEL_NAMES = tuple(name for name in NORI_VARIANTS if "/" not in name)
+
+# The shared SageMaker application accepts these peer model names. The client sends the
+# canonical name in the tensor-file metadata and verifies the response identity so one
+# endpoint cannot silently answer with a different model. An endpoint deployed from a
+# fine-tuning job serves one more name, the job's model_name, which the constructor accepts
+# by FINE_TUNED_MODEL_NAME_PATTERN rather than by listing it here.
+SAGEMAKER_VARIANTS = RELEASED_MODEL_NAMES
 
 
 def _resolve_variant(model: Optional[str]) -> tuple:
@@ -143,7 +166,7 @@ def _canonical_model_name(model: Optional[str]) -> Optional[str]:
     gateway_model, _ = _resolve_variant(model)
     if gateway_model is None:
         return None
-    return gateway_model.removeprefix("synthefy/")
+    return gateway_model.removeprefix(_GATEWAY_SLUG_PREFIX)
 
 
 def _resolve_local_variant(model: Optional[str]) -> Optional[str]:
@@ -191,11 +214,13 @@ DEFAULT_OUTPUT_TYPE = "mean"
 Mode = Literal["remote", "local", "sagemaker"]
 _VALID_MODES = ("remote", "local", "sagemaker")
 
-# AWS Marketplace's SageMaker endpoint request-body limit. The live runtime accepts exactly
-# 25,000,000 bytes and returns HTTP 413 at 25,000,001 for response-stream invocations; the
-# operation-specific API reference still shows the older 6 MiB value. Check the current service
-# limit locally so a caller gets a deterministic error before signing or sending a paid request.
-SAGEMAKER_MAX_BODY_BYTES = 25_000_000
+# SageMaker Asynchronous Inference accepts an S3-backed request object up to 1 GB. This is
+# deliberately a serialized-file limit, not an increase to the removed real-time body limit.
+SAGEMAKER_MAX_INPUT_BYTES = MAX_PAYLOAD_BYTES
+_SAGEMAKER_REQUEST_TTL_SECONDS = 21_600
+_SAGEMAKER_INVOCATION_TIMEOUT_SECONDS = 3_600
+_SAGEMAKER_POLL_INITIAL_SECONDS = 0.25
+_SAGEMAKER_POLL_MAX_SECONDS = 5.0
 
 # Authorization header scheme for remote requests. The Baseten inference *gateway* accepts only
 # ``Bearer``, which is why it is the default. ``Api-Key`` exists for a caller who points
@@ -210,42 +235,27 @@ MatrixLike = Union[Sequence[Sequence[float]], np.ndarray, pd.DataFrame]
 VectorLike = Union[Sequence[float], np.ndarray, pd.Series, pd.DataFrame]
 
 
-def _load_aws_sdk() -> Tuple[Any, Any]:
-    """Load the optional AWS SDK only when a SageMaker deployment is selected."""
-    try:
-        import boto3
-        from botocore.config import Config
-    except ImportError as exc:  # pragma: no cover - exercised without the extra
-        raise ImportError('A SageMaker deployment needs the AWS extra: install `pip install "synthefy[aws]"`.') from exc
-    return boto3, Config
+@dataclass
+class _NoriArrayRequest:
+    """Private array-backed equivalent of the public JSON request model."""
 
-
-def _create_sagemaker_runtime_client(
-    *,
-    region_name: Optional[str],
-    timeout: float,
-    max_retries: int,
-    user_agent_extra: str,
-) -> Any:
-    """Create a SageMaker Runtime client through boto3's credential chain.
-
-    Deliberately constructs an argument-free ``Session``: environment variables,
-    shared config/credentials, web identity (including GitHub OIDC), ECS/EC2 role
-    credentials, and SSO profiles retain boto3's normal precedence. The public
-    client never accepts raw AWS access keys.
-    """
-    boto3, Config = _load_aws_sdk()
-    config = Config(
-        connect_timeout=timeout,
-        read_timeout=timeout,
-        retries={"mode": "standard", "total_max_attempts": max_retries + 1},
-        user_agent_extra=user_agent_extra,
-    )
-    return boto3.Session().client(
-        "sagemaker-runtime",
-        region_name=region_name,
-        config=config,
-    )
+    X_train: np.ndarray
+    y_train: np.ndarray
+    X_test: np.ndarray
+    task: str
+    memory_policy: Optional[MemoryPolicyInput] = None
+    output_type: Optional[str] = None
+    quantiles: Optional[List[float]] = None
+    large_context_policy: Optional[LargeContextPolicy] = None
+    large_context_threshold: Optional[int] = None
+    large_context_seed: Optional[int] = None
+    large_context_holdout: Optional[LargeContextHoldout] = None
+    multi_target_prediction_strategy: Optional[MultiTargetPredictionStrategy] = None
+    multi_target_prediction_policy: Optional[MultiTargetPredictionPolicy] = None
+    # Assigned by predict() on the hosted transports, exactly as on the JSON request model,
+    # and serialized from the same NoriPredictRequest.model_fields list by nori_payload.
+    discretize: Optional[str] = None
+    categorical_levels: Optional[List[float]] = None
 
 
 def _target_name(y_train: Any) -> Any:
@@ -285,7 +295,7 @@ def _reject_non_numeric_columns(frame: pd.DataFrame, name: str) -> None:
         )
 
 
-def _coerce_matrix(arr: MatrixLike, name: str) -> np.ndarray:
+def _coerce_matrix(arr: MatrixLike, name: str, *, dtype: Any = np.float64) -> np.ndarray:
     """Coerce an array-like into a 2D float ``np.ndarray`` or raise ``ValueError``.
 
     Accepts nested Python sequences, numpy arrays, and pandas DataFrames. A
@@ -295,10 +305,10 @@ def _coerce_matrix(arr: MatrixLike, name: str) -> np.ndarray:
     """
     if isinstance(arr, pd.DataFrame):
         _reject_non_numeric_columns(arr, name)
-        matrix = arr.to_numpy(dtype=float)
+        matrix = arr.to_numpy(dtype=dtype)
     else:
         try:
-            matrix = np.asarray(arr, dtype=float)
+            matrix = np.asarray(arr, dtype=dtype)
         except (ValueError, TypeError) as exc:
             raise ValueError(
                 f"{name} must be a numeric 2D array/list with equal-length rows; "
@@ -313,7 +323,7 @@ def _coerce_matrix(arr: MatrixLike, name: str) -> np.ndarray:
     return matrix
 
 
-def _coerce_vector(arr: VectorLike, name: str) -> np.ndarray:
+def _coerce_vector(arr: VectorLike, name: str, *, dtype: Any = np.float64) -> np.ndarray:
     """Coerce targets into a 1D vector or 2D multi-target matrix.
 
     Accepts nested Python sequences, numpy arrays, a pandas Series, or a
@@ -322,16 +332,16 @@ def _coerce_vector(arr: VectorLike, name: str) -> np.ndarray:
     """
     if isinstance(arr, pd.DataFrame):
         _reject_non_numeric_columns(arr, name)
-        vector = arr.to_numpy(dtype=float)
+        vector = arr.to_numpy(dtype=dtype)
         if vector.shape[1] == 1:
             vector = vector.reshape(-1)
     elif isinstance(arr, pd.Series):
         if not pd.api.types.is_numeric_dtype(arr):
             raise ValueError(f"{name} must be numeric; got a non-numeric Series (dtype {arr.dtype}).")
-        vector = arr.to_numpy(dtype=float)
+        vector = arr.to_numpy(dtype=dtype)
     else:
         try:
-            vector = np.asarray(arr, dtype=float)
+            vector = np.asarray(arr, dtype=dtype)
         except (ValueError, TypeError) as exc:
             raise ValueError(f"{name} must be a numeric 1D array/list; got error: {exc}") from exc
     if vector.ndim not in (1, 2):
@@ -366,7 +376,8 @@ def _build_nori_request(
     large_context_holdout: Optional[LargeContextHoldout] = None,
     multi_target_prediction_strategy: Optional[MultiTargetPredictionStrategy] = None,
     multi_target_prediction_policy: Optional[MultiTargetPredictionPolicy] = None,
-) -> NoriPredictRequest:
+    array_backed: bool = False,
+) -> Union[NoriPredictRequest, _NoriArrayRequest]:
     """Validate shapes and build a :class:`NoriPredictRequest`.
 
     Accepts Python lists, numpy arrays, or pandas DataFrames/Series. When both
@@ -395,9 +406,13 @@ def _build_nori_request(
         _warning_stacklevel=5,
     )
 
-    X_train_arr = _coerce_matrix(X_train, "X_train")
-    X_test_arr = _coerce_matrix(X_test, "X_test")
-    y_train_arr = _coerce_vector(y_train, "y_train")
+    # The compact SageMaker envelope stores features as float32 and targets as float64.
+    # Coercing directly avoids first materializing full float64 feature matrices and then
+    # copying them again while writing a large request file.
+    feature_dtype = np.float32 if array_backed else np.float64
+    X_train_arr = _coerce_matrix(X_train, "X_train", dtype=feature_dtype)
+    X_test_arr = _coerce_matrix(X_test, "X_test", dtype=feature_dtype)
+    y_train_arr = _coerce_vector(y_train, "y_train", dtype=np.float64)
 
     n_context, n_features = X_train_arr.shape
     if n_context == 0:
@@ -422,10 +437,10 @@ def _build_nori_request(
     # EVERY individual assignment, so it only works if the caller assigns policy
     # before threshold/seed -- an ordering invariant that would otherwise be enforced
     # by nothing but a comment.
-    return NoriPredictRequest(
-        X_train=_nullable_matrix(X_train_arr),
-        y_train=y_train_arr.tolist(),
-        X_test=_nullable_matrix(X_test_arr),
+    metadata = NoriPredictRequest(
+        X_train=[],
+        y_train=[],
+        X_test=[],
         task=task,
         # Left as None for the default so the serialized body carries neither
         # field (see _predict_remote's exclude_none dump).
@@ -438,6 +453,37 @@ def _build_nori_request(
         large_context_holdout=large_context_holdout,
         multi_target_prediction_strategy=multi_target_prediction_strategy,
         multi_target_prediction_policy=multi_target_prediction_policy,
+    )
+    if array_backed:
+        return _NoriArrayRequest(
+            X_train=X_train_arr,
+            y_train=y_train_arr,
+            X_test=X_test_arr,
+            task=metadata.task,
+            output_type=metadata.output_type,
+            quantiles=metadata.quantiles,
+            memory_policy=metadata.memory_policy,
+            large_context_policy=metadata.large_context_policy,
+            large_context_threshold=metadata.large_context_threshold,
+            large_context_seed=metadata.large_context_seed,
+            large_context_holdout=metadata.large_context_holdout,
+            multi_target_prediction_strategy=metadata.multi_target_prediction_strategy,
+            multi_target_prediction_policy=metadata.multi_target_prediction_policy,
+        )
+    return NoriPredictRequest(
+        X_train=_nullable_matrix(X_train_arr),
+        y_train=y_train_arr.tolist(),
+        X_test=_nullable_matrix(X_test_arr),
+        task=metadata.task,
+        output_type=metadata.output_type,
+        quantiles=metadata.quantiles,
+        memory_policy=metadata.memory_policy,
+        large_context_policy=metadata.large_context_policy,
+        large_context_threshold=metadata.large_context_threshold,
+        large_context_seed=metadata.large_context_seed,
+        large_context_holdout=metadata.large_context_holdout,
+        multi_target_prediction_strategy=metadata.multi_target_prediction_strategy,
+        multi_target_prediction_policy=metadata.multi_target_prediction_policy,
     )
 
 
@@ -520,10 +566,14 @@ def _validate_multi_target_controls(
     policy: Optional[MultiTargetPredictionPolicy],
     large_context_policy: Optional[LargeContextPolicy],
     discretizing: bool,
-    model: Optional[str],
+    is_thinking: bool,
     mode: str,
 ) -> bool:
-    """Validate combinations that only make sense for matrix-valued targets."""
+    """Validate combinations that only make sense for matrix-valued targets.
+
+    ``is_thinking`` is true only for a released Thinking name, so a fine-tuned model whose
+    name contains "thinking" keeps multi-target prediction.
+    """
     targets = _coerce_vector(y_train, "y_train")
     is_multi = targets.ndim == 2
     if not is_multi:
@@ -539,7 +589,7 @@ def _validate_multi_target_controls(
         raise ValueError("large_context_policy is not supported with matrix-valued y_train.")
     if discretizing:
         raise ValueError("discretize and categorical_levels are not supported with matrix-valued y_train.")
-    if _is_thinking_model(model):
+    if is_thinking:
         raise ValueError(
             "Multi-target prediction is not available on Nori Thinking variants; "
             "use a base nori-6m, nori-30m, or nori-100m model."
@@ -700,7 +750,7 @@ def _validate_large_context_controls(
     seed: Optional[int],
     holdout: Optional[LargeContextHoldout],
     output_type: str,
-    model: Optional[str],
+    is_thinking: bool,
     mode: str,
 ) -> None:
     """Fail before preprocessing, checkpoint load, or a paid hosted request.
@@ -709,6 +759,8 @@ def _validate_large_context_controls(
     ``NoriPredictRequest``'s own ``Optional[int] = None`` wire fields), not a
     resolved default -- so an explicit value equal to the default is still
     distinguishable from "omitted" here, unlike comparing against the default value.
+    ``is_thinking`` is true only for a released Thinking name, so a fine-tuned model whose
+    name contains "thinking" keeps the policy.
     """
     if policy is None:
         if threshold is not None or seed is not None or holdout is not None:
@@ -766,7 +818,7 @@ def _validate_large_context_controls(
             "predictive distribution. Use output_type='mean' or 'median', or "
             "omit large_context_policy."
         )
-    if _is_thinking_model(model):
+    if is_thinking:
         raise ValueError(
             "large_context_policy is not available on Nori Thinking "
             "(test-time-compute) variants. Use a base nori-6m or nori-30m "
@@ -824,66 +876,32 @@ def _large_context_policy_label(policy: LargeContextPolicy) -> str:
     return getattr(policy, "__name__", repr(policy))
 
 
-# The one discretization strategy computable from the hosted endpoint's
-# response: it returns only point predictions (the distribution mean), and
-# "snap-mean" is by definition the nearest level to that mean — so snapping
-# client-side gives the same labels local mode would. Every other strategy
-# reads the full predictive distribution and needs local mode.
-_REMOTE_DISCRETIZE_METHOD = "snap-mean"
+def _wire_levels(categorical_levels: Optional[VectorLike]) -> Optional[List[float]]:
+    """Convert ``categorical_levels`` to plain floats for the request body.
 
-
-def _resolve_remote_levels(
-    y_train: List[float],
-    discretize: Optional[str],
-    categorical_levels: Optional[VectorLike],
-) -> "np.ndarray":
-    """Validate remote discretization arguments and resolve the level lattice.
-
-    Called before the network request so an unsupported strategy or bad level
-    set fails fast instead of after a paid inference round-trip.
+    The deployment owns the policy questions (how many levels are too many, whether the
+    strategy suits the lattice); this only has to make an array-like argument serializable.
+    It reports the two shapes that cannot be sent while naming the argument, because
+    otherwise a bad level surfaces as a numpy conversion error or, for a NaN, as the
+    payload guard blaming ``y_train`` for a value that came from here.
     """
-    if discretize is None:
-        raise ValueError(
-            "categorical_levels without discretize= implies the package "
-            'default strategy ("map-cell"), which needs the full predictive '
-            "distribution — the hosted endpoint returns only point "
-            'predictions. Pass discretize="snap-mean" explicitly (nearest '
-            "level to the point prediction), or use local mode "
-            "(pip install synthefy-nori) for the full strategy set."
-        )
-    if discretize != _REMOTE_DISCRETIZE_METHOD:
-        raise ValueError(
-            f"discretize={discretize!r} needs the full predictive "
-            "distribution, which the hosted endpoint does not return; "
-            'remote mode supports discretize="snap-mean" (nearest level to '
-            "the returned point prediction). For the full strategy set, use "
-            "local mode (pip install synthefy-nori)."
-        )
     if categorical_levels is None:
-        levels = np.unique(np.asarray(y_train, dtype=float))
-        levels = levels[np.isfinite(levels)]
-        if levels.size == 0:
-            raise ValueError(
-                "y_train has no finite values to derive categorical levels from; pass categorical_levels explicitly."
-            )
-    else:
-        levels = np.unique(np.asarray(categorical_levels, dtype=float).reshape(-1))
-        if levels.size == 0 or not np.all(np.isfinite(levels)):
-            raise ValueError(
-                f"categorical_levels must be a non-empty sequence of finite numbers; got {categorical_levels!r}"
-            )
-    return levels
-
-
-def _snap_to_levels(predictions: List[float], levels: "np.ndarray") -> List[float]:
-    """Snap point predictions onto the level lattice."""
-    preds = np.asarray(predictions, dtype=float)
-    snapped = preds.copy()
-    finite = np.isfinite(preds)
-    # A NaN prediction stays NaN rather than becoming a confident label.
-    nearest = np.abs(preds[finite, None] - levels[None, :]).argmin(axis=1)
-    snapped[finite] = levels[nearest]
-    return snapped.tolist()
+        return None
+    try:
+        levels = np.asarray(categorical_levels, dtype=float).reshape(-1)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"categorical_levels must be numbers; got {categorical_levels!r}.") from exc
+    if levels.size == 0:
+        raise ValueError(
+            "categorical_levels is empty. Omit it to use the distinct values of y_train, "
+            "or pass the values the target can take."
+        )
+    if not np.isfinite(levels).all():
+        raise ValueError(
+            "categorical_levels must contain only finite numbers; null, NaN and infinity "
+            "are not values a prediction can land on."
+        )
+    return [float(level) for level in levels]
 
 
 # --------------------------------------------------------------------------- #
@@ -1089,8 +1107,10 @@ class SynthefyNoriClient:
     - ``"local"``: run in-process via the optional ``synthefy-nori`` package
       (``pip install synthefy-nori``). No network and no API key.
     - ``"sagemaker"``: invoke a named Amazon SageMaker endpoint
-      through boto3. Requests are SigV4-signed using boto3's standard credential
-      chain; install the optional dependency with ``pip install "synthefy[aws]"``.
+      asynchronously through boto3. ``predict()`` remains blocking: it stages a compact
+      request in customer-owned S3, waits for SageMaker's output or failure object, and
+      deletes the invocation's temporary objects. Requests are SigV4-signed using boto3's
+      standard credential chain; install ``pip install "synthefy[aws]"``.
 
     For remote mode, the client targets the Baseten inference *gateway*
     (``https://inference.baseten.co/predict``) and includes the chosen size slug (e.g.
@@ -1110,10 +1130,9 @@ class SynthefyNoriClient:
     mode : {"remote", "local", "sagemaker"}, default "remote"
         How predictions run. See above.
     timeout : float, default 300.0
-        Per-request timeout in seconds for remote HTTP. SageMaker uses it as botocore's
-        per-read inactivity timeout; 15-second server heartbeat chunks allow an active stream
-        to continue up to SageMaker's eight-minute service limit. Per-call overrides are not
-        supported for SageMaker.
+        Per-request timeout in seconds for remote HTTP. For SageMaker this bounds client-side
+        polling as well as boto3 network operations. A client timeout does not cancel work
+        already queued by SageMaker. Per-call overrides are not supported for SageMaker.
     max_retries : int, default 2
         Number of retries for transient errors (timeouts, connection errors,
         429 and 5xx responses). Remote mode uses exponential backoff; SageMaker
@@ -1124,19 +1143,24 @@ class SynthefyNoriClient:
         Path appended to ``base_url`` for predictions (remote mode).
     model : str, REQUIRED
         Which Nori to run — there is no default; every request names a size. Pass a friendly
-        size selector — ``"nori-6m"`` (the ~6M base) or ``"nori-30m"`` (the ~29.2M variant) —
+        size selector — ``"nori-6m"`` (the ~6M base), ``"nori-30m"`` (the ~29.2M
+        variant), or ``"nori-100m"`` (the ~98.3M variant) —
         which selects both the remote gateway deployment and, in local mode, the checkpoint. A
         raw gateway slug (e.g. ``"synthefy/nori-30m"``) is also accepted verbatim. Omitting
         the argument or passing ``None`` raises :class:`ValueError`; every transport requires
         explicit model identity. Selecting a variant in local mode requires a
-        synthefy-nori build with the ``model=`` selector.
+        synthefy-nori build with the ``model=`` selector. In SageMaker mode ``model`` may
+        also be the name of a fine-tuned model deployed on the endpoint (``ft-`` then lowercase
+        letters, digits and hyphens, 63 characters at most, see :class:`synthefy.SynthefyNoriFineTuner`);
+        a name the endpoint does not serve is refused by the endpoint, as
+        :class:`~synthefy.errors.SageMakerInvocationError`, not by the constructor.
         Nori Thinking Medium — ``"nori-30m-thinking-medium"`` — runs only on hosted
         deployments: passing it with ``mode="local"`` raises
         :class:`ValueError` rather
         than silently running the base model — use ``mode="remote"``. Likewise a selector with no
         local checkpoint (an unknown/custom slug) raises in local mode instead of falling back to
-        the base model. SageMaker also requires the model name and verifies it
-        against the model specification used to create the endpoint.
+        the base model. SageMaker sends the model name to the shared application and verifies
+        that the response came from the requested peer model.
     auth_scheme : {"Bearer", "Api-Key"}, default "Bearer"
         HTTP ``Authorization`` scheme prefixed to the API key (remote mode). The
         inference gateway requires ``"Bearer"``; ``"Api-Key"`` is only for a
@@ -1150,11 +1174,22 @@ class SynthefyNoriClient:
     region_name : str or None, optional
         AWS region for SageMaker. If omitted, boto3 resolves it from
         the standard environment/shared-config chain.
+    s3_staging_uri : str or None, optional
+        Customer-owned ``s3://bucket/prefix`` used for temporary SageMaker request
+        objects. Required with ``mode="sagemaker"``. The client never creates a bucket.
 
     Attributes
     ----------
     mode : str
         The explicitly selected execution mode.
+    last_memory_report : dict or None
+        What the runtime did about ``memory_policy=`` on the most recent :meth:`predict`.
+    last_model_version : str or None
+        The ``sha256:<hex>`` ``model_version`` the deployment reported on the most recent
+        remote or SageMaker :meth:`predict`. Cleared at the start of every call, so it never
+        describes an earlier one, and left ``None`` by a call that raises, so it never
+        describes a refused answer; ``None`` in local mode and from a deployment that
+        predates the field.
 
     Examples
     --------
@@ -1184,7 +1219,8 @@ class SynthefyNoriClient:
 
     >>> client = SynthefyNoriClient(  # doctest: +SKIP
     ...     mode="sagemaker", model="nori-30m",
-    ...     endpoint_name="nori-30m-prod", region_name="us-east-1"
+    ...     endpoint_name="nori-prod", region_name="us-east-1",
+    ...     s3_staging_uri="s3://customer-bucket/nori/invocations/",
     ... )
     """
 
@@ -1193,8 +1229,8 @@ class SynthefyNoriClient:
         api_key: Optional[str] = None,
         *,
         mode: Mode = "remote",
-        timeout: float = 300.0,
-        max_retries: int = 2,
+        timeout: float = DEFAULT_TIMEOUT_S,
+        max_retries: int = DEFAULT_MAX_RETRIES,
         base_url: str = GATEWAY_BASE_URL,
         endpoint: str = GATEWAY_ENDPOINT,
         model: Any = _MODEL_REQUIRED,
@@ -1202,6 +1238,7 @@ class SynthefyNoriClient:
         user_agent: Optional[str] = None,
         endpoint_name: Optional[str] = None,
         region_name: Optional[str] = None,
+        s3_staging_uri: Optional[str] = None,
     ) -> None:
         if mode == "auto":
             raise ValueError(
@@ -1211,10 +1248,7 @@ class SynthefyNoriClient:
             raise ValueError(f"mode must be one of {_VALID_MODES}; got {mode!r}")
         if auth_scheme not in _VALID_AUTH_SCHEMES:
             raise ValueError(f"auth_scheme must be one of {_VALID_AUTH_SCHEMES}; got {auth_scheme!r}")
-        if isinstance(timeout, bool) or not isinstance(timeout, Real) or not np.isfinite(timeout) or timeout <= 0:
-            raise ValueError("timeout must be a finite number greater than zero")
-        if isinstance(max_retries, bool) or not isinstance(max_retries, Integral) or max_retries < 0:
-            raise ValueError("max_retries must be a non-negative integer")
+        check_timeout_and_retries(timeout, max_retries)
         if mode == "sagemaker":
             if api_key is not None:
                 raise ValueError(
@@ -1223,8 +1257,10 @@ class SynthefyNoriClient:
                 )
             if not endpoint_name or not endpoint_name.strip():
                 raise ValueError("endpoint_name is required with mode='sagemaker'")
-        elif endpoint_name is not None or region_name is not None:
-            raise ValueError("endpoint_name and region_name are only valid with mode='sagemaker'")
+            if not s3_staging_uri or not s3_staging_uri.strip():
+                raise ValueError("s3_staging_uri is required with mode='sagemaker'")
+        elif endpoint_name is not None or region_name is not None or s3_staging_uri is not None:
+            raise ValueError("endpoint_name, region_name, and s3_staging_uri are only valid with mode='sagemaker'")
         if model is _MODEL_REQUIRED or model is None:
             raise ValueError(
                 "model is required -- there is no default; every request names a size. "
@@ -1232,16 +1268,28 @@ class SynthefyNoriClient:
             )
         self.mode: str = mode
 
+        # A SageMaker endpoint serves the released names, or the one fine-tuned name it was
+        # deployed with. The rule reads the raw argument, so a "synthefy/..." spelling of an
+        # unreleased name, a non-string, or a name the training job would refuse never reaches
+        # an endpoint.
+        if mode == "sagemaker":
+            is_released_name = isinstance(model, str) and _canonical_model_name(model) in SAGEMAKER_VARIANTS
+            is_fine_tuned_name = isinstance(model, str) and FINE_TUNED_MODEL_NAME_RE.fullmatch(model) is not None
+            if not (is_released_name or is_fine_tuned_name):
+                raise ValueError(
+                    "SageMaker model must name a published Nori inference specification "
+                    f"({', '.join(SAGEMAKER_VARIANTS)}) or a fine-tuned model deployed on the endpoint, "
+                    f"whose name is {FINE_TUNED_MODEL_NAME_RULE} "
+                    f"({FINE_TUNED_MODEL_NAME_PATTERN}); got {model!r}"
+                )
         canonical_model = _canonical_model_name(model)
-        if mode == "sagemaker" and canonical_model not in SAGEMAKER_VARIANTS:
-            raise ValueError(
-                "SageMaker model must name a published Nori inference specification; "
-                f"choose one of: {', '.join(SAGEMAKER_VARIANTS)}"
-            )
         self._sagemaker_model = canonical_model
+        # Only a released Thinking name selects test-time compute. A fine-tuned model may carry
+        # "thinking" in its own name, so the Thinking-only refusals in predict() read this flag.
+        self._is_thinking = isinstance(model, str) and model in NORI_VARIANTS and _is_thinking_model(model)
 
         # Nori Thinking runs only on hosted backends; never silently substitute a local model.
-        if _is_thinking_model(model) and mode == "local":
+        if self._is_thinking and mode == "local":
             raise ValueError(
                 f"model={model!r} is a Nori Thinking (test-time-compute) variant, which runs only "
                 f"on the hosted Synthefy API. Set mode='remote' with a Baseten API key to use it "
@@ -1254,6 +1302,13 @@ class SynthefyNoriClient:
         self.endpoint = endpoint
         self.endpoint_name = endpoint_name
         self.region_name = region_name
+        self.s3_staging_uri = s3_staging_uri
+        self._s3_staging_bucket: Optional[str] = None
+        self._s3_staging_prefix: Optional[str] = None
+        if s3_staging_uri is not None:
+            self._s3_staging_bucket, self._s3_staging_prefix = parse_s3_uri(
+                s3_staging_uri, name="s3_staging_uri", require_prefix=True
+            )
         # self.model is the gateway model id sent in the remote body: a friendly name maps to its
         # slug, and a raw slug passes through. In local mode we additionally resolve -- and
         # validate -- the local checkpoint selector, which raises for a selector that has no local
@@ -1263,8 +1318,9 @@ class SynthefyNoriClient:
             self._local_variant = _resolve_local_variant(model)
         self.auth_scheme = auth_scheme
         self.user_agent = user_agent or f"synthefy-python httpx/{httpx.__version__}"
-        self._aws_user_agent_extra = user_agent or "synthefy-python"
+        self._aws_user_agent_extra = user_agent or AWS_USER_AGENT_EXTRA
         self._aws_client: Optional[Any] = None
+        self._aws_s3_client: Optional[Any] = None
         self._local_regressor: Optional[Any] = None
         # Guards mutation of the cached local regressor's memory_policy/large_context_*
         # attributes and its fit/predict/report sequence, the same shared-mutable-state
@@ -1274,7 +1330,8 @@ class SynthefyNoriClient:
         if mode == "sagemaker":
             self.api_key = None
             self.client = None
-            self._aws_client = _create_sagemaker_runtime_client(
+            self._aws_client, self._aws_s3_client = create_aws_clients(
+                ("sagemaker-runtime", "s3"),
                 region_name=self.region_name,
                 timeout=self.timeout,
                 max_retries=self.max_retries,
@@ -1306,6 +1363,13 @@ class SynthefyNoriClient:
         #:
         #: Populated in local, remote, and AWS modes whenever a memory policy is requested.
         self.last_memory_report: Optional[Dict[str, Any]] = None
+        #: The ``model_version`` digest the deployment reported on the most recent
+        #: :meth:`predict`, or ``None``. Set in remote and SageMaker modes from the response of
+        #: every call that returns, cleared at the start of every call and left ``None`` by a
+        #: call that raises; ``None`` in local mode and from a deployment that predates the
+        #: field. Compare it with a fine-tuning job's ``TrainingReport.model_version`` to prove
+        #: which model answered.
+        self.last_model_version: Optional[str] = None
         # Per-internal-call reports for the most recent hosted multi-target
         # prediction that explicitly set memory_policy.
         self.last_multi_target_memory_reports: Optional[List[Dict[str, Any]]] = None
@@ -1334,6 +1398,11 @@ class SynthefyNoriClient:
         if self._aws_client is not None:
             try:
                 self._aws_client.close()
+            except Exception:
+                pass
+        if self._aws_s3_client is not None:
+            try:
+                self._aws_s3_client.close()
             except Exception:
                 pass
         with self._local_regressor_lock:
@@ -1488,16 +1557,18 @@ class SynthefyNoriClient:
             quality score) and pick the strategy that maps each prediction
             onto the target's level lattice, so every returned value is one
             the target can actually take. Strictly opt-in: nothing is snapped
-            unless ``discretize=`` or ``categorical_levels=`` is passed. In
-            local mode the full strategy set of the installed ``synthefy-nori``
-            is forwarded (``"map-cell"`` — accuracy-optimal, ``"median-cell"``
-            — MAE-optimal, ``"snap-mean"``, ``"snap-median"``,
-            ``"expected-level"``, ``"prior-match"``; see
-            ``synthefy_nori.discretize``). In remote mode the hosted endpoint
-            returns only point predictions, so ``"snap-mean"`` (nearest level
-            to the point prediction — identical to local ``"snap-mean"``) is
-            the one supported strategy; anything else raises ``ValueError``
-            with guidance. A ``NaN`` prediction stays ``NaN`` after snapping.
+            unless ``discretize=`` or ``categorical_levels=`` is passed. The
+            strategy set is the installed ``synthefy-nori``'s: ``"map-cell"``
+            (accuracy-optimal), ``"median-cell"`` (MAE-optimal),
+            ``"snap-mean"``, ``"snap-median"``, ``"expected-level"`` (a
+            lattice-informed CONTINUOUS value, not on the lattice), and
+            ``"prior-match"``. Which one is right depends on the metric you are
+            scored on; see ``synthefy_nori.discretize``. Local mode runs them in
+            process, remote and SageMaker send them to the deployment, and the
+            response names the strategy that ran so a deployment too old to
+            support the field raises rather than returning continuous
+            predictions as if they were levels. Nori Thinking deployments
+            refuse the field. A ``NaN`` prediction stays ``NaN``.
         categorical_levels : array-like of float or None, optional
             The complete set of values the target can take — its label set,
             in classification terms. Values must be numeric; order and
@@ -1505,9 +1576,8 @@ class SynthefyNoriClient:
             distinct values). Defaults to the distinct values of
             ``y_train``, which is leak-safe; pass it explicitly when the
             context may under-cover the true scale (e.g. a 1–5 rating whose
-            context has no 1s). Passing it alone activates discretization
-            with the package default strategy in local mode (``"map-cell"``);
-            remote mode requires ``discretize="snap-mean"`` explicitly.
+            context has no 1s). Passing it alone activates discretization with
+            the default strategy (``"map-cell"``) in every mode.
         memory_policy : str, dict, or MemoryPolicy, optional
             Serving-memory policy, at parity with the local package's
             ``NoriRegressor(memory_policy=...)``. A preset name -- ``"exact"`` (never
@@ -1611,13 +1681,11 @@ class SynthefyNoriClient:
             ``quantiles`` is missing/empty/outside ``(0, 1)`` for
             ``output_type="quantiles"``, or is passed with a different
             ``output_type``, or is combined with
-            ``discretize=``/``categorical_levels=``; or, in remote mode, if
-            ``discretize`` is a strategy other than ``"snap-mean"`` (or
-            ``categorical_levels`` is passed without ``discretize=``, or is
-            empty/non-finite), or if the hosted deployment does not serve the
-            requested ``output_type`` (it echoes back the type it honored, so an
-            ignored ``output_type`` raises here instead of silently returning
-            means — use local mode, or a deployment with distribution support);
+            ``discretize=``/``categorical_levels=``; or if the hosted deployment
+            does not serve the requested ``output_type`` or ``discretize`` (it
+            echoes back what it honored, so a deployment that ignored either
+            raises here instead of silently returning means or continuous values
+            as if they were what you asked for);
             or if HTTP-only ``extra_headers``/per-call ``timeout`` are passed in
             a SageMaker deployment. Per-call ``timeout`` is instead ignored
             with a warning for SageMaker.
@@ -1654,6 +1722,7 @@ class SynthefyNoriClient:
         self.last_multi_target_memory_reports = None
         self.last_large_context_report = None
         self.last_target_orders = None
+        self.last_model_version = None
 
         # Validate the output contract first: a bad output_type/quantiles pair is
         # caught before the expensive steps below (loading a sentence encoder for
@@ -1664,8 +1733,8 @@ class SynthefyNoriClient:
             )
         if self.mode == "sagemaker" and timeout is not None:
             warnings.warn(
-                "Per-prediction timeout is ignored for SageMaker; boto3 applies "
-                "the timeout configured on SynthefyNoriClient.",
+                "Per-prediction timeout is ignored for SageMaker; asynchronous polling "
+                "uses the timeout configured on SynthefyNoriClient.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -1683,7 +1752,7 @@ class SynthefyNoriClient:
             policy=multi_target_prediction_policy,
             large_context_policy=large_context_policy,
             discretizing=discretize is not None or categorical_levels is not None,
-            model=self.model,
+            is_thinking=self._is_thinking,
             mode=self.mode,
         )
         if is_multi_target and output_type == "samples" and as_pandas:
@@ -1696,7 +1765,7 @@ class SynthefyNoriClient:
             seed=large_context_seed,
             holdout=large_context_holdout,
             output_type=output_type,
-            model=self.model,
+            is_thinking=self._is_thinking,
             mode=self.mode,
         )
         request_categorical_columns = categorical_columns
@@ -1760,86 +1829,95 @@ class SynthefyNoriClient:
             large_context_holdout=resolved_large_context_holdout,
             multi_target_prediction_strategy=multi_target_prediction_strategy,
             multi_target_prediction_policy=multi_target_prediction_policy,
+            array_backed=self.mode == "sagemaker",
         )
-        if is_multi_target:
-            return self._predict_multi_target_request(
-                request,
-                output_type=output_type,
-                timeout=timeout,
-                extra_headers=extra_headers,
-                as_pandas=as_pandas,
-                X_test=X_test,
-                y_train=y_train,
-            )
-        # Distribution output is shaped separately: it is not one value per query
-        # row, so it does not flow through the point-prediction path below.
-        if output_type in _DISTRIBUTION_OUTPUT_TYPES:
-            if self.mode == "local":
-                q_by_row, taus, mean = self._predict_local_distribution(
-                    request, output_type=output_type, quantile_levels=quantile_levels
-                )
-            elif self.mode == "sagemaker":
-                q_by_row, taus, mean = self._predict_aws_distribution(
-                    request,
-                    output_type=output_type,
-                )
-            else:
-                q_by_row, taus, mean = self._predict_remote_distribution(
+        # Every hosted response is parsed below, and _parse_predict_response records its
+        # model_version before the shape checks and pandas shaping that follow it. A call
+        # that raises at any point clears it, so last_model_version only ever describes a
+        # result this method returned.
+        try:
+            if is_multi_target:
+                return self._predict_multi_target_request(
                     request,
                     output_type=output_type,
                     timeout=timeout,
                     extra_headers=extra_headers,
-                )
-            if output_type == "quantiles":
-                return _shape_quantiles(
-                    q_by_row,
-                    quantile_levels or [],
                     as_pandas=as_pandas,
                     X_test=X_test,
                     y_train=y_train,
                 )
-            return _shape_full(
-                q_by_row,
-                taus,
-                mean,
-                as_pandas=as_pandas,
-                X_test=X_test,
-                y_train=y_train,
-            )
+            # Distribution output is shaped separately: it is not one value per query
+            # row, so it does not flow through the point-prediction path below.
+            if output_type in _DISTRIBUTION_OUTPUT_TYPES:
+                if self.mode == "local":
+                    q_by_row, taus, mean = self._predict_local_distribution(
+                        request, output_type=output_type, quantile_levels=quantile_levels
+                    )
+                elif self.mode == "sagemaker":
+                    q_by_row, taus, mean = self._predict_aws_distribution(
+                        request,
+                        output_type=output_type,
+                    )
+                else:
+                    q_by_row, taus, mean = self._predict_remote_distribution(
+                        request,
+                        output_type=output_type,
+                        timeout=timeout,
+                        extra_headers=extra_headers,
+                    )
+                if output_type == "quantiles":
+                    return _shape_quantiles(
+                        q_by_row,
+                        quantile_levels or [],
+                        as_pandas=as_pandas,
+                        X_test=X_test,
+                        y_train=y_train,
+                    )
+                return _shape_full(
+                    q_by_row,
+                    taus,
+                    mean,
+                    as_pandas=as_pandas,
+                    X_test=X_test,
+                    y_train=y_train,
+                )
 
-        if self.mode == "local":
-            predictions = self._predict_local(
-                request,
-                output_type=output_type,
-                discretize=discretize,
-                categorical_levels=categorical_levels,
-            )
-        else:
-            remote_levels = None
-            if discretize is not None or categorical_levels is not None:
-                remote_levels = _resolve_remote_levels(request.y_train, discretize, categorical_levels)
-            if self.mode == "sagemaker":
-                predictions = self._predict_aws(
+            if self.mode == "local":
+                predictions = self._predict_local(
                     request,
                     output_type=output_type,
+                    discretize=discretize,
+                    categorical_levels=categorical_levels,
                 )
             else:
-                predictions = self._predict_remote(
-                    request,
-                    output_type=output_type,
-                    timeout=timeout,
-                    extra_headers=extra_headers,
+                # Remote and SageMaker both send these to the server, which owns the
+                # arithmetic: the strategies need the model's own predictive distribution,
+                # and only the deployment has it without the caller installing torch.
+                request.discretize = discretize
+                request.categorical_levels = _wire_levels(categorical_levels)
+                if self.mode == "sagemaker":
+                    predictions = self._predict_aws(
+                        request,
+                        output_type=output_type,
+                    )
+                else:
+                    predictions = self._predict_remote(
+                        request,
+                        output_type=output_type,
+                        timeout=timeout,
+                        extra_headers=extra_headers,
+                    )
+            if as_pandas:
+                return pd.Series(
+                    predictions,
+                    index=_result_index(X_test),
+                    name=_target_name(y_train),
+                    dtype=float,
                 )
-            if remote_levels is not None:
-                predictions = _snap_to_levels(predictions, remote_levels)
-        if as_pandas:
-            return pd.Series(
-                predictions,
-                index=_result_index(X_test),
-                name=_target_name(y_train),
-                dtype=float,
-            )
-        return predictions
+            return predictions
+        except BaseException:
+            self.last_model_version = None
+            raise
 
     # ------------------------------------------------------------------ #
     # Local mode
@@ -1965,12 +2043,39 @@ class SynthefyNoriClient:
                     "large_context_cache_entries": 1,
                 }
             )
+        if (
+            is_multi_target
+            or request.multi_target_prediction_strategy is not None
+            or request.multi_target_prediction_policy is not None
+        ):
+            # A matrix-valued y_train needs the multi-target constructor arguments whether or not
+            # the caller set one, so the same signature probe as model= above: a build that
+            # predates multi-target would otherwise fit a 2-D target and fail later with a shape
+            # error, or return a wrong result, naming no fix.
+            if "multi_target_prediction_strategy" not in inspect.signature(regressor_cls).parameters:
+                raise ImportError(
+                    "Matrix-valued y_train (multi-target regression) requires a newer synthefy-nori "
+                    "with multi_target_prediction_strategy= on NoriRegressor. Upgrade with: "
+                    "pip install -U synthefy-nori."
+                )
         if request.multi_target_prediction_strategy is not None:
             init_kwargs["multi_target_prediction_strategy"] = request.multi_target_prediction_strategy
         if request.multi_target_prediction_policy is not None:
             init_kwargs["multi_target_prediction_policy"] = request.multi_target_prediction_policy.model_dump(
                 exclude_unset=True
             )
+        # The net under the named probes above: every keyword about to reach the constructor
+        # must be one it declares, so a future forwarded field cannot regress to the opaque
+        # TypeError the probes exist to prevent. Skipped when the constructor takes **kwargs,
+        # because then the signature cannot say what it accepts.
+        init_params = inspect.signature(regressor_cls).parameters
+        if not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in init_params.values()):
+            unsupported = sorted(set(init_kwargs) - set(init_params))
+            if unsupported:
+                raise ImportError(
+                    f"{', '.join(unsupported)} require a newer synthefy-nori (the installed "
+                    "NoriRegressor does not accept them). Upgrade with: pip install -U synthefy-nori."
+                )
         # Everything below mutates or reads the cached, shared regressor's
         # memory_policy/large_context_* attributes and its fit/predict/report
         # sequence -- one lock per client instance, so a concurrent call on the
@@ -2133,17 +2238,6 @@ class SynthefyNoriClient:
                 extra["discretize"] = discretize
             if categorical_levels is not None:
                 extra["categorical_levels"] = categorical_levels
-        if request.memory_policy is not None:
-            _require_local_memory_policy_capabilities(request.memory_policy)
-            # A dict, not our MemoryPolicy instance: the library's coerce() accepts its OWN
-            # class, a dict, a preset name or None -- a same-named class from this package is
-            # none of those and would raise. exclude_unset for the same reason as the wire
-            # path: let the library apply its own defaults to whatever was not set.
-            extra["memory_policy"] = (
-                request.memory_policy
-                if isinstance(request.memory_policy, str)
-                else request.memory_policy.model_dump(exclude_unset=True)
-            )
         if self._local_variant is not None:
             # Selecting a non-base local variant needs a synthefy-nori that exposes the model=
             # selector; fail with a clear upgrade hint instead of an opaque TypeError on old builds.
@@ -2178,6 +2272,14 @@ class SynthefyNoriClient:
         """Validate a response shared by both hosted transports."""
         parsed = NoriPredictResponse(**response_data)
         is_multi_target = np.asarray(request.y_train, dtype=float).ndim == 2
+        if not is_multi_target:
+            prediction_shape = np.asarray(parsed.predictions, dtype=float).shape
+            expected_shape = (len(request.X_test),)
+            if prediction_shape != expected_shape:
+                raise ValueError(
+                    f"Deployment returned prediction shape {prediction_shape}; expected "
+                    f"{expected_shape}, one value per query row for a single target."
+                )
         if request.memory_policy is not None:
             # The capability handshake. A deployment that predates `memory_policy` ignores the field
             # and answers with default-memory predictions that are numerically valid, so
@@ -2273,6 +2375,30 @@ class SynthefyNoriClient:
                         f"the explicit request: {parsed.target_orders!r} != {requested!r}."
                     )
                 self.last_target_orders = parsed.target_orders
+        if request.discretize is not None or request.categorical_levels is not None:
+            # The same handshake as output_type below, and it matters more here: a
+            # deployment that predates the field drops it and answers with continuous
+            # predictions, which are numerically valid and look like any other result, so
+            # nothing in `predictions` reveals that no level was ever chosen.
+            if parsed.discretize is None:
+                raise ValueError(
+                    "The hosted deployment did not discretize: it omitted the discretize "
+                    "field entirely, so it predates the capability and answered with "
+                    "continuous predictions. Those are indistinguishable from levels that "
+                    "happen to look round, so this is raised rather than returned. Point at "
+                    "a newer deployment, or use local mode (pip install synthefy-nori, then "
+                    'mode="local").'
+                )
+            # Compared case-insensitively because the server normalises the strategy name
+            # and echoes the RESOLVED one, exactly as it does for output_type. Comparing
+            # against the raw string rejects a correct response to discretize="MAP-CELL".
+            if request.discretize is not None and parsed.discretize != request.discretize.lower():
+                raise ValueError(
+                    f"The hosted deployment did not serve discretize={request.discretize!r}: "
+                    f"it ran {parsed.discretize!r} instead. Which strategy runs decides which "
+                    "level you get, so this is raised rather than returning another "
+                    "strategy's answer under the name you asked for."
+                )
         if output_type != DEFAULT_OUTPUT_TYPE and parsed.output_type != output_type:
             honored = (
                 "omitted the output_type field entirely, so it predates distribution output"
@@ -2288,124 +2414,213 @@ class SynthefyNoriClient:
                 'synthefy-nori, then mode="local"), or point at a deployment '
                 "that serves distribution output."
             )
+        self.last_model_version = parsed.model_version
         return parsed
 
-    @staticmethod
-    def _raise_sagemaker_model_error(exc: Exception) -> None:
-        """Translate a SageMaker ModelError and re-raise every other SDK error."""
-        aws_response = getattr(exc, "response", None)
-        error = aws_response.get("Error", {}) if isinstance(aws_response, dict) else {}
-        if error.get("Code") != "ModelError":
-            raise exc
-        original_status = aws_response.get("OriginalStatusCode", 500)
+    def _s3_object_exists(self, location: str) -> bool:
+        if self._aws_s3_client is None:
+            raise RuntimeError("SageMaker S3 transport is not initialized")
+        bucket, key = parse_s3_uri(location, name="location")
         try:
-            status = int(original_status)
-        except (TypeError, ValueError):
-            status = 500
-        if status < 400 or status > 599:
-            status = 500
-        message = (
-            aws_response.get("OriginalMessage") or error.get("Message") or "SageMaker endpoint returned a model error"
-        )
-        details = {
-            "error": {
-                "message": message,
-                "code": "ModelError",
-                "log_stream_arn": aws_response.get("LogStreamArn"),
-            }
-        }
-        headers: Dict[str, str] = {}
-        metadata = aws_response.get("ResponseMetadata", {})
-        if metadata.get("RequestId"):
-            headers["x-request-id"] = metadata["RequestId"]
-        _raise_for_status(httpx.Response(status, json=details, headers=headers))
+            self._aws_s3_client.head_object(Bucket=bucket, Key=key)
+            return True
+        except Exception as exc:
+            if is_missing_s3_object(exc):
+                return False
+            raise
 
-    @staticmethod
-    def _read_sagemaker_stream(event_stream: Any) -> bytes:
-        """Collect SageMaker event-stream payload parts and close the stream.
+    def _download_s3_object(self, location: str, destination: Path) -> None:
+        if self._aws_s3_client is None:
+            raise RuntimeError("SageMaker S3 transport is not initialized")
+        bucket, key = parse_s3_uri(location, name="location")
+        self._aws_s3_client.download_file(bucket, key, str(destination))
 
-        This deliberately stays synchronous: the public ``predict`` API and
-        boto3's event-stream iterator are both synchronous. An async wrapper
-        here would still block while boto3 reads each event.
-        """
-        chunks: List[bytes] = []
+    def _read_sagemaker_failure(self, location: str, *, invocation_id: str) -> SageMakerInvocationError:
+        temporary = tempfile.NamedTemporaryFile(prefix="nori-failure-", suffix=".json", delete=False)
+        path = Path(temporary.name)
+        temporary.close()
         try:
-            for event in event_stream:
-                if "PayloadPart" in event:
-                    chunks.append(event["PayloadPart"].get("Bytes", b""))
-                    continue
-                if "ModelStreamError" in event:
-                    details = event["ModelStreamError"]
-                    raise RuntimeError(
-                        "SageMaker model stream failed: "
-                        f"{details.get('ErrorCode', 'unknown')}: "
-                        f"{details.get('Message', 'no message')}"
-                    )
-                if "InternalStreamFailure" in event:
-                    raise RuntimeError(
-                        "SageMaker response stream failed internally: "
-                        f"{event['InternalStreamFailure'].get('Message', 'no message')}"
-                    )
+            self._download_s3_object(location, path)
+            text = path.read_text(encoding="utf-8", errors="replace")[:16_384]
         finally:
-            close = getattr(event_stream, "close", None)
-            if close is not None:
-                close()
-        return b"".join(chunks)
+            path.unlink(missing_ok=True)
+        message = text.strip() or "SageMaker asynchronous inference failed"
+        try:
+            details = json.loads(text)
+        except json.JSONDecodeError:
+            details = None
+        if isinstance(details, dict):
+            message = str(
+                details.get("ErrorMessage")
+                or details.get("FailureReason")
+                or details.get("failureReason")
+                or details.get("Message")
+                or details.get("message")
+                or details.get("error")
+                or message
+            )
+        return SageMakerInvocationError(
+            f"SageMaker invocation {invocation_id} failed: {message}",
+            invocation_id=invocation_id,
+            failure_location=location,
+        )
+
+    def _wait_for_sagemaker_result(
+        self,
+        *,
+        invocation_id: str,
+        output_location: str,
+        failure_location: Optional[str],
+    ) -> Dict[str, Any]:
+        deadline = time.monotonic() + self.timeout
+        delay = _SAGEMAKER_POLL_INITIAL_SECONDS
+        while True:
+            if failure_location and self._s3_object_exists(failure_location):
+                raise self._read_sagemaker_failure(failure_location, invocation_id=invocation_id)
+            if self._s3_object_exists(output_location):
+                temporary = tempfile.NamedTemporaryFile(prefix="nori-output-", suffix=".json", delete=False)
+                path = Path(temporary.name)
+                temporary.close()
+                try:
+                    self._download_s3_object(output_location, path)
+                    with path.open(encoding="utf-8") as handle:
+                        response_data = json.load(handle)
+                finally:
+                    path.unlink(missing_ok=True)
+                if not isinstance(response_data, dict):
+                    raise ValueError("SageMaker endpoint returned JSON that was not an object")
+                return response_data
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise APITimeoutError(
+                    "Timed out waiting for SageMaker invocation "
+                    f"{invocation_id}. This client timeout does not cancel a queued "
+                    "server-side invocation."
+                )
+            jittered = delay + random.uniform(0.0, delay * 0.25)
+            time.sleep(min(jittered, remaining))
+            delay = min(delay * 2, _SAGEMAKER_POLL_MAX_SECONDS)
+
+    @staticmethod
+    def _owned_result_location(location: str, invocation_id: str) -> bool:
+        try:
+            _, key = parse_s3_uri(location, name="location")
+        except ValueError:
+            return False
+        return f"/invocations/{invocation_id}/" in f"/{key}"
+
+    def _cleanup_sagemaker_objects(
+        self,
+        *,
+        invocation_id: str,
+        input_location: str,
+        output_location: Optional[str],
+        failure_location: Optional[str],
+    ) -> None:
+        if self._aws_s3_client is None:
+            return
+        locations = [input_location]
+        for location in (output_location, failure_location):
+            if location and self._owned_result_location(location, invocation_id):
+                locations.append(location)
+        for location in dict.fromkeys(locations):
+            bucket, key = parse_s3_uri(location, name="location")
+            try:
+                self._aws_s3_client.delete_object(Bucket=bucket, Key=key)
+            except Exception as exc:
+                warnings.warn(
+                    f"Could not delete temporary SageMaker object {location}: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
     def _invoke_sagemaker_predict(
         self,
-        request: NoriPredictRequest,
+        request: Union[NoriPredictRequest, _NoriArrayRequest],
         *,
         output_type: str,
     ) -> NoriPredictResponse:
         """Invoke the configured SageMaker endpoint with a SigV4-signed request."""
-        if self._aws_client is None or self.endpoint_name is None:
+        if (
+            self._aws_client is None
+            or self._aws_s3_client is None
+            or self.endpoint_name is None
+            or self._s3_staging_bucket is None
+            or self._s3_staging_prefix is None
+        ):
             raise RuntimeError(
                 "SageMaker transport is not initialized; construct the client with mode='sagemaker' and endpoint_name"
             )
         if self._sagemaker_model is None:
             raise RuntimeError("SageMaker transport has no resolved model identity")
-        payload = request.to_wire()
-        payload["model"] = self._sagemaker_model
-        body = json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8")
-        if len(body) > SAGEMAKER_MAX_BODY_BYTES:
-            raise ValueError(
-                "The SageMaker request body is "
-                f"{len(body):,} bytes, exceeding InvokeEndpointWithResponseStream's "
-                f"{SAGEMAKER_MAX_BODY_BYTES:,}-byte limit. Reduce the context/query rows."
-            )
+        invocation_id = uuid.uuid4().hex
+        input_key = f"{self._s3_staging_prefix}/{self.endpoint_name}/{invocation_id}/request.tensorfile"
+        input_location = f"s3://{self._s3_staging_bucket}/{input_key}"
+        output_location = None
+        failure_location = None
+        invocation_pending = False
+        temporary = tempfile.NamedTemporaryFile(prefix="nori-request-", suffix=".tensorfile", delete=False)
+        request_path = Path(temporary.name)
+        temporary.close()
         try:
-            # All AWS variants stream. Even base 30M can exceed SageMaker's 60-second regular
-            # response ceiling for large tables; heartbeat payload parts keep the connection
-            # active while the public predict() API continues to return one final typed value.
-            response = self._aws_client.invoke_endpoint_with_response_stream(
-                EndpointName=self.endpoint_name,
-                ContentType="application/json",
-                Accept="application/json",
-                CustomAttributes="synthefy-response-stream=v1",
-                Body=body,
-            )
-        except Exception as exc:
-            # Credential, region, signing, and throttling exceptions stay as botocore errors.
-            self._raise_sagemaker_model_error(exc)
-            raise RuntimeError("unreachable")  # pragma: no cover
-
-        response_body = response["Body"]
-        raw = self._read_sagemaker_stream(response_body)
-        response_data = json.loads(raw)
-        if not isinstance(response_data, dict):
-            raise ValueError("SageMaker endpoint returned JSON that was not an object")
-        stream_error = response_data.get("error")
-        if isinstance(stream_error, dict) and "status_code" in stream_error:
-            status = int(stream_error.get("status_code", 500))
-            if status < 400 or status > 599:
-                status = 500
-            _raise_for_status(
-                httpx.Response(
-                    status,
-                    json={"error": {"message": stream_error.get("message", "SageMaker streaming inference failed")}},
+            save_nori_request(request_path, request, model=self._sagemaker_model)
+            request_size = request_path.stat().st_size
+            if request_size > SAGEMAKER_MAX_INPUT_BYTES:
+                raise ValueError(
+                    "The serialized SageMaker request exceeds the 1 GB asynchronous "
+                    "inference payload limit. Reduce the context/query rows."
                 )
+            self._aws_s3_client.upload_file(str(request_path), self._s3_staging_bucket, input_key)
+            # A lost response does not prove that SageMaker rejected the request.
+            # Keep its input until completion is known; bucket lifecycle handles
+            # abandoned requests without racing a queued worker's download.
+            invocation_pending = True
+            response = self._aws_client.invoke_endpoint_async(
+                EndpointName=self.endpoint_name,
+                InputLocation=input_location,
+                ContentType=NORI_BINARY_CONTENT_TYPE,
+                Accept="application/json",
+                InferenceId=invocation_id,
+                RequestTTLSeconds=_SAGEMAKER_REQUEST_TTL_SECONDS,
+                InvocationTimeoutSeconds=_SAGEMAKER_INVOCATION_TIMEOUT_SECONDS,
+                S3OutputPathExtension=f"invocations/{invocation_id}",
+                Filename="result.json",
             )
+            returned_invocation_id = response.get("InferenceId")
+            if returned_invocation_id not in (None, invocation_id):
+                raise RuntimeError(f"InvokeEndpointAsync returned a mismatched InferenceId: {returned_invocation_id!r}")
+            output_location = response.get("OutputLocation")
+            failure_location = response.get("FailureLocation")
+            if not isinstance(output_location, str) or not output_location:
+                raise RuntimeError("InvokeEndpointAsync returned no S3 OutputLocation")
+            for name, location in (
+                ("OutputLocation", output_location),
+                ("FailureLocation", failure_location),
+            ):
+                if location and not self._owned_result_location(location, invocation_id):
+                    raise RuntimeError(
+                        f"InvokeEndpointAsync returned {name} outside this invocation's isolated output prefix"
+                    )
+            try:
+                response_data = self._wait_for_sagemaker_result(
+                    invocation_id=invocation_id,
+                    output_location=output_location,
+                    failure_location=failure_location,
+                )
+            except SageMakerInvocationError:
+                invocation_pending = False
+                raise
+            invocation_pending = False
+        finally:
+            request_path.unlink(missing_ok=True)
+            if not invocation_pending:
+                self._cleanup_sagemaker_objects(
+                    invocation_id=invocation_id,
+                    input_location=input_location,
+                    output_location=output_location,
+                    failure_location=failure_location,
+                )
         actual_model = response_data.get("model")
         if actual_model != self._sagemaker_model:
             raise ValueError(

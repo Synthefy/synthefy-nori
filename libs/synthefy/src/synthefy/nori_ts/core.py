@@ -95,6 +95,9 @@ class NoriTSForecaster:
         SageMaker endpoint name. Used only while constructing the client.
     region_name : str | None
         SageMaker region. Used only while constructing the client.
+    s3_staging_uri : str | None
+        Customer-owned S3 prefix used by SageMaker Async Inference. Used only
+        while constructing the client.
     context_length : int
         Cap on history rows per series (last-N kept), matching TabPFN-TS's 4096.
     quantiles : list[float]
@@ -113,6 +116,7 @@ class NoriTSForecaster:
         api_key: Optional[str] = None,
         endpoint_name: Optional[str] = None,
         region_name: Optional[str] = None,
+        s3_staging_uri: Optional[str] = None,
         context_length: int = 4096,
         quantiles: Optional[List[float]] = None,
         features=None,
@@ -129,6 +133,8 @@ class NoriTSForecaster:
                 conflicting.append("endpoint_name")
             if region_name is not None:
                 conflicting.append("region_name")
+            if s3_staging_uri is not None:
+                conflicting.append("s3_staging_uri")
             if conflicting:
                 names = ", ".join(f"{name}=" for name in conflicting)
                 raise ValueError(f"client= already owns backend configuration; do not also pass {names}")
@@ -159,6 +165,7 @@ class NoriTSForecaster:
                 model=model,
                 endpoint_name=endpoint_name,
                 region_name=region_name,
+                s3_staging_uri=s3_staging_uri,
             )
 
         self.client = resolved_client

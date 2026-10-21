@@ -5,6 +5,68 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.3.0] - 2026-10-15
+
+### Added
+
+- **`SynthefyNoriFineTuner`** fine-tunes a released Nori model (`nori-6m` or
+  `nori-100m`) on your own CSV table through the Nori fine-tuning Algorithm on
+  Amazon SageMaker and deploys the result. `fine_tune()` starts a training job from a `FineTuneJobRequest`
+  (its `FineTuneHyperparameters` are the Algorithm's hyperparameters), `get_status()`, `wait()`,
+  `get_logs()` and `get_training_curves()` follow it, `stop()` stops it,
+  `get_training_report()` reads its `TrainingReport` without extracting the
+  model, `deploy()` / `undeploy()` create and remove an asynchronous endpoint
+  serving it, described by a `FineTunedEndpoint`, and `create_client()` builds the
+  SageMaker-mode `SynthefyNoriClient` that predicts through that endpoint.
+  Requests are checked before any AWS call. Install it with
+  `pip install "synthefy[aws]"`.
+- SageMaker mode accepts a fine-tuned model's name (`model="ft-acme-churn-v1"`:
+  `ft-` then lowercase letters, digits and hyphens, 63 characters at most), sends it to the
+  endpoint and verifies the answering model as it does for a released name. The
+  constructor still refuses every other name, a mistyped `"nori-6n"` included; a
+  fine-tuned name the endpoint does not serve is refused by the endpoint as
+  `SageMakerInvocationError`. Multi-target and large-context requests are refused
+  only for the released Thinking name (`nori-30m-thinking-medium` or its
+  `synthefy/` slug); a fine-tuned name is left to the deployment.
+- `SynthefyNoriClient.last_model_version`: the `model_version` the deployment
+  reported on the most recent remote or SageMaker prediction, cleared before
+  every call and left `None` by a call that raises, so a returned result can be
+  tied to the model a `TrainingReport` describes.
+- `FineTuningError`, raised when a fine-tuning job or the deployment of its
+  result cannot give you a model. It carries `job_name`, `job_arn` (set when
+  SageMaker accepted the job, so a failed first status read keeps its receipt),
+  `status`, `failure_reason` and `created`, the resources a failed deployment
+  had already made.
+- The `aws` extra requires boto3 1.42.54 or later, the first release whose
+  `InvokeEndpointAsync` takes `S3OutputPathExtension` and `Filename`, which every
+  SageMaker prediction sends.
+- `SageMakerInvocationError`, raised when a queued SageMaker inference writes a
+  failure object instead of predictions. It carries the `invocation_id` and the
+  `failure_location` of that object.
+
+### Changed
+
+- SageMaker mode now requires a customer-owned `s3_staging_uri`, writes a compact
+  tensor request there, and uses `InvokeEndpointAsync` instead of the retired
+  response-stream path. `predict()` remains blocking while it polls the output
+  and failure objects, supports requests up to 1 GiB, and cleans up only its own
+  invocation objects.
+- One SageMaker endpoint now serves all released Nori models, including 100M,
+  and the client verifies the returned model identity.
+
+### Fixed
+
+- `undeploy()` deletes a `FineTunedEndpoint` in the endpoint's own region, the way
+  `create_client()` predicts through it, so a handle from another region deletes
+  that region's endpoint and not same-named resources in the fine-tuner's region.
+- Generated training job and endpoint config names end with six random characters
+  after the UTC timestamp (`nori-<model_name[:35]>-<timestamp>-<token>` and
+  `<endpoint_name[:40]>-<timestamp>-<token>`), so two launches in the same second,
+  or two long names cut to the same characters, get different names. `undeploy()`
+  still finds the endpoint configs 7.2.0 named without the token.
+- The README's several-models example resets `max_runtime_s` when it copies a
+  request with other hyperparameters, so the copy derives its runtime from them.
+
 ## [7.2.0] - 2026-10-13
 
 ### Added
@@ -55,6 +117,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accepts the same grouped `MultiTargetPredictionPolicy` as `NoriRegressor`.
   Hosted responses echo the honored strategy so older deployments fail closed.
 
+### Fixed
+
+- `MemoryReport.est_cache_gb`, `resident_gb` and `query_chunk` carry the library's
+  bounds again (`>= 0`, `>= 0`, `> 0`). The mirror had dropped them.
+- In local mode, a matrix-valued `y_train` (or `multi_target_prediction_strategy=` /
+  `multi_target_prediction_policy=`) on a `synthefy-nori` that predates multi-target
+  regression now raises `ImportError` with an upgrade hint before the library is
+  constructed, instead of a shape error or `TypeError` deep inside it. Every keyword
+  forwarded to `NoriRegressor(...)` is checked against its signature the same way.
+
+
 ## [7.0.4] - 2026-08-25
 
 ### Added
@@ -78,6 +151,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [7.0.3] - 2026-08-20
 
 ### Added
+
+- Every `discretize=` strategy now works against a hosted deployment, not just
+  `"snap-mean"`. The request carries `discretize` and `categorical_levels` to
+  the server, which holds the predictive distribution the other strategies need,
+  and the response echoes the strategy that ran so a deployment too old to know
+  the field is distinguishable from one that honored it. The call is unchanged:
+  same arguments, same response shape, and a request that does not discretize
+  sends the body it always sent.
 
 - Added bounded large-context selection to `SynthefyNoriClient.predict` in
   local, Baseten remote, and SageMaker modes. The shared contract accepts
