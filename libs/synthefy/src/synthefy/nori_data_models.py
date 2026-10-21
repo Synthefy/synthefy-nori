@@ -593,7 +593,7 @@ FINE_TUNED_MODEL_NAME_RULE = (
 
 #: The released model names. A fine-tuned model may not take one, so an answer that names a
 #: released model always comes from that released model.
-RELEASED_MODEL_NAMES = ("nori-6m", "nori-30m", "nori-30m-thinking-medium", "nori-100m")
+RELEASED_MODEL_NAMES = ("nori-6m", "nori-30m", "nori-30m-thinking-medium", "nori-100m", "nori-1-5")
 
 #: The released models a fine-tuning job accepts as ``base_model``.
 BaseModelName = Literal["nori-6m", "nori-100m"]

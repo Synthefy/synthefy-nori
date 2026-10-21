@@ -122,7 +122,8 @@ _GATEWAY_SLUG_PREFIX = "synthefy/"
 # Built from RELEASED_MODEL_NAMES, the one list of released names, so a new release needs no edit
 # here. Every selector names its size -- there is no bare "nori"/"synthefy/nori", so a slug never
 # silently changes which model it serves (``model=`` is required; see the constructor). "nori-6m" is
-# the ~6M base; "nori-30m" is the ~29.2M variant; "nori-100m" is the ~98.3M variant. The raw gateway
+# the ~6M base; "nori-1-5" is Nori 1.5, the ~21M Model v3 release; "nori-30m" is the ~29.2M variant;
+# "nori-100m" is the ~98.3M variant. The raw gateway
 # slugs are listed too so they load the right checkpoint locally instead of being treated as a raw
 # HF repo. "nori-30m-thinking-medium" is the test-time-compute variant: hosted-API only, so its
 # entries map a remote gateway slug but have NO local variant -- the thinking guard in __init__
@@ -145,6 +146,14 @@ _MODEL_NAMES = tuple(name for name in NORI_VARIANTS if "/" not in name)
 # fine-tuning job serves one more name, the job's model_name, which the constructor accepts
 # by FINE_TUNED_MODEL_NAME_PATTERN rather than by listing it here.
 SAGEMAKER_VARIANTS = RELEASED_MODEL_NAMES
+
+# Released models that build no key/value cache over the context rows (Model v3). On them only
+# _CONTEXT_BUDGET_MEMORY_FIELDS of a memory_policy act: the per-forward element budget and
+# whether context rows may be dropped to fit it. Every other field configures the cache, so it is
+# refused in every mode -- the hosted deployment refuses it too, and local synthefy-nori would
+# silently ignore it.
+_NO_CONTEXT_CACHE_MODELS = ("nori-1-5",)
+_CONTEXT_BUDGET_MEMORY_FIELDS = ("elements_budget", "allow_subsample")
 
 
 def _resolve_variant(model: Optional[str]) -> tuple:
@@ -174,7 +183,8 @@ def _resolve_local_variant(model: Optional[str]) -> Optional[str]:
 
     ``"nori-6m"``/``"synthefy/nori-6m"`` run the ~6M base checkpoint; ``"nori-30m"``/
     ``"synthefy/nori-30m"`` run the 29.2M checkpoint; ``"nori-100m"``/``"synthefy/nori-100m"``
-    run the 98.3M checkpoint. ``None`` forwards no ``model=`` (so
+    run the 98.3M checkpoint; ``"nori-1-5"``/``"synthefy/nori-1-5"`` run Nori 1.5 (synthefy-nori
+    0.22.0 or later). ``None`` forwards no ``model=`` (so
     synthefy-nori, which itself requires an explicit model, would raise). Any other selector has
     no local checkpoint, so this
     raises :class:`ValueError` instead of silently falling back to the base model -- a Nori
@@ -185,14 +195,14 @@ def _resolve_local_variant(model: Optional[str]) -> Optional[str]:
         raise ValueError(
             f"model={model!r} is a Nori Thinking (test-time-compute) variant, which runs only "
             "on the hosted Synthefy API and has no local checkpoint. Use mode='remote' with a "
-            "Baseten API key to run Thinking, or select 'nori-6m'/'nori-30m'/'nori-100m' for "
-            "local inference."
+            "Baseten API key to run Thinking, or select 'nori-6m'/'nori-1-5'/'nori-30m'/'nori-100m' "
+            "for local inference."
         )
     if model is None or model in NORI_VARIANTS:
         return _resolve_variant(model)[1]
     raise ValueError(
         f"model={model!r} has no local checkpoint and cannot run in mode='local'. Local "
-        "inference supports 'nori-6m', 'nori-30m' and 'nori-100m'. For hosted-only "
+        "inference supports 'nori-6m', 'nori-1-5', 'nori-30m' and 'nori-100m'. For hosted-only "
         "variants (e.g. Nori Thinking) or a custom deployment slug, use mode='remote' with a "
         "Baseten API key."
     )
@@ -592,7 +602,7 @@ def _validate_multi_target_controls(
     if is_thinking:
         raise ValueError(
             "Multi-target prediction is not available on Nori Thinking variants; "
-            "use a base nori-6m, nori-30m, or nori-100m model."
+            "use a base nori-6m, nori-1-5, nori-30m, or nori-100m model."
         )
     resolved_strategy = strategy or DEFAULT_MULTI_TARGET_PREDICTION_STRATEGY
     resolved_policy = (
@@ -823,6 +833,46 @@ def _validate_large_context_controls(
             "large_context_policy is not available on Nori Thinking "
             "(test-time-compute) variants. Use a base nori-6m or nori-30m "
             "model, or omit the policy."
+        )
+
+
+def _released_model_without_context_cache(model: Any) -> Optional[str]:
+    """Return the released name ``model`` selects when that model builds no context cache, else ``None``.
+
+    Every spelling of the name counts: the friendly name, its ``synthefy/`` gateway slug and the
+    slug's ``-dev`` form.
+    """
+    if not isinstance(model, str):
+        return None
+    name = model.removeprefix(_GATEWAY_SLUG_PREFIX)
+    if model.startswith(_GATEWAY_SLUG_PREFIX) and name.endswith("-dev"):
+        name = name.removesuffix("-dev")
+    return name if name in _NO_CONTEXT_CACHE_MODELS else None
+
+
+def _refuse_cache_settings_without_a_context_cache(memory_policy: Any, *, model: str) -> None:
+    """Refuse ``memory_policy`` settings that configure a context cache ``model`` never builds.
+
+    The same rule, and the same wording, as the hosted deployment's refusal, so a remote call
+    fails here before a paid round-trip and a local call fails instead of being silently
+    ignored by synthefy-nori. ``memory_policy`` is the validated request value: a preset name or
+    a ``MemoryPolicy``, whose explicitly set fields are the ones the caller asked for.
+    """
+    if memory_policy is None:
+        return
+    budget_fields = list(_CONTEXT_BUDGET_MEMORY_FIELDS)
+    if isinstance(memory_policy, str):
+        raise ValueError(
+            f"memory_policy={memory_policy!r} is a context-cache preset, and {model!r} keeps no "
+            "context cache, so the preset cannot act on it. Send memory_policy as an object that "
+            f"sets only {budget_fields}, or omit it."
+        )
+    cache_fields = sorted(set(memory_policy.model_fields_set) - set(_CONTEXT_BUDGET_MEMORY_FIELDS))
+    if cache_fields:
+        raise ValueError(
+            f"memory_policy fields {cache_fields} configure the key/value context cache, and "
+            f"{model!r} keeps no context cache, so they cannot act on it. Only {budget_fields} "
+            "apply to this model; drop the other fields, or omit memory_policy."
         )
 
 
@@ -1143,8 +1193,9 @@ class SynthefyNoriClient:
         Path appended to ``base_url`` for predictions (remote mode).
     model : str, REQUIRED
         Which Nori to run — there is no default; every request names a size. Pass a friendly
-        size selector — ``"nori-6m"`` (the ~6M base), ``"nori-30m"`` (the ~29.2M
-        variant), or ``"nori-100m"`` (the ~98.3M variant) —
+        size selector — ``"nori-6m"`` (the ~6M base), ``"nori-1-5"`` (Nori 1.5, the ~21M
+        Model v3 release), ``"nori-30m"`` (the ~29.2M variant), or ``"nori-100m"`` (the ~98.3M
+        variant) —
         which selects both the remote gateway deployment and, in local mode, the checkpoint. A
         raw gateway slug (e.g. ``"synthefy/nori-30m"``) is also accepted verbatim. Omitting
         the argument or passing ``None`` raises :class:`ValueError`; every transport requires
@@ -1160,7 +1211,9 @@ class SynthefyNoriClient:
         than silently running the base model — use ``mode="remote"``. Likewise a selector with no
         local checkpoint (an unknown/custom slug) raises in local mode instead of falling back to
         the base model. SageMaker sends the model name to the shared application and verifies
-        that the response came from the requested peer model.
+        that the response came from the requested peer model. Nori 1.5 builds no context
+        cache, so with it ``memory_policy=`` may set only ``elements_budget`` and
+        ``allow_subsample``.
     auth_scheme : {"Bearer", "Api-Key"}, default "Bearer"
         HTTP ``Authorization`` scheme prefixed to the API key (remote mode). The
         inference gateway requires ``"Bearer"``; ``"Api-Key"`` is only for a
@@ -1287,6 +1340,8 @@ class SynthefyNoriClient:
         # Only a released Thinking name selects test-time compute. A fine-tuned model may carry
         # "thinking" in its own name, so the Thinking-only refusals in predict() read this flag.
         self._is_thinking = isinstance(model, str) and model in NORI_VARIANTS and _is_thinking_model(model)
+        # Nori 1.5 builds no context cache, so predict() refuses memory_policy fields that configure one.
+        self._model_without_context_cache = _released_model_without_context_cache(model)
 
         # Nori Thinking runs only on hosted backends; never silently substitute a local model.
         if self._is_thinking and mode == "local":
@@ -1831,6 +1886,10 @@ class SynthefyNoriClient:
             multi_target_prediction_policy=multi_target_prediction_policy,
             array_backed=self.mode == "sagemaker",
         )
+        if self._model_without_context_cache is not None:
+            _refuse_cache_settings_without_a_context_cache(
+                request.memory_policy, model=self._model_without_context_cache
+            )
         # Every hosted response is parsed below, and _parse_predict_response records its
         # model_version before the shape checks and pandas shaping that follow it. A call
         # that raises at any point clears it, so last_model_version only ever describes a

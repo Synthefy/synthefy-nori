@@ -5,6 +5,51 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.4.0] - 2026-10-20
+
+### Added
+
+- **Nori 1.5** (`model="nori-1-5"`, gateway slug `synthefy/nori-1-5`), the ~21M Model v3
+  release, on the hosted API (`mode="remote"`), on the SageMaker endpoint
+  (`mode="sagemaker"`) and locally (`mode="local"`, which needs synthefy-nori 0.22.0 or
+  later).
+- Nori 1.5 builds no key/value cache over the context rows, so with it `memory_policy=`
+  may set only `elements_budget` and `allow_subsample`, the two fields that act without a
+  cache. A preset or any other field raises `ValueError` before a request is sent, in every
+  mode; the hosted API refuses the same settings with the same message.
+
+### Changed
+
+- `NoriTSForecaster` refuses a covariate whose values a generated time feature
+  would overwrite, such as a column named `year`, `running_index` or
+  `hour_of_day_sin`, with a `ValueError` that names the column. Before, the
+  generated feature silently replaced the caller's values. A covariate named
+  `_is_train`, the forecaster's internal train/horizon marker, is refused the
+  same way.
+- When a `CalendarFeature` generator gives one calendar feature several cycle
+  lengths in `seasonal_features` (for example `{"hour_of_day": [24, 12]}`),
+  every period keeps its own sine/cosine pair: `hour_of_day_sin_0`,
+  `hour_of_day_cos_0`, `hour_of_day_sin_1`, `hour_of_day_cos_1`. Before, each
+  period overwrote the previous one's `hour_of_day_sin` and `hour_of_day_cos`,
+  so only the last survived. A single period keeps the `<feature>_sin` / `<feature>_cos` names.
+
+### Fixed
+
+- `NoriTSForecaster.predict` orders every series by time before it builds the
+  model context and the positional features, so rows passed out of order
+  forecast the same as sorted ones.
+- `NoriTSForecaster` infers a series' cadence from its complete history before
+  `context_length` limits the rows the model sees.
+- `MultimodalPreprocessor` accepts a custom text embedding with a single
+  coordinate when `svd_dim` is set; that coordinate is kept as the feature.
+- `TimeSeriesDataFrame.from_iterable_dataset` reads a single-pass iterable,
+  such as a generator, once before validating it, so conversion no longer finds
+  it exhausted and validation errors name the right record.
+- `DataFramePreprocessor` treats a pandas `category` column as a declared
+  categorical, so a high-cardinality `category` column keeps its most frequent
+  levels instead of raising. Tuple column labels, including a `MultiIndex`,
+  keep a one-dimensional `feature_names_in_` and survive pickling.
+
 ## [7.3.0] - 2026-10-15
 
 ### Added
