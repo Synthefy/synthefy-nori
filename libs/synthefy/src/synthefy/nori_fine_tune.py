@@ -17,6 +17,7 @@ report reading and the deployment's steps are in the private ``_aws``, ``_traini
 """
 
 import logging
+import secrets
 import time
 import warnings
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 from synthefy._aws import (
     AWS_USER_AGENT_EXTRA,
     FINE_TUNING_LOGGER_NAME,
+    RESOURCE_NAME_TOKEN_CHARS,
     check_sagemaker_resource_name,
     check_timeout_and_retries,
     create_aws_clients,
@@ -87,6 +89,11 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _generate_resource_name_token() -> str:
+    """The random characters every generated name ends with, from one place, so tests can pin those names."""
+    return secrets.token_hex(RESOURCE_NAME_TOKEN_CHARS // 2)
+
+
 class SynthefyNoriFineTuner:
     """Fine-tune Nori with the SageMaker fine-tuning Algorithm and deploy the result, in the caller's AWS account.
 
@@ -143,12 +150,14 @@ class SynthefyNoriFineTuner:
         user_agent: Optional[str] = None,
     ) -> None:
         check_timeout_and_retries(timeout, max_retries)
+        #: What every client this fine-tuner makes is configured with, including one for another region (undeploy()).
+        self._client_options: Dict[str, Any] = {
+            "timeout": float(timeout),
+            "max_retries": int(max_retries),
+            "user_agent_extra": user_agent or AWS_USER_AGENT_EXTRA,
+        }
         self._sagemaker, self._logs, self._s3 = create_aws_clients(
-            ("sagemaker", "logs", "s3"),
-            region_name=region_name,
-            timeout=float(timeout),
-            max_retries=int(max_retries),
-            user_agent_extra=user_agent or AWS_USER_AGENT_EXTRA,
+            ("sagemaker", "logs", "s3"), region_name=region_name, **self._client_options
         )
         #: The region every call goes to: the one passed, or the one boto3 resolved from the environment.
         self.region_name: str = self._sagemaker.meta.region_name
@@ -185,7 +194,9 @@ class SynthefyNoriFineTuner:
         for argument, uri in (("training_data", request.training_data), ("validation_data", request.validation_data)):
             if uri is not None and not uri.endswith("/"):
                 refuse_csv_siblings(self._s3, uri, argument)
-        job_name = request.job_name or build_job_name(request.hyperparameters.model_name, _utcnow())
+        job_name = request.job_name or build_job_name(
+            request.hyperparameters.model_name, _utcnow(), _generate_resource_name_token()
+        )
         try:
             response = self._sagemaker.create_training_job(**build_training_job_request(request, job_name))
         except Exception as exc:
@@ -381,7 +392,7 @@ class SynthefyNoriFineTuner:
                 UserWarning,
                 stacklevel=2,
             )
-        config_name = build_endpoint_config_name(endpoint_name, _utcnow())
+        config_name = build_endpoint_config_name(endpoint_name, _utcnow(), _generate_resource_name_token())
         package_arn, status = create_deployment(
             self._sagemaker,
             job=current,
@@ -413,13 +424,25 @@ class SynthefyNoriFineTuner:
         The endpoint goes first and is waited for, because SageMaker refuses to delete a config or a model an
         endpoint still uses. The model package stays: it bills nothing, and the next deploy() of the same job reuses
         it instead of waiting for SageMaker to validate a new one. A resource already gone is skipped, so undeploy()
-        can run again after a partial failure.
+        can run again after a partial failure. A :class:`~synthefy.FineTunedEndpoint` is deleted in its own region,
+        the way :meth:`create_client` predicts through it; a name is deleted in this fine-tuner's region.
         """
         if isinstance(endpoint, FineTunedEndpoint):
             endpoint_name, model_name = endpoint.endpoint_name, endpoint.sagemaker_model_name
+            region_name = endpoint.region_name
         else:
             endpoint_name = model_name = endpoint
-        delete_deployment(self._sagemaker, endpoint_name=endpoint_name, model_name=model_name)
+            region_name = self.region_name
+        if region_name == self.region_name:
+            delete_deployment(self._sagemaker, endpoint_name=endpoint_name, model_name=model_name)
+            return
+        # Deleting by name through this fine-tuner's client would hit same-named resources in its region and leave
+        # the handle's endpoint running, so the deletes go through a client for the handle's region.
+        (sagemaker,) = create_aws_clients(("sagemaker",), region_name=region_name, **self._client_options)
+        try:
+            delete_deployment(sagemaker, endpoint_name=endpoint_name, model_name=model_name)
+        finally:
+            sagemaker.close()
 
     def create_client(
         self,

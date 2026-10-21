@@ -36,7 +36,8 @@ ALGORITHM = f"arn:aws:sagemaker:{REGION}:{ACCOUNT}:algorithm/nori-fine-tuning"
 ROLE = f"arn:aws:iam::{ACCOUNT}:role/SageMakerExecution"
 MODEL = "ft-acme-churn-v1"
 NOW = datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
-JOB = "nori-ft-acme-churn-v1-20261001-120000"
+RESOURCE_NAME_TOKEN = "0a1b2c"
+JOB = f"nori-{MODEL}-20261001-120000-{RESOURCE_NAME_TOKEN}"
 JOB_ARN = f"arn:aws:sagemaker:{REGION}:{ACCOUNT}:training-job/{JOB}"
 BUCKET = "customer-bucket"
 TRAIN = f"s3://{BUCKET}/nori/train/"
@@ -45,7 +46,7 @@ ARTIFACT_KEY = f"nori/output/{JOB}/output/model.tar.gz"
 ARTIFACT = f"s3://{BUCKET}/{ARTIFACT_KEY}"
 ASYNC_ROOT = f"s3://{BUCKET}/nori/output/{MODEL}/async"
 PACKAGE_ARN = f"arn:aws:sagemaker:{REGION}:{ACCOUNT}:model-package/{JOB}"
-CONFIG = f"{MODEL}-20261001-120000"
+CONFIG = f"{MODEL}-20261001-120000-{RESOURCE_NAME_TOKEN}"
 SERVED_TYPES = ["ml.g5.xlarge", "ml.g5.2xlarge", "ml.g6.xlarge"]
 STREAM = f"{JOB}/algo-1-1759320000"
 #: Bytes that are not a report: the report reader must never read them.
@@ -316,13 +317,30 @@ def create_stubbed_sagemaker() -> Tuple[Any, Any]:
 
 @contextlib.contextmanager
 def install_fake_aws(monkeypatch: Any) -> Iterator[SimpleNamespace]:
-    """A fine-tuner on the fakes, with a fake clock and a fixed UTC time; every stubbed create must be used."""
+    """A fine-tuner on the fakes, with a fake clock, a fixed UTC time and a fixed name token; every stubbed create
+    must be used. A client the fine-tuner asks for in another region comes from ``regional`` (one fake SageMaker per
+    region, made on first use unless the test put one there); ``client_calls`` records every request's keywords."""
     stubbed, stubber = create_stubbed_sagemaker()
-    fakes = SimpleNamespace(sm=FakeSageMaker(stubbed), logs=FakeLogs(), s3=FakeS3(), stubber=stubber, clock=Clock())
-    monkeypatch.setattr(
-        fine_tune_module, "create_aws_clients", lambda _service_names, **_kwargs: (fakes.sm, fakes.logs, fakes.s3)
+    fakes = SimpleNamespace(
+        sm=FakeSageMaker(stubbed),
+        logs=FakeLogs(),
+        s3=FakeS3(),
+        stubber=stubber,
+        clock=Clock(),
+        regional={},
+        client_calls=[],
     )
+
+    def create_clients(service_names: Any, **kwargs: Any) -> Tuple[Any, ...]:
+        fakes.client_calls.append(kwargs)
+        region = kwargs.get("region_name")
+        sagemaker = fakes.sm if region in (None, REGION) else fakes.regional.setdefault(region, FakeSageMaker(stubbed))
+        client_by_service_name = {"sagemaker": sagemaker, "logs": fakes.logs, "s3": fakes.s3}
+        return tuple(client_by_service_name[name] for name in service_names)
+
+    monkeypatch.setattr(fine_tune_module, "create_aws_clients", create_clients)
     monkeypatch.setattr(fine_tune_module, "_utcnow", lambda: NOW)
+    monkeypatch.setattr(fine_tune_module, "_generate_resource_name_token", lambda: RESOURCE_NAME_TOKEN)
     monkeypatch.setattr(fine_tune_module, "time", fakes.clock)
     monkeypatch.setattr(deploy_module, "time", fakes.clock)
     with stubber:

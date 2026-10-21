@@ -22,7 +22,9 @@ from ._fine_tune_fakes import (
     PACKAGE_ARN,
     REGION,
     ROLE,
+    RESOURCE_NAME_TOKEN,
     AWSError,
+    FakeSageMaker,
     FakeS3,
     build_artifact,
     build_completed,
@@ -386,8 +388,8 @@ def test_undeploy_deletes_the_endpoint_waits_for_it_then_its_configs_then_the_mo
     aws.sm.endpoints = [build_endpoint("Deleting"), build_missing_resource_error("endpoint")]
     aws.sm.endpoint_config_names = [
         CONFIG,
-        f"{MODEL}-20260930-080000",
-        f"{MODEL}-2-20261001-120000",
+        f"{MODEL}-20260930-080000",  # a config synthefy 7.2.0 made, without the token
+        f"{MODEL}-2-20261001-120000-{RESOURCE_NAME_TOKEN}",
         f"{MODEL}-manual",
     ]
 
@@ -405,6 +407,35 @@ def test_undeploy_deletes_the_endpoint_waits_for_it_then_its_configs_then_the_mo
     assert aws.clock.sleeps == [10.0]
 
 
+def test_undeploy_of_a_handle_deletes_in_the_handles_region_not_the_fine_tuners(aws):
+    regional = aws.regional.setdefault("eu-west-1", FakeSageMaker(aws.sm._stubbed))
+    regional.failures["delete_endpoint"] = build_missing_resource_error("endpoint")
+    endpoint = FineTunedEndpoint(
+        endpoint_name="churn-endpoint",
+        model_name=MODEL,
+        instance_type="ml.g5.xlarge",
+        status="InService",
+        model_package_arn=PACKAGE_ARN,
+        sagemaker_model_name="churn-endpoint",
+        endpoint_config_name=CONFIG,
+        async_output_uri=ASYNC_ROOT,
+        cut_short=False,
+        region_name="eu-west-1",
+    )
+
+    aws.tuner.undeploy(endpoint)
+
+    assert aws.sm.calls == []
+    assert regional.operations() == ["delete_endpoint", "list_endpoint_configs", "delete_model"]
+    assert regional.closed
+    assert aws.client_calls[-1] == {
+        "region_name": "eu-west-1",
+        "timeout": aws.client_calls[0]["timeout"],
+        "max_retries": aws.client_calls[0]["max_retries"],
+        "user_agent_extra": aws.client_calls[0]["user_agent_extra"],
+    }
+
+
 def test_undeploy_skips_what_is_already_gone(aws):
     aws.sm.failures["delete_endpoint"] = build_missing_resource_error("endpoint")
     aws.sm.failures["delete_model"] = build_missing_resource_error("model")
@@ -412,19 +443,25 @@ def test_undeploy_skips_what_is_already_gone(aws):
     assert aws.sm.operations() == ["delete_endpoint", "list_endpoint_configs", "delete_model"]
 
 
-@pytest.mark.parametrize("length", [47, 52], ids=["exactly-47", "longer"])
-def test_undeploy_of_a_name_cut_to_47_characters_deletes_only_the_configs_serving_its_own_model(aws, length):
-    shared = "a" * 47
+@pytest.mark.parametrize("length", [40, 52], ids=["exactly-40", "longer"])
+def test_undeploy_of_a_name_cut_to_40_characters_deletes_only_the_configs_serving_its_own_model(aws, length):
+    shared = "a" * 40
     mine, theirs = (shared + "-mine")[:length], shared + "-theirs"
-    my_config, their_config = f"{shared}-20261001-120000", f"{shared}-20261001-130000"
-    aws.sm.endpoint_config_names = [my_config, their_config]
-    aws.sm.endpoint_config_models = {my_config: mine, their_config: theirs}
+    my_config, their_config = (
+        f"{shared}-20261001-120000-{RESOURCE_NAME_TOKEN}",
+        f"{shared}-20261001-130000-{RESOURCE_NAME_TOKEN}",
+    )
+    my_legacy_config = f"{mine[:47]}-20261001-110000"  # synthefy 7.2.0 cut the name at 47 and added no token
+    aws.sm.endpoint_config_names = [my_config, their_config, my_legacy_config]
+    aws.sm.endpoint_config_models = {my_config: mine, their_config: theirs, my_legacy_config: mine}
     aws.sm.failures["delete_endpoint"] = build_missing_resource_error("endpoint", mine)
 
     aws.tuner.undeploy(mine)
 
+    listed = [params for operation, params in aws.sm.calls if operation == "list_endpoint_configs"]
+    assert listed == [{"NameContains": shared}]
     deleted = [params for operation, params in aws.sm.calls if operation == "delete_endpoint_config"]
-    assert deleted == [{"EndpointConfigName": my_config}]
+    assert deleted == [{"EndpointConfigName": my_config}, {"EndpointConfigName": my_legacy_config}]
 
 
 # --------------------------------------------------------------------------- #

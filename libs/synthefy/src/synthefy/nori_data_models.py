@@ -803,7 +803,10 @@ class FineTuneJobRequest(BaseModel):
     )
     role_arn: str = Field(min_length=1, description="The execution role SageMaker assumes to run the job.")
     job_name: Optional[str] = Field(
-        None, description="By default nori-<model_name[:42]>-<UTC timestamp>, chosen when fine_tune() runs."
+        None,
+        description=(
+            "By default nori-<model_name[:35]>-<UTC timestamp>-<6 random characters>, chosen when fine_tune() runs."
+        ),
     )
     max_runtime_s: Optional[int] = Field(
         None,

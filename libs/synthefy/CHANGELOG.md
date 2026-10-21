@@ -63,6 +63,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `context_length` limits the rows the model sees.
 - `MultimodalPreprocessor` accepts a custom text embedding with a single
   coordinate when `svd_dim` is set; that coordinate is kept as the feature.
+- `undeploy()` deletes a `FineTunedEndpoint` in the endpoint's own region, the way
+  `create_client()` predicts through it, so a handle from another region deletes
+  that region's endpoint and not same-named resources in the fine-tuner's region.
+- Generated training job and endpoint config names end with six random characters
+  after the UTC timestamp (`nori-<model_name[:35]>-<timestamp>-<token>` and
+  `<endpoint_name[:40]>-<timestamp>-<token>`), so two launches in the same second,
+  or two long names cut to the same characters, get different names. `undeploy()`
+  still finds the endpoint configs 7.2.0 named without the token.
+- The README's several-models example resets `max_runtime_s` when it copies a
+  request with other hyperparameters, so the copy derives its runtime from them.
 
 ## [7.2.0] - 2026-10-13
 

@@ -802,13 +802,14 @@ from the same lines, sampled per minute, so a short job shows only a handful of 
 ### Reading the result
 
 `report.val_mse_after` against `report.val_mse_before` is the result: the fine-tuned model and the base, scored on the
-same rows with the same context. Both are mean squared errors in standardized target units (the target scaled by the
+same rows with the same context. Lower is better: the distance between the two is what fine-tuning gained on your table,
+so always read them together. Both are mean squared errors in standardized target units (the target scaled by the
 training rows' mean and standard deviation); multiply the square root by that standard deviation for your own units.
 Without a validation channel the job sets aside min(10 % of the rows, 4,096) before training, rows no training step
-sees, so both scores are out of sample. With one, its rows (up to 4,096) are scored and also steer the training, so read
-`val_mse_after` as a favourable estimate: hold rows out of the channel yourself for an unbiased number. `validation_source` names the mode, `n_val_rows` counts
-the rows scored, and `n_rows_used` the rows kept after the 200,000-row and 30-million-cell limits; without a validation
-channel that count includes the report rows, which no training step sees.
+sees, so both scores are out of sample. With one, its rows (up to 4,096) are scored and also steer the training, so
+`val_mse_after` runs a little optimistic there. `validation_source` names the mode, `n_val_rows` counts the rows
+scored, and `n_rows_used` the rows kept after the 200,000-row and 30-million-cell limits; without a validation channel
+that count includes the report rows, which no training step sees.
 
 `job.latest_metrics` and the console charts show the last child's last step: progress, not the result. Each child's
 `val_mse` in `get_training_curves()` is that child's own validation score, the one that decides when it stops, not the
@@ -823,7 +824,9 @@ refused. For several models, run one job per `model_name` and deploy each:
 endpoints = {}
 for name, target in [("ft-acme-churn-v1", "churn"), ("ft-acme-ltv-v1", "ltv")]:
     hp = FineTuneHyperparameters(target_column=target, model_name=name)
-    job = tuner.wait(tuner.fine_tune(request.model_copy(update={"hyperparameters": hp})).job_name)
+    # max_runtime_s=None: the copy derives its runtime from these hyperparameters
+    per_model = request.model_copy(update={"hyperparameters": hp, "max_runtime_s": None})
+    job = tuner.wait(tuner.fine_tune(per_model).job_name)
     endpoints[name] = tuner.deploy(job)  # one endpoint per model, named after it
 ```
 

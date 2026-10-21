@@ -24,6 +24,9 @@ MAX_RESOURCE_NAME_CHARS = 63
 #: The UTC timestamp a generated SageMaker resource name ends with: unique per second.
 RESOURCE_NAME_TIMESTAMP_FORMAT = "%Y%m%d-%H%M%S"
 RESOURCE_NAME_TIMESTAMP_CHARS = len(datetime(2000, 1, 1).strftime(RESOURCE_NAME_TIMESTAMP_FORMAT))
+#: The random lowercase hex characters a generated name ends with, after the timestamp: two launches in the same
+#: second, or two long names cut to the same characters, get different names.
+RESOURCE_NAME_TOKEN_CHARS = 6
 #: The logger the fine-tuner and its deployment steps report progress on.
 FINE_TUNING_LOGGER_NAME = "synthefy.fine_tune"
 

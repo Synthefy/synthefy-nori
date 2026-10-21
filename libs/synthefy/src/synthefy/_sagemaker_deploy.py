@@ -18,6 +18,7 @@ from synthefy._aws import (
     MAX_RESOURCE_NAME_CHARS,
     RESOURCE_NAME_TIMESTAMP_CHARS,
     RESOURCE_NAME_TIMESTAMP_FORMAT,
+    RESOURCE_NAME_TOKEN_CHARS,
     format_seconds,
     is_missing_resource,
     is_missing_s3_object,
@@ -36,13 +37,20 @@ DEFAULT_ENDPOINT_INSTANCE_TYPE = "ml.g5.xlarge"
 ENDPOINT_TIMEOUT_S = 3600.0
 #: The timestamp a generated endpoint config name ends with, as listing matches it.
 _TIMESTAMP_PATTERN = re.compile(r"[0-9]{8}-[0-9]{6}")
+#: What follows the endpoint name in a config name deploy() makes: the UTC timestamp, then the token.
+_CONFIG_SUFFIX_PATTERN = re.compile(rf"[0-9]{{8}}-[0-9]{{6}}-[0-9a-f]{{{RESOURCE_NAME_TOKEN_CHARS}}}")
 #: A job in one of these still holds its instance and has not written its artifact, so deploy() refuses it.
 _RUNNING_JOB_STATUSES = frozenset({"InProgress", "Stopping"})
 #: The statuses deploy() ships from: a Completed job, or a Stopped one that wrote an artifact.
 _DEPLOYABLE_JOB_STATUSES = frozenset({"Completed", "Stopped"})
-#: An endpoint config name is <endpoint_name>-<UTC timestamp>, the endpoint name cut so the whole fits SageMaker's
-#: 63 characters; each deploy() gets its own.
-_ENDPOINT_CONFIG_NAME_CHARS = MAX_RESOURCE_NAME_CHARS - 1 - RESOURCE_NAME_TIMESTAMP_CHARS
+#: An endpoint config name is <endpoint_name>-<UTC timestamp>-<token>, the endpoint name cut so the whole fits
+#: SageMaker's 63 characters; each deploy() gets its own.
+_ENDPOINT_CONFIG_NAME_PREFIX_CHARS = (
+    MAX_RESOURCE_NAME_CHARS - 1 - RESOURCE_NAME_TIMESTAMP_CHARS - 1 - RESOURCE_NAME_TOKEN_CHARS
+)
+#: synthefy 7.2.0 named a config <endpoint_name[:47]>-<UTC timestamp>; undeploy() finds those too, until no
+#: deployment made by 7.2.0 is left running.
+_LEGACY_ENDPOINT_CONFIG_NAME_PREFIX_CHARS = MAX_RESOURCE_NAME_CHARS - 1 - RESOURCE_NAME_TIMESTAMP_CHARS
 #: The model package poll: SageMaker validates a package from a training job in minutes.
 _PACKAGE_POLL_S = 5.0
 _PACKAGE_TIMEOUT_S = 900.0
@@ -68,9 +76,22 @@ _CLEANUP_CALLS = (
 )
 
 
-def build_endpoint_config_name(endpoint_name: str, now: datetime) -> str:
-    """<endpoint_name[:47]>-<UTC timestamp>: within SageMaker's 63 characters, and one per deploy()."""
-    return f"{endpoint_name[:_ENDPOINT_CONFIG_NAME_CHARS]}-{now:{RESOURCE_NAME_TIMESTAMP_FORMAT}}"
+def build_endpoint_config_name(endpoint_name: str, now: datetime, token: str) -> str:
+    """<endpoint_name[:40]>-<UTC timestamp>-<token>: within SageMaker's 63 characters, and one per deploy(). The
+    token keeps two deployments begun in the same second, or two long names cut to the same characters, apart."""
+    return f"{endpoint_name[:_ENDPOINT_CONFIG_NAME_PREFIX_CHARS]}-{now:{RESOURCE_NAME_TIMESTAMP_FORMAT}}-{token}"
+
+
+def is_deployed_endpoint_config_name(name: str, endpoint_name: str) -> bool:
+    """Whether ``name`` is a config deploy() makes for ``endpoint_name``, in this version's form or 7.2.0's."""
+    for chars, pattern in (
+        (_ENDPOINT_CONFIG_NAME_PREFIX_CHARS, _CONFIG_SUFFIX_PATTERN),
+        (_LEGACY_ENDPOINT_CONFIG_NAME_PREFIX_CHARS, _TIMESTAMP_PATTERN),
+    ):
+        prefix = f"{endpoint_name[:chars]}-"
+        if name.startswith(prefix) and pattern.fullmatch(name[len(prefix) :]):
+            return True
+    return False
 
 
 def format_cleanup_calls(created: Dict[str, str]) -> str:
@@ -492,27 +513,32 @@ def read_endpoint_config_model(sagemaker: Any, config_name: str) -> Optional[str
 
 
 def list_deployed_endpoint_configs(sagemaker: Any, endpoint_name: str, model_name: str) -> List[str]:
-    """The endpoint configs deploy() made for this endpoint: ``<endpoint_name[:47]>-<UTC timestamp>``.
+    """The endpoint configs deploy() made for this endpoint, in this version's form or 7.2.0's
+    (:func:`is_deployed_endpoint_config_name`).
 
-    The timestamp must match exactly, so the configs of an endpoint whose name merely starts with this one
-    (``acme`` and ``acme-2``) are never listed. A name of 47 characters or more is cut to the same 47 as any
+    The suffix must match exactly, so the configs of an endpoint whose name merely starts with this one
+    (``acme`` and ``acme-2``) are never listed. A name of 40 characters or more is cut to the same 40 as any
     longer name sharing them, so its candidates are described and only those serving ``model_name`` are kept;
     another running endpoint's configs are never listed.
     """
-    prefix = f"{endpoint_name[:_ENDPOINT_CONFIG_NAME_CHARS]}-"
-    request: Dict[str, Any] = {"NameContains": prefix}
+    cut = endpoint_name[:_ENDPOINT_CONFIG_NAME_PREFIX_CHARS]
+    # A short name is followed by "-" in both forms; a cut one continues differently in each, so the listing
+    # filter stops at the cut and the exact check below does the rest.
+    request: Dict[str, Any] = {
+        "NameContains": f"{cut}-" if len(endpoint_name) < _ENDPOINT_CONFIG_NAME_PREFIX_CHARS else cut
+    }
     names: List[str] = []
     while True:
         page = sagemaker.list_endpoint_configs(**request)
         for config in page.get("EndpointConfigs") or []:
             name = config["EndpointConfigName"]
-            if name.startswith(prefix) and _TIMESTAMP_PATTERN.fullmatch(name[len(prefix) :]):
+            if is_deployed_endpoint_config_name(name, endpoint_name):
                 names.append(name)
         token = page.get("NextToken")
         if not token:
             break
         request["NextToken"] = token
-    if len(endpoint_name) < _ENDPOINT_CONFIG_NAME_CHARS:
+    if len(endpoint_name) < _ENDPOINT_CONFIG_NAME_PREFIX_CHARS:
         return names
     return [name for name in names if read_endpoint_config_model(sagemaker, name) == model_name]
 

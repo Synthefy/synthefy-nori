@@ -14,6 +14,7 @@ from synthefy._aws import (
     MAX_RESOURCE_NAME_CHARS,
     RESOURCE_NAME_TIMESTAMP_CHARS,
     RESOURCE_NAME_TIMESTAMP_FORMAT,
+    RESOURCE_NAME_TOKEN_CHARS,
     list_s3_keys,
     parse_s3_uri,
 )
@@ -25,17 +26,21 @@ from synthefy.nori_data_models import (
     serialize_hyperparameters,
 )
 
-#: A default job name is nori-<model_name>-<UTC timestamp>, the model name cut so the whole fits SageMaker's
-#: 63 characters. The model name brings its ft- prefix, so a job reads nori-ft-<name>-<timestamp>.
+#: A default job name is nori-<model_name>-<UTC timestamp>-<token>, the model name cut so the whole fits SageMaker's
+#: 63 characters. The model name brings its ft- prefix, so a job reads nori-ft-<name>-<timestamp>-<token>.
 _JOB_NAME_PREFIX = "nori-"
-_JOB_NAME_MODEL_CHARS = MAX_RESOURCE_NAME_CHARS - len(_JOB_NAME_PREFIX) - 1 - RESOURCE_NAME_TIMESTAMP_CHARS
+_JOB_NAME_MODEL_CHARS = (
+    MAX_RESOURCE_NAME_CHARS - len(_JOB_NAME_PREFIX) - 1 - RESOURCE_NAME_TIMESTAMP_CHARS - 1 - RESOURCE_NAME_TOKEN_CHARS
+)
 #: How many look-alike keys a refused one-object channel names.
 _MAX_LISTED_SIBLINGS = 10
 
 
-def build_job_name(model_name: str, now: datetime) -> str:
-    """nori-<model_name>-<UTC timestamp>, cut to SageMaker's 63 characters: unique per second."""
-    return f"{_JOB_NAME_PREFIX}{model_name[:_JOB_NAME_MODEL_CHARS]}-{now:{RESOURCE_NAME_TIMESTAMP_FORMAT}}"
+def build_job_name(model_name: str, now: datetime, token: str) -> str:
+    """nori-<model_name>-<UTC timestamp>-<token>, cut to SageMaker's 63 characters. The timestamp is unique per
+    second; ``token`` (random, ``RESOURCE_NAME_TOKEN_CHARS`` long) keeps two jobs started in the same second, or two
+    long names cut to the same characters, apart."""
+    return f"{_JOB_NAME_PREFIX}{model_name[:_JOB_NAME_MODEL_CHARS]}-{now:{RESOURCE_NAME_TIMESTAMP_FORMAT}}-{token}"
 
 
 def build_training_job_request(request: FineTuneJobRequest, job_name: str) -> Dict[str, Any]:

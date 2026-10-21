@@ -15,7 +15,7 @@ from synthefy import _aws as aws_module
 from synthefy.errors import APITimeoutError, FineTuningError
 from synthefy.nori_data_models import FineTuneJob
 from synthefy.nori_fine_tune import SynthefyNoriFineTuner
-from synthefy._training_jobs import build_job_name
+from synthefy._training_jobs import build_job_name, revalidate_request
 from synthefy._training_logs import CURVE_KEYS
 
 from ._fine_tune_fakes import (
@@ -30,6 +30,7 @@ from ._fine_tune_fakes import (
     REGION,
     ACCOUNT,
     STREAM,
+    RESOURCE_NAME_TOKEN,
     TRAIN,
     OUTPUT,
     AWSError,
@@ -66,10 +67,27 @@ def test_importing_the_fine_tuner_loads_neither_boto3_nor_torch():
 
 
 def test_default_job_name_fits_sagemakers_63_characters_for_the_longest_model_name():
-    name = build_job_name("ft-" + "a" * 60, NOW)
-    assert name == "nori-ft-" + "a" * 39 + "-20261001-120000"
+    name = build_job_name("ft-" + "a" * 60, NOW, RESOURCE_NAME_TOKEN)
+    assert name == "nori-ft-" + "a" * 32 + "-20261001-120000-" + RESOURCE_NAME_TOKEN
     assert len(name) == 63
     assert build_request(job_name=name).job_name == name
+
+
+def test_default_job_names_carry_the_token_so_two_launches_in_one_second_differ():
+    assert build_job_name(MODEL, NOW, "0a1b2c") != build_job_name(MODEL, NOW, "3d4e5f")
+
+
+def test_a_copied_request_derives_its_runtime_again_only_when_max_runtime_s_is_reset():
+    # The README's several-models example: a request built for a short job, copied with another model's defaults.
+    short = build_request(hyperparameters=build_hyperparameters(bag=2, steps=30))
+    assert short.max_runtime_s == 4500
+    other = build_hyperparameters(model_name="ft-acme-ltv-v1")
+    with pytest.raises(ValueError, match="max_runtime_s=4500 is below bag x budget_s"):
+        revalidate_request(short.model_copy(update={"hyperparameters": other}))
+    assert (
+        revalidate_request(short.model_copy(update={"hyperparameters": other, "max_runtime_s": None})).max_runtime_s
+        == 12600
+    )
 
 
 def test_the_fakes_refuse_a_parameter_the_installed_botocore_does_not_know(aws):
