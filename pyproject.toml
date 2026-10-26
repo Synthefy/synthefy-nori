@@ -71,9 +71,11 @@ forecasting = ["synthefy[forecasting]>=7,<8"]
 timeseries = ["synthefy[forecasting]>=7,<8"]
 train = ["wandb>=0.15.0", "xgboost"]
 eval = ["matplotlib", "openml"]
-interpretability = ["shapiq>=1.0", "matplotlib"]
-# Explainability: Nori feature importance (permutation / SHAP) -> distill to a glass-box EBM.
-# The SHAP path additionally needs the `interpretability` extra (shapiq).
+# Interpretability: Shapley values & interactions (shapiq), partial dependence, feature
+# selection, AND the glass-box workflow (NoriInterpreter -> permutation/SHAP importance ->
+# distilled EBM) under `interpretability.glassbox`. One extra covers the whole package.
+interpretability = ["shapiq>=1.0", "interpret-core>=0.6", "joblib", "matplotlib", "scipy>=1.13"]
+# Preserve the published install command used by existing glass-box clients.
 explainability = ["interpret-core>=0.6", "joblib", "matplotlib", "scipy>=1.13"]
 # Zero-shot text features: embed free-text columns and append them as numeric
 # columns (NoriRegressor.fit(..., text_columns=...)). sentence-transformers is

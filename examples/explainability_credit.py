@@ -26,7 +26,7 @@ matplotlib.use("Agg")  # headless: pick the non-interactive backend BEFORE pyplo
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
-from synthefy_nori.explainability import NoriInterpreter
+from synthefy_nori.interpretability.glassbox import NoriInterpreter
 from ucimlrepo import fetch_ucirepo
 
 

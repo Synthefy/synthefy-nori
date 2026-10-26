@@ -1,4 +1,4 @@
-"""Unit tests for ``synthefy_nori.explainability``.
+"""Unit tests for ``synthefy_nori.interpretability.glassbox``.
 
 Fast and offline: the pure helpers need nothing beyond the base deps, and the EBM
 serialisation tests fit a tiny 2-feature EBM (skipped when the optional
@@ -9,7 +9,7 @@ import warnings
 
 import numpy as np
 import pytest
-from synthefy_nori.explainability._common import (
+from synthefy_nori.interpretability.glassbox._common import (
     binarize01,
     binary_classes,
     clip_inf_edges,
@@ -126,7 +126,7 @@ def test_shape_direction(scores, expected):
 def _fit_tiny_ebm(feature_names):
     """A 2-feature classification EBM with pairwise interactions enabled."""
     pytest.importorskip("interpret", reason="needs the explainability extra")
-    from synthefy_nori.explainability.ebm import fit_ebm
+    from synthefy_nori.interpretability.glassbox.ebm import fit_ebm
 
     rng = np.random.RandomState(0)
     X = rng.normal(size=(200, len(feature_names))).astype(np.float32)
@@ -136,7 +136,7 @@ def _fit_tiny_ebm(feature_names):
 
 def test_ebm_structure_keeps_every_main_effect_when_a_feature_name_contains_an_ampersand():
     """Interactions are named "a & b", so a '&' substring test would drop "R&D spend" entirely."""
-    from synthefy_nori.explainability.ebm import ebm_structure
+    from synthefy_nori.interpretability.glassbox.ebm import ebm_structure
 
     names = ["R&D spend", "headcount"]
     struct = ebm_structure(_fit_tiny_ebm(names))
@@ -145,7 +145,7 @@ def test_ebm_structure_keeps_every_main_effect_when_a_feature_name_contains_an_a
 
 def test_ebm_structure_includes_interactions_by_default():
     """Without the pairwise terms, intercept + sum(shape_functions) != the model's prediction."""
-    from synthefy_nori.explainability.ebm import ebm_structure
+    from synthefy_nori.interpretability.glassbox.ebm import ebm_structure
 
     struct = ebm_structure(_fit_tiny_ebm(["a", "b"]))
     assert struct["interactions"], "interaction terms must be serialised by default"
@@ -155,7 +155,7 @@ def test_ebm_structure_includes_interactions_by_default():
 
 
 def test_ebm_structure_can_omit_interactions_on_request():
-    from synthefy_nori.explainability.ebm import ebm_structure
+    from synthefy_nori.interpretability.glassbox.ebm import ebm_structure
 
     struct = ebm_structure(_fit_tiny_ebm(["a", "b"]), include_interactions=False)
     assert "interactions" not in struct
@@ -163,7 +163,7 @@ def test_ebm_structure_can_omit_interactions_on_request():
 
 def test_ebm_structure_serialises_to_json_with_finite_edges():
     import json
-    from synthefy_nori.explainability.ebm import ebm_structure
+    from synthefy_nori.interpretability.glassbox.ebm import ebm_structure
 
     struct = ebm_structure(_fit_tiny_ebm(["a", "b"]))
     json.dumps(struct)  # must not raise
@@ -175,7 +175,7 @@ def test_ebm_structure_serialises_to_json_with_finite_edges():
 def test_plot_ebm_model_rejects_misaligned_density():
     """A pruned EBM plus the FULL table would silently draw each density from the wrong column."""
     pytest.importorskip("matplotlib", reason="needs the explainability extra")
-    from synthefy_nori.explainability.viz import plot_ebm_model
+    from synthefy_nori.interpretability.glassbox.viz import plot_ebm_model
 
     model = _fit_tiny_ebm(["a", "b"])
     with pytest.raises(ValueError, match="column-aligned"):
@@ -186,7 +186,7 @@ def test_plot_ebm_model_survives_a_degenerate_feature_range():
     """p10 == p90 on a zero-inflated column must not collapse the panel to zero width."""
     matplotlib = pytest.importorskip("matplotlib", reason="needs the explainability extra")
     matplotlib.use("Agg")
-    from synthefy_nori.explainability.viz import plot_ebm_model
+    from synthefy_nori.interpretability.glassbox.viz import plot_ebm_model
 
     model = _fit_tiny_ebm(["a", "b"])
     fig = plot_ebm_model(model, ["a", "b"], feature_ranges={"a": (0.0, 0.0)})
@@ -198,15 +198,15 @@ def test_plot_ebm_model_survives_a_degenerate_feature_range():
 # --------------------------------------------------------------------------- defaults
 def test_noriinterpreter_defaults_to_a_70_30_split():
     """The published write-up and the credit example both describe a 70/30 split."""
-    from synthefy_nori.explainability import NoriInterpreter
+    from synthefy_nori.interpretability.glassbox import NoriInterpreter
 
     assert NoriInterpreter().test_size == 0.3
 
 
 def test_all_split_defaults_are_70_30():
     """ "70/30 everywhere": the estimator, the pipeline's selection carve-out, and the loaders."""
-    from synthefy_nori.explainability import data as _data
-    from synthefy_nori.explainability.pipeline import SELECTION_FRACTION
+    from synthefy_nori.interpretability.glassbox import data as _data
+    from synthefy_nori.interpretability.glassbox.pipeline import SELECTION_FRACTION
 
     assert SELECTION_FRACTION == 0.3
     import inspect
@@ -220,8 +220,8 @@ def test_figure_key_states_how_many_interactions_are_drawn():
     matplotlib = pytest.importorskip("matplotlib", reason="needs the explainability extra")
     matplotlib.use("Agg")
     pytest.importorskip("interpret", reason="needs the explainability extra")
-    from synthefy_nori.explainability.ebm import fit_ebm
-    from synthefy_nori.explainability.viz import MAX_INTERACTIONS_SHOWN, plot_ebm_model
+    from synthefy_nori.interpretability.glassbox.ebm import fit_ebm
+    from synthefy_nori.interpretability.glassbox.viz import MAX_INTERACTIONS_SHOWN, plot_ebm_model
 
     rng = np.random.RandomState(0)
     X = rng.normal(size=(300, 4)).astype(np.float32)
@@ -241,8 +241,8 @@ def test_figure_key_states_how_many_interactions_are_drawn():
 def test_use_test_defaults_to_true_on_both_entry_points():
     """Interpretation is post-hoc, so importance is measured on held-out data by default."""
     import inspect
-    from synthefy_nori.explainability import NoriInterpreter
-    from synthefy_nori.explainability.pipeline import run
+    from synthefy_nori.interpretability.glassbox import NoriInterpreter
+    from synthefy_nori.interpretability.glassbox.pipeline import run
 
     assert NoriInterpreter().use_test is True
     assert inspect.signature(run).parameters["use_test"].default is True
@@ -264,7 +264,7 @@ def test_pipeline_run_end_to_end(use_test, tmp_path):
     """pipeline.run was CI-blind: only its constants were imported, never its behaviour."""
     pytest.importorskip("interpret", reason="needs the explainability extra")
     from sklearn.linear_model import Ridge
-    from synthefy_nori.explainability.pipeline import run
+    from synthefy_nori.interpretability.glassbox.pipeline import run
 
     X, y, names = _toy()
     res = run(
@@ -296,7 +296,7 @@ def test_nori_interpreter_end_to_end(use_test):
     """The estimator front door over the same _core path."""
     pytest.importorskip("interpret", reason="needs the explainability extra")
     from sklearn.linear_model import Ridge
-    from synthefy_nori.explainability import NoriInterpreter
+    from synthefy_nori.interpretability.glassbox import NoriInterpreter
 
     X, y, names = _toy()
     interp = NoriInterpreter(model=Ridge(), reduce_threshold=3, render_figure=False, use_test=use_test).fit(
@@ -316,8 +316,8 @@ def test_both_front_doors_agree_when_given_the_same_split():
     """The whole point of _core: one implementation, so the two front doors cannot drift."""
     pytest.importorskip("interpret", reason="needs the explainability extra")
     from sklearn.linear_model import Ridge
-    from synthefy_nori.explainability import NoriInterpreter
-    from synthefy_nori.explainability.pipeline import run
+    from synthefy_nori.interpretability.glassbox import NoriInterpreter
+    from synthefy_nori.interpretability.glassbox.pipeline import run
 
     X, y, names = _toy(n=200, d=5)
     res = run(X[:140], y[:140], X[140:], y[140:], names, nori_model=Ridge(), reduce_threshold=2, verbose=False)
@@ -332,7 +332,7 @@ def test_both_front_doors_agree_when_given_the_same_split():
 # --------------------------------------------------------------------------- loaders
 def test_load_table_reads_csv_and_parquet_identically(tmp_path):
     import pandas as pd
-    from synthefy_nori.explainability.data import load_csv, load_table
+    from synthefy_nori.interpretability.glassbox.data import load_csv, load_table
 
     df = pd.DataFrame({"a": [1.0, 2, 3, 4, 5, 6, 7, 8], "b": list("xxyyxxyy"), "target": [0, 1, 0, 1, 0, 1, 0, 1]})
     csv, pq = tmp_path / "t.csv", tmp_path / "t.parquet"
@@ -348,7 +348,7 @@ def test_load_table_reads_csv_and_parquet_identically(tmp_path):
 
 def test_load_table_ordinal_encodes_and_keeps_missing_as_nan(tmp_path):
     import pandas as pd
-    from synthefy_nori.explainability.data import load_table
+    from synthefy_nori.interpretability.glassbox.data import load_table
 
     df = pd.DataFrame({"cat": ["x", None, "y", "x", "y", "x"], "target": [0, 1, 0, 1, 0, 1]})
     csv = tmp_path / "m.csv"
@@ -363,7 +363,7 @@ def test_interpreter_records_the_pruning_sweep():
     """The notebook plots accuracy-vs-features straight off the fitted estimator."""
     pytest.importorskip("interpret", reason="needs the explainability extra")
     from sklearn.linear_model import Ridge
-    from synthefy_nori.explainability import NoriInterpreter
+    from synthefy_nori.interpretability.glassbox import NoriInterpreter
 
     X, y, names = _toy(n=180, d=8)
     interp = NoriInterpreter(model=Ridge(), reduce_threshold=2, render_figure=False).fit(X, y, feature_names=names)
@@ -376,7 +376,7 @@ def test_interpreter_records_the_pruning_sweep():
 
 # --------------------------------------------------------------------------- multiclass
 def test_macro_ovr_auc_needs_a_column_per_class_and_averages_them():
-    from synthefy_nori.explainability._common import make_metric
+    from synthefy_nori.interpretability.glassbox._common import make_metric
 
     metric, name = make_metric("multiclass")
     assert name == "macro_ovr_auc"
@@ -388,7 +388,7 @@ def test_macro_ovr_auc_needs_a_column_per_class_and_averages_them():
 
 
 def test_label_round_trip_for_any_encoding():
-    from synthefy_nori.explainability._common import decode_labels, encode_labels, target_classes
+    from synthefy_nori.interpretability.glassbox._common import decode_labels, encode_labels, target_classes
 
     for labels in ([1, 2, 3], [-1, 0, 1], ["low", "mid", "high"]):
         y = np.array(list(labels) * 3)
@@ -402,7 +402,7 @@ def test_one_vs_rest_wrapper_fits_one_regressor_per_class_and_assumes_no_order()
     """Nori is a regressor. For K>2, regressing the class CODES would assert 1 lies between
     0 and 2; one indicator regression per class asserts nothing about order."""
     from sklearn.linear_model import Ridge
-    from synthefy_nori.explainability._core import OneVsRestNori
+    from synthefy_nori.interpretability.glassbox._core import OneVsRestNori
 
     rng = np.random.RandomState(0)
     X = rng.normal(size=(90, 4)).astype(np.float32)
@@ -424,8 +424,8 @@ def test_regressor_on_class_codes_would_be_worse_than_one_vs_rest():
     """Why the wrapper exists: the naive single regression onto 0..K-1 loses real skill when
     the classes have no natural order."""
     from sklearn.linear_model import Ridge
-    from synthefy_nori.explainability._common import make_metric
-    from synthefy_nori.explainability._core import OneVsRestNori
+    from synthefy_nori.interpretability.glassbox._common import make_metric
+    from synthefy_nori.interpretability.glassbox._core import OneVsRestNori
 
     rng = np.random.RandomState(0)
     n = 300
@@ -445,7 +445,7 @@ def test_regressor_on_class_codes_would_be_worse_than_one_vs_rest():
 def test_multiclass_end_to_end(labels):
     pytest.importorskip("interpret", reason="needs the explainability extra")
     from sklearn.linear_model import Ridge
-    from synthefy_nori.explainability import NoriInterpreter
+    from synthefy_nori.interpretability.glassbox import NoriInterpreter
 
     rng = np.random.RandomState(0)
     n = 240
@@ -479,7 +479,7 @@ def test_multiclass_end_to_end(labels):
 def test_multiclass_ebm_has_no_interactions():
     """interpret's EBM cannot do pairwise terms for K>2, so fit_ebm must force 0."""
     pytest.importorskip("interpret", reason="needs the explainability extra")
-    from synthefy_nori.explainability.ebm import fit_ebm
+    from synthefy_nori.interpretability.glassbox.ebm import fit_ebm
 
     rng = np.random.RandomState(0)
     X = rng.normal(size=(150, 3)).astype(np.float32)
