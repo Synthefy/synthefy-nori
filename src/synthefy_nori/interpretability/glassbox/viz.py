@@ -584,3 +584,97 @@ def plot_causal_graph(
     if out_path:
         fig.savefig(out_path, dpi=150, bbox_inches="tight")
     return fig
+
+
+def plot_target_causal_edges(
+    adjacency, names, *, target_index, strong=0.5, out_path=None, title=None, figsize=(7.6, 7.6)
+):
+    """Draw only the edges into and out of the target: the target in the centre, every other node on a
+    circle around it, and one arrow per node in its more probable direction, labelled with that
+    probability. Nodes are ordered clockwise from the top by their strongest relation to the target.
+
+    ``adjacency[i, j]`` = P(node i -> node j). Arrows with probability >= ``strong`` are solid (orange into
+    the target, gray out of it) with width scaled by probability; the rest are thin and dashed, since
+    the model leans neither way for them and their direction is unreliable."""
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.lines import Line2D
+        from matplotlib.patches import FancyArrowPatch
+    except ImportError as e:  # pragma: no cover - optional extra
+        raise ImportError(
+            'plot_target_causal_edges needs matplotlib: pip install "synthefy-nori[interpretability]"'
+        ) from e
+    A = np.asarray(adjacency, float)
+    others = [j for j in range(len(names)) if j != target_index]
+    p_in, p_out = A[others, target_index], A[target_index, others]
+    order = np.argsort(-np.maximum(p_in, p_out), kind="stable")
+    angles = np.pi / 2 - 2 * np.pi * np.arange(len(others)) / max(len(others), 1)
+    surface, ink, muted = "#fcfcfb", "#1f1f1e", "#52514e"
+    cause_color, effect_color, weak_color = "#c4501d", "#6b6a66", "#b9b8b2"
+    fig, ax = plt.subplots(figsize=figsize, facecolor=surface)
+    ax.set_facecolor(surface)
+    styles_used = set()
+    for k, idx in enumerate(order):
+        pos = np.array([np.cos(angles[k]), np.sin(angles[k])])
+        into = p_in[idx] >= p_out[idx]
+        p = float(max(p_in[idx], p_out[idx]))
+        is_strong = p >= strong
+        style = ("cause" if into else "effect") if is_strong else "weak"
+        styles_used.add(style)
+        start, end = (pos, np.zeros(2)) if into else (np.zeros(2), pos)
+        ax.add_patch(
+            FancyArrowPatch(
+                start,
+                end,
+                arrowstyle="-|>",
+                mutation_scale=16 if is_strong else 11,
+                shrinkA=22 if into else 44,
+                shrinkB=44 if into else 22,
+                lw=(0.8 + 4.0 * p) if is_strong else 1.2,
+                linestyle="-" if is_strong else (0, (4, 3)),
+                color={"cause": cause_color, "effect": effect_color, "weak": weak_color}[style],
+                zorder=2,
+            )
+        )
+        ax.scatter(*pos, s=900, color="#e9e8e2", edgecolor="#2b2b2b", linewidth=1, zorder=3)
+        ax.text(*(pos * 1.2), names[others[idx]], ha="center", va="center", fontsize=12, color=ink, zorder=4)
+        label_at = pos * 0.6 + np.array([-pos[1], pos[0]]) * 0.08
+        ax.text(
+            *label_at,
+            f"{p:.2f}",
+            ha="center",
+            va="center",
+            fontsize=10 if is_strong else 9,
+            color=ink if is_strong else "#8a8983",
+            fontweight="bold" if is_strong else "normal",
+            zorder=4,
+            bbox=dict(boxstyle="round,pad=0.15", fc=surface, ec="none"),
+        )
+    target = names[target_index]
+    ax.scatter(0, 0, s=5200, color=cause_color, edgecolor="#2b2b2b", linewidth=1, zorder=3)
+    ax.text(0, 0, target, ha="center", va="center", fontsize=10.5, fontweight="bold", color="white", zorder=4)
+    ax.set_xlim(-1.45, 1.45)
+    ax.set_ylim(-1.4, 1.5)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    legend = {
+        "cause": Line2D([], [], color=cause_color, lw=3, label=f"feature → {target} (p ≥ {strong:g})"),
+        "effect": Line2D([], [], color=effect_color, lw=3, label=f"{target} → feature (p ≥ {strong:g})"),
+        "weak": Line2D(
+            [], [], color=weak_color, lw=1.4, linestyle=(0, (4, 3)), label=f"weak: both directions < {strong:g}"
+        ),
+    }
+    ax.legend(
+        handles=[legend[s] for s in ("cause", "effect", "weak") if s in styles_used],
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.06),
+        ncol=2,
+        frameon=False,
+        fontsize=10,
+        labelcolor=muted,
+    )
+    if title:
+        ax.set_title(title, fontsize=11, color=ink, pad=40)
+    if out_path:
+        fig.savefig(out_path, dpi=180, bbox_inches="tight", facecolor=surface)
+    return fig

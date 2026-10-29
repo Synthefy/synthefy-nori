@@ -145,6 +145,14 @@ def test_interpreter_causal_attributes(tiny_checkpoint):
     assert all(r["target_coverage"] == 1 for r in interp.causal_ranking_)  # one target-aware pass
     assert interp.summary()["causal_top_causes"] == [r["feature"] for r in interp.causal_ranking_]
     assert not hasattr(interp, "causal_graph_")
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from matplotlib.patches import FancyArrowPatch
+
+    default_fig = interp.plot_causal_graph()  # target-only: one arrow per feature
+    assert sum(isinstance(p, FancyArrowPatch) for p in default_fig.axes[0].patches) == 4
+    assert interp.plot_causal_graph(target_only=False, max_edges=3).axes[0].patches
     labels = (y > 0).astype(int)
     with pytest.raises(ValueError, match="regression targets only"):
         NoriInterpreter(model=Ridge(), causal=True, causal_checkpoint=tiny_checkpoint, causal_model="custom").fit(
@@ -226,3 +234,29 @@ def test_target_voting_reads_every_feature_with_y_and_floors_uncovered_pairs(mon
     uncovered = coverage == 0
     assert uncovered.any() and (causal.adjacency_[uncovered] < 1e-6).all()
     assert np.allclose(causal.adjacency_[(coverage > 0) & ~np.eye(len(coverage), dtype=bool)], 0.5)  # zero logits
+
+
+def test_plot_target_causal_edges_draws_one_arrow_per_feature_and_dashes_weak_ones():
+    pytest.importorskip("matplotlib")
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from matplotlib.patches import FancyArrowPatch
+
+    from synthefy_nori.interpretability.glassbox.viz import plot_target_causal_edges
+
+    # nodes a, b, c, y (target = 3): a -> y strong, y -> b strong, c weak both ways
+    probabilities = np.zeros((4, 4))
+    probabilities[0, 3], probabilities[3, 0] = 0.9, 0.1
+    probabilities[3, 1], probabilities[1, 3] = 0.7, 0.2
+    probabilities[2, 3], probabilities[3, 2] = 0.3, 0.2
+    probabilities[0, 1] = 0.95  # a feature-feature edge: never drawn
+    fig = plot_target_causal_edges(probabilities, ["a", "b", "c", "y"], target_index=3)
+    arrows = [p for p in fig.axes[0].patches if isinstance(p, FancyArrowPatch)]
+    assert len(arrows) == 3
+    dashed = [a for a in arrows if a.get_linestyle() not in ("-", "solid")]
+    assert len(dashed) == 1  # only c, below 0.5 both ways
+    labels = {t.get_text() for t in fig.axes[0].texts}
+    assert {"0.90", "0.70", "0.30", "y"} <= labels
+    legend = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    assert len(legend) == 3

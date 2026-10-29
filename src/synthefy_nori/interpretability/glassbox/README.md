@@ -68,7 +68,7 @@ interp.causal_ranking_               # per feature: p_cause, p_effect, importanc
 interp.causal_cause_probabilities_   # P(feature -> y), aligned with feature_names_
 interp.causal_effect_probabilities_  # P(y -> feature)
 interp.causal_adjacency_             # (d+1, d+1) edge probabilities, [i, j] = P(i -> j); target is last
-interp.plot_causal_graph(out_path="graph.png")   # the most probable edges
+interp.plot_causal_graph(out_path="graph.png")   # edges into / out of the target (target_only=False: all edges)
 ```
 
 Regression only for now: `fit` raises for classification tasks. The checkpoint downloads from `Synthefy/Nori-Causal` on first use;

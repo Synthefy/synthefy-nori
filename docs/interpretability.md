@@ -79,7 +79,7 @@ from synthefy_nori.interpretability.glassbox import NoriInterpreter
 interp = NoriInterpreter(causal=True).fit(X, y)   # the full table; regression targets only
 interp.causal_ranking_       # per feature: p_cause, p_effect, target_coverage, importance
 interp.causal_adjacency_     # (d+1, d+1) edge probabilities, [i, j] = P(i -> j); the target is last
-interp.plot_causal_graph(out_path="causal.png")   # the most probable edges
+interp.plot_causal_graph(out_path="causal.png")   # edges into / out of the target (target_only=False: all edges)
 ```
 
 The weights download from `Synthefy/Nori-Causal` on first use

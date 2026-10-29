@@ -438,17 +438,27 @@ class NoriInterpreter(BaseEstimator):
             for j in np.argsort(-self.causal_cause_probabilities_, kind="stable")
         ]
 
-    def plot_causal_graph(self, *, out_path=None, max_edges=40, **kwargs):
-        """Draw the ``max_edges`` most probable edges (target highlighted; edge width = probability)."""
+    def plot_causal_graph(self, *, target_only=True, out_path=None, max_edges=40, **kwargs):
+        """Draw the causal probabilities.
+
+        ``target_only=True`` (default): only the edges into and out of the target, the target in the
+        centre and each feature's more probable direction labelled with its probability (weak edges,
+        below 0.5 both ways, dashed). ``target_only=False``: the ``max_edges`` most probable edges among
+        all nodes on a circle."""
         check_is_fitted(self, "ebm_")
         if self.causal_ is None:
             raise AttributeError("fit with causal=True to estimate edge probabilities")
-        from synthefy_nori.interpretability.glassbox.viz import plot_causal_graph
+        from synthefy_nori.interpretability.glassbox.viz import plot_causal_graph, plot_target_causal_edges
 
+        target_index = len(self.causal_node_names_) - 1
+        if target_only:
+            return plot_target_causal_edges(
+                self.causal_adjacency_, self.causal_node_names_, target_index=target_index, out_path=out_path, **kwargs
+            )
         return plot_causal_graph(
             self.causal_adjacency_,
             self.causal_node_names_,
-            target_index=len(self.causal_node_names_) - 1,
+            target_index=target_index,
             out_path=out_path,
             max_edges=max_edges,
             **kwargs,
