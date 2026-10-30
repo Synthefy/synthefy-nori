@@ -67,6 +67,9 @@ def resolve_model_repo(model: str | None) -> str:
     return NORI_MODELS.get(model, model)
 
 
+# Synthefy repos whose downloads should show up in the Hub's stats (see download_checkpoint).
+DOWNLOAD_COUNTED_REPOS = {*NORI_MODELS.values(), "Synthefy/Nori-Causal"}
+
 LIMIX_REPO_ID = "stableai-org/LimiX-2M"
 LIMIX_FILENAME = "LimiX-2M.ckpt"
 
@@ -137,11 +140,11 @@ def download_checkpoint(
             raise CheckpointAccessError(_access_error_message(repo_id)) from exc
         raise
 
-    if repo_id in NORI_MODELS.values() and filename != "config.json":
+    if repo_id in DOWNLOAD_COUNTED_REPOS and filename != "config.json":
         # The Hub counts model downloads only via its query file (config.json),
         # never via .pt requests, so fetch the small config alongside the
         # checkpoint to make downloads show up in the repo's stats (for every
-        # Synthefy Nori variant, not just the base).
+        # Synthefy Nori variant, not just the base, and for Nori-Causal).
         try:
             hf_hub_download(
                 repo_id=repo_id,

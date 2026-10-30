@@ -106,3 +106,17 @@ def test_download_cli_rejects_bad_model_args(hub_downloads, argv):
     with pytest.raises(SystemExit):
         hf.download_cli(argv)
     assert hub_downloads == []
+
+
+def test_nori_causal_download_also_fetches_the_counting_config(monkeypatch):
+    seen = []
+
+    def fake_hub_download(repo_id, filename, **kwargs):
+        seen.append((repo_id, filename))
+        return f"/cache/{repo_id}/{filename}"
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_hub_download)
+    hf.download_checkpoint(repo_id="Synthefy/Nori-Causal", filename="noricausal_31m.pt")
+    assert seen == [("Synthefy/Nori-Causal", "noricausal_31m.pt"), ("Synthefy/Nori-Causal", "config.json")]

@@ -64,4 +64,40 @@ print(res.selected_indices, res.selected_score_mean)
 Sequential selection re-fits in-context on every CV split, so keep it to a few
 thousand samples and a modest feature count.
 
+## Causal relations to the target (NoriCausal)
+
+`NoriInterpreter(causal=True)` adds a causal view next to the permutation
+importances: for every feature, the probability that it is a direct cause of the
+target (P(feature → target)) and a direct effect of it (P(target → feature)),
+from **NoriCausal**, a zero-shot model that reads the table once. An important
+feature with a high `p_effect` and a low `p_cause` is more likely a proxy of the
+target than a driver of it.
+
+```python
+from synthefy_nori.interpretability.glassbox import NoriInterpreter
+
+interp = NoriInterpreter(causal=True).fit(X, y)   # the full table; regression targets only
+interp.causal_ranking_       # per feature: p_cause, p_effect, target_coverage, importance
+interp.causal_adjacency_     # (d+1, d+1) edge probabilities, [i, j] = P(i -> j); the target is last
+interp.plot_causal_graph(out_path="causal.png")   # edges into / out of the target (target_only=False: all edges)
+```
+
+The weights download from `Synthefy/Nori-Causal` on first use
+(`causal_checkpoint=` or `SYNTHEFY_NORICAUSAL_31M_CHECKPOINT` points at a local
+file instead). The output is probabilities, not a decided graph: no cutoff is
+applied. Up to 25 features the table is read in one pass; wider tables are read
+as 30-column subsets with the target in every subset that contains it, until
+each feature has been read with the target at least 3 times. The model is
+trained on synthetic data and can be misled by hidden confounders and
+near-duplicate columns, so treat the scores as evidence to check.
+
+NoriCausal also works on its own, with or without a target:
+
+```python
+from synthefy_nori.causal import NoriCausal
+
+causal = NoriCausal().fit(X, y)   # y is optional
+causal.adjacency_                 # [i, j] = P(node i -> node j)
+```
+
 Full runnable example: [`examples/interpretability_regression.py`](../examples/interpretability_regression.py).
