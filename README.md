@@ -21,7 +21,7 @@ Face checkpoint tooling.
 Four models ship, and `model=` is required — there is no default:
 **`"nori-6m"`** (the base), **`"nori-1-5"`**, **`"nori-30m"`**, and **`"nori-100m"`**
 (the largest).
-See [Benchmarks](#benchmarks) for how to evaluate any of them on the public suites.
+See [Benchmarks](#benchmarks) for how they compare on the official splits of three public suites.
 
 ## Table of contents
 
@@ -444,26 +444,43 @@ Reproduce (prints the results table and writes `benchmarks/plots/shap_speed.png`
 
 ## Benchmarks
 
-Mean and median R² across 95 public regression tasks from three suites. Nori 1.5 has the
-highest mean on every suite:
+Mean R² on the official splits of three public regression suites, the splits
+[pareto.synthefy.com](https://pareto.synthefy.com) uses, so these numbers are on the same scale
+as every model there. Nori 1.5 beats every other Nori size on every suite. In each size's column,
+the parentheses give Nori 1.5's lead over that size with a paired 95% bootstrap CI over datasets:
 
-| Suite | Datasets | Nori-6M | **Nori 1.5** | Nori-30M | Nori-100M |
-|-------|---------:|:-------:|:------------:|:--------:|:---------:|
-| TabArena | 13 | 0.8068 / 0.8772 | **0.8175 / 0.8939** | 0.8097 / 0.8831 | 0.8120 / 0.8901 |
-| TALENT | 71 | 0.7561 / 0.8918 | **0.7614 / 0.8939** | 0.7523 / 0.8942 | 0.7539 / 0.8944 |
-| OpenML | 11 | 0.6366 / 0.5719 | **0.6559 / 0.6265** | 0.6430 / 0.6190 | 0.6488 / 0.6313 |
-| **Overall** | **95** | 0.7492 / 0.8708 | **0.7569 / 0.8869** | 0.7475 / 0.8752 | 0.7497 / 0.8799 |
+| Suite | Datasets / folds | **Nori 1.5** | Nori-6M | Nori-30M | Nori-100M |
+|-------|-----------------:|:------------:|:-------:|:--------:|:---------:|
+| TALENT | 100 / 100 | **0.7404** | 0.7324 (+0.0080 [+0.0031, +0.0126]) | 0.7350 (+0.0054 [+0.0012, +0.0092]) | 0.7359 (+0.0045 [+0.0006, +0.0080]) |
+| TabArena | 13 / 222 | **0.8116** | 0.8015 (+0.0101 [+0.0052, +0.0160]) | 0.8034 (+0.0082 [+0.0038, +0.0139]) | 0.8059 (+0.0057 [+0.0024, +0.0102]) |
+| OpenML-CTR23 | 35 / 400 | **0.7692** | 0.7605 (+0.0087 [+0.0023, +0.0159]) | 0.7612 (+0.0080 [+0.0036, +0.0128]) | 0.7585 (+0.0040 [+0.0001, +0.0080]) ¹ |
+| **Overall** | **148 / 722** | **0.7534** | 0.7451 (+0.0084 [+0.0048, +0.0121]) | 0.7472 (+0.0062 [+0.0032, +0.0090]) | 0.7473 (+0.0045 [+0.0015, +0.0069]) ¹ |
 
-- **One sweep, one protocol.** Every column comes from one `synthefy-nori-eval` sweep on H100s
-  with the same code, each model on its own default inference config. Compare the columns with
-  each other, not with numbers from another sweep.
-- **`--max-elements-budget 2000000`, not the 8M default.** Nori-100M's key/value cache does not
-  fit an 80 GB GPU at 8M on the long-context tables. The lower budget trims context on the
-  largest tables for every model.
-- **95 tasks, not 96.** `talent/topo_2_1` is excluded, as in earlier tables.
-- **Speed.** Nori 1.5 runs 4 ensemble members instead of 8. On TabArena and TALENT it took 309 s
-  against 782 s for Nori-30M and 3,370 s for Nori-100M (separate H100s next to other jobs, so
-  approximate).
+- **TALENT:** the TALENT archive's 100 regression datasets on their official split; train plus
+  validation is the context (randomly capped at 10,000 rows), scored on the official test set.
+  This is pareto.synthefy.com's "historical" TALENT view. Its default view uses every context
+  row; there Nori 1.5 scores 0.7427.
+- **TabArena:** the 13 TabArena-v0.1 regression datasets on TabArena's official repeated 3-fold
+  CV (10 or 3 repeats, as each TabArena task defines).
+- **OpenML-CTR23:** the 35 tasks of OpenML suite 353 on their official CV splits, at most 20 per
+  task.
+- **Overall** averages every (suite, dataset) pair, so a dataset that is in two suites counts
+  once per suite.
+- ¹ Nori-100M ran out of memory on all 10 folds of `wave_energy` (64,800 rows × 48 features) on
+  an 80 GB H100 with its 8-member default config, so its CTR23 and Overall comparisons cover 34
+  and 147 datasets. On those, Nori 1.5 scores 0.7625 and 0.7518.
+- **Comparators.** Every model runs its own default inference config. The other sizes' TALENT
+  and TabArena scores are their rows on the published leaderboard. It has no CTR23 rows for
+  them, so those were run on the same code and hardware as Nori 1.5.
+- **Speed.** Nori 1.5 runs 4 ensemble members instead of 8. On CTR23's `video_transcoding`
+  (61,905 × 18), one fold took 21.9 s against 113.2 s for Nori-30M and 317.6 s for Nori-100M,
+  each on its own H100 (indicative wall-clock, not a latency benchmark).
+
+Earlier versions of this README showed a 95-task table from `synthefy-nori-eval`, which scores one
+fixed-seed holdout per dataset (70/30 for TabArena and TALENT, 80/20 for 11 OpenML datasets),
+fetches 71 TALENT datasets from OpenML by name and applies its own categorical encoding and
+missing-value imputation, so its numbers are not comparable with these or with
+pareto.synthefy.com.
 
 Large-context tables (common in TabArena) are the current focus of the
 large-table training stages.
@@ -471,14 +488,18 @@ large-table training stages.
 > **Thinking** is an inference-time reasoning extension that improves these
 > numbers further. Details are forthcoming.
 
-### Running the benchmark
+### Quick holdout check (`synthefy-nori-eval`)
+
+The packaged CLI scores the fixed-seed holdouts described above. Use it to compare checkpoints
+with each other on your own machine; its numbers are not on the scale of the table above or of
+pareto.synthefy.com.
 
 ```bash
 pip install "synthefy-nori[eval]"
 
-# One size. Repeat --checkpoint (label:path) to score several in one pass, which is how
-# the table above was produced. --max-elements-budget must match across sizes for the
-# results to be comparable; 2000000 is what the table used.
+# One size. Repeat --checkpoint (label:path) to score several in one pass.
+# --max-elements-budget must match across sizes for the results to be comparable;
+# 2000000 lets Nori-100M fit an 80 GB GPU.
 synthefy-nori-eval --download-benchmarks --openml-reg \
   --checkpoint "nori-1-5:$(python -c 'from synthefy_nori.hf import download_checkpoint as d; print(d(model="nori-1-5"))')" \
   --max-elements-budget 2000000
@@ -502,8 +523,8 @@ Each checkpoint runs its default inference config: the one stored in the file (N
 
 The benchmark allows up to 50,000 context rows per dataset (no memory-based row cap). The
 inference element budget (`SYNTHEFY_MAX_ELEMENTS_BUDGET`, or `--max-elements-budget`)
-defaults to 8M, which targets large GPUs; **the table above used 2M**, because Nori-100M's
-key/value cache reaches ~179 GiB on the long-context tables and does not fit an 80 GB or a
+defaults to 8M, which targets large GPUs; pass 2M when Nori-100M is in the comparison, because
+its key/value cache reaches ~179 GiB on the long-context tables and does not fit an 80 GB or a
 141 GB GPU at 8M. Lowering the budget trims context on the largest tables, so results there
 sit below a full-context run — more context is genuinely better. Keep the budget identical
 across every size you intend to compare. On smaller GPUs also pass `--gpu-mem-gb <GiB>` to
@@ -515,7 +536,7 @@ writes per-dataset metrics to `results/eval/all_results.csv`. Expect roughly
 then Apple MPS, then CPU; pass e.g. `--device cuda:1` to pick a GPU.
 
 Exact per-dataset R² can move by ±0.001–0.002 across GPU models and
-PyTorch/NumPy versions; per-source means should match the table to within
+PyTorch/NumPy versions; per-source means should repeat to within
 about ±0.003. The TALENT dataset `stock_fardamento02` has a heavy-tailed
 target and is the least stable single dataset across environments.
 
@@ -1019,8 +1040,7 @@ synthefy-nori-eval --checkpoint "Synthefy:path/to/checkpoint.pt"
 
 or `bash scripts/evaluate.sh`. See [docs/evaluation.md](docs/evaluation.md) for
 benchmark sources and how to evaluate a Nori checkpoint, and
-[Reproducing these numbers](#reproducing-these-numbers) for the published
-benchmark run.
+[Benchmarks](#benchmarks) for the published numbers and their protocol.
 
 ## Hugging Face
 
