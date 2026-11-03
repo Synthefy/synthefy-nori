@@ -82,7 +82,7 @@ def test_a_copied_request_derives_its_runtime_again_only_when_max_runtime_s_is_r
     short = build_request(hyperparameters=build_hyperparameters(bag=2, steps=30))
     assert short.max_runtime_s == 4500
     other = build_hyperparameters(model_name="ft-acme-ltv-v1")
-    with pytest.raises(ValueError, match="max_runtime_s=4500 is below bag x budget_s"):
+    with pytest.raises(ValueError, match=r"max_runtime_s=4500 is below ceil\(bag / 1 GPU\) x budget_s = 7,200 s"):
         revalidate_request(short.model_copy(update={"hyperparameters": other}))
     assert (
         revalidate_request(short.model_copy(update={"hyperparameters": other, "max_runtime_s": None})).max_runtime_s
@@ -114,7 +114,8 @@ def test_fine_tune_sends_the_whole_training_job_request_and_returns_the_describe
 
 
 def test_fine_tune_sends_both_channels_the_kms_key_and_every_override(aws):
-    validation = f"s3://{BUCKET}/nori/validation/holdout.csv"
+    validation = f"s3://{BUCKET}/nori/validation/holdout.parquet"
+    checkpoints = f"s3://{BUCKET}/nori/checkpoints/churn/"
     hyperparameters = build_hyperparameters(
         base_model="nori-100m", feature_columns=["tenure", "plan"], bag=2, budget_s=60.0
     )
@@ -131,6 +132,8 @@ def test_fine_tune_sends_both_channels_the_kms_key_and_every_override(aws):
         OutputDataConfig={"S3OutputPath": OUTPUT, "KmsKeyId": "alias/nori"},
         ResourceConfig={"InstanceType": "ml.g6e.xlarge", "InstanceCount": 1, "VolumeSizeInGB": 50},
         StoppingCondition={"MaxRuntimeInSeconds": 1_980},
+        # No LocalPath: the job finds the folder only at SageMaker's default.
+        CheckpointConfig={"S3Uri": checkpoints},
     )
     aws.stubber.add_response("create_training_job", {"TrainingJobArn": JOB_ARN}, expected)
     aws.sm.training_jobs = [build_description("InProgress")]
@@ -142,6 +145,7 @@ def test_fine_tune_sends_both_channels_the_kms_key_and_every_override(aws):
             job_name="churn-run-7",
             volume_size_gb=50,
             kms_key_id="alias/nori",
+            checkpoint_uri=checkpoints,
         )
     )
 
@@ -186,25 +190,46 @@ def test_fine_tune_keeps_the_job_name_and_arn_when_the_first_status_read_fails_a
     assert aws.sm.operations() == ["create_training_job", "describe_training_job"]
 
 
-def test_fine_tune_refuses_a_one_csv_channel_whose_key_other_objects_start_with_naming_them(aws):
-    training = f"s3://{BUCKET}/nori/data/train.csv"
-    for key in ("nori/data/train.csv", "nori/data/train.csv.backup.csv", "nori/data/train.csv.old/part.csv"):
-        aws.s3.objects[(BUCKET, key)] = b"x,y\n1,2\n"
+def test_fine_tune_refuses_a_one_object_channel_whose_key_other_objects_start_with_naming_them(aws):
+    training = f"s3://{BUCKET}/nori/data/train.parquet"
+    for key in (
+        "nori/data/train.parquet",
+        "nori/data/train.parquet.backup.parquet",
+        "nori/data/train.parquet.old/part.parquet",
+    ):
+        aws.s3.objects[(BUCKET, key)] = b"PAR1"
 
     with pytest.raises(ValueError) as raised:
         aws.tuner.fine_tune(build_request(training_data=training))
 
     message = str(raised.value)
-    assert f"training_data='{training}' names one .csv object, but SageMaker reads every key" in message
-    assert f"s3://{BUCKET}/nori/data/train.csv.backup.csv, s3://{BUCKET}/nori/data/train.csv.old/part.csv" in message
-    assert aws.s3.calls == [("list_objects_v2", "nori/data/train.csv")]
+    assert f"training_data='{training}' names one object, but SageMaker reads every key" in message
+    assert (
+        f"s3://{BUCKET}/nori/data/train.parquet.backup.parquet, s3://{BUCKET}/nori/data/train.parquet.old/part.parquet"
+        in message
+    )
+    assert aws.s3.calls == [("list_objects_v2", "nori/data/train.parquet")]
     assert aws.sm.calls == []
 
 
-def test_fine_tune_accepts_a_one_csv_channel_that_no_other_key_starts_with(aws):
+def test_fine_tune_refuses_a_csv_object_before_any_aws_call(aws):
+    # model_copy skips validation, so the request reaches fine_tune() with the CSV object in it.
     training = f"s3://{BUCKET}/nori/data/train.csv"
-    aws.s3.objects[(BUCKET, "nori/data/train.csv")] = b"x,y\n1,2\n"
-    aws.s3.objects[(BUCKET, "nori/data/train-old.csv")] = b"x,y\n1,2\n"
+    request = build_request().model_copy(update={"training_data": training})
+
+    with pytest.raises(ValueError) as raised:
+        aws.tuner.fine_tune(request)
+
+    message = str(raised.value)
+    assert f"training_data names a CSV object; got '{training}'" in message
+    assert "pandas.DataFrame.to_parquet(path, index=False)" in message
+    assert aws.s3.calls == [] and aws.sm.calls == []
+
+
+def test_fine_tune_accepts_a_one_object_channel_that_no_other_key_starts_with(aws):
+    training = f"s3://{BUCKET}/nori/data/train.parquet"
+    aws.s3.objects[(BUCKET, "nori/data/train.parquet")] = b"PAR1"
+    aws.s3.objects[(BUCKET, "nori/data/train-old.parquet")] = b"PAR1"
     expected = build_expected_training_job(InputDataConfig=[build_channel("train", training)])
     aws.stubber.add_response("create_training_job", {"TrainingJobArn": JOB_ARN}, expected)
     aws.sm.training_jobs = [build_description("InProgress")]
@@ -227,7 +252,7 @@ def test_fine_tune_submits_the_hyperparameters_as_built_after_the_callers_object
     "field, value, problem",
     [
         ("base_model", "nori-100m", "needs a 48 GB GPU, which 'ml.g5.xlarge' does not have"),
-        ("budget_s", 100_000.0, "max_runtime_s=12600 is below bag x budget_s=800000"),
+        ("budget_s", 100_000.0, "max_runtime_s=12600 is below ceil(bag / 1 GPU) x budget_s = 800,000 s"),
     ],
     ids=["base-needs-a-larger-gpu", "budget-outgrows-the-runtime"],
 )

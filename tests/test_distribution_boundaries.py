@@ -90,10 +90,10 @@ def _valid_artifacts(tmp_path: Path):
     )
     nori_requirements = (
         "numpy>=2.0",
-        "synthefy<8,>=7",
-        'synthefy[text]<8,>=7; extra == "text"',
-        'synthefy[forecasting]<8,>=7; extra == "forecasting"',
-        'synthefy[forecasting]<8,>=7; extra == "timeseries"',
+        "synthefy<9,>=7",
+        'synthefy[text]<9,>=7; extra == "text"',
+        'synthefy[forecasting]<9,>=7; extra == "forecasting"',
+        'synthefy[forecasting]<9,>=7; extra == "timeseries"',
     )
     values = {}
     for build in ("direct", "rebuilt"):
@@ -203,7 +203,7 @@ def test_wrong_nori_forwarding_extra_is_rejected(tmp_path):
             distribution="synthefy-nori",
             version="0.16.0",
             namespace="synthefy_nori",
-            requirements=("synthefy<8,>=7", 'synthefy[text]<8,>=7; extra == "text"'),
+            requirements=("synthefy<9,>=7", 'synthefy[text]<9,>=7; extra == "text"'),
             extras=("forecasting", "text", "timeseries"),
         )
 
@@ -244,10 +244,10 @@ def test_forwarded_requirement_must_also_be_a_provided_extra(tmp_path):
     artifacts = _valid_artifacts(tmp_path)
     requirements = (
         "numpy>=2.0",
-        "synthefy<8,>=7",
-        'synthefy[text]<8,>=7; extra == "text"',
-        'synthefy[forecasting]<8,>=7; extra == "forecasting"',
-        'synthefy[forecasting]<8,>=7; extra == "timeseries"',
+        "synthefy<9,>=7",
+        'synthefy[text]<9,>=7; extra == "text"',
+        'synthefy[forecasting]<9,>=7; extra == "forecasting"',
+        'synthefy[forecasting]<9,>=7; extra == "timeseries"',
     )
     for build in ("direct", "rebuilt"):
         artifacts[f"nori_{build}"] = _write_wheel(

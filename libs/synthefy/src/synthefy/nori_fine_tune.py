@@ -48,8 +48,8 @@ from synthefy._training_jobs import (
     build_job_name,
     build_training_job_request,
     parse_job_description,
-    refuse_csv_siblings,
     refuse_foreign_region,
+    refuse_lookalike_keys,
     revalidate_request,
 )
 from synthefy._training_logs import (
@@ -181,10 +181,15 @@ class SynthefyNoriFineTuner:
     def fine_tune(self, request: FineTuneJobRequest) -> FineTuneJob:
         """Start one training job and return at once, with the job as SageMaker first describes it.
 
+        A request with ``checkpoint_uri`` continues from the children an earlier job saved there: after a stop or a
+        failure, the same request again (with a new ``job_name`` if it names one; ``model_name`` and
+        ``instance_type`` may change) trains only the children not saved yet. Resume on the Algorithm version that
+        saved them, one job per folder at a time.
+
         The request's checks run again first, in case its hyperparameters were changed after it was built. Then the
         Algorithm ARN's region is compared with this fine-tuner's, because SageMaker runs an Algorithm only in its
-        own region and says so less clearly, and a channel given as one ``.csv`` object is refused when other keys
-        start with its key, because SageMaker's channel would read them too. A training quota SageMaker refuses the
+        own region and says so less clearly, and a channel given as one object is refused when other keys start with
+        its key, because SageMaker's channel would read them too. A training quota SageMaker refuses the
         instance under raises :class:`FineTuningError` naming that quota. When SageMaker accepted the job but the
         first status read fails, :class:`FineTuningError` carries the job's name and ARN: the job runs and bills,
         and ``get_status(job_name)`` reconnects to it.
@@ -193,7 +198,7 @@ class SynthefyNoriFineTuner:
         refuse_foreign_region(request.algorithm, self.region_name)
         for argument, uri in (("training_data", request.training_data), ("validation_data", request.validation_data)):
             if uri is not None and not uri.endswith("/"):
-                refuse_csv_siblings(self._s3, uri, argument)
+                refuse_lookalike_keys(self._s3, uri, argument)
         job_name = request.job_name or build_job_name(
             request.hyperparameters.model_name, _utcnow(), _generate_resource_name_token()
         )
@@ -270,7 +275,8 @@ class SynthefyNoriFineTuner:
         """Ask SageMaker to stop the job, then return it as described right after.
 
         The job ships what it trained so far (the report says ``cut_short``), or nothing when it had not produced a
-        model yet. A job that already ended or is already stopping is returned as is.
+        model yet. With ``checkpoint_uri``, the children it finished stay in that folder for a later
+        :meth:`fine_tune` with the same request. A job that already ended or is already stopping is returned as is.
         """
         try:
             self._sagemaker.stop_training_job(TrainingJobName=job_name)
@@ -308,7 +314,9 @@ class SynthefyNoriFineTuner:
 
         One row per step, so ``pandas.DataFrame(tuner.get_training_curves(name))`` takes it directly. Read from the
         job's log lines in every state: they carry every step, while SageMaker's metrics are sampled once a minute.
-        When no log events remain (expired, or deleted), they are read from the report in the artifact.
+        When no log events remain (expired, or deleted), they are read from the report in the artifact. A job that
+        resumed from a ``checkpoint_uri`` logs only the children it trained; its report's ``child_curves`` holds every
+        child, with ``restored`` marking the others.
         """
         follower = TrainingLogFollower(self._logs, job_name)
         lines = follower.read_new_lines()

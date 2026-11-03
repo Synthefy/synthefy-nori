@@ -1,9 +1,10 @@
 """The SageMaker training job API in the fine-tuner's terms, and the checks a job needs before it is created.
 
-A :class:`~synthefy.FineTuneJobRequest` becomes CreateTrainingJob's parameters here, and a DescribeTrainingJob
-response becomes a :class:`~synthefy.FineTuneJob`. The checks that run just before CreateTrainingJob live here too:
-the request's own checks again, the Algorithm's region, and a one-object ``.csv`` channel that would read more than
-one object. The one check that calls AWS takes the S3 client it is given, so this module imports no AWS SDK.
+A :class:`~synthefy.FineTuneJobRequest` becomes CreateTrainingJob's parameters here (with a ``CheckpointConfig`` when
+it names a checkpoint folder), and a DescribeTrainingJob response becomes a :class:`~synthefy.FineTuneJob`. The checks
+that run just before CreateTrainingJob live here too: the request's own checks again, the Algorithm's region, and a
+one-object channel that would read more than one object. The one check that calls AWS takes the S3 client it is
+given, so this module imports no AWS SDK.
 """
 
 from datetime import datetime
@@ -44,14 +45,19 @@ def build_job_name(model_name: str, now: datetime, token: str) -> str:
 
 
 def build_training_job_request(request: FineTuneJobRequest, job_name: str) -> Dict[str, Any]:
-    """CreateTrainingJob's parameters for one request; network isolation always, as the Algorithm requires."""
+    """CreateTrainingJob's parameters for one request; network isolation always, as the Algorithm requires.
+
+    File input mode, the one a SageMaker Algorithm's channels can serve this job in: SageMaker copies each channel to
+    the instance's local disk before the job starts. A ``checkpoint_uri`` becomes ``CheckpointConfig`` with only its
+    ``S3Uri``: the job finds the folder at the default ``LocalPath``.
+    """
     channels = [(TRAIN_CHANNEL, request.training_data)]
     if request.validation_data is not None:
         channels.append((VALIDATION_CHANNEL, request.validation_data))
     output: Dict[str, str] = {"S3OutputPath": request.output_path}
     if request.kms_key_id is not None:
         output["KmsKeyId"] = request.kms_key_id
-    return {
+    parameters: Dict[str, Any] = {
         "TrainingJobName": job_name,
         "AlgorithmSpecification": {"AlgorithmName": request.algorithm, "TrainingInputMode": "File"},
         "RoleArn": request.role_arn,
@@ -59,7 +65,7 @@ def build_training_job_request(request: FineTuneJobRequest, job_name: str) -> Di
         "InputDataConfig": [
             {
                 "ChannelName": name,
-                "ContentType": "text/csv",
+                "ContentType": "application/x-parquet",
                 "InputMode": "File",
                 "DataSource": {
                     "S3DataSource": {
@@ -80,6 +86,9 @@ def build_training_job_request(request: FineTuneJobRequest, job_name: str) -> Di
         "StoppingCondition": {"MaxRuntimeInSeconds": request.max_runtime_s},
         "EnableNetworkIsolation": True,
     }
+    if request.checkpoint_uri is not None:
+        parameters["CheckpointConfig"] = {"S3Uri": request.checkpoint_uri}
+    return parameters
 
 
 def parse_job_description(description: Dict[str, Any]) -> FineTuneJob:
@@ -134,11 +143,11 @@ def refuse_foreign_region(algorithm: str, region_name: str) -> None:
         )
 
 
-def refuse_csv_siblings(s3: Any, uri: str, argument: str) -> None:
-    """Refuse a one-object ``.csv`` channel whose key other keys start with.
+def refuse_lookalike_keys(s3: Any, uri: str, argument: str) -> None:
+    """Refuse a one-object channel whose key other keys start with.
 
-    SageMaker's S3Prefix channel reads every key that starts with the given text, so ``data/train.csv`` also
-    reads ``data/train.csv.backup.csv`` and the job would train on both tables concatenated.
+    SageMaker's S3Prefix channel reads every key that starts with the given text, so ``data/train.parquet`` also
+    reads ``data/train.parquet.backup.parquet`` and the job would train on both tables concatenated.
     """
     bucket, key = parse_s3_uri(uri, name=argument)
     keys, truncated = list_s3_keys(s3, bucket=bucket, prefix=key, max_keys=_MAX_LISTED_SIBLINGS + 1)
@@ -148,7 +157,7 @@ def refuse_csv_siblings(s3: Any, uri: str, argument: str) -> None:
     shown = ", ".join(f"s3://{bucket}/{name}" for name in siblings[:_MAX_LISTED_SIBLINGS])
     more = " and more" if truncated or len(siblings) > _MAX_LISTED_SIBLINGS else ""
     raise ValueError(
-        f"{argument}={uri!r} names one .csv object, but SageMaker reads every key that starts with it, so the job "
+        f"{argument}={uri!r} names one object, but SageMaker reads every key that starts with it, so the job "
         f"would also read {shown}{more}. Rename or move those objects, or put the table in a folder of its own "
         "and pass the folder, ending in '/'"
     )

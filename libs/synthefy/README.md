@@ -658,7 +658,7 @@ account: no Synthefy service sits in front of them, and Synthefy can neither see
 ### What you need
 
 ```bash
-pip install -U "synthefy[aws]>=7.3.0"
+pip install -U "synthefy[aws]>=8.0.0"
 ```
 
 Subscribe to the Nori fine-tuning Algorithm in AWS Marketplace (the listing's View purchase options, then Subscribe at
@@ -687,9 +687,18 @@ You need quota for one training and one endpoint instance; a job's default type 
 
 | Use | Instance types | Default |
 | --- | --- | --- |
-| Train `nori-6m` | `ml.g5.xlarge`, `ml.g5.2xlarge`, `ml.g6.xlarge` (24 GB); `ml.g6e.xlarge`, `ml.g6e.2xlarge` (48 GB) | `ml.g5.xlarge` |
-| Train `nori-100m` | `ml.g6e.xlarge`, `ml.g6e.2xlarge` only | `ml.g6e.xlarge` |
+| Train `nori-6m` | One GPU: `ml.g5.xlarge`, `ml.g5.2xlarge`, `ml.g6.xlarge` (24 GB); `ml.g6e.xlarge`, `ml.g6e.2xlarge` (48 GB). Several GPUs: `ml.g5.12xlarge` (4 x 24 GB), `ml.g5.48xlarge` (8 x 24 GB), `ml.g6e.12xlarge` (4 x 48 GB), `ml.g6e.48xlarge` (8 x 48 GB) | `ml.g5.xlarge` |
+| Train `nori-100m` | The 48 GB types only: `ml.g6e.xlarge`, `ml.g6e.2xlarge`, `ml.g6e.12xlarge` (4 GPUs), `ml.g6e.48xlarge` (8 GPUs) | `ml.g6e.xlarge` |
 | Endpoint | `ml.g5.xlarge`, `ml.g5.2xlarge`, `ml.g6.xlarge` | `ml.g5.xlarge` |
+
+A job trains one child per GPU at a time, so the four multi-GPU types train several children side by side:
+`ml.g5.12xlarge` and `ml.g6e.12xlarge` have 4 GPUs, `ml.g5.48xlarge` and `ml.g6e.48xlarge` have 8
+(`synthefy.nori_data_models.MULTI_GPU_INSTANCE_TYPES`). On a type with N GPUs the `bag` children take about
+ceil(`bag` / N) child-times (a child-time is the time one child trains), against `bag` child-times on one GPU: the
+default `bag=8` takes about two on a 4-GPU type and one on an 8-GPU type. `max_runtime_s` counts the same
+ceil(`bag` / N) budgets (see Stopping and failures). A multi-GPU type finishes sooner but bills more per GPU-hour
+than the one-GPU types above with the same GPU (us-east-1 on-demand prices, October 2026), so the same bag costs
+more on it. The report's `workers`, `gpus` and `failed_children` say what ran (see Reading the result).
 
 The quotas are named like `ml.g5.xlarge for training job usage` and `ml.g5.xlarge for endpoint usage`. At 0 SageMaker
 refuses the create call (`ResourceLimitExceeded`) before anything bills, and the client raises `FineTuningError` naming
@@ -706,19 +715,104 @@ aws service-quotas list-service-quotas --service-code sagemaker --region us-east
 
 ### Your table
 
-Fine-tuning is regression only, on a CSV table with one header row. Every column the job trains on must be numeric;
-features may have missing values, the target must be finite in every row. Encode categorical columns as numbers before
-you upload and keep that encoding for prediction: a text column fails the job.
+Fine-tuning is regression only, on a table in Parquet files (`.parquet` or `.pq`). Every column the job trains on must
+be numeric; features may have missing or infinite values, and both count as missing; the target must be finite in
+every row. Encode categorical columns as numbers before you upload and keep that encoding for prediction: a text
+column fails the job. With `pyarrow` installed, pandas writes a table as Parquet with
+`table.to_parquet("train.parquet", index=False)`, and a CSV file converts with
+`pd.read_csv("train.csv").to_parquet("train.parquet", index=False)`.
 
-`training_data` is one object ending in `.csv` or a folder ending in `/`; the client refuses anything else, because S3
+`training_data` is one object ending in `.parquet` or `.pq`, or a folder ending in `/`. The client refuses anything else
+before any AWS call: a `.csv` object, because the job reads Parquet only, and a folder without its `/`, because S3
 matches prefixes as strings (`.../nori/data/train` would also read `train-old/`). For one object, `fine_tune()` also
-lists the bucket and refuses it when another key starts with its key: SageMaker would read `train.csv.backup.csv` as
-well. Under a folder the job reads every uncompressed file ending in `.csv` in the folder and its sub-folders (an
-`old/` sub-folder is read too), and those files must share one header; it ignores other files and fails on a Parquet
-file. `validation_data` is optional, takes the same form and has exactly the training table's columns. The training
-table needs at least 1,111 rows, or 1,000 with a validation channel, so that 1,000 remain after the job sets aside its
-report rows. Above 200,000 rows or 30 million cells (rows x features), the job trains on a subsample drawn with its
-`seed`.
+lists the bucket and refuses it when another key starts with its key: SageMaker would read
+`train.parquet.backup.parquet` as well. Under a folder the job reads every `.parquet` and `.pq` file in the folder and
+its sub-folders (an `old/` sub-folder is read too), and those files must have the same columns. It skips empty files
+and every file or folder whose name starts with `_` or `.`, such as the `_SUCCESS` marker Spark writes, and fails on
+any other file, a `.csv` file among them, before it reads any row. So a folder holds this table's Parquet files only:
+delete any other file from it, a `train.csv` among them, before you start a job. Point a channel at plain Parquet
+files, not at a Delta Lake or Iceberg table's folder: its data files still hold rows the table has deleted or
+replaced, and the job reads every file. A column that exists only in folder names (`region=1/`) is not read; keep
+every column in the files. `validation_data` is optional, takes the same form and has exactly the training table's
+columns.
+
+SageMaker copies the tables to the instance's local disk before the job starts (its File input mode, the one a
+SageMaker Algorithm's channels take). Every instance type the Algorithm offers has at least 250 GB of local storage,
+which holds the tables and the artifact; `volume_size_gb` sizes the disk only on types without it. The job reads the
+tables one row group of a Parquet file at a time, so the instance's memory bounds the size of a row group, not of the
+table. A larger table takes longer to copy and to read, and both count toward `max_runtime_s`. A row group may hold at most 2,000,000 rows and 200,000,000 cells of the columns the job reads (rows x
+the feature and target columns); a file with a larger one fails the job before it reads any row, naming the file, the
+row group and a row group size that fits: write it again with smaller row groups, for example
+`table.to_parquet("train.parquet", index=False, row_group_size=1_000_000)` for a table of up to 200 columns.
+
+The training table needs at least 1,111 rows, or 1,000 with a validation channel, so that 1,000 remain after the job
+sets aside its report rows. The job trains on the whole table in passes: each child has its own share of the
+training rows, and one pass puts each row of that share in exactly one training step. The report's
+`steps_per_pass` is the number of steps the longest of the children's passes takes on your table, and
+`fraction_visited` how much of their shares the children went through: 1.0 when each child used each of its rows once,
+0.5 for half of them, 2.0 for two passes. A child that stops (at `steps`, `patience` or `budget_s`) before its pass
+ends trained on part of its share. With `bag` 1 and no validation channel, the child trains on four fifths of the
+training rows and is scored on up to 4,096 rows of the other fifth. To have every row of the children's shares used,
+read `steps_per_pass` in a first job's report, then set `steps` and `patience` to at least that number and `budget_s`
+to the time those steps take.
+
+### Large tables: what a job reads and what it costs
+
+A training step reads a number of rows set by the table's width, so `steps`, not the size of the table, sets how many
+rows a child reads. With the defaults (`bag` 8, `steps` 100) each child reads up to about 790,000 rows of a table of 20
+numeric feature columns and up to about 220,000 of a table of 100, from row groups at random places in its share of the
+table; a child that `patience` (25 steps without a better validation score, by default) or `budget_s` stops sooner
+reads fewer, and the report's `steps_run` gives the steps each child took. The report's `fraction_visited` says how
+much of their shares the children read; a child whose share holds fewer rows than its steps read goes through all of
+them, once per pass, and `fraction_visited` comes out above 1.
+
+The table gives, for every type the Algorithm offers, one pass of one `nori-6m` child over 50,000,000 rows of 20 numeric
+feature columns: the hours it takes, its dollars at the on-demand SageMaker training prices for us-east-1 (AWS Price
+List API, 2026-10-27), and the `steps` that make the pass.
+
+| Instance type | GPUs | Rows per step, 20 columns | Rows per step, 100 columns | Seconds per step, 20 columns | Hours for the pass | Dollars for the pass | `steps` for the pass |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| ml.g5.xlarge | 1 | about 7,950 | about 2,210 | 2.085 (measured) | 4.3 | $6.0 | 6,293 |
+| ml.g5.2xlarge | 1 | about 7,950 | about 2,210 | 2.085 (estimate) | 4.3 | $6.4 | 6,293 |
+| ml.g6.xlarge | 1 | about 7,950 | about 2,210 | 2.897 (estimate) | 5.9 | $6.6 | 6,293 |
+| ml.g6e.xlarge | 1 | about 7,950 | about 2,210 | not measured | not measured | not measured | 6,293 |
+| ml.g6e.2xlarge | 1 | about 7,950 | about 2,210 | not measured | not measured | not measured | 6,293 |
+| ml.g5.12xlarge | 4 | about 7,950 | about 2,210 | 2.085 (measured) | 4.3 | $30 | 6,293 |
+| ml.g5.48xlarge | 8 | about 7,950 | about 2,210 | 2.085 (estimate) | 4.3 | $87 | 6,293 |
+| ml.g6e.12xlarge | 4 | about 7,950 | about 2,210 | not measured | not measured | not measured | 6,293 |
+| ml.g6e.48xlarge | 8 | about 7,950 | about 2,210 | not measured | not measured | not measured | 6,293 |
+
+The rows per step are the average over a child's steps, for feature columns of continuous values and a child's share of
+the table above about 20,000 rows, so `steps` times the rows per step is what a child that runs all its steps reads; one
+step reads 4,605 to 11,290 rows at 20 columns and 1,268 to 3,153 at 100. The hours count the steps, the validation
+scores between them and a few minutes of reading and fitting. `ml.g5.2xlarge` is an estimate taken from `ml.g5.xlarge`,
+and `ml.g5.48xlarge` one taken from `ml.g5.12xlarge`: the same GPUs, one child per GPU. On `ml.g6.xlarge` a step and a
+validation score were timed together and their seconds split between the two as on `ml.g5.xlarge`, so its row is an
+estimate as well. The `ml.g6e` types are not measured; the report of a short job on one (its `seconds`, `steps_run` and
+`steps_per_pass`) gives that type's figures. On a type with N GPUs a child's pass takes the same time as on one GPU of
+the same kind, and the dollars are the whole instance's: N children make their passes at once for that price, and the
+`bag` children take ceil(`bag` / N) child-times. A child trains on a share of the table: seven eighths of it with
+`bag` 8, half with `bag` 2, four fifths with `bag` 1 and no validation channel, and all of it with `bag` 1 and a
+validation channel; its pass takes that share of the steps, and a first job's `steps_per_pass` is the figure for your
+table.
+
+`steps` sets how many rows a child reads: for one pass, set it to `steps_per_pass`. `budget_s` caps a child's time (900
+s by default) and `max_runtime_s` the job's: for a pass, raise `budget_s` to the seconds the pass takes, and
+`max_runtime_s` follows it unless you set it (see Stopping and failures). `patience` stops a child after that many steps
+without a better validation score (25 by default); to have every child make its whole pass, set it to `steps` as well.
+`bag=2` trains two children against the default's eight. A job takes ceil(`bag` / N) child-times on a type with N GPUs,
+so at the same `steps` two children take about a quarter of the eight's time and cost on a one-GPU type, half on a 4-GPU
+type and the same on an 8-GPU type, plus the few minutes of reading and fitting either way. For a whole pass, a `bag=2`
+child's share is half the table against seven eighths, so its pass costs about a sixth of the eight's on a one-GPU type,
+a third on a 4-GPU type and two thirds on an 8-GPU type. The defaults suit a first job on any table: its report gives
+`steps_per_pass` and `seconds` for your table and type.
+
+A training child holds in host memory the row group it is reading (at most about 7 GB for the largest row group the job
+accepts), its buffer of rows and about 2 GB besides: on the 50,000,000-row table of 20 columns, in row groups of
+1,000,000 rows, a child peaked at 3.5 GiB. Every type the Algorithm offers has at least 16 GiB of host memory per GPU,
+so every type holds any table within the row group limits up to 10,000 feature columns, and the choice of type is one of
+time and price. A row group above 2,000,000 rows or 200,000,000 cells fails the job before it reads any row (see Your
+table). The validation channel is used whole up to 4,096 rows; a larger one is sampled to 4,096 rows.
 
 ### The whole flow
 
@@ -734,9 +828,9 @@ ALGORITHM_ARN = "arn:aws:sagemaker:us-east-1:..."  # copied from your subscripti
 ROLE_ARN = "arn:aws:iam::ACCOUNT_ID:role/nori-fine-tune-execution"
 BUCKET, TARGET = "sagemaker-us-east-1-ACCOUNT_ID", "y"
 
-table = pd.read_csv("train.csv")
+table = pd.read_parquet("train.parquet")
 features = [column for column in table.columns if column != TARGET]  # the order the job trains on
-boto3.client("s3", region_name=REGION).upload_file("train.csv", BUCKET, "nori/data/train/train.csv")
+boto3.client("s3", region_name=REGION).upload_file("train.parquet", BUCKET, "nori/data/train/train.parquet")
 
 with SynthefyNoriFineTuner(region_name=REGION) as tuner:
     request = FineTuneJobRequest(
@@ -759,7 +853,7 @@ with SynthefyNoriFineTuner(region_name=REGION) as tuner:
     try:
         with tuner.create_client(endpoint, s3_staging_uri=f"s3://{BUCKET}/nori/invocations/") as client:
             context = table.sample(n=min(len(table), 2000), random_state=0)
-            new_rows = pd.read_csv("new.csv")[features]  # rows the job never saw: same columns, same order
+            new_rows = pd.read_parquet("new.parquet")[features]  # rows the job never saw: same columns, same order
             print(client.predict(X_train=context[features], y_train=context[TARGET], X_test=new_rows,
                                  categorical_columns=None))
             assert client.last_model_version == report.model_version
@@ -778,11 +872,13 @@ package for a new deploy. The endpoint bills every hour from creation until `und
 requests; prices per instance type and region are on [SageMaker AI pricing](https://aws.amazon.com/sagemaker/ai/pricing/).
 
 Other hyperparameters, with defaults: `base_model` (`nori-6m`, or `nori-100m`); `feature_columns` (all but the target, in
-table order); `bag` (8: the number of children the job trains, 1 to 8; the fine-tuned model is built from them, and each
-child has its own steps and time budget); `steps` (100: maximum training steps per child); `patience` (25: a child stops
-after this many steps without improvement); `budget_s` (900 s per child); `lr` (1e-5); `seed` (0). `model_name` starts with `ft-`, then 1 to 60
-lowercase letters, digits and `-` starting with a letter or digit, and cannot be a released model's name. End it with a
-letter or digit as well: `deploy()` names the endpoint after it, and SageMaker refuses an endpoint name that ends with `-`.
+table order); `bag` (8: how many children the job trains, 1 to 8; the fine-tuned model is built from them, and children
+train one per GPU at a time); `steps` (100: the number of training steps each child takes, unless `patience` or
+`budget_s` stops it sooner); `patience` (25: how many training steps without a better validation score stop a child,
+rounded up to a multiple of `validation_interval`); `budget_s` (900: the time cap of one child, in seconds); `lr`
+(1e-5); `seed` (0). `model_name` starts with `ft-`, then 1 to 60 lowercase letters, digits and `-`
+starting with a letter or digit, and cannot be a released model's name. End it with a letter or digit as well:
+`deploy()` names the endpoint after it, and SageMaker refuses an endpoint name that ends with `-`.
 
 ### Watching a job
 
@@ -811,13 +907,29 @@ from the same lines, sampled per minute, so a short job shows only a handful of 
 same rows with the same context. Lower is better: the distance between the two is what fine-tuning gained on your table,
 so always read them together. Both are mean squared errors in standardized target units (the target scaled by the
 training rows' mean and standard deviation); multiply the square root by that standard deviation for your own units.
-Without a validation channel the job sets aside min(10 % of the rows, 4,096) before training, rows no training step
-sees, so both scores are out of sample. With one, its rows (up to 4,096) are scored and also steer the training, so
-`val_mse_after` runs a little optimistic there. `validation_source` names the mode, `n_val_rows` counts the rows
-scored, and `n_rows_used` the rows kept after the 200,000-row and 30-million-cell limits; without a validation channel
-that count includes the report rows, which no training step sees.
+Without a validation channel the job sets aside up to 4,096 rows (about 10 % of a smaller table) before training, rows
+no training step sees, so both scores are out of sample. With one, its rows (up to 4,096) are scored and also steer the
+training, so `val_mse_after` runs a little optimistic there. `validation_source` names the mode, `n_val_rows` counts
+the rows scored, `n_rows` the rows of the training table and `n_rows_used` the rows training could draw from: the table
+minus the report rows, when the job sets them aside. With `bag` 1 and no validation channel, the child trains on four
+fifths of these rows and is scored on up to 4,096 rows of the other fifth.
 
-`job.latest_metrics` and the console charts show the last child's last step: progress, not the result. Each child's
+`rows_visited` counts the rows the children's training steps used, a row used in two passes twice; each curve in
+`child_curves` has its child's own count. `fraction_visited` and `steps_per_pass` set that against the table (see Your
+table). `validation_interval` is the number of training steps between two validation scores in a child's curve: 1
+below 1,000 `steps`, else `steps` / 500 rounded down, so a child stops after `patience` steps without improvement
+rounded up to a multiple of it. `read_seconds` is the time the job's first read of the training table took.
+
+`workers` is the number of worker processes that trained the children at the same time (one per GPU on a type with
+several GPUs) and `gpus` the number of GPUs they trained on: both are 1 on a one-GPU type. An error in one child fails
+that child alone, on any type: `failed_children` lists it, its curve in `child_curves` has `failed` true and the end
+of its error message in `failure`, and the fine-tuned model is built from the other children. On a type with several
+GPUs, running out of host memory can end every unfinished child on one GPU at once, and `failed_children` lists them
+all. A job whose children all fail ends `Failed`, and `failure_reason` names them.
+
+`job.latest_metrics` and the console charts follow the children's validated steps as they are printed, several
+children side by side on a type with several GPUs (the `child` metric names each point's child): progress, not the
+result. Once the job ends, `job.latest_metrics` holds the last step of whichever child finished last. Each child's
 `val_mse` in `get_training_curves()` is that child's own validation score, the one that decides when it stops, not the
 report's score, so compare the report's two numbers instead.
 
@@ -853,15 +965,24 @@ instance; raise the count from the SageMaker AI console (the endpoint's configur
 that window: it writes a model from the training done so far when any of it improved on the base, and ends `Stopped`
 with `cut_short` true; `val_mse_after` is scored only if that fits within 60 s of
 the signal, else null. `deploy()` accepts a `Stopped` job that has a model and warns that it was cut short. At `max_runtime_s` SageMaker
-stops the job the same way, so it ends `Stopped`, not `Failed`; the default is 1.5 x `bag` x `budget_s` + 1,800 s
-(12,600 s with default settings), and the client refuses less than `bag` x `budget_s`. SageMaker's own ceiling is 28
-days per job; for a long run, raise `budget_s` and `steps` per child and `max_runtime_s` together. A job keeps no
-checkpoints and cannot resume: a new job starts again from the base.
+stops the job the same way, so it ends `Stopped`, not `Failed`; the default is 1.5 x ceil(`bag` / N) x `budget_s` +
+1,800 s on a type with N GPUs (12,600 s with default settings on one GPU, 4,500 s on four), and the client refuses
+less than ceil(`bag` / N) x `budget_s`. SageMaker's own ceiling is 28 days per job; for a long run, raise `budget_s`
+and `steps` per child and `max_runtime_s` together.
+
+A job given `checkpoint_uri`, an S3 folder ending in `/`, saves each child it finishes there. After a stop or a
+failure, `fine_tune()` with the same request (`model_name` and `instance_type` may change) trains only the children
+not saved in the folder, and the report marks the others with `ChildCurve.restored`. A folder resumes only on the
+Algorithm version that wrote it and with the same table and hyperparameters: a job refuses a folder written by
+another version, with other hyperparameters or for another table, naming what differs, and an edited table needs an
+empty folder. Run one job per folder at a time. Without `checkpoint_uri` a job keeps no checkpoints: a new job starts
+again from the base.
 
 | You see | What to do |
 | --- | --- |
 | `deploy()` or `get_training_report()` raises `FineTuningError` saying the `Stopped` job has no model artifact | Nothing had improved on the base when the job stopped, so it wrote no model. Start a new job. |
 | `Failed`, and `failure_reason` names your table or settings | The job refused the input once its instance was up. Fix it and start a new job; `tuner.get_logs()` has any traceback. |
+| `Failed`, and `failure_reason` contains `killed while` | The job's process was killed, most likely because the instance ran out of memory. Start a new job on an instance type with more memory, or write the table with smaller row groups (see Your table). |
 | `InProgress` in `Pending` for a long time with the message `Training job waiting for capacity`, or `Failed` with `CapacityError:` | AWS has no spare capacity for that type. The wait is unbilled and can last hours. Stop it and start a new job on another type. |
 | `fine_tune()` raises `FineTuningError` saying SageMaker started the job but reading its status failed | The job runs and bills. Call `tuner.get_status(error.job_name)` to follow it, not `fine_tune()` again, which starts a second job. |
 | `wait()` raises `APITimeoutError` | It waited the time limit plus 7,200 s. The job still runs: call `wait()` again, or `stop()`. |

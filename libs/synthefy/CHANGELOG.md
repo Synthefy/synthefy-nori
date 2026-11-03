@@ -5,6 +5,75 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.0.0] - 2026-10-28
+
+The major version is for the Parquet-only fine-tuning channels: a 7.x caller
+that passes a `.csv` channel is refused. `mode="local"` with 8.0.0 needs a
+synthefy-nori release after 0.22.0: synthefy-nori 0.22.0 requires
+`synthefy>=7,<8`.
+
+### Changed (breaking)
+
+- Fine-tuning channels are Parquet only. `FineTuneJobRequest` accepts a channel
+  given as an S3 folder ending in `/` of Parquet files or as one `.parquet` or
+  `.pq` object, and refuses a `.csv` object, or any other object, before any AWS
+  call; the refusal of a `.csv` object says how to write the table as Parquet
+  (`pandas.DataFrame.to_parquet(path, index=False)`). The job fails before it
+  reads any row when a channel holds a CSV file or a file of another format.
+  The channels go to SageMaker as `application/x-parquet`.
+
+### Added
+
+- `FineTuneJobRequest.checkpoint_uri`: an S3 folder ending in `/` where a
+  fine-tuning job saves each child it finishes. After a stop or a failure,
+  `fine_tune()` with the same request (`model_name` and `instance_type` may
+  change) trains only the children not saved there, and the report marks the
+  others with `ChildCurve.restored`. A folder resumes only on the Algorithm
+  version that wrote it and with the same table and hyperparameters: a job
+  refuses a folder written by another version, with other hyperparameters or
+  for another table, naming what differs, and an edited table needs an empty
+  folder. Run one job per folder at a time. An Algorithm version that does not
+  save checkpoints ignores the folder and trains every child.
+
+### Changed
+
+- `SynthefyNoriFineTuner.fine_tune` refuses a channel given as one object when
+  other keys start with its key, whatever the object's format, since SageMaker
+  would read those too; the message says the channel "names one object".
+- `FineTuneJobRequest` refuses a channel given as one object whose name starts
+  with `_` or `.`: the job skips such files, like the markers Spark and Hadoop
+  write next to a table, and would find no rows.
+- `max_runtime_s` covers the bag on an instance type with N GPUs: by default
+  ceil(1.5 x ceil(bag / N) x budget_s) + 1800, and at least
+  ceil(bag / N) x budget_s.
+- With `steps` of 1,000 or more, a child is scored every `steps` / 500 steps,
+  rounded down (the report's `validation_interval`); `patience` is rounded up
+  to a multiple of that, and a child's curve has one point per score.
+- The descriptions of `steps`, `bag`, `budget_s` and `patience` in
+  `FineTuneHyperparameters` say what each setting means to the job: `steps`
+  sets how many rows a child reads, the `bag` children train one per GPU at a
+  time, `budget_s` is the time cap of one child, and `patience` counts training
+  steps without a better validation score.
+
+### Added
+
+- `TrainingReport` fields `validation_interval` (default `1`), `read_seconds`
+  (`0.0`), `rows_visited` (`0`), `fraction_visited` (`0.0`), `steps_per_pass`
+  (`0`), `workers` (`1`), `gpus` (`1`) and `failed_children` (empty), and
+  `ChildCurve` fields `rows_visited` (`0`), `failed` (`False`) and `failure`
+  (empty); a report written without one of these fields reads it as its
+  default. `child_curves` holds a curve for every child that started or
+  failed.
+- Fine-tuning on `ml.g5.12xlarge` and `ml.g6e.12xlarge` (4 GPUs) and on
+  `ml.g5.48xlarge` and `ml.g6e.48xlarge` (8 GPUs), one child per GPU at a time.
+  `MULTI_GPU_INSTANCE_TYPES` maps each to its number of GPUs, and
+  `LARGE_GPU_INSTANCE_TYPES`, the types `nori-100m` needs, holds the two
+  `ml.g6e` ones as well.
+- The README's fine-tuning section gives the rows a step reads on every
+  training instance type, the hours and dollars of one pass over a large table
+  on the types measured or estimated, and the host memory a job needs ("Large
+  tables: what a job reads and what it costs").
+
 ## [7.4.0] - 2026-10-20
 
 ### Added

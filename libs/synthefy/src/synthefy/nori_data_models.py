@@ -49,10 +49,11 @@ import json
 import math
 import re
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationInfo, field_validator, model_validator
-from synthefy._aws import check_sagemaker_resource_name, format_seconds, parse_s3_uri
+from synthefy._aws import check_sagemaker_resource_name, parse_s3_uri
 from typing_extensions import Annotated
 
 #: Named starting points accepted wherever a policy is expected, instead of a field dict.
@@ -598,8 +599,14 @@ RELEASED_MODEL_NAMES = ("nori-6m", "nori-30m", "nori-30m-thinking-medium", "nori
 #: The released models a fine-tuning job accepts as ``base_model``.
 BaseModelName = Literal["nori-6m", "nori-100m"]
 
-#: The fine-tuning Algorithm's 48 GB training instance types; ``nori-100m`` needs one of them.
-LARGE_GPU_INSTANCE_TYPES = ("ml.g6e.xlarge", "ml.g6e.2xlarge")
+#: The fine-tuning Algorithm's training instance types with 48 GB GPUs: one GPU on the first two, 4 on
+#: ``ml.g6e.12xlarge`` and 8 on ``ml.g6e.48xlarge``. ``nori-100m`` needs one of them.
+LARGE_GPU_INSTANCE_TYPES = ("ml.g6e.xlarge", "ml.g6e.2xlarge", "ml.g6e.12xlarge", "ml.g6e.48xlarge")
+#: The fine-tuning Algorithm's training instance types with several GPUs and the number each has; every other type
+#: has one. A job trains one child per GPU at a time, so ``max_runtime_s`` covers ceil(bag / GPUs) budgets.
+MULTI_GPU_INSTANCE_TYPES = MappingProxyType(
+    {"ml.g5.12xlarge": 4, "ml.g6e.12xlarge": 4, "ml.g5.48xlarge": 8, "ml.g6e.48xlarge": 8}
+)
 
 #: The job's input channels: the training table and the optional validation table.
 TRAIN_CHANNEL = "train"
@@ -628,15 +635,35 @@ class FineTuneHyperparameters(BaseModel):
         ge=1,
         le=8,
         description=(
-            "The number of children the job trains, 1 to 8. The fine-tuned model is built from them, and each "
-            "child has its own steps and time budget."
+            "How many children the job trains, 1 to 8; the fine-tuned model is built from them. Children train one "
+            "per GPU at a time, and each has its own steps, patience and budget_s."
         ),
     )
     # The Algorithm's defaults; CI fails if they drift.
-    steps: int = Field(100, ge=1, description="Maximum training steps per child.")
+    steps: int = Field(
+        100,
+        ge=1,
+        description=(
+            "The number of training steps each child takes, unless patience or budget_s stops it sooner. A step reads "
+            "a number of rows set by the table's width, fewer on a wider table, so steps sets how many rows a child "
+            "reads; the training report's steps_per_pass is the number of steps that read once every row a child "
+            "trains on."
+        ),
+    )
     lr: float = Field(1e-5, gt=0, description="Learning rate.")
-    patience: int = Field(25, ge=1, description="A child stops after this many steps without improvement.")
-    budget_s: float = Field(900.0, gt=0, description="Wall-clock cap per child, in seconds.")
+    patience: int = Field(
+        25,
+        ge=1,
+        description=(
+            "How many training steps without a better validation score stop a child, rounded up to a multiple of the "
+            "steps between two validation scores (1 below 1,000 steps, else steps / 500 rounded down)."
+        ),
+    )
+    budget_s: float = Field(
+        900.0,
+        gt=0,
+        description="The time cap of one child, in seconds: the child stops after the first step that ends past it.",
+    )
     # The Algorithm refuses a negative seed; refusing here names the field.
     seed: int = Field(0, ge=0, description="The job's random seed.")
 
@@ -686,14 +713,26 @@ class ChildCurve(BaseModel):
     val_mse_best: Optional[float]
     interrupted: bool
     joined_average: bool
+    rows_visited: int = Field(
+        0, description="Training rows this child's steps used; a row used in two passes counts twice."
+    )
+    failed: bool = Field(False, description="Whether this child failed and was left out of the fine-tuned model.")
+    failure: str = Field("", description="The failure's last lines; empty when the child joined.")
+    restored: bool = Field(
+        False,
+        description="Whether an earlier job trained this child and this job read it back from the checkpoint folder.",
+    )
 
 
 class TrainingReport(BaseModel):
     """``training_report.json``: what a fine-tuning job did and how its result scores.
 
     ``val_mse_before`` and ``val_mse_after`` are the mean squared errors of the base model and of the fine-tuned
-    model on the same rows, in standardized target units. ``child_curves`` has one entry per child that started,
-    with that child's own validation scores: a view of progress, not the result.
+    model on the same rows, in standardized target units. ``child_curves`` has one entry per child that started or
+    failed, with that child's own validation scores: a view of progress, not the result. ``n_rows`` counts the rows
+    of the training table and ``n_rows_used`` the rows training could draw from: the table minus any rows set aside
+    to score the report. With ``bag`` 1 and no validation channel, the child trains on four fifths of these rows and
+    is scored on up to 4,096 rows of the other fifth.
     """
 
     model_config = ConfigDict(protected_namespaces=())
@@ -717,21 +756,51 @@ class TrainingReport(BaseModel):
     cut_short: bool
     seconds: float
     instance_type: str
+    # Training steps between two validation scores in a child's curve.
+    validation_interval: int = 1
+    # Seconds the job's first read of the training table took.
+    read_seconds: float = 0.0
+    # Training rows the children's steps used, summed over the children; a row used in two passes counts twice.
+    rows_visited: int = 0
+    # rows_visited over the sum of the children's shares of the table: about 1.0 after one pass each.
+    fraction_visited: float = 0.0
+    # Training steps the longest of the children's passes over their shares of this table takes.
+    steps_per_pass: int = 0
+    workers: int = Field(
+        1,
+        description=(
+            "How many worker processes trained the children at the same time; 1 trains them one after the other."
+        ),
+    )
+    gpus: int = Field(1, description="How many GPUs the children trained on; 0 on a CPU job.")
+    failed_children: List[int] = Field(
+        [],
+        description=(
+            "The children that failed and were left out of the fine-tuned model; their curves carry the failure."
+        ),
+    )
 
 
 # ------------------------------------------------------------------ fine-tuning requests and results
 #: The training instance when the request names none: the cheapest one the 24 GB bases fit.
 _DEFAULT_TRAINING_INSTANCE_TYPE = "ml.g5.xlarge"
-#: The job's disk when the request names none: the channels and the image's working files fit with room to spare.
+#: The job's disk when the request names none, on an instance type without local storage: the image's working files
+#: and the artifact fit with room to spare. The Algorithm's instance types have local storage, which holds the tables.
 _DEFAULT_VOLUME_SIZE_GB = 30
 #: Bases that need a 48 GB GPU (LARGE_GPU_INSTANCE_TYPES); the job would fail on a 24 GB one after billing it.
 _LARGE_GPU_BASES = frozenset({"nori-100m"})
 #: SageMaker's limit on one hyperparameter value, in characters.
 _MAX_HYPERPARAMETER_CHARS = 2500
-#: The derived MaxRuntimeInSeconds: every child's budget, plus half again and 30 minutes for what the job does
-#: besides training.
+#: The derived MaxRuntimeInSeconds: ceil(bag / GPUs) children's budgets, plus half again and 30 minutes for what
+#: the job does besides training.
 _RUNTIME_MARGIN_FACTOR = 1.5
 _RUNTIME_MARGIN_S = 1800
+#: The extensions, in any case, of a channel given as one object: the job reads Parquet files.
+_CHANNEL_FILE_SUFFIXES = (".parquet", ".pq")
+#: The extension, in any case, of a CSV object, which a channel cannot hold.
+_CSV_SUFFIX = ".csv"
+#: The job skips a file whose name starts with one of these, so a one-object channel so named holds no table.
+_CHANNEL_SKIPPED_NAME_PREFIXES = ("_", ".")
 
 
 def serialize_hyperparameters(hyperparameters: FineTuneHyperparameters) -> Dict[str, str]:
@@ -751,27 +820,41 @@ def serialize_hyperparameters(hyperparameters: FineTuneHyperparameters) -> Dict[
 
 
 def _check_channel_uri(value: str, argument: str) -> None:
-    """Refuse a channel URI that is not an S3 folder ending in ``/`` or one ``.csv`` object.
+    """Refuse a channel URI that is not an S3 folder ending in ``/`` or one ``.parquet`` or ``.pq`` object.
 
     SageMaker's S3Prefix channel reads every key that starts with the given text, so a folder named without its
-    ``/`` also reads look-alike siblings (``data`` reads ``data-old/``), and the job reads only ``.csv`` files.
+    ``/`` also reads look-alike siblings (``data`` reads ``data-old/``), and the job reads only Parquet files
+    (``.parquet`` or ``.pq``). A ``.csv`` object is refused with the way to write the table as Parquet. The job
+    skips a file whose name starts with ``_`` or ``.``, so one object so named is also refused.
     """
     parse_s3_uri(value, name=argument)
-    if not (value.endswith("/") or value.lower().endswith(".csv")):
+    if value.lower().endswith(_CSV_SUFFIX):
         raise ValueError(
-            f"{argument} must be an S3 folder ending in '/' or one .csv object; got {value!r}. SageMaker reads "
-            "every key that starts with the given text, so a folder without its '/' also reads look-alike "
-            "siblings, and the job reads only .csv files"
+            f"{argument} names a CSV object; got {value!r}. The job reads Parquet only: write the table with "
+            "pandas.DataFrame.to_parquet(path, index=False) and upload that .parquet object or a folder of them"
+        )
+    if not (value.endswith("/") or value.lower().endswith(_CHANNEL_FILE_SUFFIXES)):
+        raise ValueError(
+            f"{argument} must be an S3 folder ending in '/' or one .parquet or .pq object; got {value!r}. SageMaker "
+            "reads every key that starts with the given text, so a folder without its '/' also reads look-alike "
+            "siblings, and the job reads only .parquet and .pq files"
+        )
+    if not value.endswith("/") and value.rsplit("/", 1)[-1].startswith(_CHANNEL_SKIPPED_NAME_PREFIXES):
+        raise ValueError(
+            f"{argument} names one object whose name starts with '_' or '.'; got {value!r}. The job skips such files, "
+            "like the markers and checksums Spark and Hadoop write next to a table, so it would find no rows: rename "
+            "the object"
         )
 
 
 class FineTuneJobRequest(BaseModel):
-    """One fine-tuning job: the tables, what to train, and where.
+    """One fine-tuning job: the Parquet tables, what to train, and where.
 
     Everything SageMaker or the job would refuse only after an instance started billing is checked when the request
-    is built: the S3 URIs, the job name, the instance a base needs, a runtime long enough for the bag, and
-    SageMaker's limit on a hyperparameter value's length. ``hyperparameters`` is a
-    copy of what the caller passed, so changing the caller's object afterwards changes nothing here;
+    is built: the S3 URIs (each channel a folder of Parquet files or one Parquet object, never a CSV object), the job
+    name, the instance a base needs, a runtime long enough for the bag, and SageMaker's limit on a hyperparameter
+    value's length. ``hyperparameters`` is a copy of what the caller passed, so changing the caller's object
+    afterwards changes nothing here;
     :meth:`~synthefy.SynthefyNoriFineTuner.fine_tune` runs every check again before it submits the job.
     """
 
@@ -784,7 +867,9 @@ class FineTuneJobRequest(BaseModel):
             "Algorithm in the caller's own account."
         ),
     )
-    training_data: str = Field(description="The train channel: an S3 folder ending in '/' or one .csv object.")
+    training_data: str = Field(
+        description="The train channel: an S3 folder ending in '/' of Parquet files, or one .parquet or .pq object."
+    )
     validation_data: Optional[str] = Field(
         None,
         description=(
@@ -813,14 +898,27 @@ class FineTuneJobRequest(BaseModel):
         ge=1,
         validate_default=True,
         description=(
-            f"SageMaker stops the job after this; by default ceil({_RUNTIME_MARGIN_FACTOR} x bag x budget_s) + "
-            f"{_RUNTIME_MARGIN_S}."
+            f"SageMaker stops the job after this; by default ceil({_RUNTIME_MARGIN_FACTOR} x ceil(bag / N) x "
+            f"budget_s) + {_RUNTIME_MARGIN_S} on an instance type with N GPUs, and at least ceil(bag / N) x "
+            "budget_s."
         ),
     )
     volume_size_gb: int = Field(
-        _DEFAULT_VOLUME_SIZE_GB, ge=1, description="The job's disk; SageMaker copies the channels onto it."
+        _DEFAULT_VOLUME_SIZE_GB,
+        ge=1,
+        description=(
+            "The job's disk in GB on an instance type without local storage. The instance types the Algorithm offers have "
+            "at least 250 GB of local storage, which SageMaker uses instead and which holds the tables and the artifact."
+        ),
     )
     kms_key_id: Optional[str] = Field(None, description="The KMS key SageMaker encrypts the artifact with.")
+    checkpoint_uri: Optional[str] = Field(
+        None,
+        description=(
+            "An S3 folder ending in '/' where the job saves each child it finishes. A later job given the same "
+            "folder, table and hyperparameters trains only the children not saved there."
+        ),
+    )
 
     @field_validator("training_data", "validation_data")
     @classmethod
@@ -833,6 +931,17 @@ class FineTuneJobRequest(BaseModel):
     @classmethod
     def _check_output_path(cls, value: str) -> str:
         parse_s3_uri(value, name="output_path")
+        return value
+
+    @field_validator("checkpoint_uri")
+    @classmethod
+    def _check_checkpoint_uri(cls, value: Optional[str]) -> Optional[str]:
+        # A folder of its own: SageMaker copies everything under it into the job, which refuses any file it did not
+        # write, so a bucket's root would cost a refused job.
+        if value is not None:
+            parse_s3_uri(value, name="checkpoint_uri", require_prefix=True)
+            if not value.endswith("/"):
+                raise ValueError(f"checkpoint_uri must be an S3 folder ending in '/'; got {value!r}")
         return value
 
     @field_validator("hyperparameters")
@@ -889,17 +998,19 @@ class FineTuneJobRequest(BaseModel):
     @classmethod
     def _resolve_max_runtime(cls, value: Optional[int], info: ValidationInfo) -> Optional[int]:
         hyperparameters = info.data.get("hyperparameters")
-        if hyperparameters is None:
+        instance_type = info.data.get("instance_type")
+        if hyperparameters is None or instance_type is None:
             return value
-        floor = hyperparameters.bag * hyperparameters.budget_s
+        gpus = MULTI_GPU_INSTANCE_TYPES.get(instance_type, 1)
+        floor = math.ceil(hyperparameters.bag / gpus) * hyperparameters.budget_s
         if value is None:
             return math.ceil(_RUNTIME_MARGIN_FACTOR * floor) + _RUNTIME_MARGIN_S
         if value < floor:
-            shown = format_seconds(floor)
             raise ValueError(
-                f"max_runtime_s={value} is below bag x budget_s={shown}, so SageMaker would stop the job before "
-                "every child has had its budget. Lower budget_s or bag, or raise max_runtime_s. The job also needs "
-                f"time besides training; the derived default adds {round((_RUNTIME_MARGIN_FACTOR - 1) * 100)} % plus "
+                f"max_runtime_s={value} is below ceil(bag / {gpus} GPU{'s' if gpus > 1 else ''}) x budget_s = "
+                f"{floor:,.10g} s on {instance_type}, so SageMaker would stop the job before every child has had "
+                "its budget. Lower budget_s or bag, or raise max_runtime_s. The job also needs time besides "
+                f"training; the derived default adds {round((_RUNTIME_MARGIN_FACTOR - 1) * 100)} % plus "
                 f"{_RUNTIME_MARGIN_S // 60} min for that."
             )
         return value
@@ -929,8 +1040,9 @@ class FineTuneJob(BaseModel):
     latest_metrics: Dict[str, float] = Field(
         default_factory=dict,
         description=(
-            "The last value SageMaker read for each metric, which is the last child's last validated step: "
-            "progress only, not a score of the fine-tuned model (get_training_report() has that)."
+            "The last value SageMaker read for each metric: one child's latest validated step, from whichever child "
+            "finished last once the job ends (the child metric names which), progress only, not a score of the "
+            "fine-tuned model (get_training_report() has that)."
         ),
     )
     algorithm: str = Field(description="The Algorithm ARN or name the job ran, which deploy() packages with.")
