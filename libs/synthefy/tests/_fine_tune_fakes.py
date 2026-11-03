@@ -482,7 +482,7 @@ def store_artifact(s3: FakeS3, data: bytes) -> None:
 def build_channel(name: str, uri: str) -> Dict[str, Any]:
     return {
         "ChannelName": name,
-        "ContentType": "text/csv",
+        "ContentType": "application/x-parquet",
         "InputMode": "File",
         "DataSource": {
             "S3DataSource": {"S3DataType": "S3Prefix", "S3Uri": uri, "S3DataDistributionType": "FullyReplicated"}

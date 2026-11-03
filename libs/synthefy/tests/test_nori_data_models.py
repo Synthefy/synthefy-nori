@@ -12,7 +12,8 @@ defaults.
 The fine-tuning models describe the Nori fine-tuning Algorithm, and CI checks them against it.
 Here they are held to what the client relies on: hyperparameters survive the all-strings form
 SageMaker delivers them in, a fine-tuned model never takes a released name, and a report parses
-whatever validation mode a newer Algorithm version names.
+whatever validation mode a newer Algorithm version names, with or without the counts of the rows
+training visited and of the workers and GPUs that trained the children, and the children that failed.
 
 The fine-tuning request and result schemas at the end of the module mirror nothing; their tests
 check what a request refuses, or derives, before a job is paid for.
@@ -206,7 +207,8 @@ def test_a_fine_tuned_name_starts_with_ft_and_fits_63_characters(name, accepted)
             FineTuneHyperparameters(target_column="y", model_name=name)
 
 
-def test_a_report_from_a_job_with_a_newer_validation_mode_still_parses():
+def _report_fields(**fields):
+    """A ``training_report.json`` body with only the fields every Algorithm version writes, plus ``fields``."""
     curve = {
         "child": 0,
         "steps": [1, 2],
@@ -217,46 +219,117 @@ def test_a_report_from_a_job_with_a_newer_validation_mode_still_parses():
         "interrupted": False,
         "joined_average": True,
     }
-    report = TrainingReport.model_validate(
-        {
-            "model_name": "ft-acme-churn-v1",
-            "model_version": "sha256:" + "a" * 64,
-            "base_model": "nori-6m",
-            "base_model_version": "sha256:" + "b" * 64,
-            "n_rows": 5000,
-            "n_rows_used": 5000,
-            "n_features": 4,
-            "children": 1,
-            "steps_run": [2],
-            "validation_source": "a-mode-added-later",
-            "n_val_rows": 500,
-            "val_mse_before": 0.6,
-            "val_mse_after": None,
-            "child_curves": [curve],
-            "cut_short": True,
-            "seconds": 12.5,
-            "instance_type": "ml.g5.xlarge",
-        }
-    )
+    return {
+        "model_name": "ft-acme-churn-v1",
+        "model_version": "sha256:" + "a" * 64,
+        "base_model": "nori-6m",
+        "base_model_version": "sha256:" + "b" * 64,
+        "n_rows": 5000,
+        "n_rows_used": 4500,
+        "n_features": 4,
+        "children": 1,
+        "steps_run": [2],
+        "validation_source": "kfold",
+        "n_val_rows": 500,
+        "val_mse_before": 0.6,
+        "val_mse_after": None,
+        "child_curves": [curve],
+        "cut_short": True,
+        "seconds": 12.5,
+        "instance_type": "ml.g5.xlarge",
+        **fields,
+    }
+
+
+def test_a_report_from_a_job_with_a_newer_validation_mode_still_parses():
+    report = TrainingReport.model_validate(_report_fields(validation_source="a-mode-added-later"))
     assert report.validation_source == "a-mode-added-later"
     assert report.val_mse_after is None
     assert report.child_curves[0].train_loss == [0.9, None]
 
 
+def test_a_report_parses_with_or_without_the_fields_that_count_rows_workers_and_failed_children():
+    without = TrainingReport.model_validate(_report_fields())
+    assert (
+        without.validation_interval,
+        without.read_seconds,
+        without.rows_visited,
+        without.fraction_visited,
+        without.steps_per_pass,
+        without.workers,
+        without.gpus,
+        without.failed_children,
+    ) == (1, 0.0, 0, 0.0, 0, 1, 1, [])
+    curve = without.child_curves[0]
+    assert (curve.rows_visited, curve.failed, curve.failure, curve.restored) == (0, False, "", False)
+
+    # A bag of two on a four-GPU type: one worker per child on two of the GPUs, and only child 0 joined the average.
+    written = _report_fields(
+        children=1,
+        steps_run=[2, 0],
+        instance_type="ml.g5.12xlarge",
+        validation_interval=2,
+        read_seconds=1.25,
+        rows_visited=9000,
+        fraction_visited=2.5,
+        steps_per_pass=4,
+        workers=2,
+        gpus=2,
+        failed_children=[1],
+    )
+    written["child_curves"][0].update(rows_visited=9000, failed=False, failure="", restored=False)
+    written["child_curves"].append(
+        {
+            "child": 1,
+            "steps": [],
+            "train_loss": [],
+            "val_mse": [],
+            "best_step": 0,
+            "val_mse_best": None,
+            "interrupted": False,
+            "joined_average": False,
+            "rows_visited": 0,
+            "failed": True,
+            "failure": "RuntimeError: CUDA error: an illegal memory access was encountered",
+            "restored": False,
+        }
+    )
+    assert TrainingReport.model_validate_json(json.dumps(written)).model_dump() == written
+
+
 # ------------------------------------------------- the fine-tuning request and result schemas
-def test_request_derives_max_runtime_from_bag_and_budget_plus_margin():
+def test_request_derives_max_runtime_from_the_budgets_each_gpu_trains_plus_margin():
     assert build_request().max_runtime_s == 12_600
     assert build_request(hyperparameters=build_hyperparameters(bag=2, budget_s=100.0)).max_runtime_s == 2_100
+    four_children = build_hyperparameters(bag=4, budget_s=1200.0)
+    assert build_request(hyperparameters=four_children).max_runtime_s == 9_000
+    assert build_request(hyperparameters=four_children, instance_type="ml.g5.12xlarge").max_runtime_s == 3_600
 
 
-def test_request_refuses_max_runtime_one_second_below_bag_times_budget_and_accepts_it_at_the_floor():
-    hyperparameters = build_hyperparameters(bag=2, budget_s=100.0)
+@pytest.mark.parametrize(
+    "instance_type, bag, floor, gpus",
+    [
+        ("ml.g5.xlarge", 4, 4_800, "1 GPU"),
+        ("ml.g5.12xlarge", 4, 1_200, "4 GPUs"),
+        ("ml.g5.12xlarge", 5, 2_400, "4 GPUs"),
+        ("ml.g6e.48xlarge", 8, 1_200, "8 GPUs"),
+    ],
+    ids=["one-gpu-every-child", "four-gpus-one-child-each", "four-gpus-five-children", "eight-gpus-one-child-each"],
+)
+def test_request_refuses_max_runtime_one_second_below_the_budgets_each_gpu_trains_and_accepts_the_floor(
+    instance_type, bag, floor, gpus
+):
+    hyperparameters = build_hyperparameters(bag=bag, budget_s=1200.0)
     with pytest.raises(ValidationError) as raised:
-        build_request(hyperparameters=hyperparameters, max_runtime_s=199)
+        build_request(hyperparameters=hyperparameters, instance_type=instance_type, max_runtime_s=floor - 1)
     message = str(raised.value)
-    assert "max_runtime_s=199 is below bag x budget_s=200, so SageMaker would stop the job" in message
+    assert (
+        f"max_runtime_s={floor - 1} is below ceil(bag / {gpus}) x budget_s = {floor:,} s on {instance_type}, so "
+        "SageMaker would stop the job before every child has had its budget"
+    ) in message
     assert "Lower budget_s or bag, or raise max_runtime_s. The job also needs time besides training" in message
-    assert build_request(hyperparameters=hyperparameters, max_runtime_s=200).max_runtime_s == 200
+    request = build_request(hyperparameters=hyperparameters, instance_type=instance_type, max_runtime_s=floor)
+    assert request.max_runtime_s == floor
 
 
 def test_request_refuses_an_unknown_keyword():
@@ -269,9 +342,20 @@ def test_request_defaults_the_instance_type_to_one_the_base_fits(base_model, ins
     assert build_request(hyperparameters=build_hyperparameters(base_model=base_model)).instance_type == instance_type
 
 
-def test_request_refuses_nori_100m_on_a_24_gb_instance_naming_the_48_gb_types():
-    with pytest.raises(ValidationError, match=re.escape("use instance_type 'ml.g6e.xlarge' or 'ml.g6e.2xlarge'")):
-        build_request(hyperparameters=build_hyperparameters(base_model="nori-100m"), instance_type="ml.g5.2xlarge")
+@pytest.mark.parametrize("instance_type", ["ml.g6e.xlarge", "ml.g6e.2xlarge", "ml.g6e.12xlarge", "ml.g6e.48xlarge"])
+def test_request_accepts_nori_100m_on_every_48_gb_type_with_one_gpu_or_several(instance_type):
+    request = build_request(hyperparameters=build_hyperparameters(base_model="nori-100m"), instance_type=instance_type)
+    assert request.instance_type == instance_type
+
+
+@pytest.mark.parametrize("instance_type", ["ml.g5.2xlarge", "ml.g5.12xlarge", "ml.g5.48xlarge"])
+def test_request_refuses_nori_100m_on_a_24_gb_type_with_one_gpu_or_several_naming_the_48_gb_types(instance_type):
+    with pytest.raises(ValidationError) as raised:
+        build_request(hyperparameters=build_hyperparameters(base_model="nori-100m"), instance_type=instance_type)
+    assert (
+        f"needs a 48 GB GPU, which {instance_type!r} does not have; use instance_type 'ml.g6e.xlarge' or "
+        "'ml.g6e.2xlarge' or 'ml.g6e.12xlarge' or 'ml.g6e.48xlarge'"
+    ) in str(raised.value)
 
 
 def test_hyperparameters_refuse_a_released_model_the_algorithm_does_not_fine_tune():
@@ -285,7 +369,9 @@ def test_hyperparameters_refuse_a_released_model_the_algorithm_does_not_fine_tun
         ("training_data", "https://customer-bucket/train/", "training_data must be an s3://bucket/prefix URI"),
         ("training_data", "s3:///train/", "training_data must be an s3://bucket/prefix URI"),
         ("training_data", "s3://customer-bucket/train", "training_data must be an S3 folder ending in '/'"),
-        ("training_data", "s3://customer-bucket/train/table.parquet", "the job reads only .csv files"),
+        ("training_data", "s3://customer-bucket/train/table.csv.gz", "the job reads only .parquet and .pq files"),
+        ("validation_data", "s3://customer-bucket/TABLE.CSV", "validation_data names a CSV object"),
+        ("training_data", "s3://customer-bucket/train/_table.parquet", "The job skips such files"),
         ("validation_data", "s3://customer-bucket/validation", "validation_data must be an S3 folder ending in '/'"),
         ("output_path", "customer-bucket/output/", "output_path must be an s3://bucket/prefix URI"),
     ],
@@ -296,9 +382,14 @@ def test_request_refuses_an_s3_location_the_job_cannot_read_naming_the_field(fie
 
 
 @pytest.mark.parametrize(
-    "uri", ["s3://customer-bucket/train/", "s3://customer-bucket/train/table.csv", "s3://customer-bucket/TABLE.CSV"]
+    "uri",
+    [
+        "s3://customer-bucket/train/",
+        "s3://customer-bucket/train/table.parquet",
+        "s3://customer-bucket/TABLE.PQ",
+    ],
 )
-def test_request_accepts_a_folder_or_one_csv_object_for_either_channel(uri):
+def test_request_accepts_a_folder_or_one_parquet_object_for_either_channel(uri):
     request = build_request(training_data=uri, validation_data=uri)
     assert (request.training_data, request.validation_data) == (uri, uri)
 

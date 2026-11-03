@@ -220,9 +220,9 @@ def _validate_dependency_direction(client: WheelInfo, nori: WheelInfo) -> None:
     _validate_extra_requirements(
         nori,
         {
-            "forecasting": ("synthefy[forecasting]<8,>=7",),
-            "text": ("synthefy[text]<8,>=7",),
-            "timeseries": ("synthefy[forecasting]<8,>=7",),
+            "forecasting": ("synthefy[forecasting]<9,>=7",),
+            "text": ("synthefy[text]<9,>=7",),
+            "timeseries": ("synthefy[forecasting]<9,>=7",),
         },
     )
 
@@ -231,8 +231,8 @@ def _validate_dependency_direction(client: WheelInfo, nori: WheelInfo) -> None:
     if len(base_edges) != 1:
         raise BoundaryError(f"synthefy-nori must have exactly one unconditional synthefy edge, found {base_edges}")
     normalized_edge = re.sub(r"\s+", "", base_edges[0]).lower().replace("_", "-")
-    if normalized_edge not in {"synthefy<8,>=7", "synthefy>=7,<8"}:
-        raise BoundaryError(f"synthefy-nori's base dependency must be synthefy>=7,<8; found {base_edges[0]!r}")
+    if normalized_edge not in {"synthefy<9,>=7", "synthefy>=7,<9"}:
+        raise BoundaryError(f"synthefy-nori's base dependency must be synthefy>=7,<9; found {base_edges[0]!r}")
 
 
 def _validate_rebuild(direct: WheelInfo, rebuilt: WheelInfo) -> None:
