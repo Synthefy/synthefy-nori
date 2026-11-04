@@ -142,7 +142,7 @@ jobs:
           uv pip install --python "$release_python" --strict --no-sources --torch-backend cpu "${wheel[0]}"
           uv pip check --python "$release_python"
           cd "$RUNNER_TEMP"
-          "$release_python" -c 'import sys; from importlib.metadata import version; import synthefy, synthefy_nori; assert version("synthefy-nori") == sys.argv[1]; assert synthefy_nori.__version__ == sys.argv[1]; assert int(synthefy.__version__.split(".", 1)[0]) == 7' "$EXPECTED_VERSION"
+          "$release_python" -c 'import sys; from importlib.metadata import version; import synthefy, synthefy_nori; assert version("synthefy-nori") == sys.argv[1]; assert synthefy_nori.__version__ == sys.argv[1]; assert 7 <= int(synthefy.__version__.split(".", 1)[0]) < 9' "$EXPECTED_VERSION"
 
       - uses: actions/upload-artifact@v7
         with:
