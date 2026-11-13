@@ -163,11 +163,13 @@ def _probe_client_extra(extra: str) -> None:
     _assert_not_importable(*sorted(all_optional.difference(optional_modules[extra])))
 
     if extra == "aws":
-        from synthefy._aws import load_aws_sdk
+        from synthefy._aws import load_aws_sdk, load_parquet_reader
 
         boto3, config = load_aws_sdk()
         if boto3.__name__ != "boto3" or config.__name__ != "Config":
             raise AssertionError("the AWS extra did not load boto3 and botocore.Config")
+        if load_parquet_reader()[1].__name__ != "pyarrow.parquet":
+            raise AssertionError("the AWS extra did not load pyarrow.parquet")
     elif extra == "forecasting":
         _import_required("datasets", "gluonts", "joblib", "scipy", "statsmodels")
         _canonical_tsfeatures()

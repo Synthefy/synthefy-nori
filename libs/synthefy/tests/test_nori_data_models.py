@@ -28,6 +28,8 @@ import warnings
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from synthefy._training_jobs import refuse_task_settings_the_version_lacks
+from synthefy.errors import FineTuningError
 from synthefy.nori_data_models import (
     FINE_TUNED_MODEL_NAME_PATTERN,
     MEMORY_PRESETS,
@@ -36,7 +38,10 @@ from synthefy.nori_data_models import (
     FineTuneHyperparameters,
     FineTuneJob,
     FineTuneJobRequest,
+    get_task_tables,
+    serialize_hyperparameters,
     FineTunedEndpoint,
+    TaskTable,
     MemoryAttempt,
     MemoryPolicy,
     MemoryReport,
@@ -138,13 +143,19 @@ def test_hyperparameters_survive_the_all_strings_form_sagemaker_delivers():
         base_model="nori-100m",
         feature_columns=["sqft", "rooms", "age"],
         bag=3,
-        steps=40,
+        row_partition_strategy="folds",
+        n_steps_per_model=40,
         lr=3e-6,
         patience=7,
-        budget_s=120.5,
+        max_training_hours=1.5,
+        validation_every_n_steps=4,
         seed=11,
     )
-    for hyperparameters in (FineTuneHyperparameters(target_column="y", model_name="ft-m"), full):
+    # patience and max_training_hours default to a value, so None travels as "none" rather than being left out.
+    uncapped = FineTuneHyperparameters(
+        target_column="y", model_name="ft-m", n_passes_per_row=2.5, patience=None, max_training_hours=None
+    )
+    for hyperparameters in (FineTuneHyperparameters(target_column="y", model_name="ft-m"), full, uncapped):
         strings = serialize_hyperparameters(hyperparameters)
         assert all(isinstance(value, str) for value in strings.values())
         assert FineTuneHyperparameters.model_validate(strings) == hyperparameters
@@ -241,6 +252,39 @@ def _report_fields(**fields):
     }
 
 
+def _plan_fields(**fields):
+    """A ``training_plan`` of a bag-2 shard job on 9,000 training rows."""
+    return {
+        "n_rows_in_table": 10_000,
+        "n_feature_columns": 4,
+        "n_validation_rows": 1_000,
+        "n_training_rows": 9_000,
+        "bag": 2,
+        "row_partition_strategy": "shard",
+        "n_rows_per_model": 4_500,
+        "rows_per_step": 1_500.0,
+        "targets_per_step": 375.0,
+        "rows_per_step_is_estimate": False,
+        "steps_per_model": 100,
+        "n_passes_per_row": 33.33,
+        "validation_every_n_steps": 1,
+        "fraction_of_table_read": 1.0,
+        "fraction_of_rows_as_targets": 1.0,
+        "seconds_per_step": 2.1,
+        "instance_type": "ml.g5.12xlarge",
+        "gpus": 4,
+        "training_hours": 0.06,
+        "estimated_cost_usd": 0.41,
+        "prices_as_of": "2026-10-27",
+        "patience": 25,
+        "patience_steps": 25,
+        "max_training_hours": 24.0,
+        "hits_max_training_hours": False,
+        "warnings": [],
+        **fields,
+    }
+
+
 def test_a_report_from_a_job_with_a_newer_validation_mode_still_parses():
     report = TrainingReport.model_validate(_report_fields(validation_source="a-mode-added-later"))
     assert report.validation_source == "a-mode-added-later"
@@ -259,9 +303,25 @@ def test_a_report_parses_with_or_without_the_fields_that_count_rows_workers_and_
         without.workers,
         without.gpus,
         without.failed_children,
-    ) == (1, 0.0, 0, 0.0, 0, 1, 1, [])
+        without.training_plan,
+        without.stop_reason,
+        without.unstarted_children,
+        without.bag,
+        without.n_passes_per_row_completed,
+        without.fraction_of_rows_as_targets,
+        without.n_rows_unread,
+    ) == (1, 0.0, 0, 0.0, 0, 1, 1, [], None, None, [], None, None, None, None)
+    assert "n/a passes per row; n/a of the training rows served as targets; n/a rows unread" in without.get_summary()
     curve = without.child_curves[0]
-    assert (curve.rows_visited, curve.failed, curve.failure, curve.restored) == (0, False, "", False)
+    assert (
+        curve.rows_visited,
+        curve.failed,
+        curve.failure,
+        curve.restored,
+        curve.stop_reason,
+        curve.n_skipped_state_saves,
+        curve.last_saved_step,
+    ) == (0, False, "", False, None, 0, None)
 
     # A bag of two on a four-GPU type: one worker per child on two of the GPUs, and only child 0 joined the average.
     written = _report_fields(
@@ -276,8 +336,26 @@ def test_a_report_parses_with_or_without_the_fields_that_count_rows_workers_and_
         workers=2,
         gpus=2,
         failed_children=[1],
+        training_plan=_plan_fields(),
+        stop_reason="max_training_hours",
+        n_passes_per_row_completed=1.5,
+        seconds_per_step=2.1,
+        fraction_of_rows_as_targets=0.62,
+        unstarted_children=[],
+        n_rows_unread=0,
+        bag=2,
+        row_partition_strategy="shard",
+        tasks=[],
     )
-    written["child_curves"][0].update(rows_visited=9000, failed=False, failure="", restored=False)
+    written["child_curves"][0].update(
+        rows_visited=9000,
+        failed=False,
+        failure="",
+        restored=False,
+        stop_reason="max_training_hours",
+        n_skipped_state_saves=1,
+        last_saved_step=2,
+    )
     written["child_curves"].append(
         {
             "child": 1,
@@ -292,44 +370,34 @@ def test_a_report_parses_with_or_without_the_fields_that_count_rows_workers_and_
             "failed": True,
             "failure": "RuntimeError: CUDA error: an illegal memory access was encountered",
             "restored": False,
+            "stop_reason": "plan_done",
+            "n_skipped_state_saves": 0,
+            "last_saved_step": None,
         }
     )
     assert TrainingReport.model_validate_json(json.dumps(written)).model_dump() == written
 
 
 # ------------------------------------------------- the fine-tuning request and result schemas
-def test_request_derives_max_runtime_from_the_budgets_each_gpu_trains_plus_margin():
-    assert build_request().max_runtime_s == 12_600
-    assert build_request(hyperparameters=build_hyperparameters(bag=2, budget_s=100.0)).max_runtime_s == 2_100
-    four_children = build_hyperparameters(bag=4, budget_s=1200.0)
-    assert build_request(hyperparameters=four_children).max_runtime_s == 9_000
-    assert build_request(hyperparameters=four_children, instance_type="ml.g5.12xlarge").max_runtime_s == 3_600
+def test_request_derives_max_runtime_from_max_training_hours_plus_margin_within_sagemakers_limit():
+    assert build_request().max_runtime_s == 88_200
+    assert build_request(hyperparameters=build_hyperparameters(max_training_hours=0.25)).max_runtime_s == 2_700
+    assert build_request(hyperparameters=build_hyperparameters(max_training_hours=1.1)).max_runtime_s == 5_760
+    assert build_request(hyperparameters=build_hyperparameters(max_training_hours=119.5)).max_runtime_s == 432_000
+    assert build_request(hyperparameters=build_hyperparameters(max_training_hours=None)).max_runtime_s == 432_000
+    assert build_request(max_runtime_s=600).max_runtime_s == 600
+    with pytest.raises(ValidationError, match="max_training_hours"):
+        build_hyperparameters(max_training_hours=float("inf"))
+    with pytest.raises(ValidationError, match="less than or equal to 119.5"):
+        build_hyperparameters(max_training_hours=119.6)
 
 
-@pytest.mark.parametrize(
-    "instance_type, bag, floor, gpus",
-    [
-        ("ml.g5.xlarge", 4, 4_800, "1 GPU"),
-        ("ml.g5.12xlarge", 4, 1_200, "4 GPUs"),
-        ("ml.g5.12xlarge", 5, 2_400, "4 GPUs"),
-        ("ml.g6e.48xlarge", 8, 1_200, "8 GPUs"),
-    ],
-    ids=["one-gpu-every-child", "four-gpus-one-child-each", "four-gpus-five-children", "eight-gpus-one-child-each"],
-)
-def test_request_refuses_max_runtime_one_second_below_the_budgets_each_gpu_trains_and_accepts_the_floor(
-    instance_type, bag, floor, gpus
-):
-    hyperparameters = build_hyperparameters(bag=bag, budget_s=1200.0)
-    with pytest.raises(ValidationError) as raised:
-        build_request(hyperparameters=hyperparameters, instance_type=instance_type, max_runtime_s=floor - 1)
-    message = str(raised.value)
-    assert (
-        f"max_runtime_s={floor - 1} is below ceil(bag / {gpus}) x budget_s = {floor:,} s on {instance_type}, so "
-        "SageMaker would stop the job before every child has had its budget"
-    ) in message
-    assert "Lower budget_s or bag, or raise max_runtime_s. The job also needs time besides training" in message
-    request = build_request(hyperparameters=hyperparameters, instance_type=instance_type, max_runtime_s=floor)
-    assert request.max_runtime_s == floor
+def test_hyperparameters_refuse_a_step_count_with_a_pass_count():
+    with pytest.raises(ValidationError, match="n_steps_per_model and n_passes_per_row both set the number of steps"):
+        build_hyperparameters(n_steps_per_model=30, n_passes_per_row=2.0)
+    with pytest.raises(ValidationError, match="n_steps_per_model and n_passes_per_row both set the number of steps"):
+        build_hyperparameters(n_steps_per_model=30, n_passes_per_row=1.0)
+    assert build_hyperparameters(n_steps_per_model=30).n_passes_per_row is None
 
 
 def test_request_refuses_an_unknown_keyword():
@@ -337,7 +405,10 @@ def test_request_refuses_an_unknown_keyword():
         build_request(instance_count=2)
 
 
-@pytest.mark.parametrize("base_model, instance_type", [("nori-6m", "ml.g5.xlarge"), ("nori-100m", "ml.g6e.xlarge")])
+@pytest.mark.parametrize(
+    "base_model, instance_type",
+    [("nori-6m", "ml.g5.xlarge"), ("nori-1-5", "ml.g5.xlarge"), ("nori-100m", "ml.g6e.xlarge")],
+)
 def test_request_defaults_the_instance_type_to_one_the_base_fits(base_model, instance_type):
     assert build_request(hyperparameters=build_hyperparameters(base_model=base_model)).instance_type == instance_type
 
@@ -359,7 +430,7 @@ def test_request_refuses_nori_100m_on_a_24_gb_type_with_one_gpu_or_several_namin
 
 
 def test_hyperparameters_refuse_a_released_model_the_algorithm_does_not_fine_tune():
-    with pytest.raises(ValidationError, match=re.escape("Input should be 'nori-6m' or 'nori-100m'")):
+    with pytest.raises(ValidationError, match=re.escape("Input should be 'nori-6m', 'nori-1-5' or 'nori-100m'")):
         build_hyperparameters(base_model="nori-30m")
 
 
@@ -426,7 +497,7 @@ def test_request_keeps_a_snapshot_of_the_hyperparameters_it_was_built_with():
     request = build_request(hyperparameters=hyperparameters)
     hyperparameters.base_model = "nori-100m"
     assert request.hyperparameters is not hyperparameters
-    assert request.hyperparameters.base_model == "nori-6m"
+    assert request.hyperparameters.base_model == "nori-1-5"
 
 
 @pytest.mark.parametrize(
@@ -453,14 +524,14 @@ def test_serialized_hyperparameters_send_every_field_with_the_columns_as_a_json_
     assert serialize_hyperparameters(build_hyperparameters(feature_columns=["tenure", "plan"])) == {
         "target_column": "churn",
         "model_name": MODEL,
-        "base_model": "nori-6m",
+        "base_model": "nori-1-5",
         "task": "regression",
         "feature_columns": '["tenure", "plan"]',
         "bag": "8",
-        "steps": "100",
+        "row_partition_strategy": "shard",
         "lr": "1e-05",
         "patience": "25",
-        "budget_s": "900.0",
+        "max_training_hours": "24.0",
         "seed": "0",
     }
 
@@ -470,3 +541,82 @@ def test_serialized_hyperparameters_keep_a_column_name_whatever_it_holds(columns
     text = serialize_hyperparameters(build_hyperparameters(feature_columns=columns))["feature_columns"]
     assert json.loads(text) == columns
     assert build_hyperparameters(feature_columns=text).feature_columns == columns
+
+
+def test_task_tables_and_row_counts_reach_the_job_as_the_client_set_them():
+    hyperparameters = FineTuneHyperparameters(
+        model_name="ft-acme-v1",
+        query_rows=24,
+        tasks=[
+            TaskTable(path="sales.parquet", target_column="sales", context_rows={256: 1, 1024: 2}),
+            TaskTable(path="stores/", target_column="units", task_column="store_id", time_column="day"),
+        ],
+    )
+
+    # SageMaker carries strings, and JSON object keys are text: the job parses the rows back as integers.
+    sent = serialize_hyperparameters(hyperparameters)
+    received = FineTuneHyperparameters.model_validate(sent)
+
+    assert json.loads(sent["tasks"])[0] == {
+        "path": "sales.parquet",
+        "target_column": "sales",
+        "context_rows": {"256": 1.0, "1024": 2.0},
+    }
+    assert received == hyperparameters
+    # Each table takes the job's query rows where it sets none.
+    assert [table.query_rows for table in get_task_tables(received)] == [24, 24]
+    assert get_task_tables(received)[0].context_rows == {256: 1.0, 1024: 2.0}
+
+
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        ({}, "set one of target_column"),
+        (
+            {
+                "target_column": "y",
+                "tasks": [{"path": "a/", "target_column": "y"}, {"path": "b/", "target_column": "y"}],
+            },
+            "set one of target_column",
+        ),
+        ({"tasks": [{"path": "a/", "target_column": "y"}]}, "is one task: set target_column"),
+        (
+            {"tasks": [{"path": "a/", "target_column": "y"}, {"path": "a", "target_column": "z"}]},
+            "lists the path 'a' more than once",
+        ),
+        (
+            {
+                "task_column": "store",
+                "tasks": [{"path": "a/", "target_column": "y"}, {"path": "b/", "target_column": "y"}],
+            },
+            "set task_column on each task table",
+        ),
+        ({"target_column": "y", "time_column": "day"}, "time_column needs query_rows"),
+        ({"target_column": "y", "task_column": "y"}, "task_column must be neither target_column"),
+        ({"target_column": "y", "context_rows": 8}, "context_rows must be at least 16 rows"),
+        ({"target_column": "y", "query_rows": {"24": -1}}, "weights must be finite and not negative"),
+    ],
+    ids=[
+        "neither",
+        "both",
+        "one-plain-table",
+        "repeated-path",
+        "top-level-task-column",
+        "time-without-queries",
+        "task-is-target",
+        "short-context",
+        "negative-weight",
+    ],
+)
+def test_task_settings_that_cannot_describe_tasks_are_refused(settings, message):
+    with pytest.raises(ValidationError, match=message):
+        FineTuneHyperparameters(model_name="ft-acme-v1", **settings)
+
+
+def test_a_job_of_tasks_is_refused_on_an_algorithm_version_that_predates_it():
+    hyperparameters = FineTuneHyperparameters(model_name="ft-acme-v1", target_column="y", task_column="store")
+    supported_before_tasks = frozenset({"target_column", "model_name", "n_passes_per_row"})
+
+    with pytest.raises(FineTuningError, match="does not read task_column: its version predates jobs of tasks"):
+        refuse_task_settings_the_version_lacks(hyperparameters, "nori-fine-tune", supported_before_tasks)
+    refuse_task_settings_the_version_lacks(hyperparameters, "nori-fine-tune", supported_before_tasks | {"task_column"})

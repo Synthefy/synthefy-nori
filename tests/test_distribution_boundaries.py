@@ -80,6 +80,7 @@ def _valid_artifacts(tmp_path: Path):
     client_requirements = (
         "httpx<0.28.0,>=0.24.0",
         'boto3<2.0.0,>=1.42.54; extra == "aws"',
+        'pyarrow>=16.0.0; extra == "aws"',
         'datasets>=2.0; extra == "forecasting"',
         'gluonts>=0.16; extra == "forecasting"',
         'joblib>=1.1; extra == "forecasting"',
@@ -90,10 +91,10 @@ def _valid_artifacts(tmp_path: Path):
     )
     nori_requirements = (
         "numpy>=2.0",
-        "synthefy<9,>=7",
-        'synthefy[text]<9,>=7; extra == "text"',
-        'synthefy[forecasting]<9,>=7; extra == "forecasting"',
-        'synthefy[forecasting]<9,>=7; extra == "timeseries"',
+        "synthefy<10,>=7",
+        'synthefy[text]<10,>=7; extra == "text"',
+        'synthefy[forecasting]<10,>=7; extra == "forecasting"',
+        'synthefy[forecasting]<10,>=7; extra == "timeseries"',
     )
     values = {}
     for build in ("direct", "rebuilt"):
@@ -173,6 +174,7 @@ def test_misassigned_client_extra_requirement_is_rejected(tmp_path):
     wrong_requirements = (
         "httpx<0.28.0,>=0.24.0",
         'boto3<2.0.0,>=1.42.54; extra == "aws"',
+        'pyarrow>=16.0.0; extra == "aws"',
         'datasets>=2.0; extra == "forecasting"',
         'gluonts>=0.16; extra == "forecasting"',
         'joblib>=1.1; extra == "forecasting"',
@@ -203,7 +205,7 @@ def test_wrong_nori_forwarding_extra_is_rejected(tmp_path):
             distribution="synthefy-nori",
             version="0.16.0",
             namespace="synthefy_nori",
-            requirements=("synthefy<9,>=7", 'synthefy[text]<9,>=7; extra == "text"'),
+            requirements=("synthefy<10,>=7", 'synthefy[text]<10,>=7; extra == "text"'),
             extras=("forecasting", "text", "timeseries"),
         )
 
@@ -217,6 +219,7 @@ def test_extra_requirement_with_an_additional_environment_marker_is_rejected(tmp
     conditional_requirements = (
         "httpx<0.28.0,>=0.24.0",
         'boto3<2.0.0,>=1.42.54; python_version < "3.10" or extra == "aws"',
+        'pyarrow>=16.0.0; extra == "aws"',
         'datasets>=2.0; extra == "forecasting"',
         'gluonts>=0.16; extra == "forecasting"',
         'joblib>=1.1; extra == "forecasting"',
@@ -244,10 +247,10 @@ def test_forwarded_requirement_must_also_be_a_provided_extra(tmp_path):
     artifacts = _valid_artifacts(tmp_path)
     requirements = (
         "numpy>=2.0",
-        "synthefy<9,>=7",
-        'synthefy[text]<9,>=7; extra == "text"',
-        'synthefy[forecasting]<9,>=7; extra == "forecasting"',
-        'synthefy[forecasting]<9,>=7; extra == "timeseries"',
+        "synthefy<10,>=7",
+        'synthefy[text]<10,>=7; extra == "text"',
+        'synthefy[forecasting]<10,>=7; extra == "forecasting"',
+        'synthefy[forecasting]<10,>=7; extra == "timeseries"',
     )
     for build in ("direct", "rebuilt"):
         artifacts[f"nori_{build}"] = _write_wheel(
@@ -274,6 +277,7 @@ def test_sdist_rebuild_with_different_runtime_files_is_rejected(tmp_path):
         requirements=(
             "httpx<0.28.0,>=0.24.0",
             'boto3<2.0.0,>=1.42.54; extra == "aws"',
+            'pyarrow>=16.0.0; extra == "aws"',
         ),
         extras=("aws", "forecasting", "text"),
         extra_runtime_files=("synthefy/client.py", "synthefy/unexpected.py"),
@@ -294,6 +298,7 @@ def test_sdist_rebuild_with_same_paths_but_different_bytes_is_rejected(tmp_path)
         requirements=(
             "httpx<0.28.0,>=0.24.0",
             'boto3<2.0.0,>=1.42.54; extra == "aws"',
+            'pyarrow>=16.0.0; extra == "aws"',
         ),
         extras=("aws", "forecasting", "text"),
         init_payload=b"__all__ = ['changed']\n",

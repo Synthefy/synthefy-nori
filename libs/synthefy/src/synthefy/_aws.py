@@ -74,12 +74,22 @@ def is_missing_s3_object(exc: BaseException) -> bool:
     return read_aws_error(exc)[0] in {"404", "NoSuchKey", "NotFound"}
 
 
+#: The error codes AWS answers with when the caller's identity is not allowed to make a call.
+ACCESS_DENIED_CODES = frozenset({"AccessDenied", "AccessDeniedException", "403", "Forbidden"})
+
+
+def is_access_denied(exc: BaseException) -> bool:
+    """Whether an AWS call failed because the caller's identity is not allowed to make it."""
+    return read_aws_error(exc)[0] in ACCESS_DENIED_CODES
+
+
 def is_missing_resource(exc: BaseException) -> bool:
     """Whether a SageMaker describe or delete failed only because the resource does not exist.
 
-    SageMaker answers a missing endpoint, endpoint config, model or model package with a ``ValidationException``
-    whose message says so ("Could not find endpoint", "ModelPackage ... does not exist"), and a missing training job
-    with ``ResourceNotFound``. Any other ``ValidationException`` is a real refusal and must reach the caller.
+    SageMaker answers a missing endpoint, endpoint config, model, model package or training job with a
+    ``ValidationException`` whose message says so ("Could not find endpoint", "ModelPackage ... does not exist",
+    "Requested resource not found."), and some calls with ``ResourceNotFound``. Any other ``ValidationException`` is a
+    real refusal and must reach the caller.
     """
     code, message = read_aws_error(exc)
     if code in ("ResourceNotFound", "ResourceNotFoundException"):
@@ -87,7 +97,8 @@ def is_missing_resource(exc: BaseException) -> bool:
     if code != "ValidationException":
         return False
     text = message.lower()
-    return any(phrase in text for phrase in ("does not exist", "could not be found", "could not find"))
+    phrases = ("does not exist", "could not be found", "could not find", "resource not found")
+    return any(phrase in text for phrase in phrases)
 
 
 def check_sagemaker_resource_name(value: str, argument: str) -> None:
@@ -112,6 +123,19 @@ def load_aws_sdk() -> Tuple[Any, Any]:
     except ImportError as exc:  # pragma: no cover - exercised without the extra
         raise ImportError('A SageMaker deployment needs the AWS extra: install `pip install "synthefy[aws]"`.') from exc
     return boto3, Config
+
+
+def load_parquet_reader() -> Tuple[Any, Any]:
+    """``(pyarrow, pyarrow.parquet)``, imported when a training plan reads Parquet footers; raises ImportError naming
+    the ``synthefy[aws]`` extra when pyarrow is missing."""
+    try:
+        import pyarrow
+        import pyarrow.parquet
+    except ImportError as exc:  # pragma: no cover - exercised without the extra
+        raise ImportError(
+            'Planning a fine-tuning job needs the AWS extra: install `pip install "synthefy[aws]"`.'
+        ) from exc
+    return pyarrow, pyarrow.parquet
 
 
 def build_aws_client_config(timeout: float, max_retries: int, user_agent_extra: str) -> Any:

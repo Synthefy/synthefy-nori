@@ -138,7 +138,7 @@ def test_published_dependencies_point_only_from_heavy_to_light():
     edge = _named(root_requirements, "synthefy")
 
     assert len(edge) == 1
-    assert edge[0].specifier == SpecifierSet(">=7,<9")
+    assert edge[0].specifier == SpecifierSet(">=7,<10")
     assert not edge[0].extras and edge[0].marker is None and edge[0].url is None
     assert Version(_declared_version()) in edge[0].specifier
 
@@ -185,7 +185,7 @@ def test_published_dependencies_point_only_from_heavy_to_light():
         assert len(forwarded) == 1
         assert canonicalize_name(forwarded[0].name) == "synthefy"
         assert forwarded[0].extras == {client_extra}
-        assert forwarded[0].specifier == SpecifierSet(">=7,<9")
+        assert forwarded[0].specifier == SpecifierSet(">=7,<10")
 
 
 def test_namespaces_and_imports_do_not_create_a_base_runtime_cycle():

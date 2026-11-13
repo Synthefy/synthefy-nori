@@ -63,6 +63,11 @@ _ENDPOINT_POLL_S = 30.0
 #: undeploy()'s wait for a deleted endpoint to disappear, after which its config and model can be deleted.
 _ENDPOINT_DELETE_POLL_S = 10.0
 _ENDPOINT_DELETE_TIMEOUT_S = 600.0
+#: SageMaker refuses to delete an endpoint in one of these statuses, so undeploy() waits for it to leave them.
+_SETTLING_ENDPOINT_STATUSES = frozenset({"Creating", "Updating", "SystemUpdating", "RollingBack"})
+#: undeploy()'s default wait for an endpoint to leave those statuses: one that waits for GPU capacity can stay
+#: Creating for longer than deploy() waits for it.
+UNDEPLOY_TIMEOUT_S = 3600.0
 _VARIANT_NAME = "AllTraffic"
 #: One queued request at a time per instance: the container runs one prediction at a time, so more would only
 #: raise peak memory on the same GPU. Scale with instance count instead.
@@ -403,10 +408,17 @@ def wait_for_endpoint_in_service(
             )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            others = [name for name in supported if name != instance_type]
+            elsewhere = (
+                f" When SageMaker is short of {instance_type} capacity, deploy() again with instance_type one of "
+                f"{', '.join(others)}; the model package is reused."
+                if others
+                else ""
+            )
             raise APITimeoutError(
-                f"endpoint {endpoint_name} is still {status} after {format_seconds(timeout_s)} s; it keeps "
-                f"starting and billing on SageMaker. Check it later with describe_endpoint, or call "
-                f"undeploy({endpoint_name!r}) to delete it."
+                f"endpoint {endpoint_name} is still {status} after {format_seconds(timeout_s)} s; it is left in "
+                f"place, starting and billing on SageMaker. Check it later with describe_endpoint, or call "
+                f"undeploy({endpoint_name!r}), which waits for it to leave {status} and then deletes it.{elsewhere}"
             )
         time.sleep(min(_ENDPOINT_POLL_S, remaining))
 
@@ -474,14 +486,92 @@ def create_deployment(
         ) from exc
 
 
-def delete_endpoint_and_wait(sagemaker: Any, endpoint_name: str) -> None:
-    """Delete the endpoint and wait until SageMaker no longer describes it; an endpoint already gone is fine."""
+def get_endpoint_status(sagemaker: Any, endpoint_name: str) -> Optional[str]:
+    """The endpoint's status; None when it is gone."""
     try:
-        sagemaker.delete_endpoint(EndpointName=endpoint_name)
+        return sagemaker.describe_endpoint(EndpointName=endpoint_name)["EndpointStatus"]
     except Exception as exc:
         if is_missing_resource(exc):
-            return
+            return None
         raise
+
+
+def wait_for_endpoint_to_settle(
+    sagemaker: Any, endpoint_name: str, status: str, *, deadline: float, timeout_s: float
+) -> None:
+    """Poll an endpoint SageMaker cannot delete yet until it leaves the settling statuses or is gone.
+
+    ``deadline`` is the :func:`time.monotonic` value the whole wait of ``timeout_s`` ends at; reaching it raises
+    :class:`APITimeoutError` naming the status the endpoint is still in.
+    """
+    _LOG.info(
+        "endpoint %s is %s and SageMaker cannot delete it until that ends; waiting up to %s s",
+        endpoint_name,
+        status,
+        format_seconds(max(0, round(deadline - time.monotonic()))),
+    )
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise APITimeoutError(
+                f"endpoint {endpoint_name} is still {status} after {format_seconds(timeout_s)} s, and SageMaker "
+                f"cannot delete it until it leaves {status}. Call undeploy({endpoint_name!r}) again later."
+            )
+        time.sleep(min(_ENDPOINT_POLL_S, remaining))
+        current = get_endpoint_status(sagemaker, endpoint_name)
+        if current not in _SETTLING_ENDPOINT_STATUSES:
+            return
+        if current != status:
+            _LOG.info("endpoint %s: %s", endpoint_name, current)
+            status = current
+
+
+def _is_in_progress_endpoint_refusal(exc: BaseException) -> bool:
+    """Whether SageMaker refused an endpoint call because another operation on the endpoint is in progress."""
+    code, message = read_aws_error(exc)
+    return code == "ValidationException" and "in-progress endpoint" in message.lower()
+
+
+def _get_endpoint_status_after_delete_request(sagemaker: Any, endpoint_name: str) -> Optional[str]:
+    """Request DeleteEndpoint and return the endpoint's status after the request.
+
+    ``"Deleting"`` when SageMaker accepted it; None when the endpoint is already gone; and, when SageMaker refused it
+    because another operation on the endpoint is in progress, the status :func:`get_endpoint_status` reads then,
+    which is ``"Deleting"`` when an earlier request is still deleting it. Any other refusal is raised at once; when
+    the status cannot be read, the refusal is raised from that error.
+    """
+    try:
+        sagemaker.delete_endpoint(EndpointName=endpoint_name)
+        return "Deleting"
+    except Exception as exc:
+        if is_missing_resource(exc):
+            return None
+        if not _is_in_progress_endpoint_refusal(exc):
+            raise
+        refusal = exc
+    try:
+        return get_endpoint_status(sagemaker, endpoint_name)
+    except Exception as exc:
+        raise refusal from exc
+
+
+def delete_endpoint_and_wait(sagemaker: Any, endpoint_name: str, *, settle_timeout_s: float) -> None:
+    """Delete the endpoint and wait until SageMaker no longer describes it; an endpoint already gone is fine.
+
+    SageMaker refuses DeleteEndpoint while another operation on the endpoint is in progress (Creating, Updating,
+    SystemUpdating or RollingBack); such an endpoint is waited for until it leaves that status and the delete is
+    requested again, for at most ``settle_timeout_s`` in all. An endpoint already Deleting is waited for until it is
+    gone.
+    """
+    settle_deadline = time.monotonic() + settle_timeout_s
+    status = _get_endpoint_status_after_delete_request(sagemaker, endpoint_name)
+    while status is not None and status != "Deleting":
+        wait_for_endpoint_to_settle(
+            sagemaker, endpoint_name, status, deadline=settle_deadline, timeout_s=settle_timeout_s
+        )
+        status = _get_endpoint_status_after_delete_request(sagemaker, endpoint_name)
+    if status is None:
+        return
     _LOG.info("deleting endpoint %s", endpoint_name)
     deadline = time.monotonic() + _ENDPOINT_DELETE_TIMEOUT_S
     while True:
@@ -543,12 +633,12 @@ def list_deployed_endpoint_configs(sagemaker: Any, endpoint_name: str, model_nam
     return [name for name in names if read_endpoint_config_model(sagemaker, name) == model_name]
 
 
-def delete_deployment(sagemaker: Any, *, endpoint_name: str, model_name: str) -> None:
+def delete_deployment(sagemaker: Any, *, endpoint_name: str, model_name: str, settle_timeout_s: float) -> None:
     """Delete the endpoint and wait for it, then its endpoint configs, then the SageMaker model; keep the package.
 
     A resource already gone is skipped, so this can run again after a partial failure.
     """
-    delete_endpoint_and_wait(sagemaker, endpoint_name)
+    delete_endpoint_and_wait(sagemaker, endpoint_name, settle_timeout_s=settle_timeout_s)
     for config_name in list_deployed_endpoint_configs(sagemaker, endpoint_name, model_name):
         try:
             sagemaker.delete_endpoint_config(EndpointConfigName=config_name)

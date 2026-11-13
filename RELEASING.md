@@ -24,7 +24,7 @@ Neither workflow consults the repository-wide "latest release."
 ## Required order
 
 Publish the lightweight SDK first. The heavy package declares
-`synthefy>=7,<9`, so publishing it before a compatible SDK exists on PyPI would
+`synthefy>=7,<10`, so publishing it before a compatible SDK exists on PyPI would
 create an unresolvable release.
 
 1. Publish and verify `synthefy 7.0.0` (or the selected fix-forward version).
@@ -149,7 +149,7 @@ Before production, rehearse three clean environments:
 The mixed released-heavy/candidate-light environment must either pass its
 supported smoke test or fail immediately with explicit version guidance. These
 candidate-wheel rehearsals do not depend on either package index. The heavy
-wheel resolves `synthefy>=7,<9`, so publish it only after the selected
+wheel resolves `synthefy>=7,<10`, so publish it only after the selected
 lightweight SDK version has been verified on PyPI.
 
 ## Publish to PyPI
@@ -201,7 +201,7 @@ gh release create synthefy-nori-v0.17.3 \\
 ```
 
 Approve `synthefy-nori-pypi`, then verify `synthefy-nori==0.17.3` resolves
-`synthefy>=7,<9` and that local regression plus
+`synthefy>=7,<10` and that local regression plus
 `synthefy-nori[forecasting]` work in clean environments.
 
 Each workflow builds only its own project root, runs strict metadata checks,
