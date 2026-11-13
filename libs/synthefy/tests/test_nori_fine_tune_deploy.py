@@ -31,6 +31,7 @@ from ._fine_tune_fakes import (
     build_description,
     build_endpoint,
     build_hyperparameters,
+    build_in_progress_error,
     build_missing_package_error,
     build_missing_resource_error,
     build_package,
@@ -344,8 +345,12 @@ def test_deploy_endpoint_poll_timeout_names_undeploy(finished):
     aws.sm.model_packages = [build_missing_package_error(), build_package("Completed")]
     aws.sm.endpoints = [build_missing_resource_error("endpoint"), build_endpoint("Creating")]
     expect_every_deploy_create(aws.stubber)
-    with pytest.raises(APITimeoutError, match="still Creating after 60 s.*undeploy"):
+    with pytest.raises(APITimeoutError) as raised:
         aws.tuner.deploy(JOB, timeout_s=60)
+    message = str(raised.value)
+    assert "still Creating after 60 s; it is left in place" in message
+    assert f"undeploy('{MODEL}'), which waits for it to leave Creating and then deletes it" in message
+    assert "deploy() again with instance_type one of ml.g5.2xlarge, ml.g6.xlarge" in message
     assert aws.clock.sleeps == [30.0, 30.0]
 
 
@@ -405,6 +410,146 @@ def test_undeploy_deletes_the_endpoint_waits_for_it_then_its_configs_then_the_mo
         ("delete_model", {"ModelName": MODEL}),
     ]
     assert aws.clock.sleeps == [10.0]
+
+
+def test_undeploy_of_a_creating_endpoint_waits_until_it_settles_then_deletes_it(aws):
+    aws.sm.failures["delete_endpoint"] = [build_in_progress_error()]
+    aws.sm.endpoints = [
+        build_endpoint("Creating"),
+        build_endpoint("Creating"),
+        build_endpoint("InService"),
+        build_endpoint("Deleting"),
+        build_missing_resource_error("endpoint"),
+    ]
+
+    aws.tuner.undeploy(MODEL)
+
+    assert aws.sm.operations() == [
+        "delete_endpoint",
+        "describe_endpoint",
+        "describe_endpoint",
+        "describe_endpoint",
+        "delete_endpoint",
+        "describe_endpoint",
+        "describe_endpoint",
+        "list_endpoint_configs",
+        "delete_model",
+    ]
+    assert aws.clock.sleeps == [30.0, 30.0, 10.0]
+
+
+def test_undeploy_of_an_endpoint_still_creating_after_timeout_s_says_to_call_it_again_later(aws):
+    aws.sm.failures["delete_endpoint"] = [build_in_progress_error()]
+    aws.sm.endpoints = [build_endpoint("Creating")]
+
+    with pytest.raises(APITimeoutError) as raised:
+        aws.tuner.undeploy(MODEL, timeout_s=60)
+
+    assert str(raised.value) == (
+        f"endpoint {MODEL} is still Creating after 60 s, and SageMaker cannot delete it until it leaves Creating. "
+        f"Call undeploy('{MODEL}') again later."
+    )
+    assert aws.sm.operations() == ["delete_endpoint", "describe_endpoint", "describe_endpoint", "describe_endpoint"]
+    assert aws.clock.sleeps == [30.0, 30.0]
+
+
+def test_undeploy_of_a_creating_endpoint_raises_any_other_delete_refusal_at_once(aws):
+    refusal = AWSError("AccessDeniedException", "User is not authorized to perform: sagemaker:DeleteEndpoint")
+    aws.sm.failures["delete_endpoint"] = refusal
+    aws.sm.endpoints = [build_endpoint("Creating")]
+
+    with pytest.raises(AWSError) as raised:
+        aws.tuner.undeploy(MODEL)
+
+    assert raised.value is refusal
+    assert aws.sm.operations() == ["delete_endpoint"]
+    assert aws.clock.sleeps == []
+
+
+def test_undeploy_of_an_endpoint_deleted_elsewhere_while_it_waits_deletes_its_configs_and_model(aws):
+    aws.sm.failures["delete_endpoint"] = [build_in_progress_error(), build_missing_resource_error("endpoint")]
+    aws.sm.endpoints = [build_endpoint("Creating"), build_missing_resource_error("endpoint")]
+    aws.sm.endpoint_config_names = [CONFIG]
+
+    aws.tuner.undeploy(MODEL)
+
+    assert aws.sm.operations() == [
+        "delete_endpoint",
+        "describe_endpoint",
+        "describe_endpoint",
+        "delete_endpoint",
+        "list_endpoint_configs",
+        "delete_endpoint_config",
+        "delete_model",
+    ]
+    assert aws.clock.sleeps == [30.0]
+
+
+def test_undeploy_settles_again_when_the_next_delete_is_refused_too_within_one_timeout_s(aws):
+    aws.sm.failures["delete_endpoint"] = [build_in_progress_error(), build_in_progress_error()]
+    aws.sm.endpoints = [
+        build_endpoint("Creating"),
+        build_endpoint("InService"),
+        build_endpoint("Updating"),
+        build_endpoint("InService"),
+        build_endpoint("Deleting"),
+        build_missing_resource_error("endpoint"),
+    ]
+
+    aws.tuner.undeploy(MODEL, timeout_s=45)
+
+    assert aws.sm.operations() == [
+        "delete_endpoint",
+        "describe_endpoint",
+        "describe_endpoint",
+        "delete_endpoint",
+        "describe_endpoint",
+        "describe_endpoint",
+        "delete_endpoint",
+        "describe_endpoint",
+        "describe_endpoint",
+        "list_endpoint_configs",
+        "delete_model",
+    ]
+    # The second wait has only the 15 s left of timeout_s.
+    assert aws.clock.sleeps == [30.0, 15.0, 10.0]
+
+
+def test_undeploy_of_an_endpoint_already_deleting_waits_for_it_to_go_then_deletes_its_configs_and_model(aws):
+    aws.sm.failures["delete_endpoint"] = [build_in_progress_error()]
+    aws.sm.endpoints = [
+        build_endpoint("Deleting"),
+        build_endpoint("Deleting"),
+        build_missing_resource_error("endpoint"),
+    ]
+    aws.sm.endpoint_config_names = [CONFIG]
+
+    aws.tuner.undeploy(MODEL)
+
+    assert aws.sm.operations() == [
+        "delete_endpoint",
+        "describe_endpoint",
+        "describe_endpoint",
+        "describe_endpoint",
+        "list_endpoint_configs",
+        "delete_endpoint_config",
+        "delete_model",
+    ]
+    assert aws.clock.sleeps == [10.0]
+
+
+def test_undeploy_raises_the_delete_refusal_from_a_failed_status_read(aws):
+    refusal = build_in_progress_error()
+    describe_error = AWSError("AccessDeniedException", "User is not authorized to perform: sagemaker:DescribeEndpoint")
+    aws.sm.failures["delete_endpoint"] = [refusal]
+    aws.sm.endpoints = [describe_error]
+
+    with pytest.raises(AWSError) as raised:
+        aws.tuner.undeploy(MODEL)
+
+    assert raised.value is refusal
+    assert raised.value.__cause__ is describe_error
+    assert aws.sm.operations() == ["delete_endpoint", "describe_endpoint"]
 
 
 def test_undeploy_of_a_handle_deletes_in_the_handles_region_not_the_fine_tuners(aws):

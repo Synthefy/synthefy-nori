@@ -27,6 +27,7 @@ from botocore.validate import ParamValidator
 
 from synthefy import _sagemaker_deploy as deploy_module
 from synthefy import nori_fine_tune as fine_tune_module
+from synthefy._training_jobs import RESUME_HYPERPARAMETER
 from synthefy.nori_data_models import FineTuneHyperparameters, FineTuneJobRequest, serialize_hyperparameters
 from synthefy.nori_fine_tune import SynthefyNoriFineTuner
 
@@ -93,6 +94,14 @@ def build_missing_resource_error(kind: str, name: str = MODEL) -> AWSError:
     return AWSError("ValidationException", f'Could not find {kind} "arn:aws:sagemaker:{REGION}:{ACCOUNT}:{name}".')
 
 
+def build_in_progress_error() -> AWSError:
+    """SageMaker's refusal of DeleteEndpoint while another operation on the endpoint is in progress."""
+    return AWSError(
+        "ValidationException",
+        f'Cannot update in-progress endpoint "arn:aws:sagemaker:{REGION}:{ACCOUNT}:endpoint/{MODEL}"',
+    )
+
+
 def build_missing_package_error() -> AWSError:
     return AWSError("ValidationException", f"ModelPackage {PACKAGE_ARN} does not exist.")
 
@@ -101,10 +110,12 @@ class FakeSageMaker:
     """SageMaker as the fine-tuner sees it.
 
     Each describe answers from its queue in order and repeats the last answer; an exception in a queue is raised.
-    Stop and delete calls fail only when ``failures`` names them. An endpoint config exists once the stubbed
-    create succeeded; ``hidden_endpoint_config_reads`` makes that many DescribeEndpointConfig calls miss it first,
-    as SageMaker's eventually consistent read can. Every call is recorded with its parameters and checked against
-    botocore's SageMaker model.
+    ``running_training_jobs`` holds the descriptions of the account's running jobs: ListTrainingJobs names those in
+    the status it is asked for, and a describe of one of them by name answers with it, not from the queue.
+    Stop, delete and list calls fail only when ``failures`` names them; a list there fails that many calls in order.
+    An endpoint config exists once the stubbed create succeeded; ``hidden_endpoint_config_reads`` makes that many
+    DescribeEndpointConfig calls miss it first, as SageMaker's eventually consistent read can. Every call is recorded
+    with its parameters and checked against botocore's SageMaker model.
     """
 
     def __init__(self, stubbed: Any) -> None:
@@ -112,6 +123,7 @@ class FakeSageMaker:
         self.meta = stubbed.meta
         self.calls: List[Tuple[str, Dict[str, Any]]] = []
         self.training_jobs: List[Any] = []
+        self.running_training_jobs: List[Dict[str, Any]] = []
         self.endpoints: List[Any] = [build_missing_resource_error("endpoint")]
         self.model_packages: List[Any] = [build_missing_package_error()]
         self.models: List[Any] = [build_missing_resource_error("model")]
@@ -119,7 +131,8 @@ class FakeSageMaker:
         #: The SageMaker model each endpoint config serves, for describe_endpoint_config.
         self.endpoint_config_models: Dict[str, str] = {}
         self.hidden_endpoint_config_reads = 0
-        self.failures: Dict[str, Exception] = {}
+        self.algorithms: List[Any] = [build_algorithm_description(CURRENT_ALGORITHM_HYPERPARAMETERS)]
+        self.failures: Dict[str, Union[Exception, List[Exception]]] = {}
         self.closed = False
 
     def _check_and_record(self, operation: str, params: Dict[str, Any]) -> None:
@@ -136,6 +149,8 @@ class FakeSageMaker:
     def _record_call(self, operation: str, params: Dict[str, Any]) -> Dict[str, Any]:
         self._check_and_record(operation, params)
         failure = self.failures.get(operation)
+        if isinstance(failure, list):
+            failure = failure.pop(0) if failure else None
         if failure is not None:
             raise failure
         return {}
@@ -144,8 +159,30 @@ class FakeSageMaker:
         self.calls.append((operation, params))
         return getattr(self._stubbed, operation)(**params)
 
+    def describe_algorithm(self, **params: Any) -> Dict[str, Any]:
+        return self._answer_from_queue("describe_algorithm", self.algorithms, params)
+
     def describe_training_job(self, **params: Any) -> Dict[str, Any]:
+        for description in self.running_training_jobs:
+            if description["TrainingJobName"] == params["TrainingJobName"]:
+                self._check_and_record("describe_training_job", params)
+                return copy.deepcopy(description)
         return self._answer_from_queue("describe_training_job", self.training_jobs, params)
+
+    def list_training_jobs(self, **params: Any) -> Dict[str, Any]:
+        self._record_call("list_training_jobs", params)
+        return {
+            "TrainingJobSummaries": [
+                {
+                    "TrainingJobName": description["TrainingJobName"],
+                    "TrainingJobArn": description["TrainingJobArn"],
+                    "CreationTime": description["CreationTime"],
+                    "TrainingJobStatus": description["TrainingJobStatus"],
+                }
+                for description in self.running_training_jobs
+                if description["TrainingJobStatus"] == params["StatusEquals"]
+            ]
+        }
 
     def describe_endpoint(self, **params: Any) -> Dict[str, Any]:
         return self._answer_from_queue("describe_endpoint", self.endpoints, params)
@@ -260,8 +297,15 @@ class FakeLogs:
 
 
 class FakeS3:
+    """S3's object calls on a dict of objects. ``modified`` holds an object's LastModified (NOW unless set);
+    ``delete_errors`` maps a key to the error code DeleteObjects reports for it, and ``failures`` an operation to the
+    exception it raises."""
+
     def __init__(self) -> None:
         self.objects: Dict[Tuple[str, str], bytes] = {}
+        self.modified: Dict[Tuple[str, str], datetime] = {}
+        self.delete_errors: Dict[str, str] = {}
+        self.failures: Dict[str, Exception] = {}
         self.calls: List[Tuple[str, str]] = []
         self.closed = False
 
@@ -272,18 +316,61 @@ class FakeS3:
             raise AWSError("404", "Not Found")
         return {"ContentLength": len(self.objects[(Bucket, Key)])}
 
-    def get_object(self, *, Bucket: str, Key: str) -> Dict[str, Any]:
-        assert_botocore_accepts("s3", "get_object", {"Bucket": Bucket, "Key": Key})
+    def get_object(self, *, Bucket: str, Key: str, **range_: str) -> Dict[str, Any]:
+        """The object, or with ``Range="bytes=-N"`` its last N bytes, the one range form the fine-tuner asks for."""
+        assert_botocore_accepts("s3", "get_object", {"Bucket": Bucket, "Key": Key, **range_})
         self.calls.append(("get_object", Key))
+        if "get_object" in self.failures:
+            raise self.failures["get_object"]
         if (Bucket, Key) not in self.objects:
             raise AWSError("NoSuchKey", "The specified key does not exist.")
-        return {"Body": io.BytesIO(self.objects[(Bucket, Key)])}
+        data = self.objects[(Bucket, Key)]
+        if range_:
+            assert set(range_) == {"Range"} and range_["Range"].startswith("bytes=-"), range_
+            data = data[-int(range_["Range"][len("bytes=-") :]) :]
+        return {"Body": io.BytesIO(data)}
 
-    def list_objects_v2(self, *, Bucket: str, Prefix: str, MaxKeys: int) -> Dict[str, Any]:
-        assert_botocore_accepts("s3", "list_objects_v2", {"Bucket": Bucket, "Prefix": Prefix, "MaxKeys": MaxKeys})
+    def list_objects_v2(self, *, Bucket: str, Prefix: str, MaxKeys: int, **token: str) -> Dict[str, Any]:
+        """One page of keys in key order; ``ContinuationToken`` is the last key of the page before."""
+        params = {"Bucket": Bucket, "Prefix": Prefix, "MaxKeys": MaxKeys, **token}
+        assert_botocore_accepts("s3", "list_objects_v2", params)
         self.calls.append(("list_objects_v2", Prefix))
-        keys = sorted(key for bucket, key in self.objects if bucket == Bucket and key.startswith(Prefix))
-        return {"Contents": [{"Key": key} for key in keys[:MaxKeys]], "IsTruncated": len(keys) > MaxKeys}
+        if "list_objects_v2" in self.failures:
+            raise self.failures["list_objects_v2"]
+        after = token.get("ContinuationToken", "")
+        keys = sorted(
+            key for bucket, key in self.objects if bucket == Bucket and key.startswith(Prefix) and key > after
+        )
+        page = keys[:MaxKeys]
+        answer: Dict[str, Any] = {
+            "Contents": [
+                {
+                    "Key": key,
+                    "Size": len(self.objects[(Bucket, key)]),
+                    "LastModified": self.modified.get((Bucket, key), NOW),
+                }
+                for key in page
+            ],
+            "IsTruncated": len(keys) > MaxKeys,
+        }
+        if len(keys) > MaxKeys:
+            answer["NextContinuationToken"] = page[-1]
+        return answer
+
+    def delete_objects(self, *, Bucket: str, Delete: Dict[str, Any]) -> Dict[str, Any]:
+        """Delete each key not named in ``delete_errors``; a key named there is reported in ``Errors``."""
+        assert_botocore_accepts("s3", "delete_objects", {"Bucket": Bucket, "Delete": Delete})
+        self.calls.append(("delete_objects", ",".join(item["Key"] for item in Delete["Objects"])))
+        if "delete_objects" in self.failures:
+            raise self.failures["delete_objects"]
+        errors = []
+        for item in Delete["Objects"]:
+            code = self.delete_errors.get(item["Key"])
+            if code is not None:
+                errors.append({"Key": item["Key"], "Code": code, "Message": "Access Denied"})
+                continue
+            self.objects.pop((Bucket, item["Key"]), None)
+        return {"Errors": errors} if errors else {}
 
     def close(self) -> None:
         self.closed = True
@@ -313,6 +400,90 @@ def create_stubbed_sagemaker() -> Tuple[Any, Any]:
         "sagemaker", region_name=REGION, aws_access_key_id="unit-test", aws_secret_access_key="unit-test"
     )
     return client, Stubber(client)
+
+
+#: The SupportedHyperParameters of the Algorithm version live in the buyer account on 2026-11-07, which trains each
+#: model for a fixed number of steps: (name, type, default).
+LEGACY_ALGORITHM_HYPERPARAMETERS: Tuple[Tuple[str, str, str], ...] = (
+    ("target_column", "FreeText", ""),
+    ("model_name", "FreeText", ""),
+    ("base_model", "Categorical", "nori-6m"),
+    ("task", "Categorical", "regression"),
+    ("feature_columns", "FreeText", ""),
+    ("bag", "Integer", "8"),
+    ("steps", "Integer", "100"),
+    ("lr", "Continuous", "1e-05"),
+    ("patience", "Integer", "25"),
+    ("budget_s", "Continuous", "900.0"),
+    ("seed", "Integer", "0"),
+)
+#: A version that trains on the whole table: the hyperparameters of FineTuneHyperparameters and resume.
+CURRENT_ALGORITHM_HYPERPARAMETERS: Tuple[Tuple[str, str, str], ...] = tuple(
+    (name, "FreeText", "") for name in FineTuneHyperparameters.model_fields
+) + ((RESUME_HYPERPARAMETER, "Categorical", "false"),)
+#: A version that trains on the whole table and continues another job's checkpoint folder without being told to.
+IMPLICIT_RESUME_ALGORITHM_HYPERPARAMETERS = CURRENT_ALGORITHM_HYPERPARAMETERS[:-1]
+
+
+def _compact_varint(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        out.append(byte | (0x80 if value else 0))
+        if not value:
+            return bytes(out)
+
+
+def _compact_struct(fields: Sequence[Tuple[int, int, Any]]) -> bytes:
+    """A Thrift compact struct of ``(field id, type, value)`` in field order: type 5 or 6 an integer, 8 bytes, 9 a
+    list of structs (each a field list)."""
+    out = bytearray()
+    last = 0
+    for field, kind, value in fields:
+        out.append(((field - last) << 4) | kind)
+        last = field
+        if kind in (5, 6):
+            out += _compact_varint((value << 1) ^ (value >> 63))
+        elif kind == 8:
+            out += _compact_varint(len(value)) + value
+        else:
+            size = len(value)
+            out += bytes([(size << 4) | 12]) if size < 15 else bytes([0xF0 | 12]) + _compact_varint(size)
+            for item in value:
+                out += _compact_struct(item)
+    return bytes(out) + b"\x00"
+
+
+def build_parquet_file(columns: Sequence[str], row_groups: Sequence[int]) -> bytes:
+    """A Parquet file of DOUBLE ``columns`` with these row groups and no data pages: its footer is all the fine-tuner
+    reads, so a table of millions of rows takes a few hundred bytes."""
+    schema = [[(4, 8, b"schema"), (5, 5, len(columns))]]
+    schema += [[(1, 5, 5), (3, 5, 1), (4, 8, name.encode())] for name in columns]
+    groups = [[(1, 9, []), (2, 6, 0), (3, 6, rows)] for rows in row_groups]
+    footer = _compact_struct([(1, 5, 1), (2, 9, schema), (3, 6, sum(row_groups)), (4, 9, groups)])
+    return b"PAR1" + footer + len(footer).to_bytes(4, "little") + b"PAR1"
+
+
+def build_algorithm_description(
+    hyperparameters: Sequence[Tuple[str, str, str]], offered_base_models: Sequence[str] = ()
+) -> Dict[str, Any]:
+    """A DescribeAlgorithm response with these SupportedHyperParameters; ``offered_base_models``, when given, is the
+    ``base_model`` item's Categorical range."""
+    supported: List[Dict[str, Any]] = [
+        {"Name": name, "Type": kind, **({"DefaultValue": default} if default else {})}
+        for name, kind, default in hyperparameters
+    ]
+    if offered_base_models:
+        base_model_range = {"CategoricalParameterRangeSpecification": {"Values": list(offered_base_models)}}
+        supported = [
+            {**item, "Range": base_model_range} if item["Name"] == "base_model" else item for item in supported
+        ]
+    return {
+        "AlgorithmName": "nori-fine-tuning",
+        "AlgorithmArn": ALGORITHM,
+        "TrainingSpecification": {"SupportedHyperParameters": supported},
+    }
 
 
 @contextlib.contextmanager
@@ -380,7 +551,7 @@ def build_description(status: str, **overrides: Any) -> Dict[str, Any]:
         "SecondaryStatusTransitions": [
             {"Status": "Starting", "StartTime": NOW, "StatusMessage": "Preparing the instances for training"}
         ],
-        "StoppingCondition": {"MaxRuntimeInSeconds": 12600},
+        "StoppingCondition": {"MaxRuntimeInSeconds": 88200},
         "CreationTime": NOW,
         "AlgorithmSpecification": {"AlgorithmName": ALGORITHM, "TrainingInputMode": "File"},
         "RoleArn": ROLE,
@@ -499,19 +670,19 @@ def build_expected_training_job(**overrides: Any) -> Dict[str, Any]:
         "HyperParameters": {
             "target_column": "churn",
             "model_name": MODEL,
-            "base_model": "nori-6m",
+            "base_model": "nori-1-5",
             "task": "regression",
             "bag": "8",
-            "steps": "100",
+            "row_partition_strategy": "shard",
             "lr": "1e-05",
             "patience": "25",
-            "budget_s": "900.0",
+            "max_training_hours": "24.0",
             "seed": "0",
         },
         "InputDataConfig": [build_channel("train", TRAIN)],
         "OutputDataConfig": {"S3OutputPath": OUTPUT},
         "ResourceConfig": {"InstanceType": "ml.g5.xlarge", "InstanceCount": 1, "VolumeSizeInGB": 30},
-        "StoppingCondition": {"MaxRuntimeInSeconds": 12600},
+        "StoppingCondition": {"MaxRuntimeInSeconds": 88200},
         "EnableNetworkIsolation": True,
     }
     params.update(overrides)

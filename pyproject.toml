@@ -53,7 +53,7 @@ dependencies = [
     "scipy>=1.13",
     # torch.compile/Inductor imports setuptools during backend discovery.
     "setuptools>=68,<81",
-    "synthefy>=7,<9",
+    "synthefy>=7,<10",
     "torch>=2.8,<2.14",
     "tqdm>=4.65",
     "typing-extensions>=4.10",
@@ -66,9 +66,9 @@ Issues = "https://github.com/Synthefy/synthefy-nori/issues"
 Changelog = "https://github.com/Synthefy/synthefy-nori/releases"
 
 [project.optional-dependencies]
-forecasting = ["synthefy[forecasting]>=7,<9"]
+forecasting = ["synthefy[forecasting]>=7,<10"]
 # Backward-compatible spelling; new documentation uses the broader forecasting extra.
-timeseries = ["synthefy[forecasting]>=7,<9"]
+timeseries = ["synthefy[forecasting]>=7,<10"]
 train = ["wandb>=0.15.0", "xgboost"]
 eval = ["matplotlib", "openml"]
 # Interpretability: Shapley values & interactions (shapiq), partial dependence, feature
@@ -80,7 +80,7 @@ explainability = ["interpret-core>=0.6", "joblib", "matplotlib", "scipy>=1.13"]
 # Zero-shot text features: embed free-text columns and append them as numeric
 # columns (NoriRegressor.fit(..., text_columns=...)). sentence-transformers is
 # imported lazily, so numeric-only use never needs it.
-text = ["synthefy[text]>=7,<9"]
+text = ["synthefy[text]>=7,<10"]
 dev = [
     "build",
     "pytest",

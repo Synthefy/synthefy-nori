@@ -5,6 +5,190 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [9.0.0] - 2026-11-11
+
+The fine-tuning hyperparameters say how much of the table each model reads, in
+place of a step count and a time budget per model. A caller that passes `steps`
+or `budget_s` is refused, so the release that carries this is a major version.
+`mode="local"` with 9.0.0 needs a synthefy-nori release after 0.23.0:
+synthefy-nori 0.23.0 requires `synthefy>=7,<9`.
+
+### Changed (breaking)
+
+- `FineTuneHyperparameters` drops `steps` and `budget_s`. A model takes the
+  training steps that read each row of its share of the table
+  `n_passes_per_row` times (unset by default: each row once, so the job reads
+  the whole table once, unless `patience` stops the model sooner), and at least
+  100; `n_steps_per_model` sets an exact number of steps and is refused
+  together with `n_passes_per_row`.
+  Replace `steps=N` with `n_steps_per_model=N`; remove `budget_s` and use
+  `max_training_hours` for a time cap.
+- `patience` counts validation scores: a model stops after `patience` scores
+  in a row without a better one (25 by default), and a score comes every
+  `validation_every_n_steps` steps.
+  Replace a `patience` of N training steps with N divided by
+  `validation_every_n_steps`, rounded up.
+- The default `validation_every_n_steps` keeps the wait `patience` sets at
+  100 training steps or fewer, so it no longer grows with the plan (a
+  50,000-step plan waited 12,500 steps): a model is scored every hundredth of
+  its steps, but at most every 100 / `patience` steps (4 at patience 25), which
+  makes a long plan's upper-bound hours about 45% longer. A
+  `validation_every_n_steps` you set is kept, and the wait is `patience` times
+  it, however long. `TrainingPlan.patience_steps` gives the wait, which the
+  summary prints. The 100 steps are provisional.
+- `max_training_hours` (24.0 by default, at most 119.5) caps the whole job from
+  its start, the read of the table included, and
+  `FineTuneJobRequest.max_runtime_s` defaults to `max_training_hours` x 3,600 +
+  1,800 s, and 432,000 s when `max_training_hours` is `None`. A `max_runtime_s`
+  you set is sent as it is, and, unless the Algorithm's version trains each
+  model for a fixed number of steps, `fine_tune()` and `get_training_plan()`
+  refuse one below that sum; a request copied with new hyperparameters derives
+  `max_runtime_s` from them.
+  `max_training_hours` is refused when it is not finite or above 119.5. A job
+  that `resume()` starts may change `max_training_hours`.
+- Each model trains on at least 1,000 rows, so a table needs about 1,400 rows
+  for `bag` 1 without a validation channel, and under `"shard"` about 1,150
+  rows per model (1,050 with a validation channel); a smaller table trains
+  fewer models.
+- Under `"folds"` with `bag` above 1, each model trains on all but one fold,
+  so a table needs about 1,270 rows with `bag` 8 (1,150 with a validation
+  channel) and more with a smaller `bag`; a smaller table is refused.
+
+### Added
+
+- `base_model="nori-1-5"` fine-tunes Nori 1.5 next to `nori-6m` and `nori-100m`, and it is the default. The
+  model it trains keeps no context cache, like its base. Its plan gives hours and cost on the `ml.g5` types
+  (6.0 s a step, measured on `ml.g5.12xlarge`) and none on `ml.g6` or `ml.g6e`. `fine_tune()` and
+  `get_training_plan()` raise `FineTuningError` for a `base_model` the Algorithm's version does not list,
+  naming the bases it offers. An unset `base_model` takes the version's declared default, so a version
+  published before `nori-1-5` still trains `nori-6m` for a caller who never chose a base.
+- A job of tasks fine-tunes one model on several regression tasks:
+  `FineTuneHyperparameters.task_column` names each row's task in one table
+  (numbers or text, or `key=value` folder names), and `tasks`, a list of
+  `TaskTable`, gives tables in different files their own target and feature
+  columns. `time_column` makes each task of a table a time series, sorted by
+  it, whose training steps predict the rows right after their context.
+  `context_rows` and `query_rows` set how many rows a step takes, as a number
+  or as `{rows: weight}`, for the job or per table; a time series needs
+  `query_rows`. A job of tasks reads its tables into memory whole, refuses a
+  task whose target never changes and a time repeated within a task, has no
+  plan before it runs (`get_training_plan()` checks the tables, then raises
+  `ValueError`; `fine_tune()` attaches no plan) and refuses `checkpoint_uri`.
+  `target_column` is now optional: set it or `tasks`. `TrainingReport.tasks`
+  lists each task's table, rows and scores (`TaskScore`). The settings are
+  unset by default and never sent unset, so a request without them runs on
+  every Algorithm version.
+- `FineTuneHyperparameters.row_partition_strategy`: `"shard"` (the default)
+  gives each model its own 1/`bag` of the training rows; `"folds"` trains each
+  model on every training row outside its validation fold.
+- `FineTuneHyperparameters.validation_every_n_steps`: the training steps
+  between two validation scores of a model; by default the steps per model
+  divided by 100, at least 1.
+- `patience=None` lets each model take every step of its plan, and
+  `max_training_hours=None` turns the cap off; both are sent to the job as
+  `"none"`.
+- `TrainingPlan`: what a job reads and what it takes (rows per model, steps,
+  passes per row, `patience`, estimated hours and dollars, warnings), with
+  `get_summary()`; the hours and dollars are a ceiling when `patience` can
+  stop a model sooner. `TrainingReport.training_plan` holds the job's plan;
+  `FineTuneJob.training_plan` holds a plan `fine_tune()` worked out before
+  submitting, and is `None` otherwise.
+- `TrainingReport` fields `stop_reason`, `n_passes_per_row_completed`,
+  `seconds_per_step`, `fraction_of_rows_as_targets`, `unstarted_children`,
+  `n_rows_unread`, `bag` and `row_partition_strategy`, and
+  `ChildCurve.stop_reason`. A report from an earlier job still parses, with
+  `stop_reason`, `n_passes_per_row_completed`, `fraction_of_rows_as_targets`
+  and `n_rows_unread` null.
+- `TrainingReport.get_summary()`, which `wait()` logs when a job completes.
+- `SynthefyNoriFineTuner.resume(job, instance_type=None, max_training_hours=...)`
+  starts a new job with `job`'s request on its checkpoint folder, which keeps
+  the models the folder holds finished and continues the others from their
+  last saved step; `instance_type` and `max_training_hours` may change, and
+  the job's tags are not copied. It makes the request's training plan as
+  `fine_tune()` does, logs it and returns it as the new job's
+  `training_plan`: the plan of the whole request, the most the new job
+  takes. It refuses a job still running, a job
+  without `checkpoint_uri` or whose folder holds no checkpoint file, a job
+  created with managed spot training, a VPC or a volume KMS key, and a
+  completed job that left no model to train or whose training report cannot
+  be read. It needs `s3:ListBucket` and `s3:GetObject` on the folder and
+  `sagemaker:ListTrainingJobs`.
+- `fine_tune(request, overwrite=True)` deletes the checkpoint files in the
+  request's `checkpoint_uri` folder, then creates the job. It deletes nothing
+  and refuses when the folder holds a file a fine-tuning job does not write,
+  more than 1,000 files, or the files of a job still running; it needs
+  `s3:DeleteObject` on the folder. A message names a permission only when AWS
+  denied access.
+- `SynthefyNoriFineTuner.get_training_plan(request)`: the job's plan for a
+  request from the footers of its Parquet files, before submitting it, with
+  rows per step estimated from the feature columns. `get_training_plan` refuses
+  the same one-object channel `fine_tune()` refuses. `fine_tune()` logs that
+  plan, returns it as `FineTuneJob.training_plan`, and warns when the plan's
+  training hours leave the job less than the 30 minutes it needs besides
+  training within SageMaker's 120-hour limit on a training job and the
+  request has no `checkpoint_uri`.
+- `fine_tune()` refuses a target or feature column the training table lacks,
+  a folder channel with no Parquet file or with a file of another extension,
+  and a file that cannot be read as Parquet, before creating the job.
+- On an Algorithm version that trains each model for a fixed number of steps,
+  `fine_tune()` refuses `row_partition_strategy`, `n_passes_per_row`,
+  `max_training_hours`, `validation_every_n_steps` and a `patience=None` the
+  request sets, by name, and otherwise trains each model for
+  `n_steps_per_model` steps (100 by default) or 900 seconds, whichever ends
+  first, and the plan counts the steps that fit; `patience` counts validation
+  scores on that version too, 25 by default. A job on that version is sent a
+  `max_runtime_s` the request sets as it is, and by default ceil(bag / N) x
+  1,350 + 1,800 s on an instance type with N GPUs, at most 432,000 s. When the
+  Algorithm cannot be described, the job gets only the settings every version of
+  the Algorithm reads, and a request that sets `row_partition_strategy`,
+  `n_passes_per_row`, `max_training_hours`, `validation_every_n_steps`,
+  `n_steps_per_model` or `patience=None` is refused, naming each.
+- The `aws` extra installs `pyarrow` 16.0.0 or later, which reads the Parquet
+  footers for a training plan.
+- A job given `checkpoint_uri` saves a model in training every 15 minutes or
+  500 steps and when it stops; `resume()` continues that model from its last
+  saved step. The folder holds at most about 0.4 GB
+  per model for `nori-6m` (6.1 GB for `nori-100m`), and the execution role
+  needs `s3:DeleteObject` on it.
+  `ChildCurve.n_skipped_state_saves` counts the saves of a model that were due
+  and did not happen, and `ChildCurve.last_saved_step` names its newest saved
+  step. A job that cannot continue a saved state fails and leaves that model's
+  files in the folder unchanged.
+
+### Changed
+
+- `fine_tune()` refuses a `checkpoint_uri` folder that holds any file before
+  creating the job, naming the models and steps it holds and the job that
+  wrote it: call `resume()` with that job, pass `overwrite=True`, or give
+  another `checkpoint_uri`. A folder that holds only files a fine-tuning job
+  does not write is refused as not a checkpoint folder.
+- `fine_tune()` with `checkpoint_uri`, and `resume()`, refuse while another
+  `InProgress` or `Stopping` training job of the account saves to the folder,
+  with nothing deleted and no job created.
+- `fine_tune()` with `checkpoint_uri` needs `s3:ListBucket` on the bucket,
+  `s3:GetObject` on the folder and `sagemaker:ListTrainingJobs` for the
+  identity that runs the client, and refuses without them: add
+  `sagemaker:ListTrainingJobs` to a caller policy copied from an earlier
+  README.
+- A job that `resume()` starts keeps the earlier job's `model_name`, and a job
+  on a folder another job wrote fails unless it continues that job.
+- The `APITimeoutError` that `deploy()` raises when the endpoint is not
+  `InService` within `timeout_s` says the endpoint is left in place, that
+  `undeploy()` waits for it and then deletes it, and names the other endpoint
+  instance types to deploy on when AWS is short of the chosen one.
+
+### Fixed
+
+- `SynthefyNoriFineTuner.undeploy()` deletes an endpoint that is still
+  `Creating`, `Updating`, `SystemUpdating` or `RollingBack`: when SageMaker
+  refuses the delete for that reason, it waits for the endpoint to leave that
+  status and asks again, up to its new `timeout_s` argument in all (3,600 s by
+  default). An endpoint still in that status after `timeout_s` raises
+  `APITimeoutError`, which says to call `undeploy()` again later.
+- `undeploy()` of an endpoint already `Deleting`, after an earlier call that
+  timed out waiting for it or a delete made elsewhere, waits for the endpoint
+  to be gone and then deletes its endpoint configs and model.
+
 ## [8.0.0] - 2026-10-28
 
 The major version is for the Parquet-only fine-tuning channels: a 7.x caller
