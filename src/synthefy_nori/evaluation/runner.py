@@ -2,6 +2,8 @@
 
 Runs all registered models on all loaded datasets, collecting:
   - Regression: R2, RMSE, MAE
+  - Predictive distribution (opt-in, ``distribution_metrics=True``): CRPS,
+    central-interval coverage and width, PIT calibration
   - Latency: wall-clock time per dataset, throughput (samples/sec)
 """
 
@@ -55,6 +57,105 @@ def compute_reg_metrics(y_true, y_pred):
         "rmse": float(rmse_score(y_true, y_pred)),
         "mae": mean_absolute_error(y_true, y_pred),
     }
+
+
+# Central-interval levels reported as cov50 / cov80 / cov90 / cov95.
+DIST_COVERAGE_LEVELS = (0.5, 0.8, 0.9, 0.95)
+# Rows per chunk when computing CRPS, to bound memory on large test sets.
+_DIST_ROW_CHUNK = 4096
+DIST_METRIC_KEYS = (
+    "crps",
+    "crps_rel",
+    *(f"cov{round(level * 100)}" for level in DIST_COVERAGE_LEVELS),
+    "width90_rel",
+    "pit_ks",
+)
+
+
+def _quantile_at(quantiles: np.ndarray, taus: np.ndarray, level: float) -> np.ndarray:
+    """Per-row quantile at ``level``, linearly interpolated on the shared tau grid.
+
+    Levels outside ``[taus[0], taus[-1]]`` clamp to the outermost quantile.
+    """
+    upper = int(np.clip(np.searchsorted(taus, level), 1, len(taus) - 1))
+    lo_tau, hi_tau = taus[upper - 1], taus[upper]
+    weight = float(np.clip((level - lo_tau) / (hi_tau - lo_tau), 0.0, 1.0))
+    return quantiles[:, upper - 1] * (1.0 - weight) + quantiles[:, upper] * weight
+
+
+def compute_dist_metrics(y_true, quantiles, taus):
+    """Score a predictive distribution given as a per-row quantile bank.
+
+    Args:
+        y_true: ``(n,)`` observed targets.
+        quantiles: ``(n, K)`` predicted quantiles, one row per target.
+        taus: ``(K,)`` strictly increasing quantile levels in ``(0, 1)``.
+
+    Returns a dict with:
+
+    - ``crps``: mean CRPS, ``2 * integral of the pinball loss over tau``, integrated
+      with the trapezoid rule over ``taus``. The tails outside ``[taus[0], taus[-1]]``
+      are not covered, so this slightly under-counts CRPS (by about 1e-5 relative
+      for the released 999-level grid on a Gaussian).
+    - ``crps_rel``: ``crps / std(y_true)``, a scale-free value comparable across datasets.
+    - ``cov50`` / ``cov80`` / ``cov90`` / ``cov95``: fraction of targets inside the
+      central interval at that level (ideal: the level itself).
+    - ``width90_rel``: mean width of the 90% interval divided by ``std(y_true)``, so
+      coverage cannot be bought with uninformatively wide intervals.
+    - ``pit_ks``: Kolmogorov-Smirnov distance of the PIT values (each target's level in
+      its predicted CDF) from uniform; 0 is perfectly calibrated.
+
+    Rows with a non-finite target or quantile are dropped. With fewer than two rows
+    every value is NaN; the ``_rel`` values are NaN when ``y_true`` is constant.
+    """
+    y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
+    quantiles = np.asarray(quantiles, dtype=np.float64)
+    taus = np.asarray(taus, dtype=np.float64).reshape(-1)
+    if quantiles.ndim != 2 or quantiles.shape != (len(y_true), len(taus)):
+        raise ValueError(
+            f"quantiles must have shape (n_targets, n_taus) = ({len(y_true)}, {len(taus)}); got {quantiles.shape}"
+        )
+    if len(taus) < 2 or not np.all(np.diff(taus) > 0) or taus[0] <= 0.0 or taus[-1] >= 1.0:
+        raise ValueError("taus must contain at least two strictly increasing levels in (0, 1)")
+
+    # The bank can be large (50k rows x 999 levels is 400 MB), so copy it only when needed.
+    mask = np.isfinite(y_true) & np.isfinite(quantiles).all(axis=1)
+    if not mask.all():
+        y_true, quantiles = y_true[mask], quantiles[mask]
+    if len(y_true) < 2:
+        return {key: float("nan") for key in DIST_METRIC_KEYS}
+    # Guard against quantile crossing: a predictive CDF must be non-decreasing.
+    if not np.all(quantiles[:, 1:] >= quantiles[:, :-1]):
+        quantiles = np.sort(quantiles, axis=1)
+    scale = float(np.std(y_true))
+
+    # Row chunks bound the (rows, K) temporaries: at the benchmark's 50k test rows and
+    # K=999, a single pass would allocate several ~400 MB float64 arrays.
+    tau_steps = np.diff(taus)
+    crps_sum = 0.0
+    for start in range(0, len(y_true), _DIST_ROW_CHUNK):
+        diff = y_true[start : start + _DIST_ROW_CHUNK, None] - quantiles[start : start + _DIST_ROW_CHUNK]
+        pinball = np.maximum(taus * diff, (taus - 1.0) * diff)
+        # Trapezoid rule written out (np.trapz/np.trapezoid differ across NumPy versions).
+        crps_sum += float(np.sum(pinball[:, 1:] + pinball[:, :-1], axis=0) @ tau_steps)
+    crps = crps_sum / len(y_true)  # 2 * (1/2) trapezoid factors cancel
+
+    metrics = {"crps": crps, "crps_rel": crps / scale if scale > 0 else float("nan")}
+    for level in DIST_COVERAGE_LEVELS:
+        lower = _quantile_at(quantiles, taus, (1.0 - level) / 2.0)
+        upper = _quantile_at(quantiles, taus, (1.0 + level) / 2.0)
+        metrics[f"cov{round(level * 100)}"] = float(np.mean((y_true >= lower) & (y_true <= upper)))
+    width90 = float(np.mean(_quantile_at(quantiles, taus, 0.95) - _quantile_at(quantiles, taus, 0.05)))
+    metrics["width90_rel"] = width90 / scale if scale > 0 else float("nan")
+
+    # PIT: invert each row's piecewise-linear quantile function at its target.
+    pit = np.array([np.interp(y, row, taus, left=0.0, right=1.0) for y, row in zip(y_true, quantiles)])
+    pit.sort()
+    n = len(pit)
+    ranks = np.arange(1, n + 1) / n
+    metrics["pit_ks"] = float(max(np.max(ranks - pit), np.max(pit - (ranks - 1.0 / n))))
+    # Keep the documented key order.
+    return {key: metrics[key] for key in DIST_METRIC_KEYS}
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +219,7 @@ class EvalRunner:
         parallel_models: int = 1,
         allow_single_gpu_parallel: bool = False,
         gpu_mem_gb: Optional[float] = None,
+        distribution_metrics: bool = False,
     ):
         self.models = model_registry
         self.datasets = dataset_registry
@@ -131,6 +233,9 @@ class EvalRunner:
         # max_samples. Set a GiB value to enable the memory-model train cap on
         # smaller GPUs (lowers results on large tables).
         self.gpu_mem_gb = gpu_mem_gb
+        # Opt-in: score the predictive distribution (CRPS, coverage, PIT) as well as
+        # the point prediction. Off by default so published results are unchanged.
+        self.distribution_metrics = bool(distribution_metrics)
         self.results: List[EvalResult] = []
 
         # Result cache
@@ -151,6 +256,10 @@ class EvalRunner:
     def _cache_key(self, model_name: str, dataset_name: str, source: str, task_type: str) -> str:
         """Deterministic cache key from evaluation parameters."""
         raw = f"{model_name}|{dataset_name}|{source}|{task_type}|max={self.max_samples}|memcap={self.gpu_mem_gb}"
+        if self.distribution_metrics:
+            # Separate entries, so a point-only cached result never answers a distribution
+            # run. Appended only when on, so existing point-only cache keys stay valid.
+            raw += "|dist=1"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
     def _cache_path(self, key: str) -> Path:
@@ -178,7 +287,7 @@ class EvalRunner:
                 throughput_samples_per_sec=data.get("throughput_sps", 0.0),
                 error=data.get("error"),
             )
-            for metric_key in ("r2", "rmse", "mae"):
+            for metric_key in ("r2", "rmse", "mae", *DIST_METRIC_KEYS):
                 if metric_key in data and data[metric_key] is not None:
                     result.metrics[metric_key] = data[metric_key]
             return result
@@ -411,6 +520,28 @@ class EvalRunner:
         max_train = max(max_total - n_test, 200)
         return max_train
 
+    def _predict(self, wrapper, X_train, y_train, X_test):
+        """Return ``(point_predictions, (quantiles, taus) or None)`` for one dataset.
+
+        Point-only unless ``distribution_metrics`` is on and the wrapper can return a
+        distribution. Then a single distribution call supplies the quantiles and, under
+        the default ``quantile_collapse="mean"``, the point predictions too (its mean is
+        what ``predict_regression`` returns, to float precision). Any other collapse
+        makes a different point prediction, so ``predict_regression`` still supplies it.
+        A checkpoint without a quantile head is scored on its point prediction only.
+        """
+        predict_distribution = getattr(wrapper, "predict_distribution", None)
+        if self.distribution_metrics and predict_distribution is not None:
+            try:
+                quantiles, taus, mean = predict_distribution(X_train, y_train, X_test)
+            except NotImplementedError:
+                pass  # e.g. a bar_distribution / MSE checkpoint: no quantile bank
+            else:
+                if getattr(wrapper, "quantile_collapse", "mean") == "mean":
+                    return mean, (quantiles, taus)
+                return wrapper.predict_regression(X_train, y_train, X_test), (quantiles, taus)
+        return wrapper.predict_regression(X_train, y_train, X_test), None
+
     def _eval_one(self, model_entry: ModelEntry, ds: DatasetEntry, prefix: str) -> EvalResult:
         """Evaluate one model on one dataset."""
         max_train = self.max_samples
@@ -459,12 +590,15 @@ class EvalRunner:
             t_start = time.perf_counter()
 
             with strict_pipeline(SvdFallbackWarning):
-                y_pred = wrapper.predict_regression(X_train, y_train, ds.X_test)
+                y_pred, distribution = self._predict(wrapper, X_train, y_train, ds.X_test)
             if torch.cuda.is_available() and model_device is not None:
                 torch.cuda.synchronize(model_device)
             t_end = time.perf_counter()
             y_pred = np.asarray(y_pred, dtype=np.float64).squeeze()
             result.metrics = compute_reg_metrics(ds.y_test, y_pred)
+            if distribution is not None:
+                quantiles, taus = distribution
+                result.metrics.update(compute_dist_metrics(ds.y_test, quantiles, taus))
             result.latency_ms = (t_end - t_start) * 1000
             total_samples = ds.n_train + ds.n_test
             if result.latency_ms > 0:

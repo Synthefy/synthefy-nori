@@ -39,6 +39,30 @@ synthefy-nori-eval --checkpoint "MyRun:checkpoints/best_reg_r2.pt"
 `--checkpoint` is repeatable (`label:path`), so several checkpoints can be
 compared in one run.
 
+## Predictive-distribution metrics
+
+By default only point predictions are scored (R², RMSE, MAE). Add
+`--distribution-metrics` to also score the predicted quantiles of a
+quantile-head checkpoint:
+
+```bash
+synthefy-nori-eval --checkpoint "MyRun:checkpoints/best_reg_r2.pt" --distribution-metrics
+```
+
+| Column | Meaning | Ideal |
+| --- | --- | --- |
+| `crps` | Continuous ranked probability score from the quantile bank | lower |
+| `crps_rel` | `crps` divided by the test target's standard deviation, comparable across datasets | lower |
+| `cov50` … `cov95` | Fraction of test targets inside the central 50/80/90/95% interval | the level |
+| `width90_rel` | Mean 90% interval width divided by the target's standard deviation | narrow at the right coverage |
+| `pit_ks` | KS distance of the PIT values from uniform (overall calibration) | 0 |
+
+One distribution call per dataset supplies both the quantiles and, under the
+default `quantile_collapse="mean"`, the point prediction. Checkpoints without a
+quantile head are scored on point metrics only. Results are cached separately
+from point-only runs, and the summary adds mean `cov90`, `crps_rel` and `pit_ks`
+per source.
+
 ## Dataset locations
 
 The CLI loads local CSV caches by default:
