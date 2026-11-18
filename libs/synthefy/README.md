@@ -444,11 +444,14 @@ In `mode="local"` the same argument works when the installed `synthefy-nori` exp
 the field. An older runtime raises `ImportError` with an upgrade hint before inference.
 `last_memory_report` exposes the resolved local report just as it does for hosted calls.
 
-**Nori 1.5 (`model="nori-1-5"`) builds no key/value cache**, so the cache fields and
-the presets have nothing to act on. With it, `memory_policy=` may set only
-`elements_budget` and `allow_subsample`, which decide whether context rows are dropped
-to fit the element budget; anything else raises `ValueError` before a request is sent,
-in every mode, and its `last_memory_report` always reports the `no_cache` rung.
+Every base model, Nori 1.5 (`model="nori-1-5"`) included, keeps this cache, so every
+preset and field applies to all of them. int8 keys and values cost Nori 1.5 about 0.006 R²
+(the dense models lose almost nothing), so hosted Nori 1.5 never drops its cache to int8
+unasked: unless the policy sets `cache_dtype="int8"` (the `"max_context"` preset does) or
+`allow_quantization`, a cache that does not fit in bf16 moves to host memory instead. In
+`mode="local"`, Nori 1.5's cache needs a
+`synthefy-nori` that builds it; an older runtime raises `ImportError` with an upgrade hint
+for any setting beyond `elements_budget` and `allow_subsample`, rather than ignore it.
 
 ### Choosing Context on Large Tables (`large_context_policy=`)
 
@@ -1023,8 +1026,7 @@ its model from there. `undeploy()` deletes the endpoint, its endpoint configs an
 package for a new deploy. The endpoint bills every hour from creation until `undeploy()`, whether or not you send
 requests; prices per instance type and region are on [SageMaker AI pricing](https://aws.amazon.com/sagemaker/ai/pricing/).
 
-Other hyperparameters, with defaults: `base_model` (`nori-1-5`, `nori-6m` or `nori-100m`; a model fine-tuned from
-`nori-1-5` keeps no context cache, like its base; `fine_tune()` raises for a base the Algorithm's version does not
+Other hyperparameters, with defaults: `base_model` (`nori-1-5`, `nori-6m` or `nori-100m`; `fine_tune()` raises for a base the Algorithm's version does not
 list, and an unset `base_model` on a version published before `nori-1-5` trains that version's default, `nori-6m`); `feature_columns` (all but the target, in
 table order); `bag` (8: how many models the job trains, 1 to 8; the fine-tuned model averages them, and models train
 one per GPU at a time); `row_partition_strategy` (`"shard"`: each model trains on its own 1/`bag` of the training rows;

@@ -2075,15 +2075,6 @@ def test_nori_1_5_is_offered_on_every_backend():
     assert not _is_thinking_model("nori-1-5")
 
 
-def test_sagemaker_mode_refuses_nori_1_5_cache_settings_before_any_upload(monkeypatch):
-    # SageMaker serves Nori 1.5 (test_aws_predict_uses_s3_and_invoke_endpoint_async_for_every_model
-    # covers it); a cache setting is refused before anything is staged in the customer's bucket.
-    client, runtime, s3 = _stubbed_aws_client(monkeypatch, model="nori-1-5")
-    with pytest.raises(ValueError, match="is a context-cache preset"):
-        client.predict(_XTR, _YTR, _XTE, memory_policy="exact")
-    assert s3.uploads == [] and runtime.requests == []
-
-
 def test_remote_body_uses_nori_1_5_gateway_slug():
     capture: Dict = {}
     client = SynthefyNoriClient(api_key="k", model="nori-1-5")
@@ -2092,63 +2083,13 @@ def test_remote_body_uses_nori_1_5_gateway_slug():
     assert capture["body"]["model"] == "synthefy/nori-1-5"
 
 
-@pytest.mark.parametrize(
-    ("mode", "model"),
-    [
-        ("remote", "nori-1-5"),
-        ("remote", "synthefy/nori-1-5"),
-        ("remote", "synthefy/nori-1-5-dev"),
-        ("local", "nori-1-5"),
-        ("local", "synthefy/nori-1-5"),
-    ],
-)
-@pytest.mark.parametrize(
-    ("memory_policy", "message"),
-    [
-        ("off", "'off' is a context-cache preset, and 'nori-1-5' keeps no context cache"),
-        (
-            {"cache_dtype": "int8", "allow_subsample": True},
-            r"memory_policy fields \['cache_dtype'\] configure the key/value context cache",
-        ),
-    ],
-)
-def test_nori_1_5_refuses_context_cache_settings_before_any_request(model, mode, memory_policy, message):
-    # Nori 1.5 builds no context cache: the hosted API refuses these settings and local
-    # synthefy-nori would ignore them, so the client refuses them in every mode, before a paid
-    # request or a checkpoint load. A 500 from the mock would mean a request went out.
-    client = SynthefyNoriClient(mode=mode, model=model, **({"api_key": "k"} if mode == "remote" else {}))
-    if mode == "remote":
-        _attach_mock(client, lambda _request: httpx.Response(500))
-    with pytest.raises(ValueError, match=message):
-        client.predict(_XTR, _YTR, _XTE, memory_policy=memory_policy)
-
-
-def test_nori_1_5_sends_the_context_budget_fields():
+@pytest.mark.parametrize("model", ["nori-6m", "nori-1-5", "synthefy/nori-1-5-dev"])
+@pytest.mark.parametrize("memory_policy", ["exact", {"cache_dtype": "int8", "allow_subsample": True}])
+def test_every_base_model_sends_presets_and_cache_fields(model, memory_policy):
+    # Every base model, Nori 1.5 included, builds a context cache (#1038), so the client
+    # forwards presets and cache fields and leaves validation to the deployment.
     capture: Dict = {}
-    client = SynthefyNoriClient(api_key="k", model="nori-1-5")
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        capture["body"] = json.loads(request.content)
-        return httpx.Response(
-            200,
-            json={
-                "task": "regression",
-                "model": "nori-1-5",
-                "predictions": [1.0],
-                "memory_report": {**_REPORT, "rung": "no_cache", "clamped": [], "notes": []},
-            },
-        )
-
-    _attach_mock(client, handler)
-    client.predict(_XTR, _YTR, _XTE, memory_policy={"elements_budget": 1_000_000, "allow_subsample": False})
-    assert capture["body"]["memory_policy"] == {"elements_budget": 1_000_000, "allow_subsample": False}
-    assert client.last_memory_report["rung"] == "no_cache"
-
-
-def test_models_with_a_context_cache_keep_every_memory_policy_field():
-    # The refusal is Nori 1.5's alone; the other sizes still take presets and cache fields.
-    capture: Dict = {}
-    client = SynthefyNoriClient(api_key="k", model="nori-6m")
+    client = SynthefyNoriClient(api_key="k", model=model)
 
     def handler(request: httpx.Request) -> httpx.Response:
         capture["body"] = json.loads(request.content)
@@ -2158,8 +2099,8 @@ def test_models_with_a_context_cache_keep_every_memory_policy_field():
         )
 
     _attach_mock(client, handler)
-    client.predict(_XTR, _YTR, _XTE, memory_policy="exact")
-    assert capture["body"]["memory_policy"] == "exact"
+    client.predict(_XTR, _YTR, _XTE, memory_policy=memory_policy)
+    assert capture["body"]["memory_policy"] == memory_policy
 
 
 def test_remote_body_uses_variant_gateway_slug():
@@ -3105,6 +3046,62 @@ def test_local_mode_refuses_stream_field_when_installed_policy_lacks_it(monkeypa
             memory_policy={"stream_context": enabled},
         )
     assert initialized == [], "capability guard must run before estimator construction"
+
+
+class _RecordingLocalRegressor:
+    """A local NoriRegressor stand-in that records the policy it was built with."""
+
+    seen: Dict = {}
+
+    def __init__(self, model=None, memory_policy=None):
+        type(self).seen = {"model": model, "memory_policy": memory_policy}
+        self.memory_policy = memory_policy
+        self.memory_report_ = None
+
+    def fit(self, X, y):
+        return self
+
+    def predict(self, X, *, output_type="mean", quantiles=None):
+        self.memory_report_ = {**_REPORT, "clamped": [], "notes": []}
+        return [0.1] * len(X)
+
+
+@pytest.mark.parametrize("memory_policy", ["exact", {"cache_dtype": "int8"}])
+def test_local_nori_1_5_refuses_cache_settings_a_runtime_without_its_cache_would_ignore(monkeypatch, memory_policy):
+    # synthefy-nori before #1038 runs Nori 1.5 without a context cache and would drop these
+    # settings silently, so the client asks for an upgrade before building the estimator.
+    from synthefy import nori_client as module
+
+    _RecordingLocalRegressor.seen = {}
+    monkeypatch.setattr(module, "_local_memory_policy_available", lambda: True)
+    monkeypatch.setattr(module, "_local_model_v3_context_cache_available", lambda: False)
+    monkeypatch.setattr(module, "_load_local_regressor", lambda: _RecordingLocalRegressor)
+
+    client = SynthefyNoriClient(model="nori-1-5", mode="local")
+    with pytest.raises(ImportError, match="cache settings on nori-1-5 require a newer synthefy-nori"):
+        client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST, memory_policy=memory_policy)
+    assert _RecordingLocalRegressor.seen == {}, "capability guard must run before estimator construction"
+
+
+@pytest.mark.parametrize(
+    ("model", "memory_policy", "cache_available"),
+    [
+        # The context-budget fields act without a cache, so an older runtime still takes them.
+        ("nori-1-5", {"elements_budget": 1_000_000, "allow_subsample": False}, False),
+        ("nori-1-5", {"cache_dtype": "int8"}, True),
+        # The dense models have always kept a cache.
+        ("nori-30m", {"cache_dtype": "int8"}, False),
+    ],
+)
+def test_local_mode_forwards_memory_policy_the_runtime_can_honour(monkeypatch, model, memory_policy, cache_available):
+    from synthefy import nori_client as module
+
+    monkeypatch.setattr(module, "_local_memory_policy_available", lambda: True)
+    monkeypatch.setattr(module, "_local_model_v3_context_cache_available", lambda: cache_available)
+    monkeypatch.setattr(module, "_load_local_regressor", lambda: _RecordingLocalRegressor)
+
+    SynthefyNoriClient(model=model, mode="local").predict(_X_TRAIN, _Y_TRAIN, _X_TEST, memory_policy=memory_policy)
+    assert _RecordingLocalRegressor.seen["memory_policy"] == memory_policy
 
 
 def test_local_mode_forwards_stream_context_when_installed_policy_supports_it(monkeypatch):

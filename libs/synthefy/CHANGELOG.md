@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [9.1.0] - 2026-11-18
+
+Hosted Nori 1.5 keeps a context cache, so the client stops refusing cache settings for it.
+
+### Changed
+
+- Nori 1.5 (`model="nori-1-5"`) now keeps a key/value context cache, so `memory_policy=`
+  presets and cache fields reach it in every mode instead of raising `ValueError`. In
+  `mode="local"` they need a `synthefy-nori` that builds Nori 1.5's cache; an older runtime
+  raises `ImportError` with an upgrade hint for any field beyond `elements_budget` and
+  `allow_subsample`. Hosted Nori 1.5 never drops its cache to int8 unless the policy sets
+  `cache_dtype="int8"` (the `"max_context"` preset does) or `allow_quantization`: int8 keys
+  and values cost it about 0.006 R².
+
 ## [9.0.0] - 2026-11-11
 
 The fine-tuning hyperparameters say how much of the table each model reads, in
