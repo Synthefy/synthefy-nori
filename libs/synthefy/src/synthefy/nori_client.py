@@ -147,12 +147,9 @@ _MODEL_NAMES = tuple(name for name in NORI_VARIANTS if "/" not in name)
 # by FINE_TUNED_MODEL_NAME_PATTERN rather than by listing it here.
 SAGEMAKER_VARIANTS = RELEASED_MODEL_NAMES
 
-# Released models that build no key/value cache over the context rows (Model v3). On them only
-# _CONTEXT_BUDGET_MEMORY_FIELDS of a memory_policy act: the per-forward element budget and
-# whether context rows may be dropped to fit it. Every other field configures the cache, so it is
-# refused in every mode -- the hosted deployment refuses it too, and local synthefy-nori would
-# silently ignore it.
-_NO_CONTEXT_CACHE_MODELS = ("nori-1-5",)
+# The memory_policy fields that act without a context cache: the per-forward element budget and
+# whether context rows may be dropped to fit it. Every other field, and every preset, configures
+# the key/value cache.
 _CONTEXT_BUDGET_MEMORY_FIELDS = ("elements_budget", "allow_subsample")
 
 
@@ -719,7 +716,31 @@ def _local_stream_context_available() -> bool:
     return "stream_context" in LocalMemoryPolicy.model_fields
 
 
-def _require_local_memory_policy_capabilities(memory_policy: MemoryPolicyInput) -> None:
+def _local_model_v3_context_cache_available() -> bool:
+    """Whether the installed ``synthefy-nori`` builds Nori 1.5's (Model v3's) context cache.
+
+    It landed as ``TwoPhaseEncoder.supports_context_cache``. An older runtime runs Nori 1.5
+    without a cache and resolves every policy to the ``no_cache`` rung, so a cache setting
+    would be silently ignored rather than refused.
+    """
+    try:
+        from synthefy_nori.model.two_phase import TwoPhaseEncoder
+    except ImportError:
+        return False
+    return bool(getattr(TwoPhaseEncoder, "supports_context_cache", False))
+
+
+def _sets_context_cache_fields(memory_policy: MemoryPolicyInput) -> bool:
+    """Whether ``memory_policy`` configures the key/value cache: a preset, or any field set
+    explicitly beyond :data:`_CONTEXT_BUDGET_MEMORY_FIELDS`."""
+    if isinstance(memory_policy, str):
+        return True
+    return bool(set(memory_policy.model_fields_set) - set(_CONTEXT_BUDGET_MEMORY_FIELDS))
+
+
+def _require_local_memory_policy_capabilities(
+    memory_policy: MemoryPolicyInput, *, local_variant: Optional[str] = None
+) -> None:
     """Fail with an upgrade hint before forwarding an unsupported local policy."""
     if not _local_memory_policy_available():
         raise ImportError(
@@ -732,6 +753,16 @@ def _require_local_memory_policy_capabilities(memory_policy: MemoryPolicyInput) 
             "memory_policy.stream_context requires a newer synthefy-nori; the "
             "installed runtime's MemoryPolicy does not include the stream_context "
             "field. Upgrade with: pip install -U synthefy-nori."
+        )
+    if (
+        local_variant == "nori-1-5"
+        and _sets_context_cache_fields(memory_policy)
+        and not _local_model_v3_context_cache_available()
+    ):
+        raise ImportError(
+            "memory_policy cache settings on nori-1-5 require a newer synthefy-nori: the "
+            "installed runtime builds no context cache for Nori 1.5 and would ignore them. "
+            f"Upgrade with: pip install -U synthefy-nori, or set only {list(_CONTEXT_BUDGET_MEMORY_FIELDS)}."
         )
 
 
@@ -833,46 +864,6 @@ def _validate_large_context_controls(
             "large_context_policy is not available on Nori Thinking "
             "(test-time-compute) variants. Use a base nori-6m or nori-30m "
             "model, or omit the policy."
-        )
-
-
-def _released_model_without_context_cache(model: Any) -> Optional[str]:
-    """Return the released name ``model`` selects when that model builds no context cache, else ``None``.
-
-    Every spelling of the name counts: the friendly name, its ``synthefy/`` gateway slug and the
-    slug's ``-dev`` form.
-    """
-    if not isinstance(model, str):
-        return None
-    name = model.removeprefix(_GATEWAY_SLUG_PREFIX)
-    if model.startswith(_GATEWAY_SLUG_PREFIX) and name.endswith("-dev"):
-        name = name.removesuffix("-dev")
-    return name if name in _NO_CONTEXT_CACHE_MODELS else None
-
-
-def _refuse_cache_settings_without_a_context_cache(memory_policy: Any, *, model: str) -> None:
-    """Refuse ``memory_policy`` settings that configure a context cache ``model`` never builds.
-
-    The same rule, and the same wording, as the hosted deployment's refusal, so a remote call
-    fails here before a paid round-trip and a local call fails instead of being silently
-    ignored by synthefy-nori. ``memory_policy`` is the validated request value: a preset name or
-    a ``MemoryPolicy``, whose explicitly set fields are the ones the caller asked for.
-    """
-    if memory_policy is None:
-        return
-    budget_fields = list(_CONTEXT_BUDGET_MEMORY_FIELDS)
-    if isinstance(memory_policy, str):
-        raise ValueError(
-            f"memory_policy={memory_policy!r} is a context-cache preset, and {model!r} keeps no "
-            "context cache, so the preset cannot act on it. Send memory_policy as an object that "
-            f"sets only {budget_fields}, or omit it."
-        )
-    cache_fields = sorted(set(memory_policy.model_fields_set) - set(_CONTEXT_BUDGET_MEMORY_FIELDS))
-    if cache_fields:
-        raise ValueError(
-            f"memory_policy fields {cache_fields} configure the key/value context cache, and "
-            f"{model!r} keeps no context cache, so they cannot act on it. Only {budget_fields} "
-            "apply to this model; drop the other fields, or omit memory_policy."
         )
 
 
@@ -1340,8 +1331,6 @@ class SynthefyNoriClient:
         # Only a released Thinking name selects test-time compute. A fine-tuned model may carry
         # "thinking" in its own name, so the Thinking-only refusals in predict() read this flag.
         self._is_thinking = isinstance(model, str) and model in NORI_VARIANTS and _is_thinking_model(model)
-        # Nori 1.5 builds no context cache, so predict() refuses memory_policy fields that configure one.
-        self._model_without_context_cache = _released_model_without_context_cache(model)
 
         # Nori Thinking runs only on hosted backends; never silently substitute a local model.
         if self._is_thinking and mode == "local":
@@ -1886,10 +1875,6 @@ class SynthefyNoriClient:
             multi_target_prediction_policy=multi_target_prediction_policy,
             array_backed=self.mode == "sagemaker",
         )
-        if self._model_without_context_cache is not None:
-            _refuse_cache_settings_without_a_context_cache(
-                request.memory_policy, model=self._model_without_context_cache
-            )
         # Every hosted response is parsed below, and _parse_predict_response records its
         # model_version before the shape checks and pandas shaping that follow it. A call
         # that raises at any point clears it, so last_model_version only ever describes a
@@ -2063,7 +2048,7 @@ class SynthefyNoriClient:
             init_kwargs["model"] = self._local_variant
         is_multi_target = np.asarray(request.y_train, dtype=float).ndim == 2
         if request.memory_policy is not None:
-            _require_local_memory_policy_capabilities(request.memory_policy)
+            _require_local_memory_policy_capabilities(request.memory_policy, local_variant=self._local_variant)
             # NoriRegressor belongs to another package and expects its own MemoryPolicy
             # class (or a plain input), not this client's equivalent pydantic class.
             init_kwargs["memory_policy"] = (
