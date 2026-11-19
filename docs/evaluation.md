@@ -1,6 +1,10 @@
 # Evaluation
 
-## Reproduce the published benchmark
+## Quick holdout check
+
+This CLI scores one fixed-seed holdout per dataset. Its numbers are not on the scale of the
+official-split table in the [README](../README.md#benchmarks) or of
+[pareto.synthefy.com](https://pareto.synthefy.com); use it to compare checkpoints with each other.
 
 ```bash
 pip install "synthefy-nori[eval]"
