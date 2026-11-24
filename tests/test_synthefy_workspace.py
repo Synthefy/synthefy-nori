@@ -99,7 +99,7 @@ def test_project_identities_versions_and_build_backends_are_disjoint():
     client = _toml(_CLIENT / "pyproject.toml")
 
     assert root["project"]["name"] == "synthefy-nori"
-    assert root["project"]["version"] == "0.23.1"
+    assert root["project"]["version"] == "0.23.2"
     assert root["build-system"]["build-backend"] == "setuptools.build_meta"
     assert client["project"]["name"] == "synthefy"
     # The client version is written once, in the package. Assert the wiring that makes every
@@ -138,7 +138,7 @@ def test_published_dependencies_point_only_from_heavy_to_light():
     edge = _named(root_requirements, "synthefy")
 
     assert len(edge) == 1
-    assert edge[0].specifier == SpecifierSet(">=7,<10")
+    assert edge[0].specifier == SpecifierSet(">=7,<11")
     assert not edge[0].extras and edge[0].marker is None and edge[0].url is None
     assert Version(_declared_version()) in edge[0].specifier
 
@@ -185,7 +185,7 @@ def test_published_dependencies_point_only_from_heavy_to_light():
         assert len(forwarded) == 1
         assert canonicalize_name(forwarded[0].name) == "synthefy"
         assert forwarded[0].extras == {client_extra}
-        assert forwarded[0].specifier == SpecifierSet(">=7,<10")
+        assert forwarded[0].specifier == SpecifierSet(">=7,<11")
 
 
 def test_namespaces_and_imports_do_not_create_a_base_runtime_cycle():

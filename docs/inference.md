@@ -230,7 +230,7 @@ samples = client.predict(
         n_draws=300,
         random_state=42,
     ),
-)
+).predictions
 ```
 
 Hosted responses cap targets, draws, and total returned sample cells. Thinking and

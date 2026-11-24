@@ -141,11 +141,11 @@ Synthefy API if you'd rather not run it locally.
        X_train=X_train,   # lists, numpy arrays, or pandas — NaNs OK, imputed for you
        y_train=y_train,   # continuous target
        X_test=X_test,     # rows to score
-   )                      # -> list of floats, one per X_test row (as_pandas=True for a Series)
+   ).predictions      # -> list of floats, one per X_test row (as_pandas=True for a Series)
 
    # Prediction intervals come free — no conformal/quantile add-ons:
    lo, mid, hi = client.predict(X_train, y_train, X_test,
-                                output_type="quantiles", quantiles=[0.1, 0.5, 0.9])
+                                output_type="quantiles", quantiles=[0.1, 0.5, 0.9]).predictions
    ```
 
 X is a numeric feature matrix (or a pandas DataFrame — non-numeric columns are
@@ -169,13 +169,28 @@ from synthefy import SynthefyNoriClient
 # Pass it explicitly or set the SYNTHEFY_NORI_API_KEY environment variable.
 client = SynthefyNoriClient(api_key="your_api_key", model="nori-30m")
 
-predictions = client.predict(
+result = client.predict(
     X_train=[[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]],  # context features
     y_train=[1.0, 1.0, 2.0],                        # context targets
     X_test=[[2.0, 2.0], [0.5, 0.5]],                # query features
 )
-print(predictions)  # -> [<float>, <float>]  (one per X_test row)
+print(result.predictions)    # -> [<float>, <float>]  (one per X_test row)
+print(result.model_name)     # -> nori-30m: the model that answered
+print(result.model_version)  # -> sha256:...: a digest of that model's weights and config
 ```
+
+### What `predict()` returns
+
+`predict()` returns a `NoriPrediction` with three fields:
+
+| Field | What it holds |
+| --- | --- |
+| `predictions` | The predictions: a list (or a pandas `Series` with `as_pandas=True`) for a point output, the quantiles for `output_type="quantiles"`, a dict for `"full"`. |
+| `model_name` | The name of the model that answered: the name the deployment reported in a hosted mode, the client's model name in local mode. |
+| `model_version` | `sha256:<hex>` digest of the model that answered (its checkpoint and inference settings), or `None` in local mode. Two answers with the same digest came from the same model, even if its name was later moved to new weights. For a fine-tuned model it equals the training job's `TrainingReport.model_version`. |
+
+Before 10.0.0, `predict()` returned the predictions alone; add `.predictions` to an
+existing call to keep its old value.
 
 `X_train`, `y_train`, and `X_test` accept Python lists, numpy arrays, or pandas
 objects (a `DataFrame` for the feature matrices; a `Series` or single-column
@@ -190,7 +205,7 @@ X_train = pd.DataFrame({"price": [9.99, 4.50, 7.25], "region": ["NW", "SE", "NW"
 y_train = pd.Series([120.0, 305.0, 180.0])
 X_test  = pd.DataFrame({"region": ["SE"], "price": [5.00]})  # order need not match
 
-predictions = client.predict(X_train, y_train, X_test)  # 'region' is encoded
+predictions = client.predict(X_train, y_train, X_test).predictions  # 'region' is encoded
 ```
 
 By default (`categorical_columns="auto"`) each remaining non-numeric column
@@ -225,7 +240,7 @@ predictions = client.predict(
     X_test,
     text_columns=["review"],
     svd_dim=128,
-)
+).predictions
 ```
 
 Text embedding always happens on the client machine. By default,
@@ -248,7 +263,7 @@ and indexed by `X_test`'s index (when `X_test` is a DataFrame), so predictions
 join straight back:
 
 ```python
-preds = client.predict(X_train, y_train, X_test, as_pandas=True)
+preds = client.predict(X_train, y_train, X_test, as_pandas=True).predictions
 # preds is a pd.Series named after y_train, sharing X_test's index
 ```
 
@@ -303,7 +318,7 @@ predictions = client.predict(
     X_train=[[0.0], [1.0]],
     y_train=[0.0, 1.0],
     X_test=[[2.0]],
-)
+).predictions
 ```
 
 The client creates an argument-free `boto3.Session()` and therefore uses
@@ -358,7 +373,7 @@ predictions = client.predict(
     X_train=[[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]],
     y_train=[1.0, 1.0, 2.0],
     X_test=[[2.0, 2.0]],
-)
+).predictions
 ```
 
 `predict` has the same signature in every mode. The `synthefy-nori` dependency
@@ -374,7 +389,7 @@ exception around the client call; the client does not catch, wrap, or rewrite it
 from synthefy_nori import SvdFallbackWarning, strict_pipeline
 
 with strict_pipeline(SvdFallbackWarning):
-    predictions = client.predict(X_train, y_train, X_test)
+    predictions = client.predict(X_train, y_train, X_test).predictions
 ```
 
 Backend selection is explicit. Use `mode="local"` for in-process execution or
@@ -390,19 +405,19 @@ what to do about it. Omit it and the defaults handle almost every request.
 
 ```python
 # A preset...
-preds = client.predict(X_train, y_train, X_test, memory_policy="exact")        # never quantize
-preds = client.predict(X_train, y_train, X_test, memory_policy="max_context")  # fit the largest table
+preds = client.predict(X_train, y_train, X_test, memory_policy="exact").predictions        # never quantize
+preds = client.predict(X_train, y_train, X_test, memory_policy="max_context").predictions  # fit the largest table
 
 # ...individual fields...
-preds = client.predict(X_train, y_train, X_test, memory_policy={"cache_dtype": "int8"})
+preds = client.predict(X_train, y_train, X_test, memory_policy={"cache_dtype": "int8"}).predictions
 preds = client.predict(X_train, y_train, X_test,
-                       memory_policy={"stream_context": True})  # bounded GPU staging
+                       memory_policy={"stream_context": True}).predictions  # bounded GPU staging
 
 # ...or the typed model, which ships with the client — no synthefy-nori needed. Validated
 # before the request goes out, so a typo or an out-of-range value costs no round trip.
 from synthefy import MemoryPolicy
 preds = client.predict(X_train, y_train, X_test,
-                       memory_policy=MemoryPolicy(cache_dtype="int8", gpu_budget_frac=0.5))
+                       memory_policy=MemoryPolicy(cache_dtype="int8", gpu_budget_frac=0.5)).predictions
 
 print(client.last_memory_report["rung"])  # e.g. "resident_bf16"
 ```
@@ -468,7 +483,7 @@ preds = client.predict(
     large_context_policy="cluster_route",
     large_context_threshold=50_000,
     large_context_seed=0,
-)
+).predictions
 print(client.last_large_context_report)
 ```
 
@@ -506,7 +521,7 @@ preds = client.predict(
         "target_rank[cap=65536]",
     ],
     large_context_holdout="tail",  # chronological; use "random" for IID
-)
+).predictions
 ```
 
 The response echoes `holdout_strategy`; the client rejects a response that did
@@ -546,7 +561,7 @@ no separate quantile models:
 lo, mid, hi = client.predict(
     X_train, y_train, X_test,
     output_type="quantiles", quantiles=[0.1, 0.5, 0.9],   # an 80% interval
-)
+).predictions
 ```
 
 `output_type` selects what comes back. Shared selectors use the same meanings as
@@ -570,7 +585,7 @@ by `X_test`, so the bands join straight back) and one column per level, named
 
 ```python
 bands = client.predict(X_train, y_train, X_test, output_type="quantiles",
-                       quantiles=[0.1, 0.9], as_pandas=True)
+                       quantiles=[0.1, 0.9], as_pandas=True).predictions
 bands.columns   # ['price[0.1]', 'price[0.9]']  (named after y_train)
 ```
 
@@ -615,12 +630,12 @@ count, a quality score), pass `discretize=` and every returned prediction is
 one of the target's own levels instead of a continuous estimate:
 
 ```python
-labels = client.predict(X_train, y_train, X_test, discretize="map-cell")
+labels = client.predict(X_train, y_train, X_test, discretize="map-cell").predictions
 labels = client.predict(
     X_train, y_train, X_test,
     discretize="map-cell",
     categorical_levels=[1, 2, 3, 4, 5],   # the full scale, if the context may under-cover it
-)
+).predictions
 ```
 
 Discretization is **strictly opt-in** — nothing is snapped unless you ask.
@@ -1010,7 +1025,7 @@ with SynthefyNoriFineTuner(region_name=REGION) as tuner:
             context = table.sample(n=min(len(table), 2000), random_state=0)
             new_rows = pd.read_parquet("new.parquet")[features]  # rows the job never saw: same columns, same order
             print(client.predict(X_train=context[features], y_train=context[TARGET], X_test=new_rows,
-                                 categorical_columns=None))
+                                 categorical_columns=None).predictions)
             assert client.last_model_version == report.model_version
     finally:
         tuner.undeploy(endpoint)

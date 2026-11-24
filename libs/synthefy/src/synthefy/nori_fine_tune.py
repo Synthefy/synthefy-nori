@@ -190,7 +190,7 @@ class SynthefyNoriFineTuner:
             print(tuner.get_training_report(job.job_name).val_mse_after)
             endpoint = tuner.deploy(job)
             with tuner.create_client(endpoint, s3_staging_uri="s3://my-bucket/churn/staging/") as client:
-                predictions = client.predict(X_train, y_train, X_test)
+                predictions = client.predict(X_train, y_train, X_test).predictions
             tuner.undeploy(endpoint)
     """
 

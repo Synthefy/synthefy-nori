@@ -24,7 +24,7 @@ from synthefy_nori.api import (
 from synthefy_nori.embedding import NoriEmbedding
 from synthefy_nori.pricing import billable_price
 
-__version__ = "0.23.1"
+__version__ = "0.23.2"
 
 __all__ = [
     "ContextSubsampledWarning",

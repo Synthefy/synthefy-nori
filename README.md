@@ -117,7 +117,7 @@ export SYNTHEFY_NORI_API_KEY="<your key>"
 from synthefy import SynthefyNoriClient
 
 client = SynthefyNoriClient(mode="remote", model="nori-30m")
-predictions = client.predict([[0.0], [1.0]], [0.0, 1.0], [[0.5]])
+predictions = client.predict([[0.0], [1.0]], [0.0, 1.0], [[0.5]]).predictions
 client.close()
 ```
 

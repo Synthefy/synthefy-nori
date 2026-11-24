@@ -10,6 +10,7 @@ pytest.importorskip("gluonts")
 pytest.importorskip("statsmodels")
 pytest.importorskip("datasets")
 
+from synthefy import NoriPrediction
 from synthefy.nori_ts import NoriTSForecaster
 from synthefy.nori_ts.tsfeatures import TimeSeriesDataFrame, generate_test_X
 
@@ -29,7 +30,8 @@ class _RecordingClient:
                 "kwargs": kwargs,
             }
         )
-        return np.vstack([np.full(len(X_test), level * 10.0) for level in kwargs["quantiles"]])
+        quantiles = np.vstack([np.full(len(X_test), level * 10.0) for level in kwargs["quantiles"]])
+        return NoriPrediction(predictions=quantiles, model_name=self.model, model_version=None)
 
 
 def _multi_series_frame():

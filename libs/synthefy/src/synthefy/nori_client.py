@@ -52,7 +52,7 @@ from synthefy.featurize import (
     DEFAULT_MAX_CARDINALITY as _DEFAULT_MAX_CARDINALITY,
     align_and_featurize as _align_and_featurize,
 )
-from synthefy.data_models import NoriPredictRequest, NoriPredictResponse
+from synthefy.data_models import NoriPrediction, NoriPredictRequest, NoriPredictResponse
 from synthefy.nori_data_models import (
     DEFAULT_LARGE_CONTEXT_HOLDOUT,
     DEFAULT_LARGE_CONTEXT_SEED,
@@ -1008,7 +1008,7 @@ def _shape_quantiles(
 
     The default result is transposed to ``(n_levels, n_query)`` — level-major —
     which is ``NoriRegressor.predict``'s shape and what makes
-    ``lo, mid, hi = client.predict(..., quantiles=[0.1, 0.5, 0.9])`` work. The
+    ``lo, mid, hi = client.predict(..., quantiles=[0.1, 0.5, 0.9]).predictions`` work. The
     pandas result stays row-major, because a DataFrame indexed by the query rows
     is what joins back onto the data.
     """
@@ -1233,19 +1233,22 @@ class SynthefyNoriClient:
         remote or SageMaker :meth:`predict`. Cleared at the start of every call, so it never
         describes an earlier one, and left ``None`` by a call that raises, so it never
         describes a refused answer; ``None`` in local mode and from a deployment that
-        predates the field.
+        predates the field. The same value is the ``model_version`` of the
+        :class:`~synthefy.data_models.NoriPrediction` that call returned.
 
     Examples
     --------
     >>> from synthefy import SynthefyNoriClient
     >>> client = SynthefyNoriClient(api_key="...", model="nori-30m")  # or SYNTHEFY_NORI_API_KEY
-    >>> preds = client.predict(
+    >>> result = client.predict(
     ...     X_train=[[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]],
     ...     y_train=[1.0, 1.0, 2.0],
     ...     X_test=[[2.0, 2.0]],
     ... )
-    >>> len(preds)
+    >>> len(result.predictions)
     1
+    >>> result.model_name, result.model_version  # doctest: +SKIP
+    ('nori-30m', 'sha256:6adbff4dbe11...')
 
     Prediction intervals come from the same forward pass -- no conformal or
     quantile-regression add-ons:
@@ -1253,7 +1256,7 @@ class SynthefyNoriClient:
     >>> lo, mid, hi = client.predict(          # doctest: +SKIP
     ...     X_train, y_train, X_test,
     ...     output_type="quantiles", quantiles=[0.1, 0.5, 0.9],
-    ... )
+    ... ).predictions
 
     Run the same prediction locally (no API key, needs ``synthefy-nori``):
 
@@ -1414,6 +1417,9 @@ class SynthefyNoriClient:
         #: field. Compare it with a fine-tuning job's ``TrainingReport.model_version`` to prove
         #: which model answered.
         self.last_model_version: Optional[str] = None
+        # The model name the deployment reported on the most recent hosted predict(), kept
+        # with last_model_version and returned as NoriPrediction.model.
+        self._last_answering_model_name: Optional[str] = None
         # Per-internal-call reports for the most recent hosted multi-target
         # prediction that explicitly set memory_policy.
         self.last_multi_target_memory_reports: Optional[List[Dict[str, Any]]] = None
@@ -1480,8 +1486,8 @@ class SynthefyNoriClient:
         multi_target_prediction_policy: Optional[MultiTargetPredictionPolicy] = None,
         timeout: Optional[float] = None,
         extra_headers: Optional[Dict[str, str]] = None,
-    ) -> Union[List[float], pd.Series, List[List[float]], pd.DataFrame, Dict[str, Any]]:
-        """Predict a value for each query row via in-context regression.
+    ) -> NoriPrediction:
+        """Predict a value for each query row via in-context regression, and name the model that answered.
 
         Parameters
         ----------
@@ -1533,7 +1539,7 @@ class SynthefyNoriClient:
             - ``"quantiles"`` — **prediction intervals**: the predictive
               quantiles at the levels in ``quantiles=``. Returns
               ``(n_levels, n_query)`` — level-major, so
-              ``lo, mid, hi = client.predict(..., quantiles=[0.1, 0.5, 0.9])``
+              ``lo, mid, hi = client.predict(..., quantiles=[0.1, 0.5, 0.9]).predictions``
               unpacks directly.
             - ``"full"`` — the whole quantile bank as a dict with keys
               ``"quantiles"`` (``(n_query, K)`` ascending values), ``"taus"``
@@ -1693,17 +1699,22 @@ class SynthefyNoriClient:
 
         Returns
         -------
-        list of float, or pandas.Series if ``as_pandas=True``
-            For a point ``output_type`` (``"mean"``/``"median"``):
-            one predicted value per row of ``X_test``.
-        list of list of float, or pandas.DataFrame if ``as_pandas=True``
-            For ``output_type="quantiles"``: the quantiles as
-            ``(n_levels, n_query)`` — level-major, matching
-            ``NoriRegressor.predict`` — or, as pandas, a ``(n_query, n_levels)``
-            frame with one column per level.
-        dict
-            For ``output_type="full"``: ``{"quantiles", "taus", "mean"}``, with
-            lists (or a ``DataFrame`` and a ``Series`` under ``as_pandas=True``).
+        NoriPrediction
+            ``.model_name`` is the name of the model that answered and ``.model_version``
+            its ``sha256:<hex>`` digest (``None`` in local mode); see
+            :class:`~synthefy.data_models.NoriPrediction`. ``.predictions`` holds:
+
+            - for a point ``output_type`` (``"mean"``/``"median"``): one predicted
+              value per row of ``X_test``, as a list, or a ``pandas.Series`` if
+              ``as_pandas=True``;
+            - for ``output_type="quantiles"``: the quantiles as
+              ``(n_levels, n_query)`` lists — level-major, matching
+              ``NoriRegressor.predict`` — or, as pandas, a ``(n_query, n_levels)``
+              frame with one column per level;
+            - for ``output_type="full"``: a dict ``{"quantiles", "taus", "mean"}``,
+              with lists (or a ``DataFrame`` and a ``Series`` under ``as_pandas=True``);
+            - for a multi-target ``y_train``: ``(n_query, n_targets)`` lists, or a
+              ``DataFrame`` with one column per target.
 
         Raises
         ------
@@ -1767,6 +1778,7 @@ class SynthefyNoriClient:
         self.last_large_context_report = None
         self.last_target_orders = None
         self.last_model_version = None
+        self._last_answering_model_name = None
 
         # Validate the output contract first: a bad output_type/quantiles pair is
         # caught before the expensive steps below (loading a sentence encoder for
@@ -1876,92 +1888,132 @@ class SynthefyNoriClient:
             array_backed=self.mode == "sagemaker",
         )
         # Every hosted response is parsed below, and _parse_predict_response records its
-        # model_version before the shape checks and pandas shaping that follow it. A call
-        # that raises at any point clears it, so last_model_version only ever describes a
-        # result this method returned.
+        # model name and model_version before the shape checks and pandas shaping that follow
+        # it. A call that raises at any point clears both, so they only ever describe a result
+        # this method returned.
         try:
-            if is_multi_target:
-                return self._predict_multi_target_request(
+            predictions = self._get_shaped_predictions(
+                request,
+                is_multi_target=is_multi_target,
+                output_type=output_type,
+                quantile_levels=quantile_levels,
+                discretize=discretize,
+                categorical_levels=categorical_levels,
+                as_pandas=as_pandas,
+                X_test=X_test,
+                y_train=y_train,
+                timeout=timeout,
+                extra_headers=extra_headers,
+            )
+        except BaseException:
+            self.last_model_version = None
+            self._last_answering_model_name = None
+            raise
+        # Local mode runs the checkpoint the client resolved from its own model name; a hosted
+        # deployment names the model it ran in its response.
+        answering_model_name = self._sagemaker_model if self.mode == "local" else self._last_answering_model_name
+        return NoriPrediction(
+            predictions=predictions,
+            model_name=answering_model_name,
+            model_version=self.last_model_version,
+        )
+
+    def _get_shaped_predictions(
+        self,
+        request: NoriPredictRequest,
+        *,
+        is_multi_target: bool,
+        output_type: str,
+        quantile_levels: Optional[List[float]],
+        discretize: Optional[str],
+        categorical_levels: Optional[VectorLike],
+        as_pandas: bool,
+        X_test: MatrixLike,
+        y_train: VectorLike,
+        timeout: Optional[float],
+        extra_headers: Optional[Dict[str, str]],
+    ) -> Union[List[float], pd.Series, List[List[float]], pd.DataFrame, Dict[str, Any]]:
+        """Run one validated request in this client's mode and return its predictions, shaped as
+        :meth:`predict` documents for ``NoriPrediction.predictions``."""
+        if is_multi_target:
+            return self._predict_multi_target_request(
+                request,
+                output_type=output_type,
+                timeout=timeout,
+                extra_headers=extra_headers,
+                as_pandas=as_pandas,
+                X_test=X_test,
+                y_train=y_train,
+            )
+        # Distribution output is shaped separately: it is not one value per query
+        # row, so it does not flow through the point-prediction path below.
+        if output_type in _DISTRIBUTION_OUTPUT_TYPES:
+            if self.mode == "local":
+                q_by_row, taus, mean = self._predict_local_distribution(
+                    request, output_type=output_type, quantile_levels=quantile_levels
+                )
+            elif self.mode == "sagemaker":
+                q_by_row, taus, mean = self._predict_aws_distribution(
+                    request,
+                    output_type=output_type,
+                )
+            else:
+                q_by_row, taus, mean = self._predict_remote_distribution(
                     request,
                     output_type=output_type,
                     timeout=timeout,
                     extra_headers=extra_headers,
-                    as_pandas=as_pandas,
-                    X_test=X_test,
-                    y_train=y_train,
                 )
-            # Distribution output is shaped separately: it is not one value per query
-            # row, so it does not flow through the point-prediction path below.
-            if output_type in _DISTRIBUTION_OUTPUT_TYPES:
-                if self.mode == "local":
-                    q_by_row, taus, mean = self._predict_local_distribution(
-                        request, output_type=output_type, quantile_levels=quantile_levels
-                    )
-                elif self.mode == "sagemaker":
-                    q_by_row, taus, mean = self._predict_aws_distribution(
-                        request,
-                        output_type=output_type,
-                    )
-                else:
-                    q_by_row, taus, mean = self._predict_remote_distribution(
-                        request,
-                        output_type=output_type,
-                        timeout=timeout,
-                        extra_headers=extra_headers,
-                    )
-                if output_type == "quantiles":
-                    return _shape_quantiles(
-                        q_by_row,
-                        quantile_levels or [],
-                        as_pandas=as_pandas,
-                        X_test=X_test,
-                        y_train=y_train,
-                    )
-                return _shape_full(
+            if output_type == "quantiles":
+                return _shape_quantiles(
                     q_by_row,
-                    taus,
-                    mean,
+                    quantile_levels or [],
                     as_pandas=as_pandas,
                     X_test=X_test,
                     y_train=y_train,
                 )
+            return _shape_full(
+                q_by_row,
+                taus,
+                mean,
+                as_pandas=as_pandas,
+                X_test=X_test,
+                y_train=y_train,
+            )
 
-            if self.mode == "local":
-                predictions = self._predict_local(
+        if self.mode == "local":
+            predictions = self._predict_local(
+                request,
+                output_type=output_type,
+                discretize=discretize,
+                categorical_levels=categorical_levels,
+            )
+        else:
+            # Remote and SageMaker both send these to the server, which owns the
+            # arithmetic: the strategies need the model's own predictive distribution,
+            # and only the deployment has it without the caller installing torch.
+            request.discretize = discretize
+            request.categorical_levels = _wire_levels(categorical_levels)
+            if self.mode == "sagemaker":
+                predictions = self._predict_aws(
                     request,
                     output_type=output_type,
-                    discretize=discretize,
-                    categorical_levels=categorical_levels,
                 )
             else:
-                # Remote and SageMaker both send these to the server, which owns the
-                # arithmetic: the strategies need the model's own predictive distribution,
-                # and only the deployment has it without the caller installing torch.
-                request.discretize = discretize
-                request.categorical_levels = _wire_levels(categorical_levels)
-                if self.mode == "sagemaker":
-                    predictions = self._predict_aws(
-                        request,
-                        output_type=output_type,
-                    )
-                else:
-                    predictions = self._predict_remote(
-                        request,
-                        output_type=output_type,
-                        timeout=timeout,
-                        extra_headers=extra_headers,
-                    )
-            if as_pandas:
-                return pd.Series(
-                    predictions,
-                    index=_result_index(X_test),
-                    name=_target_name(y_train),
-                    dtype=float,
+                predictions = self._predict_remote(
+                    request,
+                    output_type=output_type,
+                    timeout=timeout,
+                    extra_headers=extra_headers,
                 )
-            return predictions
-        except BaseException:
-            self.last_model_version = None
-            raise
+        if as_pandas:
+            return pd.Series(
+                predictions,
+                index=_result_index(X_test),
+                name=_target_name(y_train),
+                dtype=float,
+            )
+        return predictions
 
     # ------------------------------------------------------------------ #
     # Local mode
@@ -2459,6 +2511,7 @@ class SynthefyNoriClient:
                 "that serves distribution output."
             )
         self.last_model_version = parsed.model_version
+        self._last_answering_model_name = parsed.model
         return parsed
 
     def _s3_object_exists(self, location: str) -> bool:

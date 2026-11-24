@@ -96,7 +96,9 @@ def _remote_call(response: dict, *args: Any, **kwargs: Any) -> dict:
         base_url=client.base_url,
         transport=httpx.MockTransport(handler),
     )
-    result = client.predict(*args, **kwargs)
+    # Reviewed contract change: predict() returns a NoriPrediction since synthefy 10.0.0. Its
+    # predictions must still equal what 6.3 returned, so the trace records those.
+    result = client.predict(*args, **kwargs).predictions
     client.close()
     return {"transport": captured, "result": _normalized(result)}
 
@@ -172,7 +174,7 @@ def _public_trace(monkeypatch) -> dict:
     fake_nori.predict = fake_predict
     monkeypatch.setitem(sys.modules, "synthefy_nori", fake_nori)
     local_client = SynthefyNoriClient(mode="local", model="nori-30m")
-    local_result = local_client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])
+    local_result = local_client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]]).predictions
     trace["local_default"] = {
         "call": _normalized(local_capture),
         "result": _normalized(local_result),
@@ -267,7 +269,7 @@ def _public_trace(monkeypatch) -> dict:
         region_name="us-east-1",
         s3_staging_uri="s3://golden-bucket/nori/golden",
     )
-    aws_result = aws_client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]])
+    aws_result = aws_client.predict([[0.0], [1.0]], [0.0, 1.0], [[2.0]]).predictions
     aws_client.close()
     trace["sagemaker_default"] = {
         "result": _normalized(aws_result),
