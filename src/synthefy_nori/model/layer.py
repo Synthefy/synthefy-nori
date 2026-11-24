@@ -1067,12 +1067,20 @@ class MultiheadAttention(torch.nn.Module):
         attn_mask: torch.Tensor | None = None,
         calculate_sample_attention: bool = False,
         calculate_feature_attention: bool = False,
+        qassmax_scale_keys: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         """
         x: [batch_size, seq_len, feature, embed_dim]
         kv: Optional[batch_size, seq_len_kv, feature, embed_dim] — only needed if qkv_combined=False
         copy_first_head: Reuse the results from the first attention head
+        qassmax_scale_keys: Separate Q/KV attention only. Replaces the key count in the QASS log-n query scale
+            (an integer of at least 2); the attention still runs over every key. None uses the number of keys.
         """
+        if qassmax_scale_keys is not None:
+            if self.qkv_combined:
+                raise ValueError("qassmax_scale_keys is only valid for separate Q/KV attention")
+            if type(qassmax_scale_keys) is not int or qassmax_scale_keys < 2:
+                raise ValueError("qassmax_scale_keys must be an integer >= 2")
         # feature attention: [B S F E]
         # item attention: [B F S E]
         # B, T, C = x.shape
@@ -1131,7 +1139,7 @@ class MultiheadAttention(torch.nn.Module):
                     ),
                 )
             if self.use_qassmax:
-                q = self.apply_qassmax(q, kv.shape[1])
+                q = self.apply_qassmax(q, kv.shape[1] if qassmax_scale_keys is None else qassmax_scale_keys)
 
         kv_perhead = kv if kv is None else self._kv_for_kernel(kv, needs_explicit_heads=False)
         atten_out = self.compute_attention_by_torch(qkv, q, kv_perhead, attn_mask)

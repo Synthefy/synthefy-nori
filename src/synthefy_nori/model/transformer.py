@@ -314,6 +314,7 @@ class FeaturesTransformer(nn.Module):
                 task_type="reg",
                 max_num_classes=self.max_num_classes,
                 layer_norm_eps=self.layer_norm_eps,
+                attention_policy=two_phase.get("attention_policy"),
                 device=self.device,
                 dtype=self.dtype,
             )

@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from synthefy_nori.configs import DEFAULT_MODEL_CONFIG, config_path
-from synthefy_nori.model.encoders import MaskEmbEncoder
+from synthefy_nori.model.encoders import MaskEmbEncoder, PromptQuantilePLEEncoder
 from synthefy_nori.model.layer import MultiheadAttention
 from synthefy_nori.utils.loading import build_model, finalize_arch_config
 
@@ -172,3 +172,53 @@ def test_released_model_v3_flags_set_off_are_accepted():
         input_transform="scientific", compute_dtype="float64", use_raw_input_residual=False
     )
     build_model(config)
+
+
+def test_ramp_tie_code_fills_tied_bins_and_leaves_untied_bins_alone():
+    # One column whose context quantiles tie: bins 1, 2 and 3 have zero width on the boundary value 1.0.
+    reference = {"edges": torch.tensor([[[[0.0, 1.0, 1.0, 1.0, 1.0, 2.0]]]])}
+    values = torch.tensor([0.5, 1.0, 1.5, 3.0]).view(1, 4, 1, 1)  # [batch, rows, groups, features]
+    legacy = PromptQuantilePLEEncoder.encode(values, reference).squeeze()
+    ramp = PromptQuantilePLEEncoder.encode(values, reference, tie_code="ramp").squeeze()
+    # A value on the tied boundary: legacy leaves the block at zero, ramp spreads it as 1 - (j + 0.5) / 3.
+    assert legacy[1].tolist() == [1.0, 0.0, 0.0, 0.0, 0.0]
+    assert ramp[1].tolist() == pytest.approx([1.0, 5 / 6, 1 / 2, 1 / 6, 0.0])
+    # A value above the block is one on every bin below it under ramp, but zero on the block under legacy.
+    assert legacy[2].tolist() == [1.0, 0.0, 0.0, 0.0, 0.5]
+    assert ramp[2].tolist() == [1.0, 1.0, 1.0, 1.0, 0.5]
+    assert ramp[3].tolist() == [1.0, 1.0, 1.0, 1.0, 1.0]
+    # A value below the block, and every bin that has width, encode the same under both codes.
+    assert torch.equal(legacy[0], ramp[0])
+    assert torch.equal(legacy[:, [0, 4]], ramp[:, [0, 4]])
+    with pytest.raises(ValueError, match="tie code"):
+        PromptQuantilePLEEncoder.encode(values, reference, tie_code="unknown")
+
+
+def test_fixed_context_label_scale_changes_only_the_context_rows_of_the_first_layer():
+    torch.manual_seed(0)
+    default_config = _get_small_two_phase_model_config()
+    fixed_config = copy.deepcopy(default_config)
+    fixed_config["two_phase_config"]["attention_policy"] = {
+        "qk_normalization": "affine",
+        "context_label_scale": "fixed",
+        "reference_keys": 4,
+    }
+    default_layer = build_model(default_config).eval().transformer_encoder.layers[0]
+    fixed_layer = build_model(fixed_config).eval().transformer_encoder.layers[0]
+    fixed_layer.load_state_dict(default_layer.state_dict())
+    rows = torch.randn(1, 14, default_layer.target_width)  # 10 context rows then 4 query rows
+    normalized = default_layer.target_norms[0](rows).unsqueeze(1)
+    with torch.no_grad():
+        default_update = default_layer.attend_target_rows_to_context(rows, normalized, normalized[:, :, :10])
+        fixed_update = fixed_layer.attend_target_rows_to_context(rows, normalized, normalized[:, :, :10])
+        # A chunk that starts inside the query rows sees no context row, so the policy does not apply to it.
+        chunk_update = fixed_layer.attend_target_rows_to_context(
+            rows[:, 10:], normalized[:, :, 10:], normalized[:, :, :10], row_start=10
+        )
+    assert not torch.allclose(fixed_update[:, :10], default_update[:, :10])
+    torch.testing.assert_close(fixed_update[:, 10:], default_update[:, 10:])
+    torch.testing.assert_close(chunk_update, default_update[:, 10:])
+    with pytest.raises(NotImplementedError, match="affine"):
+        broken_config = copy.deepcopy(default_config)
+        broken_config["two_phase_config"]["attention_policy"] = {"qk_normalization": "non_affine"}
+        build_model(broken_config)

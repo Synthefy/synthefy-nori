@@ -28,6 +28,7 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
+from synthefy_nori.model.attention_policy import QKNormalization, TwoPhaseAttentionPolicy
 from synthefy_nori.model.layer import MultiheadAttention, RMSNorm, SwiGLUMLP
 
 
@@ -50,9 +51,19 @@ def _build_two_phase_attention(
     )
 
 
-def _attend_to_keys(module: MultiheadAttention, queries: torch.Tensor, keys: torch.Tensor) -> torch.Tensor:
-    """``queries``/``keys``: ``[batch, groups, length, width]``; attention runs over ``length``."""
-    return module(x=queries, x_kv=keys, copy_first_head_kv=False)[0]
+def _attend_to_keys(
+    module: MultiheadAttention,
+    queries: torch.Tensor,
+    keys: torch.Tensor,
+    *,
+    qassmax_scale_keys: int | None = None,
+) -> torch.Tensor:
+    """``queries``/``keys``: ``[batch, groups, length, width]``; attention runs over ``length``.
+
+    ``qassmax_scale_keys`` replaces the key count in the log-n query scale; the attention itself still runs
+    over every key.
+    """
+    return module(x=queries, x_kv=keys, copy_first_head_kv=False, qassmax_scale_keys=qassmax_scale_keys)[0]
 
 
 class TargetStreamEncoder(nn.Module):
@@ -163,6 +174,7 @@ class CellLayer2P(nn.Module):
         self.target_tokens = int(target_tokens)
         self.target_width = self.cell_dim * self.target_tokens
         self.deepnorm_alpha = float(deepnorm_alpha)
+        self.context_attention_policy = TwoPhaseAttentionPolicy()
         norm = lambda width: RMSNorm(width, eps=layer_norm_eps, elementwise_affine=False)  # noqa: E731
         self.cell_norms = nn.ModuleList([norm(self.cell_dim) for _ in range(3)])
         self.target_norms = nn.ModuleList([norm(self.target_width), norm(self.target_width), norm(self.cell_dim)])
@@ -198,14 +210,32 @@ class CellLayer2P(nn.Module):
         return cells + self.deepnorm_alpha * self.column_attention(self.cell_norms[0](cells), eval_pos)
 
     def attend_target_rows_to_context(
-        self, rows: torch.Tensor, normalized: torch.Tensor, context_keys: torch.Tensor
+        self, rows: torch.Tensor, normalized: torch.Tensor, context_keys: torch.Tensor, *, row_start: int = 0
     ) -> torch.Tensor:
         """S for the target stream: ``normalized`` rows attend to the context rows' ``context_keys``.
 
         ``rows``: ``[batch, n, width]``; ``normalized``: ``target_norms[0](rows).unsqueeze(1)``;
-        ``context_keys``: the same for the context rows. Any slice of rows may be passed.
+        ``context_keys``: the same for the context rows. Any slice of rows may be passed; ``row_start`` is the
+        index of the slice's first row in the table, which tells the context rows (the first
+        ``context_keys.shape[2]`` rows of the table) from the query rows. Under a capped or fixed
+        ``context_attention_policy`` only the context rows use the policy's key count in their log-n query
+        scale; the query rows use the number of context keys.
         """
-        update = _attend_to_keys(self.sequence_attentions[0], normalized, context_keys)
+        key_count = context_keys.shape[2]
+        scale_keys = self.context_attention_policy.resolve_context_scale_keys(key_count)
+        context_rows = min(max(key_count - row_start, 0), normalized.shape[2])
+        module = self.sequence_attentions[0]
+        if scale_keys == key_count or context_rows == 0:
+            update = _attend_to_keys(module, normalized, context_keys)
+        else:
+            context_update = _attend_to_keys(
+                module, normalized[:, :, :context_rows], context_keys, qassmax_scale_keys=scale_keys
+            )
+            if context_rows < normalized.shape[2]:
+                query_update = _attend_to_keys(module, normalized[:, :, context_rows:], context_keys)
+                update = torch.cat((context_update, query_update), dim=2)
+            else:
+                update = context_update
         return rows + self.deepnorm_alpha * update.squeeze(1)
 
     def apply_row_mlps_and_feature_attention(
@@ -293,10 +323,17 @@ class TwoPhaseEncoder(nn.Module):
         task_type: str,
         max_num_classes: int,
         layer_norm_eps: float = 1e-5,
+        attention_policy: dict | None = None,
         device=None,
         dtype=None,
     ):
         super().__init__()
+        self.attention_policy = TwoPhaseAttentionPolicy(**(attention_policy or {}))
+        if self.attention_policy.qk_normalization != QKNormalization.AFFINE:
+            raise NotImplementedError(
+                "this release supports only qk_normalization='affine', "
+                f"got {self.attention_policy.qk_normalization.value!r}"
+            )
         if min(cell_layers, target_tokens, row_heads) <= 0 or row_layers < 0:
             raise ValueError("two-phase encoder needs positive cell-layer, token and head counts and row_layers >= 0")
         self.cell_dim = int(cell_dim)
@@ -357,6 +394,7 @@ class TwoPhaseEncoder(nn.Module):
         self.layers = nn.ModuleList(cell + row)
         self.cell_out_norm = RMSNorm(self.cell_dim, eps=layer_norm_eps, elementwise_affine=False)
         self.row_out_norm = RMSNorm(self.width, eps=layer_norm_eps, elementwise_affine=False)
+        self.layers[0].context_attention_policy = self.attention_policy
 
     def _run_encoder_layer(self, layer: nn.Module, *args):
         if self.gradient_checkpointing and self.training:
@@ -443,7 +481,7 @@ class TwoPhaseEncoder(nn.Module):
             for part in row_slices:
                 part_rows = rows[:, part].to(compute_device)
                 part_rows = layer.attend_target_rows_to_context(
-                    part_rows, layer.target_norms[0](part_rows).unsqueeze(1), context_keys
+                    part_rows, layer.target_norms[0](part_rows).unsqueeze(1), context_keys, row_start=part.start
                 )
                 part_cells, part_targets = layer.apply_row_mlps_and_feature_attention(
                     cells[:, part].to(compute_device), part_rows
