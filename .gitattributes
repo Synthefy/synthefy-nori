@@ -1,1 +1,1 @@
-checkpoints/*.pt filter=lfs diff=lfs merge=lfs -text
+nori-1-5/*.pt filter=lfs diff=lfs merge=lfs -text
