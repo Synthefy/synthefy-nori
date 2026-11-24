@@ -58,6 +58,13 @@ def main(argv: list[str] | None = None) -> None:
         help="Enable the memory-model train-row cap for smaller GPUs (e.g. 24). "
         "Default: uncapped — train rows bounded only by --max-train-samples.",
     )
+    parser.add_argument(
+        "--distribution-metrics",
+        action="store_true",
+        help="Also score the predictive distribution: CRPS, central-interval coverage "
+        "(cov50/80/90/95), 90%% interval width, and PIT calibration. Needs a quantile-head "
+        "checkpoint; others are scored on point metrics only.",
+    )
     parser.add_argument("--warmup", type=int, default=0)
     parser.add_argument("--no-cache", action="store_true")
     parser.add_argument("--cache-dir", default="cache/eval_cache")
@@ -108,6 +115,7 @@ def main(argv: list[str] | None = None) -> None:
         cache_dir=args.cache_dir,
         no_cache=args.no_cache,
         gpu_mem_gb=args.gpu_mem_gb,
+        distribution_metrics=args.distribution_metrics,
     )
     df = runner.run(sources=args.sources)
     if df is not None and len(df) and "r2" in df.columns:
@@ -117,6 +125,15 @@ def main(argv: list[str] | None = None) -> None:
             for src, g in reg.groupby("source"):
                 print(f"  {src:12s} N={len(g):3d}  R2={g['r2'].mean():.4f}")
             print(f"  {'ALL':12s} N={len(reg):3d}  R2={reg['r2'].mean():.4f}")
+    if args.distribution_metrics and df is not None and len(df) and "cov90" in df.columns:
+        dist = df.dropna(subset=["cov90"])
+        if len(dist):
+            print("\nMean predictive-distribution metrics by source (ideal: cov90=0.90, pit_ks=0):")
+            for src, g in [*dist.groupby("source"), ("ALL", dist)]:
+                print(
+                    f"  {src:12s} N={len(g):3d}  cov90={g['cov90'].mean():.3f}  "
+                    f"crps_rel={g['crps_rel'].mean():.4f}  pit_ks={g['pit_ks'].mean():.3f}"
+                )
 
 
 if __name__ == "__main__":
