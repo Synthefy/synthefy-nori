@@ -306,6 +306,10 @@ class PBLDEmbedding(nn.Module):
         return out
 
 
+# How PromptQuantilePLEEncoder.encode codes zero-width (tied-boundary) bins; "zero" is the legacy code.
+PLE_TIE_CODES = ("zero", "ramp")
+
+
 class PromptQuantilePLEEncoder(nn.Module):
     """Build context-only quantile boundaries for piecewise-linear encoding.
 
@@ -402,15 +406,28 @@ class PromptQuantilePLEEncoder(nn.Module):
     def encode(
         x: torch.Tensor,
         reference: dict[str, torch.Tensor],
+        tie_code: str = "zero",
     ) -> torch.Tensor:
         """Return cumulative PLE coordinates for ``x``.
 
         Channel ``i`` is ``clamp((x-b_i)/(b_{i+1}-b_i), 0, 1)``. Hence bins
         below the value are one, its active bin is fractional, and bins above
-        it are zero. Duplicate boundaries produce a zero channel rather than a
-        data-dependent removal, keeping the representation shape static.
+        it are zero. Tied context values make boundaries coincide, which leaves
+        zero-width bins (the representation keeps its static shape); ``tie_code``
+        sets their channels:
+
+        - ``"zero"`` (legacy): always zero, also for values above the tied
+          boundary, so the cumulative code has holes on tied columns.
+        - ``"ramp"``: one below the value and zero above it, like any other
+          bin. A value equal to a tied block of ``k`` zero-width bins gets
+          ``1 - (j + 0.5) / k`` on the block's ``j``-th bin, spreading it evenly
+          over the block.
+
+        Columns without ties encode identically under every code.
         """
 
+        if tie_code not in PLE_TIE_CODES:
+            raise ValueError(f"unknown prompt-quantile PLE tie code {tie_code!r}; expected one of {PLE_TIE_CODES}")
         edges = reference["edges"].to(device=x.device, dtype=x.dtype)
         left = edges[..., :-1]
         right = edges[..., 1:]
@@ -421,12 +438,42 @@ class PromptQuantilePLEEncoder(nn.Module):
         values = x.permute(0, 2, 3, 1).unsqueeze(-1)
         coordinates = ((values - left.unsqueeze(-2)) / safe_width.unsqueeze(-2)).clamp(0.0, 1.0)
         valid_values = torch.isfinite(values)
-        coordinates = torch.where(
-            valid_values & nonzero_width.unsqueeze(-2),
-            coordinates,
-            torch.zeros_like(coordinates),
-        )
+        if tie_code == "ramp":
+            tied = PromptQuantilePLEEncoder._get_ramp_tied_coordinates(values, left, nonzero_width)
+        else:
+            tied = torch.zeros_like(coordinates)
+        coordinates = torch.where(nonzero_width.unsqueeze(-2), coordinates, tied)
+        coordinates = torch.where(valid_values, coordinates, torch.zeros_like(coordinates))
         return coordinates.permute(0, 3, 1, 2, 4).contiguous()
+
+    @staticmethod
+    def _get_ramp_tied_coordinates(
+        values: torch.Tensor,
+        left: torch.Tensor,
+        nonzero_width: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return the ramp coordinates of zero-width bins (see ``encode``) for ``values`` [..., S, 1], edges [..., B]."""
+
+        tied_bin = ~nonzero_width
+        n_bins = left.shape[-1]
+        bin_index = torch.arange(n_bins, device=left.device)
+        # A tied block is a run of consecutive zero-width bins on one boundary value.
+        continues = torch.zeros_like(tied_bin)
+        continues[..., 1:] = tied_bin[..., 1:] & tied_bin[..., :-1] & (left[..., 1:] == left[..., :-1])
+        starts = tied_bin & ~continues
+        ends = tied_bin.clone()
+        ends[..., :-1] = tied_bin[..., :-1] & ~continues[..., 1:]
+        start_index = torch.where(starts, bin_index, torch.full_like(bin_index, -1)).cummax(dim=-1).values
+        end_index = torch.where(ends, bin_index, torch.full_like(bin_index, n_bins))
+        end_index = end_index.flip(-1).cummin(dim=-1).values.flip(-1)
+        block_length = (end_index - start_index + 1).clamp(min=1).to(values.dtype)
+        offset = (bin_index - start_index).to(values.dtype)
+        at_value = (1.0 - (offset + 0.5) / block_length).unsqueeze(-2)
+
+        boundary = left.unsqueeze(-2)
+        above = values > boundary
+        equal = values == boundary
+        return torch.where(above, torch.ones_like(boundary), torch.where(equal, at_value, torch.zeros_like(boundary)))
 
 
 class MaskEmbEncoder(nn.Module):
@@ -448,6 +495,7 @@ class MaskEmbEncoder(nn.Module):
         bias: bool = True,
         in_keys: list[str] = ["data"],
         out_key: str = "data",
+        prompt_quantile_ple_tie_code: str = "zero",
     ):
         """Initialize the MaskEmbEncoder.
 
@@ -458,6 +506,9 @@ class MaskEmbEncoder(nn.Module):
                 each cell token are piecewise-linear coordinates against context quantiles (see
                 :class:`PromptQuantilePLEEncoder`) and the numeric embedding fills the rest.
                 0 (the default) keeps the numeric embedding at the full width.
+            prompt_quantile_ple_tie_code: How those coordinates code zero-width bins of tied columns, one of
+                ``PLE_TIE_CODES`` (see :meth:`PromptQuantilePLEEncoder.encode`). "zero" (the default) is the code
+                of checkpoints that do not record one.
             nan_to_zero: Whether to replace NaN values in the input by zero. Defaults to False.
             bias: Whether to use a bias term in the linear layer. Defaults to True.
         """
@@ -467,6 +518,9 @@ class MaskEmbEncoder(nn.Module):
         self.in_keys = in_keys
         self.out_key = out_key
         self.prompt_quantile_ple_bins = int(prompt_quantile_ple_bins)
+        self.prompt_quantile_ple_tie_code = str(prompt_quantile_ple_tie_code)
+        if self.prompt_quantile_ple_tie_code not in PLE_TIE_CODES:
+            raise ValueError(f"prompt_quantile_ple_tie_code must be one of {PLE_TIE_CODES}")
         if self.prompt_quantile_ple_bins < 0:
             raise ValueError("prompt_quantile_ple_bins cannot be negative")
         if self.prompt_quantile_ple_bins == 1:
@@ -563,7 +617,9 @@ class MaskEmbEncoder(nn.Module):
             reference = input.get(PromptQuantilePLEEncoder.reference_key)
             if not isinstance(reference, dict):
                 raise TypeError("prompt-quantile PLE reference is required when the tokenizer is enabled")
-            ple = PromptQuantilePLEEncoder.encode(x.squeeze(-1), reference).to(x_emb.dtype)
+            ple = PromptQuantilePLEEncoder.encode(
+                x.squeeze(-1), reference, tie_code=self.prompt_quantile_ple_tie_code
+            ).to(x_emb.dtype)
             x_emb = torch.cat((x_emb, ple), dim=-1)
 
         if self.nan_to_zero:
@@ -897,6 +953,7 @@ def get_x_encoder(
     prompt_quantile_ple_bins: int = 0,
     in_keys: list = ["data"],
     nan_to_zero: bool = False,
+    prompt_quantile_ple_tie_code: str = "zero",
 ):
     assert isinstance(in_keys, list), "The type of in_keys must be a list!"
     inputs_to_merge = {}
@@ -919,6 +976,7 @@ def get_x_encoder(
             PBLD_config=PBLD_config,
             prompt_quantile_ple_bins=prompt_quantile_ple_bins,
             numeric_embed_type=numeric_embed_type,
+            prompt_quantile_ple_tie_code=prompt_quantile_ple_tie_code,
         ),
     ]
     return nn.Sequential(
