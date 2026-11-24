@@ -15,6 +15,7 @@ pytest.importorskip("datasets")
 pytest.importorskip("gluonts")
 pytest.importorskip("statsmodels")
 
+from synthefy import NoriPrediction
 from synthefy import nori_client as client_module
 from synthefy.nori_ts import NoriTSForecaster
 from synthefy.nori_ts.tsfeatures import TimeSeriesDataFrame, generate_test_X
@@ -80,7 +81,8 @@ class _RecordingFakeClient:
             "quantiles": kwargs["quantiles"],
         }
         self.requests.append(payload)
-        return np.asarray(_quantile_rows(len(X_test), kwargs["quantiles"]), dtype=float).T
+        quantiles = np.asarray(_quantile_rows(len(X_test), kwargs["quantiles"]), dtype=float).T
+        return NoriPrediction(predictions=quantiles, model_name=self.model, model_version=None)
 
 
 class _MissingS3Object(Exception):

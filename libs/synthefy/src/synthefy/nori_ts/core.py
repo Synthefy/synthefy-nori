@@ -190,7 +190,7 @@ class NoriTSForecaster:
             X_test,
             output_type="quantiles",
             quantiles=quantiles,
-        )
+        ).predictions
 
     # -------------------------------------------------------------- inference
     def predict(

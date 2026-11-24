@@ -34,7 +34,7 @@ from synthefy.errors import (
     InternalServerError,
     SageMakerInvocationError,
 )
-from synthefy.data_models import NoriPredictRequest, NoriPredictResponse
+from synthefy.data_models import NoriPrediction, NoriPredictRequest, NoriPredictResponse
 from synthefy.nori_client import (
     GATEWAY_ENDPOINT,
     NORI_VARIANTS,
@@ -315,7 +315,7 @@ def test_aws_predict_uses_s3_and_invoke_endpoint_async_for_every_model(monkeypat
         [[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]],
         [1.0, 1.0, 2.0],
         [[2.0, 2.0], [3.0, 3.0]],
-    )
+    ).predictions
     assert predictions == [10.0, 20.0]
     upload = s3.uploads[0]
     assert upload["bucket"] == "customer-bucket"
@@ -360,7 +360,7 @@ def test_sagemaker_large_context_uses_the_shared_wire_and_report(monkeypatch):
         large_context_policy="cluster_route_g4",
         large_context_threshold=1,
         large_context_seed=11,
-    ) == [10.0, 20.0]
+    ).predictions == [10.0, 20.0]
     metadata = s3.uploads[0]["metadata"]
     assert metadata["large_context_policy"] == "cluster_route_g4"
     assert metadata["large_context_threshold"] == 1
@@ -585,7 +585,7 @@ def test_sagemaker_refuses_a_name_that_is_neither_released_nor_fine_tuned(monkey
 def test_sagemaker_sends_a_fine_tuned_name_as_the_request_model(monkeypatch, model):
     client, runtime, s3 = _stubbed_aws_client(monkeypatch, model=model)
 
-    assert client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST) == [10.0, 20.0]
+    assert client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST).predictions == [10.0, 20.0]
     assert s3.uploads[0]["metadata"]["model"] == model
     assert runtime.requests[0]["EndpointName"] == "nori-shared"
 
@@ -616,9 +616,10 @@ def test_a_fine_tuned_name_containing_thinking_predicts_a_target_matrix(monkeypa
         {"predictions": [[10.0, 11.0], [20.0, 21.0]], "multi_target_prediction_strategy": "copula"}
     )
 
-    predictions = client.predict([[0.0], [1.0]], [[0.0, 1.0], [1.0, 0.0]], [[2.0], [3.0]])
+    result = client.predict([[0.0], [1.0]], [[0.0, 1.0], [1.0, 0.0]], [[2.0], [3.0]])
 
-    assert predictions == [[10.0, 11.0], [20.0, 21.0]]
+    assert result.predictions == [[10.0, 11.0], [20.0, 21.0]]
+    assert result.model_name == "ft-churn-thinking-v1"
     assert s3.uploads[0]["shapes"]["y_train"] == [2, 2]
 
 
@@ -635,7 +636,8 @@ def test_sagemaker_last_model_version_is_the_latest_accepted_answer(monkeypatch)
     client, runtime, _ = _stubbed_aws_client(monkeypatch, model="ft-acme-churn-v1")
     runtime.response_overrides["model_version"] = digest
 
-    client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+    result = client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+    assert (result.model_name, result.model_version) == ("ft-acme-churn-v1", digest)
     assert client.last_model_version == digest
 
     runtime.response_overrides["model"] = "nori-6m"
@@ -646,7 +648,8 @@ def test_sagemaker_last_model_version_is_the_latest_accepted_answer(monkeypatch)
     del runtime.response_overrides["model"]
     client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
     del runtime.response_overrides["model_version"]
-    client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+    result = client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+    assert (result.model_name, result.model_version) == ("ft-acme-churn-v1", None)
     assert client.last_model_version is None
 
 
@@ -665,6 +668,38 @@ def test_remote_last_model_version_is_set_from_the_response_and_cleared_by_the_n
     assert client.last_model_version == digest
     client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
     assert client.last_model_version is None
+
+
+def test_a_remote_prediction_returns_the_model_that_answered_and_its_version():
+    digest = "sha256:" + "cd" * 32
+    body = {"task": "regression", "predictions": [1.0, 2.0], "model": "nori-30m", "model_version": digest}
+    client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
+    _attach_mock(client, lambda _request: httpx.Response(200, json=body))
+
+    result = client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+
+    assert result == NoriPrediction(predictions=[1.0, 2.0], model_name="nori-30m", model_version=digest)
+
+
+def test_a_remote_deployment_that_names_no_model_returns_none_for_it():
+    client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
+    _attach_mock(client, lambda _request: httpx.Response(200, json={"task": "regression", "predictions": [1.0, 2.0]}))
+
+    result = client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST)
+
+    assert (result.model_name, result.model_version) == (None, None)
+
+
+def test_a_local_prediction_returns_the_clients_canonical_model_name_and_no_version(monkeypatch):
+    def fake_predict(X_train, y_train, X_test, *, task=None, model="__unset__"):
+        return [0.0]
+
+    monkeypatch.setattr("synthefy.nori_client._load_local_predict", lambda: fake_predict)
+    client = SynthefyNoriClient(mode="local", model="synthefy/nori-1-5")
+
+    result = client.predict(X_train=_XTR, y_train=_YTR, X_test=_XTE)
+
+    assert result == NoriPrediction(predictions=[0.0], model_name="nori-1-5", model_version=None)
 
 
 _REFUSED_ANSWERS = {
@@ -741,7 +776,7 @@ def test_predict_returns_predictions_and_sends_expected_request():
         X_train=[[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]],
         y_train=[1.0, 1.0, 2.0],
         X_test=[[2.0, 2.0], [3.0, 3.0]],
-    )
+    ).predictions
 
     assert preds == [10.0, 20.0]
     assert client.mode == "remote"
@@ -763,7 +798,7 @@ def test_null_prediction_returns_as_nan():
     client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
     _attach_mock(client, _ok_handler([None], {}))
 
-    predictions = client.predict(X_train=[[0.0], [1.0]], y_train=[0.0, 1.0], X_test=[[2.0]])
+    predictions = client.predict(X_train=[[0.0], [1.0]], y_train=[0.0, 1.0], X_test=[[2.0]]).predictions
 
     assert len(predictions) == 1 and math.isnan(predictions[0])
 
@@ -777,7 +812,7 @@ def test_predict_accepts_numpy_arrays():
         X_train=np.array([[0.0, 1.0], [1.0, 0.0]]),
         y_train=np.array([1.0, 2.0]),
         X_test=np.array([[2.0, 2.0]]),
-    )
+    ).predictions
 
     assert preds == [42.0]
     # numpy inputs are serialized to plain JSON lists of floats.
@@ -799,7 +834,7 @@ def test_predict_accepts_dataframes_and_series():
     y_train = pd.Series([1.0, 2.0])
     X_test = pd.DataFrame({"a": [2.0], "b": [2.0]})
 
-    preds = client.predict(X_train, y_train, X_test)
+    preds = client.predict(X_train, y_train, X_test).predictions
 
     assert preds == [5.0]
     # DataFrame/Series inputs serialize to plain JSON lists of floats.
@@ -861,7 +896,7 @@ def test_non_numeric_columns_are_ordinal_encoded_by_default():
         y_train=[1.0, 2.0, 3.0],
         # 'z' is unseen in training -> bounded other code K=2.
         X_test=pd.DataFrame({"a": [3.0, 4.0], "cat": ["x", "z"]}),
-    )
+    ).predictions
 
     assert out == [5.0, 6.0]
     # one column per categorical, codes in sorted-category order: x=0, y=1
@@ -940,7 +975,7 @@ def test_non_numeric_columns_are_one_hot_encoded():
         # 'z' is unseen in training -> its indicator group is all zeros.
         X_test=pd.DataFrame({"a": [2.0], "cat": ["z"]}),
         categorical_encoding="onehot",
-    )
+    ).predictions
 
     assert out == [5.0]
     # columns: a, cat_x, cat_y  (numerics first, then sorted one-hot groups)
@@ -1228,7 +1263,7 @@ def test_default_return_is_a_plain_list_not_series():
         X_train=pd.DataFrame({"a": [0.0, 1.0]}),
         y_train=pd.Series([1.0, 2.0], name="demand"),
         X_test=pd.DataFrame({"a": [2.0, 3.0]}),
-    )
+    ).predictions
     assert isinstance(out, list)
     assert out == [1.0, 2.0]
 
@@ -1244,7 +1279,7 @@ def test_as_pandas_returns_series_named_after_y_train_and_indexed_by_xtest():
         y_train=pd.Series([1.0, 2.0], name="demand"),
         X_test=X_test,
         as_pandas=True,
-    )
+    ).predictions
 
     assert isinstance(out, pd.Series)
     assert out.name == "demand"
@@ -1262,7 +1297,7 @@ def test_as_pandas_uses_single_column_dataframe_y_label():
         y_train=pd.DataFrame({"units": [1.0, 2.0]}),
         X_test=pd.DataFrame({"a": [2.0]}),
         as_pandas=True,
-    )
+    ).predictions
     assert isinstance(out, pd.Series)
     assert out.name == "units"
 
@@ -1277,7 +1312,7 @@ def test_as_pandas_with_non_pandas_inputs_uses_defaults():
         y_train=[1.0, 2.0],
         X_test=[[2.0], [3.0]],
         as_pandas=True,
-    )
+    ).predictions
     assert isinstance(out, pd.Series)
     assert out.name == "prediction"  # no name available from a plain list
     assert list(out.index) == [0, 1]  # default RangeIndex
@@ -1377,7 +1412,7 @@ def test_hosted_accepts_finite_targets_with_missing_features(monkeypatch, mode, 
     y_train = [[1.0, 2.0], [3.0, 4.0]] if multi_target else [1.0, 2.0]
     client, uploads, requests = _create_stubbed_hosted_target_client(monkeypatch, mode, multi_target=multi_target)
     with client:
-        predictions = client.predict([[0.0, np.nan], [1.0, 2.0]], y_train, [[2.0, None], [3.0, 4.0]])
+        predictions = client.predict([[0.0, np.nan], [1.0, 2.0]], y_train, [[2.0, None], [3.0, 4.0]]).predictions
 
     assert predictions == ([[10.0, 11.0], [20.0, 21.0]] if multi_target else [10.0, 20.0])
     assert len(requests) == 1
@@ -1394,7 +1429,7 @@ def test_local_delegates_non_finite_target_validation_to_runtime(monkeypatch, mi
 
     monkeypatch.setattr(nori_client_module, "_load_local_predict", lambda: predict_locally)
     with SynthefyNoriClient(mode="local", model="nori-30m") as client:
-        assert client.predict([[0.0], [1.0]], [1.0, missing], [[2.0], [3.0]]) == [10.0, 20.0]
+        assert client.predict([[0.0], [1.0]], [1.0, missing], [[2.0], [3.0]]).predictions == [10.0, 20.0]
 
     np.testing.assert_equal(captured["targets"], np.asarray([1.0, missing], dtype=float))
 
@@ -1409,7 +1444,7 @@ def test_custom_http_endpoint_still_requires_and_sends_model():
     )
     _attach_mock(client, _ok_handler([1.0], capture))
 
-    preds = client.predict(X_train=[[0.0], [1.0]], y_train=[0.0, 1.0], X_test=[[2.0]])
+    preds = client.predict(X_train=[[0.0], [1.0]], y_train=[0.0, 1.0], X_test=[[2.0]]).predictions
 
     assert preds == [1.0]
     assert capture["path"] == "/predict"
@@ -1613,7 +1648,7 @@ def test_retries_on_server_error_then_succeeds(monkeypatch):
     client = SynthefyNoriClient(api_key="test-key", max_retries=2, model="nori-30m")
     _attach_mock(client, handler)
 
-    preds = client.predict(X_train=[[1.0]], y_train=[1.0], X_test=[[2.0]])
+    preds = client.predict(X_train=[[1.0]], y_train=[1.0], X_test=[[2.0]]).predictions
 
     assert preds == [7.0]
     assert calls["n"] == 2
@@ -1679,7 +1714,7 @@ def test_per_call_zero_timeout_is_forwarded_exactly():
     client = SynthefyNoriClient(api_key="test-key", model="nori-30m")
     _attach_mock(client, handler)
 
-    assert client.predict([[1.0]], [1.0], [[2.0]], timeout=0.0) == [7.0]
+    assert client.predict([[1.0]], [1.0], [[2.0]], timeout=0.0).predictions == [7.0]
     assert set(capture["timeout"].values()) == {0.0}
 
 
@@ -1761,7 +1796,7 @@ def test_remote_multi_target_samples_are_one_call_and_shape_checked():
         output_type="samples",
         multi_target_prediction_strategy="independent",
         multi_target_prediction_policy={"n_draws": 2, "random_state": 42},
-    )
+    ).predictions
 
     assert np.asarray(result).shape == (2, 2, 2)
     assert capture["body"]["y_train"] == [[0.0, 1.0], [1.0, 0.0], [2.0, 2.0]]
@@ -1956,7 +1991,7 @@ def test_local_predict_real_inference():
     y_train = X_train[:, 0] * 2.0 + 1.0
     X_test = rng.normal(size=(5, 3))
 
-    preds = client.predict(X_train, y_train, X_test)
+    preds = client.predict(X_train, y_train, X_test).predictions
 
     assert isinstance(preds, list)
     assert len(preds) == 5
@@ -2245,7 +2280,7 @@ def test_remote_returns_the_levels_the_deployment_chose():
         y_train=[1.0, 1.0, 2.0],
         X_test=[[0.5], [1.5], [2.5]],
         discretize="snap-mean",
-    )
+    ).predictions
     assert preds == [1.0, 2.0, 2.0]
     assert capture["body"]["discretize"] == "snap-mean"
 
@@ -2261,7 +2296,7 @@ def test_remote_discretization_survives_the_pandas_wrapper():
         X_test=pd.DataFrame({"a": [0.5, 1.5]}, index=[10, 20]),
         as_pandas=True,
         discretize="snap-mean",
-    )
+    ).predictions
     assert isinstance(preds, pd.Series)
     assert preds.name == "rating"
     assert list(preds.index) == [10, 20]
@@ -2296,7 +2331,7 @@ def test_a_normalized_echo_is_not_mistaken_for_a_different_strategy():
         y_train=[1.0, 2.0],
         X_test=[[0.5], [1.5]],
         discretize="MAP-CELL",
-    )
+    ).predictions
     assert preds == [1.0, 2.0]
 
 
@@ -2321,7 +2356,7 @@ def test_levels_alone_accept_whichever_default_the_deployment_resolved():
         y_train=[1.0, 2.0],
         X_test=[[0.5], [1.5]],
         categorical_levels=[1, 2],
-    )
+    ).predictions
     assert preds == [1.0, 2.0]
 
 
@@ -2471,7 +2506,7 @@ def test_local_mode_without_discretize_sends_only_required_model(monkeypatch):
 
     monkeypatch.setattr("synthefy.nori_client._load_local_predict", lambda: strict_predict)
     client = SynthefyNoriClient(mode="local", model="nori-30m")
-    assert client.predict(X_train=_XTR, y_train=_YTR, X_test=_XTE) == [1.0]
+    assert client.predict(X_train=_XTR, y_train=_YTR, X_test=_XTE).predictions == [1.0]
 
 
 def test_local_mode_preserves_degradation_warning_and_message(monkeypatch):
@@ -2488,7 +2523,7 @@ def test_local_mode_preserves_degradation_warning_and_message(monkeypatch):
     client = SynthefyNoriClient(mode="local", model="nori-30m")
 
     with pytest.warns(LocalDegradationWarning, match="SVD fit failed") as caught:
-        assert client.predict(X_train=_XTR, y_train=_YTR, X_test=_XTE) == [1.0]
+        assert client.predict(X_train=_XTR, y_train=_YTR, X_test=_XTE).predictions == [1.0]
 
     assert str(caught[0].message) == message
 
@@ -2534,7 +2569,7 @@ def test_local_discretize_real_inference():
     y_train = np.clip(np.round(X_train[:, 0] * 2.0 + 3.0), 1, 5)
     X_test = rng.normal(size=(5, 3))
 
-    preds = client.predict(X_train, y_train, X_test, discretize="map-cell")
+    preds = client.predict(X_train, y_train, X_test, discretize="map-cell").predictions
     levels = set(np.unique(y_train).tolist())
     assert all(p in levels for p in preds)
 
@@ -2684,7 +2719,7 @@ def test_text_columns_embeds_client_side_and_sends_numeric():
 
     preds = client.predict(
         df_train, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], df_test, text_columns=["review"], svd_dim=4, embedder=_fake_embed
-    )
+    ).predictions
 
     assert preds == [1.0, 2.0]
     # x1 (numeric) + brand (1 categorical col) + 4 SVD text cols = 6 numeric features
@@ -3173,7 +3208,7 @@ def test_local_mode_uses_estimator_and_surfaces_memory_report(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("functional path used")),
     )
     client = SynthefyNoriClient(model="nori-30m", mode="local")
-    predictions = client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST, memory_policy={"cache_dtype": "int8"})
+    predictions = client.predict(_X_TRAIN, _Y_TRAIN, _X_TEST, memory_policy={"cache_dtype": "int8"}).predictions
 
     assert predictions == [0.1, 0.2]
     assert seen["model"] == "nori-30m"
@@ -3324,7 +3359,7 @@ def test_large_context_wire_and_report_round_trip():
         large_context_policy="cluster_route",
         large_context_threshold=1,
         large_context_seed=7,
-    )
+    ).predictions
     assert predictions == [0.1, 0.2]
     assert capture["body"]["large_context_policy"] == "cluster_route"
     assert capture["body"]["large_context_threshold"] == 1
@@ -3657,7 +3692,7 @@ def test_local_large_context_uses_the_estimator_and_copies_its_report(monkeypatc
         large_context_policy=custom_policy,
         large_context_threshold=1,
         large_context_seed=7,
-    )
+    ).predictions
     assert predictions == [0.4, 0.5]
     assert seen["init"] == {
         "model": "nori-30m",
@@ -3810,7 +3845,7 @@ def test_remote_quantiles_sends_the_levels_and_returns_level_major():
         [[2.0, 2.0], [3.0, 3.0]],
         output_type="quantiles",
         quantiles=_LEVELS,
-    )
+    ).predictions
 
     assert capture["body"]["output_type"] == "quantiles"
     assert capture["body"]["quantiles"] == _LEVELS
@@ -3860,7 +3895,7 @@ def test_remote_quantiles_preserve_the_requested_level_order():
             taus=[0.9, 0.1],
         ),
     )
-    hi, lo = client.predict(_XTR, _YTR, [[2.0, 2.0]], output_type="quantiles", quantiles=[0.9, 0.1])
+    hi, lo = client.predict(_XTR, _YTR, [[2.0, 2.0]], output_type="quantiles", quantiles=[0.9, 0.1]).predictions
     assert capture["body"]["quantiles"] == [0.9, 0.1]
     assert hi == [9.0] and lo == [1.0]
 
@@ -3886,7 +3921,7 @@ def test_remote_quantiles_as_pandas_is_a_frame_keyed_by_level():
         output_type="quantiles",
         quantiles=_LEVELS,
         as_pandas=True,
-    )
+    ).predictions
 
     assert isinstance(out, pd.DataFrame)
     # Row-major under pandas, indexed by X_test so the bands join back.
@@ -3910,7 +3945,7 @@ def test_remote_full_returns_the_whole_bank():
         ),
     )
 
-    out = client.predict(_XTR, _YTR, [[2.0, 2.0], [3.0, 3.0]], output_type="full")
+    out = client.predict(_XTR, _YTR, [[2.0, 2.0], [3.0, 3.0]], output_type="full").predictions
 
     assert capture["body"]["output_type"] == "full"
     assert "quantiles" not in capture["body"]  # no levels needed for "full"
@@ -3940,7 +3975,7 @@ def test_remote_full_as_pandas_gives_a_frame_and_a_series():
         X_test,
         output_type="full",
         as_pandas=True,
-    )
+    ).predictions
 
     assert list(out["quantiles"].columns) == ["y[0.25]", "y[0.75]"]
     assert list(out["quantiles"].index) == [7, 8]
@@ -3960,7 +3995,7 @@ def test_remote_median_returns_one_value_per_row():
             output_type="median",
         ),
     )
-    preds = client.predict(_XTR, _YTR, [[2.0, 2.0], [3.0, 3.0]], output_type="median")
+    preds = client.predict(_XTR, _YTR, [[2.0, 2.0], [3.0, 3.0]], output_type="median").predictions
     assert capture["body"]["output_type"] == "median"
     assert preds == [3.0, 4.0]
 
@@ -4019,7 +4054,7 @@ def test_remote_default_output_type_needs_no_echo():
     # field, so the gate applies only to a non-default output_type.
     client = _remote_client()
     _attach_mock(client, _ok_handler([1.0, 2.0], {}))
-    assert client.predict(_XTR, _YTR, [[2.0, 2.0], [3.0, 3.0]]) == [1.0, 2.0]
+    assert client.predict(_XTR, _YTR, [[2.0, 2.0], [3.0, 3.0]]).predictions == [1.0, 2.0]
 
 
 def test_remote_malformed_quantile_block_shape_raises():
@@ -4071,7 +4106,7 @@ def test_remote_null_quantiles_come_back_as_nan():
             taus=_LEVELS,
         ),
     )
-    lo, mid, hi = client.predict(_XTR, _YTR, [[2.0, 2.0]], output_type="quantiles", quantiles=_LEVELS)
+    lo, mid, hi = client.predict(_XTR, _YTR, [[2.0, 2.0]], output_type="quantiles", quantiles=_LEVELS).predictions
     assert lo == [0.5] and hi == [1.5]
     assert math.isnan(mid[0])
 
@@ -4175,7 +4210,7 @@ def test_local_quantiles_route_through_the_estimator_api(monkeypatch):
         [[2.0, 2.0], [3.0, 3.0]],
         output_type="quantiles",
         quantiles=_LEVELS,
-    )
+    ).predictions
 
     assert seen["fit"][0] == _XTR and seen["fit"][1] == _YTR
     assert seen["predict"]["output_type"] == "quantiles"
@@ -4233,7 +4268,7 @@ def test_local_full_returns_the_bank_dict(monkeypatch):
     seen: Dict = {}
     client = _local_client_with_fake(monkeypatch, seen)
 
-    out = client.predict(_XTR, _YTR, [[2.0, 2.0], [3.0, 3.0]], output_type="full")
+    out = client.predict(_XTR, _YTR, [[2.0, 2.0], [3.0, 3.0]], output_type="full").predictions
 
     assert seen["predict"]["output_type"] == "full"
     assert seen["predict"]["quantiles"] is None
@@ -4246,7 +4281,7 @@ def test_local_full_returns_the_bank_dict(monkeypatch):
 def test_local_median_also_uses_the_estimator(monkeypatch):
     seen: Dict = {}
     client = _local_client_with_fake(monkeypatch, seen)
-    preds = client.predict(_XTR, _YTR, [[2.0, 2.0], [3.0, 3.0]], output_type="median")
+    preds = client.predict(_XTR, _YTR, [[2.0, 2.0], [3.0, 3.0]], output_type="median").predictions
     assert seen["predict"]["output_type"] == "median"
     assert preds == [0.0, 1.0]
 
@@ -4264,7 +4299,7 @@ def test_local_mean_still_uses_the_functional_predict(monkeypatch):
     monkeypatch.setattr("synthefy.nori_client._load_local_predict", lambda: fake_predict)
     monkeypatch.setattr("synthefy.nori_client._load_local_regressor", _boom)
     client = SynthefyNoriClient(mode="local", model="nori-30m")
-    assert client.predict(_XTR, _YTR, _XTE) == [7.0]
+    assert client.predict(_XTR, _YTR, _XTE).predictions == [7.0]
 
 
 def test_local_quantiles_as_pandas_frame(monkeypatch):
@@ -4279,7 +4314,7 @@ def test_local_quantiles_as_pandas_frame(monkeypatch):
         output_type="quantiles",
         quantiles=[0.1, 0.9],
         as_pandas=True,
-    )
+    ).predictions
 
     assert list(out.columns) == ["score[0.1]", "score[0.9]"]
     assert list(out.index) == ["r1", "r2"]
@@ -4344,15 +4379,17 @@ def test_local_quantiles_real_inference():
     y_train = X_train[:, 0] * 2.0 + rng.normal(scale=0.3, size=60)
     X_test = rng.normal(size=(8, 3))
 
-    lo, mid, hi = client.predict(X_train, y_train, X_test, output_type="quantiles", quantiles=[0.1, 0.5, 0.9])
+    lo, mid, hi = client.predict(
+        X_train, y_train, X_test, output_type="quantiles", quantiles=[0.1, 0.5, 0.9]
+    ).predictions
     assert len(lo) == len(mid) == len(hi) == 8
     # A valid quantile function is non-decreasing in tau.
     assert all(a <= b <= c for a, b, c in zip(lo, mid, hi))
 
-    mean = client.predict(X_train, y_train, X_test)
+    mean = client.predict(X_train, y_train, X_test).predictions
     assert all(a <= m <= c for a, m, c in zip(lo, mean, hi))
 
-    full = client.predict(X_train, y_train, X_test, output_type="full")
+    full = client.predict(X_train, y_train, X_test, output_type="full").predictions
     Q = np.asarray(full["quantiles"])
     taus = np.asarray(full["taus"])
     assert Q.shape == (8, taus.shape[0])

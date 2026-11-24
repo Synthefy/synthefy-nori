@@ -21,6 +21,7 @@ from synthefy.nori_data_models import (
     TrainingReport,
 )
 from synthefy.data_models import (
+    NoriPrediction,
     NoriPredictRequest,
     NoriPredictResponse,
 )
@@ -28,7 +29,7 @@ from synthefy.errors import FineTuningError, SageMakerInvocationError
 from synthefy.nori_client import SynthefyNoriClient
 from synthefy.nori_fine_tune import SynthefyNoriFineTuner
 
-__version__ = "9.1.0"
+__version__ = "10.0.0"
 
 __all__ = [
     "DEFAULT_LARGE_CONTEXT_SEED",
@@ -55,6 +56,7 @@ __all__ = [
     "TaskTable",
     "TrainingPlan",
     "TrainingReport",
+    "NoriPrediction",
     "NoriPredictRequest",
     "NoriPredictResponse",
     "__version__",

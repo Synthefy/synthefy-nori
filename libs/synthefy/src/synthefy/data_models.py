@@ -1,5 +1,7 @@
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
+import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from synthefy.nori_data_models import (
@@ -219,3 +221,37 @@ class NoriPredictResponse(BaseModel):
     samples: Optional[List[List[List[Optional[float]]]]] = None
     multi_target_prediction_strategy: Optional[MultiTargetPredictionStrategy] = None
     target_orders: Optional[List[List[int]]] = None
+
+
+@dataclass(frozen=True)
+class NoriPrediction:
+    """What :meth:`synthefy.nori_client.SynthefyNoriClient.predict` returns: the predictions
+    and the model that produced them.
+
+    A plain dataclass rather than a pydantic model, so a large ``predictions`` list or a
+    pandas object is held as returned, never copied or coerced.
+
+    Parameters
+    ----------
+    predictions : list, pandas.Series, pandas.DataFrame or dict
+        The predictions, shaped by ``output_type`` and ``as_pandas`` as
+        :meth:`~synthefy.nori_client.SynthefyNoriClient.predict` documents: one value per
+        query row for a point output, the quantiles for ``"quantiles"``, a dict for
+        ``"full"``, one row per query row and one column per target for a multi-target
+        ``y_train``.
+    model_name : str or None
+        The name of the model that answered. In a hosted mode it is the name the deployment
+        reported (SageMaker mode raises before returning when it differs from the name the
+        client asked for); ``None`` only from a remote deployment that predates the field.
+        In local mode it is the client's canonical model name.
+    model_version : str or None
+        ``sha256:<hex>`` digest of the model that answered, as
+        :attr:`NoriPredictResponse.model_version` describes. For a fine-tuned model it equals
+        the fine-tuning job's ``TrainingReport.model_version``, which proves which training
+        produced the predictions. ``None`` in local mode and from a deployment that predates
+        the field.
+    """
+
+    predictions: Union[List[Any], Dict[str, Any], pd.Series, pd.DataFrame]
+    model_name: Optional[str]
+    model_version: Optional[str]

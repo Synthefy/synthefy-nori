@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.0.0] - 2026-11-24
+
+`predict()` names the model that answered alongside its predictions. Every caller
+that reads the return value changes, so this is a major version.
+
+### Changed (breaking)
+
+- `SynthefyNoriClient.predict()` returns a `NoriPrediction` (exported from
+  `synthefy`) instead of the predictions alone. `.predictions` holds exactly what
+  `predict()` returned before, for every `output_type`, `as_pandas` and
+  multi-target shape; `.model_name` is the name of the model that answered (the name the
+  deployment reported in remote and SageMaker modes, the client's canonical
+  model name in local mode); `.model_version` is its `sha256:<hex>`
+  digest, `None` in local mode and from a deployment that predates the field.
+  Add `.predictions` to a call to keep its old value:
+  `lo, mid, hi = client.predict(..., output_type="quantiles", quantiles=[0.1, 0.5, 0.9]).predictions`.
+- `last_model_version` stays and holds the same digest as the returned
+  `model_version`.
+
 ## [9.1.0] - 2026-11-18
 
 Hosted Nori 1.5 keeps a context cache, so the client stops refusing cache settings for it.

@@ -13,7 +13,7 @@ pytest.importorskip("joblib")
 pytest.importorskip("scipy")
 pytest.importorskip("statsmodels")
 
-from synthefy import SynthefyNoriClient
+from synthefy import NoriPrediction, SynthefyNoriClient
 from synthefy.nori_ts import NoriTSForecaster
 from synthefy.nori_ts.core import _TARGET
 from synthefy.nori_ts.tsfeatures import RunningIndexFeature
@@ -35,7 +35,8 @@ class _FakeClient:
                 **kwargs,
             }
         )
-        return np.zeros((len(kwargs["quantiles"]), len(X_test)), dtype=float)
+        quantiles = np.zeros((len(kwargs["quantiles"]), len(X_test)), dtype=float)
+        return NoriPrediction(predictions=quantiles, model_name=self.model, model_version=None)
 
 
 def _forecaster(**kwargs):
@@ -210,7 +211,8 @@ def test_predict_df_runs_through_public_synthefy_nori_client(monkeypatch, quanti
 
     def predict(X_train, y_train, X_test, **kwargs):
         calls.append((X_train, y_train, X_test, kwargs))
-        return np.vstack([np.full(len(X_test), 100.0 * level**2, dtype=float) for level in kwargs["quantiles"]])
+        quantiles = np.vstack([np.full(len(X_test), 100.0 * level**2, dtype=float) for level in kwargs["quantiles"]])
+        return NoriPrediction(predictions=quantiles, model_name="nori-6m", model_version=None)
 
     monkeypatch.setattr(client, "predict", predict)
     try:
