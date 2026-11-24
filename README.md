@@ -759,7 +759,7 @@ winner is deployed. This is the only safe way to use `boost` — the gate declin
 exactly the tables where it detonated:
 
 ```python
-NoriRegressor(large_context_policy=["random", "cluster_route", "safeboost"])
+NoriRegressor(model="nori-1-5", large_context_policy=["random", "cluster_route", "safeboost"])
 ```
 
 For chronologically ordered rows, use a tail holdout so future rows never enter
@@ -768,6 +768,7 @@ LaDe tables, so do not use the default random holdout for this comparison:
 
 ```python
 NoriRegressor(
+    model="nori-1-5",
     large_context_policy=[
         "target_rank[cap=32768]",
         "target_rank[cap=65536]",

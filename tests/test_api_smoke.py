@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 import torch
 
-from synthefy_nori import NoriRegressor, config_path
+from synthefy_nori import NoriRegressor, config_path, infer
 from synthefy_nori import api
 from synthefy_nori.inference import preprocess as inference_preprocess
 from synthefy_nori.inference.predictor import NoriPredictor
@@ -123,8 +123,19 @@ def test_regressor_stores_model_variant_verbatim():
 def test_predict_without_model_or_path_raises_require_model():
     # Neither model= nor model_path -> the require-model guard raises at checkpoint load,
     # before any network call. Covers the public NoriRegressor.fit/predict entry point.
-    with pytest.raises(ValueError, match=r"requires model="):
+    with pytest.raises(ValueError, match=r"requires model=") as excinfo:
         NoriRegressor().fit([[0.0, 1.0], [1.0, 0.0]], [0.0, 1.0]).predict([[0.5, 0.5]])
+    # The message names the caller's own arguments and the choices, not download_checkpoint's.
+    message = str(excinfo.value)
+    assert "model_path=" in message
+    assert "'nori-6m'" in message
+    assert "repo_id" not in message
+
+
+def test_infer_without_model_raises_the_same_actionable_error():
+    with pytest.raises(ValueError, match=r"requires model=.*model_path=") as excinfo:
+        infer([[0.0, 1.0], [1.0, 0.0]], [0.0, 1.0], [[0.5, 0.5]])
+    assert "repo_id" not in str(excinfo.value)
 
 
 def test_resolve_model_path_threads_variant_to_download(monkeypatch):
