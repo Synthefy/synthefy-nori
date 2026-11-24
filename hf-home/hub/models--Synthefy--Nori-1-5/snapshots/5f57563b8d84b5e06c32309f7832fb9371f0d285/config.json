@@ -1,0 +1,30 @@
+{
+  "model_type": "features-transformer",
+  "library_name": "synthefy-nori",
+  "pipeline_tag": "tabular-regression",
+  "checkpoint_file": "nori.pt",
+  "num_parameters": 20757832,
+  "architecture": "Model v3: two-phase encoder",
+  "embed_dim": 128,
+  "hid_dim": 384,
+  "nlayers": 9,
+  "nhead": 4,
+  "features_per_group": 1,
+  "two_phase": {
+    "target_tokens": 2,
+    "row_layers": 12,
+    "row_heads": 8,
+    "row_hidden_dim": 768,
+    "attention_policy": {
+      "qk_normalization": "affine",
+      "context_label_scale": "fixed",
+      "reference_keys": 512
+    }
+  },
+  "block": "SwiGLU + RMSNorm + pre-norm (layer_arch=smf)",
+  "regression_head": "999-quantile pinball",
+  "inference_config": "model_v3_inference.json (4 members), stored in nori.pt",
+  "min_synthefy_nori_version": "0.24.0",
+  "_comment": "Architecture summary; weights and full training config are inside nori.pt. This file is also the Hub's download-counting query file.",
+  "training_recipe": "v9.6.4 tier 4 (EMA, optimizer step 297,000)"
+}
