@@ -34,6 +34,15 @@ def _safe_torch_load(path):
             return torch.load(path, map_location="cpu", weights_only=True)
 
 
+class MissingFeatureDecoderError(ValueError):
+    """``mask_prediction=True`` was requested for a checkpoint that omits the feature decoder.
+
+    A ``ValueError`` subclass so existing ``except ValueError`` handling keeps working,
+    while callers that need the decoder (e.g. the ICL learnability filter) can name the
+    problem in their own terms.
+    """
+
+
 # The attention-scale flags and their defaults. ``finalize_arch_config`` stamps
 # this table into every new checkpoint's ``model_config``; ``build_model`` falls
 # back to it for checkpoints saved before it did. One table, so the value a run
@@ -251,7 +260,7 @@ def load_model(model_path, mask_prediction: bool = False, base_config_path: str 
     # and callers (e.g. the eval harness) reuse that object.
     config = dict(config)
     if mask_prediction and bool(config.get("omit_feature_decoder", False)):
-        raise ValueError(
+        raise MissingFeatureDecoderError(
             "mask_prediction=True requires a checkpoint with feature_decoder; "
             "this checkpoint explicitly omits that head"
         )

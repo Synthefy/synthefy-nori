@@ -515,6 +515,9 @@ class NoriTrainer:
           ``'nori-6m'`` etc.  -- download that Synthefy checkpoint size (any ``NORI_MODELS`` name)
           ``'org/repo'``      -- download from an arbitrary HuggingFace repo
           local file path     -- used as-is
+
+        This only resolves the name. ``_init_gpu_icl_filter`` then rejects a checkpoint
+        without the feature decoder the filter needs (e.g. ``'nori-1-5'``).
         """
         if model_path == "limix":
             from synthefy_nori.hf import download_limix
@@ -535,11 +538,23 @@ class NoriTrainer:
           - ``'nori-6m'`` / ``'nori-30m'`` / ``'nori-100m'`` -- auto-download that Synthefy checkpoint
           - ``'org/repo'`` -- auto-download from a custom HuggingFace repo
           - Local file paths (.pt/.ckpt) -- uses native forward pass
-        """
-        model_path = self._resolve_icl_filter_path(model_path)
-        from synthefy_nori.utils.loading import load_model
 
-        m = load_model(model_path, mask_prediction=True)
+        The filter runs the model with ``mask_prediction=True``, so the checkpoint must
+        include the feature decoder. Nori 1.5 (``'nori-1-5'``) omits it and is rejected.
+        """
+        requested = model_path
+        model_path = self._resolve_icl_filter_path(model_path)
+        from synthefy_nori.utils.loading import MissingFeatureDecoderError, load_model
+
+        try:
+            m = load_model(model_path, mask_prediction=True)
+        except MissingFeatureDecoderError as exc:
+            raise ValueError(
+                f"--icl-filter-model {requested!r} cannot be used as the ICL learnability filter: "
+                "the filter needs the checkpoint's feature decoder, which this checkpoint omits. "
+                "Use 'nori-6m', 'nori-30m' or 'nori-100m', or a checkpoint that includes the "
+                "feature decoder."
+            ) from exc
         m.eval()
         m.to(self.device)
         for p in m.parameters():
